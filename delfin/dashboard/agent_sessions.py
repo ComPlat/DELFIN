@@ -90,6 +90,11 @@ def login_node_refusal(open_here: int, *, kind: Optional[str] = None,
             "Not a shared login node? Set DELFIN_HOST_KIND=workstation "
             "(or hpc.host_kind in the settings).")
 _REFRESH_S = 3.0
+
+#: How long a kept session on its way back into a dashboard may be on
+#: record nowhere (a hand-over between its claim and the service's list)
+#: before its row reads as an ordinary one that does not run.
+_HAND_OVER_SETTLE_S = 20.0
 # Reading the saved sessions parses every session file, so the resume list
 # is rebuilt on open/close and at this interval, not on every refresh.
 _RESUME_REFRESH_S = 60.0
@@ -2917,6 +2922,8 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
     def _rec_running(rec: dict) -> bool:
         """A session open here runs -- in this kernel, or in the service
         unless the service has it asleep or ended it."""
+        if rec.get("handing_over"):
+            return True                 # kept: on its way back here
         if rec.get("dormant"):
             return False                # open, but it did not keep working
         if not rec.get("live"):
@@ -2971,7 +2978,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         rec = _find(key)
         if rec is None:
             return
-        if rec.get("dormant"):
+        if rec.get("dormant") and not rec.get("handing_over"):
             _wake(rec)                 # loaded from its record, in its place
             return
         view["active"] = key
@@ -3367,16 +3374,27 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                      "the phone no longer have it.")
         return rec
 
-    def open_dormant(sid: str, workspace: str, title: str = "") -> dict:
+    def open_dormant(sid: str, workspace: str, title: str = "", *,
+                     handing_over: bool = False) -> dict:
         """A row for an open session that does not run: its name and folder,
-        "not running", nothing loaded. A click loads it (_wake)."""
+        "not running", nothing loaded. A click loads it (_wake).
+
+        ``handing_over``: a kept session on its way back into this
+        dashboard (_step_hand_over) -- its row says so, and it becomes the
+        full chat by itself, in its place, once it is free."""
+        import time as _time
         key = _address_for(sid)
         name = title or session_label("", sid)
-        tab = widgets.VBox([_classed(widgets.HTML(
-            f"{html.escape(name)} is not running; loading it from its record."),
-            "delfin-session-notice")], layout=widgets.Layout(display="none"))
+        text = (f"{name} is being handed over to this dashboard; its chat opens "
+                "here in a moment." if handing_over else
+                f"{name} is not running; loading it from its record.")
+        tab = widgets.VBox([_classed(widgets.HTML(html.escape(text)),
+                                     "delfin-session-notice")],
+                           layout=widgets.Layout(display="none"))
         title_btn = _classed(widgets.Button(description=name, tooltip=(
-            "Not running: open it (loaded from its saved record)")), "delfin-session-title")
+            "Being handed over: its chat opens here in a moment" if handing_over
+            else "Not running: open it (loaded from its saved record)")),
+            "delfin-session-title")
         close_btn = _classed(widgets.Button(description="×", tooltip=(
             "Remove it from this list; it stays saved and can be resumed")),
             "delfin-session-close")
@@ -3392,6 +3410,22 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                "ctx": _SessionContext(ctx, agent_workspace=workspace,
                                       initial_session_id=sid,
                                       agent_status_html=widgets.HTML(""))}
+        if handing_over:
+            from delfin.dashboard import kept_agent_sessions as _K
+            from delfin.dashboard.resume_server import grace_seconds
+            now = _time.monotonic()
+            rec["handing_over"] = True
+            rec["notice_html"] = tab.children[0]
+            # Held longer than a closed window's grace (and not working):
+            # a dashboard that is still open has it -- its view, as a click
+            # in the running list gives it.
+            rec["held_until"] = now + grace_seconds() + 60.0
+            rec["settle_until"] = now + _HAND_OVER_SETTLE_S
+            _K.want(sid)
+            if not view.get("exit_hook"):
+                import atexit
+                atexit.register(_K.on_kernel_end)
+                view["exit_hook"] = True
         _add_close_ask(rec)
         title_btn.on_click(lambda _b, _key=key: activate(_key))
         close_btn.on_click(lambda _b, _key=key: close_session(_key))
@@ -3400,14 +3434,116 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         _render_list()
         return rec
 
-    def _wake(rec: dict) -> Optional[dict]:
+    def _not_handing_over(rec: dict, text: str = "") -> None:
+        """A handing-over row becomes an ordinary not-running row."""
+        from delfin.dashboard import kept_agent_sessions as _K
+        rec.pop("handing_over", None)
+        _K.unwant(rec["session_id"])
+        _K.spawn_hand_over()              # a record left alone for this row
+        name = str(rec["title_btn"].description or "")
+        rec["title_btn"].tooltip = "Not running: open it (loaded from its saved record)"
+        notice_html = rec.get("notice_html")
+        if notice_html is not None:
+            notice_html.value = html.escape(
+                text or f"{name} is not running; loading it from its record.")
+        _render_list()
+
+    def _arrived(rec: dict, new: Optional[dict], shown: bool, before: str) -> None:
+        """After a handing-over row became the session: on screen only if
+        the row was; the session in front stays in front otherwise."""
+        if new is None:
+            return
+        if shown:
+            activate(new["key"])
+        elif before and before != rec["key"] and _find(before) is not None:
+            activate(before)
+
+    def _take_kept_here(rec: dict) -> Optional[dict]:
+        """A kept session whose old kernel ended, taken into this
+        dashboard's full chat straight from its record -- no stop in the
+        agent service on the way -- and kept again here."""
+        from delfin.dashboard import kept_agent_sessions as _K
+        sid = rec["session_id"]
+        record, why = _K.claim_here(sid)
+        if record is None:
+            if why:
+                _not_handing_over(rec, f"{rec['title_btn'].description} was not "
+                                       f"resumed: {why}. A click loads it.")
+            return None
+        shown, before = view["active"] == rec["key"], view["active"]
+        rec.pop("handing_over", None)
+        # Its record says the old kernel is gone; the service may list the
+        # session a moment longer as that kernel's -- not a reason for its view.
+        new = _wake(rec, show=False, in_kernel=True)
+        if new is None:
+            _K.put_back(record)           # the hand-over finds it as before
+            if rec in sessions:
+                _not_handing_over(rec)
+            return None
+        if not keep_session_refusal():
+            set_keep(new["key"], True)
+        _arrived(rec, new, shown, before)
+        return new
+
+    def _step_hand_over(rec: dict) -> None:
+        """One tick of a kept session on its way back (open_dormant with
+        ``handing_over``): taken from its record once its old kernel is
+        gone; taken over from the service if a hand-over put it there; the
+        service's view while it is in the middle of a turn (the full chat
+        follows when the turn is over); an ordinary not-running row when
+        it turns out to be nowhere."""
+        import time as _time
+        from delfin.dashboard import kept_agent_sessions as _K
+        from delfin.dashboard import live_sessions as LS
+        sid = rec["session_id"]
+        where = _K.where_kept(sid)
+        if where == "free":
+            _take_kept_here(rec)
+            return
+        now = _time.monotonic()
+        summary = (running_panel.running.summary(sid)
+                   if live["client"] is not None else None) or {}
+        busy = bool(summary) and LS.state_word(summary) in ("working", "needs you")
+        if where == "held" and not busy and now < rec["held_until"]:
+            return                        # its old kernel still has it
+        if where == "held" and not summary:
+            # Still held long after a closed window's grace, and the service
+            # does not list it: a dashboard that is still open has it.
+            _not_handing_over(rec, f"{rec['title_btn'].description} is open in "
+                                   "another dashboard; close it there to have it here.")
+            return
+        if where:
+            rec["settle_until"] = now + _HAND_OVER_SETTLE_S
+            if where == "moving" or not summary:
+                return
+        elif not summary:
+            if now < rec["settle_until"]:
+                return                    # the service may list it any moment
+            # Nowhere: not kept any more (switched off, a stop). Loaded when
+            # it is clicked, as any open session that did not keep working.
+            _not_handing_over(rec)
+            if view["active"] == rec["key"]:
+                _wake(rec)
+            return
+        shown, before = view["active"] == rec["key"], view["active"]
+        rec.pop("handing_over", None)
+        _K.unwant(sid)
+        new = _wake(rec, show=False)
+        if new is None:                   # not saved in time: tried again
+            rec["handing_over"] = True
+            _K.want(sid)
+            return
+        _arrived(rec, new, shown, before)
+
+    def _wake(rec: dict, *, show: bool = True, in_kernel: bool = False) -> Optional[dict]:
         """A not-running row becomes the session: from the agent service
         when it runs there (kept, picked up there), else loaded from its
         saved record into this dashboard's full chat -- in the row's place."""
         at = sessions.index(rec) if rec in sessions else len(sessions)
         sessions.remove(rec)
         sid = rec["session_id"]
-        if live["client"] is not None and running_panel.running.summary(sid):
+        if not in_kernel and live["client"] is not None \
+                and running_panel.running.summary(sid):
             new = open_from_list(sid)
         else:
             new = open_session(rec["workspace"], sid, in_kernel=True)
@@ -3424,7 +3560,8 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         new["known_title"] = rec["title_btn"].description
         if new["title_btn"].description == "New session":
             new["title_btn"].description = new["known_title"]
-        activate(new["key"])
+        if show:
+            activate(new["key"])
         return new
 
     def _into_chat_when_idle() -> None:
@@ -3646,6 +3783,13 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         "kept" (it goes on in the agent service, out of this list's open
         set) or "ended" (saved, ended). Not running, not kept: ended."""
         from delfin.dashboard import kept_agent_sessions as _K
+        if rec.get("handing_over"):
+            # Not here yet: its row goes, the session stays kept -- the
+            # hand-over resumes it in the agent service (one that left it
+            # alone for this dashboard runs again).
+            _K.unwant(rec["session_id"])
+            _K.spawn_hand_over()
+            return "kept"
         if not how and _rec_kept(rec) and _rec_running(rec):
             rec["close_ask"].layout.display = ""
             return "asked"
@@ -3769,6 +3913,12 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             except Exception:
                 pass
         for rec in list(sessions):
+            if rec.get("handing_over"):
+                try:
+                    _step_hand_over(rec)
+                except Exception:
+                    pass
+                continue
             if rec.get("dormant"):
                 # Not running here. One that runs in the service now (a kept
                 # session handed over a moment ago) is picked up as it is.
@@ -4127,6 +4277,35 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
     resume_search.observe(lambda _change: _refresh_resume_options(),
                           names="value")
 
+    def _back_from_closed_window(row: dict) -> bool:
+        """A session this dashboard had open when it closed, kept, and on
+        its way back -- its old kernel still holds it (the window grace) or
+        a hand-over is moving it: its row now, saying so, and the full chat
+        in its place in a moment (_step_hand_over), never the service's
+        view first. In the middle of a turn, or already in the service, it
+        is left to the caller (the view then the full chat; the take-over).
+        True when the row was made."""
+        from delfin.dashboard import kept_agent_sessions as _K
+        from delfin.dashboard import live_sessions as LS
+        if view["start_in_service"]:
+            return False                # those stay in the service's view
+        sid = row["session_id"]
+        where = _K.where_kept(sid)
+        summary = (running_panel.running.summary(sid)
+                   if live["client"] is not None else None) or {}
+        if summary and LS.state_word(summary) in ("working", "needs you"):
+            return False
+        if not where:
+            return False
+        data = _saved_session(sid) or {}
+        name = str(summary.get("name") or "") or session_display_name(data.get("title"), sid)
+        workspace = (row.get("workspace") or str(summary.get("workspace") or "")
+                     or str(data.get("workspace") or ""))
+        rec = open_dormant(sid, workspace, name, handing_over=True)
+        if where == "free":
+            _take_kept_here(rec)        # its old kernel is gone: at once
+        return True
+
     # -- start ------------------------------------------------------------------
 
     rows = load_open_sessions()
@@ -4141,16 +4320,13 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
     if wanted and all(row["session_id"] != wanted for row in rows):
         rows.insert(0, {"session_id": wanted, "workspace": ""})
     _connect()
-    # Kept sessions whose kernel ended without handing them over (a killed
-    # server): handed over now, by a process of their own.
-    try:
-        from delfin.dashboard import kept_agent_sessions as _K
-        if _K.pending_here():
-            _K.spawn_hand_over()
-    except Exception:
-        pass
     front_sid = next((r["session_id"] for r in rows if r.get("front")), "")
     for row in rows[:_MAX_OPEN]:
+        try:
+            if _back_from_closed_window(row):
+                continue
+        except Exception:
+            pass
         if live["client"] is not None and running_panel.running.summary(row["session_id"]):
             # The service runs it -- kept when this dashboard last closed.
             # Sessions started in the service stay there, a view on it,
@@ -4164,8 +4340,13 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                     rec = open_live(row["session_id"], row["workspace"], show=False)
                     if rec is not None and hosted:
                         rec["into_chat"] = True
-                else:
-                    open_from_list(row["session_id"])
+                elif open_from_list(row["session_id"]) is None:
+                    # Not saved in time: its row, and the take-over again
+                    # on the next ticks -- not gone from the list.
+                    data = _saved_session(row["session_id"]) or {}
+                    open_dormant(row["session_id"], row["workspace"],
+                                 session_display_name(data.get("title"), row["session_id"]),
+                                 handing_over=True)
             except Exception:
                 pass
             continue
@@ -4181,6 +4362,15 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                          session_display_name(data.get("title"), row["session_id"]))
         except Exception:
             continue
+    # Kept sessions whose kernel ended without handing them over (a killed
+    # server): handed over now, by a process of their own -- after the
+    # rows above, so the ones this dashboard takes back are left to it.
+    try:
+        from delfin.dashboard import kept_agent_sessions as _K
+        if _K.pending_here():
+            _K.spawn_hand_over()
+    except Exception:
+        pass
     if not sessions:
         open_session()
     # The one in front when it closed is in front again, loaded; else the
