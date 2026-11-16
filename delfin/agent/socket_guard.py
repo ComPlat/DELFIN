@@ -21,6 +21,13 @@ refused; other address families are connected as asked. The filter also
 refuses datagram Unix sockets (``sendto`` carries its own address) and
 io_uring (which connects without the system call).
 
+Under the proxy a TCP connect to the loopback is refused unless every
+socket listening there is the command's own: held by its process tree or
+named as a listener of the session's own background jobs
+(``Supervisor._own_loopback``). A test that serves a fake endpoint to
+itself works; the user's notebook or model server and other users'
+services on the same host stay out of reach.
+
 If the supervisor ends, the listener closes and every later connect fails:
 the guard fails closed. Linux x86_64 and aarch64; ``available()`` says
 whether this kernel and architecture support it.
@@ -109,6 +116,190 @@ def name_lookup_sockets(direct_routes: bool, net_mode: str,
 #: refused as a whole besides these.
 _METADATA = {ipaddress.ip_address(a) for a in (
     "169.254.169.254", "100.100.100.200", "168.63.129.16", "fd00:ec2::254")}
+
+
+#: Where the process and socket tables are read. A test points it at a
+#: recorded tree, so the ownership rule is checked on every machine.
+_PROC = "/proc"
+
+
+def _proc_net_address(field: str):
+    """``(ip_address, port)`` of a ``local_address`` in /proc/net/tcp{,6}.
+
+    The kernel prints each 32-bit word of the address in host byte order."""
+    hexaddr, hexport = field.split(":")
+    raw = bytes.fromhex(hexaddr)
+    if sys.byteorder == "little":
+        raw = b"".join(raw[i:i + 4][::-1] for i in range(0, len(raw), 4))
+    return ipaddress.ip_address(raw), int(hexport, 16)
+
+
+def loopback_listeners(ip, port: int) -> set:
+    """Inodes of the listening TCP sockets a connect to ``ip:port`` can
+    reach: bound to that address or to a wildcard, IPv4 and IPv6 (an IPv6
+    socket that also accepts IPv4 shows its address as mapped). Read from
+    /proc/net, which shows every user's sockets in this network namespace;
+    empty when nothing listens there or the tables cannot be read."""
+    out: set = set()
+    for table in (f"{_PROC}/net/tcp", f"{_PROC}/net/tcp6"):
+        try:
+            with open(table, encoding="latin-1") as fh:
+                next(fh, None)
+                for line in fh:
+                    cols = line.split()
+                    # local_address, state 0A = LISTEN, inode at index 9
+                    if len(cols) < 10 or cols[3] != "0A":
+                        continue
+                    try:
+                        addr, lport = _proc_net_address(cols[1])
+                    except ValueError:
+                        continue
+                    if lport != port:
+                        continue
+                    if getattr(addr, "ipv4_mapped", None) is not None:
+                        addr = addr.ipv4_mapped
+                    if addr == ip or addr.is_unspecified:
+                        out.add(cols[9])
+        except OSError:
+            continue
+    return out
+
+
+def socket_inodes_below(root: int, include_root: bool = True) -> set:
+    """Inodes of the sockets ``root`` and every process below it hold
+    (/proc); without ``include_root``, those of the processes below it only.
+    A process of another user is not readable and adds nothing."""
+    tree = {root}
+    parent_of: dict = {}
+    try:
+        names = os.listdir(_PROC)
+    except OSError:
+        names = []
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"{_PROC}/{name}/stat", encoding="latin-1") as fh:
+                stat = fh.read()
+            parent_of[int(name)] = int(stat.rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+    grew = True
+    while grew:
+        grew = False
+        for pid, ppid in parent_of.items():
+            if ppid in tree and pid not in tree:
+                tree.add(pid)
+                grew = True
+    if not include_root:
+        tree.discard(root)
+    inodes: set = set()
+    for pid in tree:
+        try:
+            fds = os.listdir(f"{_PROC}/{pid}/fd")
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                link = os.readlink(f"{_PROC}/{pid}/fd/{fd}")
+            except OSError:
+                continue
+            if link.startswith("socket:["):
+                inodes.add(link[8:-1])
+    return inodes
+
+
+def owns_loopback(ip, port: int, own_inodes=(), root_pid: int = 0,
+                  include_root: bool = True) -> bool:
+    """Whether every socket a connect to loopback ``ip:port`` can reach is
+    the caller's own: one of ``own_inodes`` (the listening sockets of the
+    session's background jobs) or held by ``root_pid``'s process tree.
+
+    On a shared host the loopback carries other users' services and the
+    user's own unsandboxed ones (a notebook server, a model server, the
+    dashboard); those are in neither and stay refused. Judged from /proc
+    when asked, so a port the server gave up and another program took is no
+    longer the caller's. False when nothing listens there, for a non-loopback
+    address and on any error."""
+    try:
+        if not ip.is_loopback:
+            return False
+        reach = loopback_listeners(ip, port)
+        if not reach:
+            return False
+        own = {str(i) for i in own_inodes}
+        if reach <= own:
+            return True
+        return bool(root_pid) and reach <= (
+            own | socket_inodes_below(int(root_pid), include_root))
+    except Exception:
+        return False
+
+
+def _udp_datagram_rows():
+    """The bound endpoint rows of the kernel's UDP tables.
+
+    State 07 is UDP's bound entry (an unconnected socket's resting state,
+    which is how OpenMPI holds its discovery and rank-to-rank sockets)."""
+    out: set = set()
+    for table in (f"{_PROC}/net/udp", f"{_PROC}/net/udp6"):
+        try:
+            with open(table, encoding="latin-1") as fh:
+                next(fh, None)
+                for line in fh:
+                    cols = line.split()
+                    # local_address, state 07 = the bound endpoint,
+                    # inode at index 9
+                    if len(cols) < 10 or cols[3] != "07":
+                        continue
+                    try:
+                        addr, lport = _proc_net_address(cols[1])
+                    except ValueError:
+                        continue
+                    if getattr(addr, "ipv4_mapped", None) is not None:
+                        addr = addr.ipv4_mapped
+                    out.add((addr, lport, cols[9]))
+        except OSError:
+            continue
+    return out
+
+
+def udp_datagram_ends(ip, port: int) -> set:
+    """Inodes of the bound UDP endpoints a datagram to ``ip:port`` can
+    reach: bound to that address or to a wildcard, IPv4 and IPv6 (an IPv6
+    socket that also serves IPv4 shows its address as mapped). Read from
+    /proc/net, which shows every user's sockets in this network namespace;
+    empty when nothing is bound there or the tables cannot be read."""
+    return {(inode) for (addr, lport, inode) in _udp_datagram_rows()
+            if lport == port
+            and (addr == ip or addr.is_unspecified)}
+
+
+def owns_udp(ip, port: int, own_inodes=(), root_pid: int = 0,
+             include_root: bool = True) -> bool:
+    """Whether every UDP endpoint a datagram to ``ip:port`` can reach is
+    the caller's own: one of ``own_inodes`` (the session's background
+    jobs' sockets) or held by ``root_pid``'s process tree.
+
+    Same rule as :func:`owns_loopback`, on the UDP tables: on a shared
+    host the loopback carries other users' ranks and the user's own
+    unsandboxed senders; those are in neither and stay refused. False
+    when nothing is bound there, for a non-loopback address (a datagram
+    bound to a real interface is what the filter must refuse at
+    creation) and on any error."""
+    try:
+        if not ip.is_loopback:
+            return False
+        reach = udp_datagram_ends(ip, port)
+        if not reach:
+            return False
+        own = {str(i) for i in own_inodes}
+        if reach <= own:
+            return True
+        return bool(root_pid) and reach <= (
+            own | socket_inodes_below(int(root_pid), include_root))
+    except Exception:
+        return False
 
 
 def _arch():
@@ -254,8 +445,14 @@ class Supervisor:
     """Answers the command's connect() calls until the command ends."""
 
     def __init__(self, listener: int, allowed: list[str], net_mode: str = "open",
-                 allowed_tcp=(), denied=()):
+                 allowed_tcp=(), denied=(), own_listeners=()):
         self.listener = listener
+        # The listening sockets of the session's own background jobs (their
+        # inodes, read when the command started); with the sockets of the
+        # command's own process tree they are the servers it may reach on
+        # the loopback (_own_loopback).
+        self.own_listeners = {str(i) for i in own_listeners if str(i).isdigit()}
+        self.root_pid = 0
         self.allowed = [os.path.realpath(p).rstrip("/") for p in allowed if p]
         self.denied = [os.path.realpath(p).rstrip("/") for p in denied if p]
         self.net_mode = net_mode if net_mode in ("open", "proxy", "none") else "none"
@@ -284,8 +481,21 @@ class Supervisor:
         if self.net_mode == "proxy" and ((ip, port) in self.allowed_tcp
                                          or (ip, 0) in self.allowed_tcp):
             return ""
+        if self.net_mode == "proxy" and ip.is_loopback and self._own_loopback(ip, port):
+            return ""
         return (f"direct connection to {ip}:{port}; the sandbox reaches the "
                 "network through its proxy only")
+
+    def _own_loopback(self, ip, port: int) -> bool:
+        """A server of the command's own tree or one of the session's own
+        background jobs (``owns_loopback``). The supervisor connects right
+        after the check (_handle); a socket replaced in between is not seen.
+
+        Rejected: allowing the whole loopback under the proxy (reaches what
+        runs outside every sandbox with the user's rights); a port list
+        fixed when the command starts (a port given up and taken by another
+        program stays open)."""
+        return owns_loopback(ip, port, self.own_listeners, self.root_pid)
 
     def unix_path_allowed(self, path: str) -> bool:
         real = os.path.realpath(path)
@@ -410,6 +620,7 @@ class Supervisor:
 
     def serve(self, child_pid: int) -> int:
         """Answer notifications until ``child_pid`` exits; return its status."""
+        self.root_pid = int(child_pid)
         poller = select.poll()
         poller.register(self.listener, select.POLLIN)
         while True:

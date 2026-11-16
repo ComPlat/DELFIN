@@ -22,7 +22,7 @@ instead of running it unconfined.
         [--net open|proxy|none] [--proxy-socket PATH] [--allow-tcp IP:PORT ...] \
         [--deny-socket DIR ...] [--read-only PATH ...] [--read DIR ...] \
         [--proxy-token-file PATH] [--guard 0] [--netns 1] \
-        -- /bin/bash -c CMD
+        [--own-listener INODE ...] -- /bin/bash -c CMD
 
 ``--read-only`` (any number) keeps a path beneath a write root readable
 but not writable. ``--read`` (any number) confines reading to beneath those
@@ -31,7 +31,11 @@ except ``--hide``. ``--proxy-token-file`` names the per-session proxy token
 (default: ``token`` beside the proxy socket). ``--guard 0`` leaves out the
 seccomp supervisor (a host without user notification, or a test of the
 layers below it); ``--netns 1`` says the caller already put the command in
-a network namespace of its own.
+a network namespace of its own. ``--own-listener`` (any number) names a
+listening socket of the session's own background jobs by inode: under the
+socket guard the command may connect to it on the loopback directly, as it
+may to a server its own process tree listens on
+(``socket_guard.owns_loopback``).
 
 Unix sockets are guarded too (``socket_guard``): the command reaches them
 only beneath the write roots, the private temp directory and the cluster's
@@ -369,7 +373,8 @@ def _run_guarded(write: list[str], hide: list[str], allowed: list[str],
                  read_only: list[str] | None = None,
                  read: list[str] | None = None,
                  token_file: str = "", use_guard: bool = True,
-                 netns: bool = False) -> int:
+                 netns: bool = False,
+                 own_listeners: list[str] | None = None) -> int:
     """Apply the filesystem policy (unless ``use_fs`` is off, inside
     bubblewrap), the socket guard and the network mode, and run the command.
 
@@ -489,7 +494,8 @@ def _run_guarded(write: list[str], hide: list[str], allowed: list[str],
     if forwarder is not None:
         forwarder.start()
     status = sg.Supervisor(listener, allowed, net_mode, allow_tcp,
-                           denied=deny_socket or ()).serve(pid)
+                           denied=deny_socket or (),
+                           own_listeners=own_listeners or ()).serve(pid)
     return _exit_code(status)
 
 
@@ -544,6 +550,7 @@ def main(argv: list[str]) -> int:
     hide: list[str] = []
     allow_socket: list[str] = []
     allow_tcp: list[str] = []
+    own_listeners: list[str] = []
     deny_socket: list[str] = []
     read_only: list[str] = []
     read: list[str] | None = None
@@ -589,6 +596,8 @@ def main(argv: list[str]) -> int:
             use_guard = value != "0"
         elif flag == "--netns":
             netns = value == "1"
+        elif flag == "--own-listener":
+            own_listeners.append(value)
         else:
             print(f"landlock_exec: unknown option {flag}", file=sys.stderr)
             return 126
@@ -616,7 +625,8 @@ def main(argv: list[str]) -> int:
                         proxy_socket=proxy_socket, allow_tcp=allow_tcp,
                         deny_socket=deny_socket, read_only=read_only,
                         read=read, token_file=token_file,
-                        use_guard=use_guard, netns=netns)
+                        use_guard=use_guard, netns=netns,
+                        own_listeners=own_listeners)
 
 
 if __name__ == "__main__":
