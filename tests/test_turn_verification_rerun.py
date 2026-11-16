@@ -1,21 +1,16 @@
-"""Characterization: the dashboard reruns a turn that cites a path that
-does not exist; the terminal does not.
+"""Both surfaces rerun a turn that cites a bare path that does not exist.
 
-The dashboard's Verify-Enforcement block (the inline scan in
-delfin/dashboard/tab_agent.py) forces one correction turn when the answer
-cites a path the repo does not contain (``scan_for_ungrounded_code_claims``
-returns a ``kind == "nonexistent"`` flag) and the turn never read a file or
-consulted docs. The terminal layer drives a single ``stream_response`` and
-does no post-answer scan of its own: the engine's claim-grounding guard
-(``_enforce_claim_grounding``) uses ``scan_for_ungrounded_location_claims``,
-which does not flag a nonexistent path, so a terminal turn that cites one
-is answered once and never corrected.
+The dashboard used to own this check -- its inline Verify-Enforcement block
+scanned a finished answer with ``scan_for_ungrounded_code_claims`` and forced
+one correction turn when it found a ``kind == "nonexistent"`` flag. The engine
+never did: its guard's ``scan_for_ungrounded_location_claims`` only flags
+``file_line`` claims, so a bare (line-less) nonexistent path was invisible to
+the terminal, which therefore answered once and never corrected.
 
-This file pins that divergence (dashboard reruns, terminal does not) before
-the verification decision moves into the engine. The terminal expectation
-is intentional: today's absence is the behaviour the step is meant to
-change, and it flips to the dashboard's count once the engine owns the
-decision.
+The two tests characterise the rerun through the dashboard and through the
+engine (the engine is what the terminal layer drives for a turn). The engine
+test flipped from 1 stream / no feedback to 2 streams / one [Verify] row when
+the decision moved into the engine's guard.
 """
 
 from __future__ import annotations
@@ -89,19 +84,20 @@ def _term_engine(client, agent_tree):
                            mode="quick", pack_dir=agent_tree)
 
 
-def test_terminal_does_not_rerun_a_nonexistent_path(agent_tree):
-    """Today the engine's grounding guard does not treat a nonexistent
-    citation as a correction trigger: one stream, one call, no [Verify]
-    feedback appended. This is the behaviour the step is meant to change."""
-    client = _client([CITING])
+def test_terminal_reruns_a_nonexistent_path(agent_tree):
+    """The engine's grounding guard now treats a bare nonexistent citation
+    as a correction trigger, so the terminal reruns the turn exactly as the
+    dashboard does: two streams, one [Verify] feedback row appended."""
+    client = _client([CITING, "Nothing more."])
     engine = _term_engine(client, agent_tree)
-    out = engine.stream_response("What is the fix?")
-    assert client.stream_message.call_count == 1, (
-        "terminal must not force a correction turn for a nonexistent path")
-    assert "[Verify]" not in out
+    engine.stream_response("What is the fix?")
+    assert client.stream_message.call_count == 2, (
+        "the terminal now forces one correction turn for a nonexistent path")
     feedback = [m for m in engine.messages
-                if m.get("_harness") and str(m.get("content", "")).startswith("[Verify]")]
-    assert feedback == [], "no verification rerun in the terminal today"
+                if m.get("_harness")
+                and str(m.get("content", "")).startswith("[Verify]")]
+    assert len(feedback) == 1, f"terminal verification reruns: {len(feedback)}"
+    assert NONEXISTENT in feedback[0]["content"]
 
 
 # --------------------------------------------------------------------------
