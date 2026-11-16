@@ -46,9 +46,10 @@ import sys
 import threading
 
 _ARCHES = {
-    # machine: (AUDIT_ARCH, seccomp, connect, socket, io_uring_setup, pidfd_open, pidfd_getfd)
-    "x86_64": (0xC000003E, 317, 42, 41, 425, 434, 438),
-    "aarch64": (0xC00000B7, 277, 203, 198, 425, 434, 438),
+    # machine: (AUDIT_ARCH, seccomp, connect, socket, io_uring_setup,
+    #           pidfd_open, pidfd_getfd, bind, sendto, sendmsg, sendmmsg)
+    "x86_64": (0xC000003E, 317, 42, 41, 425, 434, 438, 49, 44, 45, 46),
+    "aarch64": (0xC00000B7, 277, 203, 198, 425, 434, 438, 200, 205, 211, 212),
 }
 
 _SECCOMP_SET_MODE_FILTER = 1
@@ -64,9 +65,6 @@ _NOTIF_ID_VALID_OLD = 0x80082102
 #: SECCOMP_USER_NOTIF_FLAG_CONTINUE: the kernel carries out the notified
 #: syscall itself after the supervisor answers 0 with this flag.
 _NOTIF_FLAG_CONTINUE = 1
-#: System calls whose address-bearing datagram use is judged (x86_64 and
-#: aarch64 numbers; other architectures never reach the filter).
-_NR_SOCKET, _NR_BIND = 56, 48
 
 _libc = ctypes.CDLL(None, use_errno=True)
 _libc.syscall.restype = ctypes.c_long
@@ -374,15 +372,26 @@ def _head(audit: int):
 
 def _program(block_inet_datagrams: bool = False):
     """connect() to the supervisor, no io_uring, no datagram Unix socket,
-    and with a restricted network no non-stream inet socket (UDP would
-    leave without connect(), past the supervisor). A foreign architecture
-    (32-bit entry points use other numbers) runs nothing."""
-    audit, _sc, nr_connect, nr_socket, nr_uring, _po, _pg = _arch()
+    and with a restricted network the datagram surface is judged, not
+    blocked: socket(AF_INET/6, SOCK_DGRAM) is notified (creation sends
+    nothing; OpenMPI reads interfaces over it), and the address-bearing
+    datagram sends (sendto/sendmsg/sendmmsg) are notified too -- a UDP
+    datagram otherwise leaves without connect(), past the supervisor.
+    A foreign architecture (32-bit entry points use other numbers)
+    runs nothing."""
+    (audit, _sc, nr_connect, nr_socket, nr_uring, _po, _pg,
+     _nb, nr_sendto, nr_sendmsg, nr_sendmmsg) = _arch()
     items, tail = _head(audit)
     items += [
         (_JEQ, nr_connect, "notify", None),
         (_JEQ, nr_uring, "enosys", None),
         (_JEQ, nr_socket, None, "allow"),
+    ]
+    if block_inet_datagrams:
+        items += [(_JEQ, nr_sendto, "notify", None),
+                  (_JEQ, nr_sendmsg, "notify", None),
+                  (_JEQ, nr_sendmmsg, "notify", None)]
+    items += [
         (_LD, 16),
         (_JEQ, socket.AF_UNIX, "unix", None),
     ]
@@ -406,7 +415,7 @@ def _block_unix_program(block_inet_datagrams: bool = False):
     """Where the kernel cannot hand connects to a supervisor: no Unix socket
     at all (and no io_uring), and with a restricted network no inet socket
     at all either."""
-    audit, _sc, _nc, nr_socket, nr_uring, _po, _pg = _arch()
+    audit, _sc, _nc, nr_socket, nr_uring, _po, _pg, *_x = _arch()
     items, tail = _head(audit)
     items += [(_JEQ, nr_uring, "enosys", None),
               (_JEQ, nr_socket, None, "allow"),
@@ -554,50 +563,49 @@ class Supervisor:
 
     def _datagram_socket(self, notif_id: int, pid: int, args: tuple,
                          nr: int) -> None:
-        """socket()/bind() under a restricted network: the creation of a
-        datagram socket and the binding of its loopback endpoint are
-        judged here by the UDP ownership rule (owns_udp -- the command
-        tree's own ranks, or a session background job's socket).
+        """socket() under a restricted network: creating a datagram socket
+        is the command's own act (creation sends nothing; OpenMPI reads
+        its interfaces over one). Allowed with
+        SECCOMP_USER_NOTIF_FLAG_CONTINUE, so the kernel carries out the
+        real call -- no address rewrite, no copied descriptor.
 
-        Allowed with SECCOMP_USER_NOTIF_FLAG_CONTINUE: the kernel then
-        carries out the real socket()/bind() itself, so the descriptor the
-        command gets is the kernel's own (no address rewrite, no copied
-        fd). Everything else is refused with EACCES, fail closed.
-        """
+        The escape is judged where the address appears: sendto/
+        sendmsg/sendmmsg with a destination go to _datagram_send."""
+        self._send(notif_id, 0, _NOTIF_FLAG_CONTINUE)
+
+    def _datagram_send(self, notif_id: int, pid: int, args: tuple) -> None:
+        """sendto()/sendmsg()/sendmmsg() with a destination address: the
+        destination is judged by the UDP ownership rule (owns_udp -- the
+        command tree's own ranks, or a session background job's socket,
+        loopback only). Without a destination the kernel uses the
+        connected peer, which connect() already judged -- allowed with
+        CONTINUE. Everything else is refused with EACCES, fail closed."""
         try:
-            allowed = False
-            if nr == _NR_BIND:
-                # args: (fd, addr_ptr, addr_len) -- read the address
-                # straight out of the command's memory.
-                addr_ptr, addr_len = int(args[1]), int(args[2]) & 0xFFFFFFFF
-                with open(f"/proc/{pid}/mem", "rb", buffering=0) as mem:
-                    mem.seek(addr_ptr)
-                    raw = mem.read(addr_len)
-                if len(raw) != addr_len or not self._valid(notif_id):
-                    raise ValueError("unreadable bind address")
-                family = struct.unpack_from("<H", raw)[0]
-                if family == socket.AF_INET and len(raw) >= 8:
-                    port = struct.unpack_from(">H", raw, 2)[0]
-                    ip = ipaddress.ip_address(raw[4:8])
-                elif family == socket.AF_INET6 and len(raw) >= 24:
-                    port = struct.unpack_from(">H", raw, 2)[0]
-                    ip = ipaddress.ip_address(raw[8:24])
-                else:
-                    raise ValueError(f"address family {family}")
-                allowed = owns_udp(ip, port, self.own_listeners,
-                                   self.root_pid, include_root=True)
-                if not allowed:
-                    self.refused.append(f"bind {ip}:{port}")
-            else:
-                # socket(): creating the descriptor is the command's own
-                # act. The escape paths are the address-bearing calls
-                # (sendto/sendmsg to a foreign endpoint), which the proxy
-                # rules refuse; a bound rank may talk to itself.
-                allowed = True
-            if allowed:
+            addr_ptr, addr_len = int(args[1]), int(args[2]) & 0xFFFFFFFF
+            if addr_len < 2:
+                # no destination: the connected peer, already judged
                 self._send(notif_id, 0, _NOTIF_FLAG_CONTINUE)
+                return
+            with open(f"/proc/{pid}/mem", "rb", buffering=0) as mem:
+                mem.seek(addr_ptr)
+                raw = mem.read(addr_len)
+            if len(raw) != addr_len or not self._valid(notif_id):
+                raise ValueError("unreadable destination address")
+            family = struct.unpack_from("<H", raw)[0]
+            if family == socket.AF_INET and len(raw) >= 8:
+                port = struct.unpack_from(">H", raw, 2)[0]
+                ip = ipaddress.ip_address(raw[4:8])
+            elif family == socket.AF_INET6 and len(raw) >= 24:
+                port = struct.unpack_from(">H", raw, 2)[0]
+                ip = ipaddress.ip_address(raw[8:24])
             else:
-                self._send(notif_id, -1, -errno.EACCES)
+                raise ValueError(f"address family {family}")
+            if owns_udp(ip, port, self.own_listeners,
+                        self.root_pid, include_root=True):
+                self._send(notif_id, 0, _NOTIF_FLAG_CONTINUE)
+                return
+            self.refused.append(f"send {ip}:{port}")
+            self._send(notif_id, -1, -errno.EACCES)
         except Exception:
             try:
                 self._send(notif_id, -1, -errno.EACCES)
@@ -605,11 +613,17 @@ class Supervisor:
                 pass
 
     def _handle(self, notif_id: int, pid: int, args: tuple, nr: int = -1) -> None:
-        # socket()/bind(): datagram creation and loopback binding are
-        # judged here (the filter notifies them under a restricted
-        # network). Allowed with CONTINUE, refused with EACCES.
-        if nr in (_NR_SOCKET, _NR_BIND):
+        # The datagram surface, by the architecture's own numbers: socket()
+        # is the command's own creation; the address-bearing sends are
+        # judged by the UDP ownership rule. bind() is not notified (the
+        # filter allows it in-kernel; the escape is judged at sendto).
+        (audit, _sc, nr_connect, nr_socket, nr_uring, _po, _pg,
+         _nb, nr_sendto, nr_sendmsg, nr_sendmmsg) = _arch()
+        if nr == nr_socket:
             self._datagram_socket(notif_id, pid, args, nr)
+            return
+        if nr in (nr_sendto, nr_sendmsg, nr_sendmmsg):
+            self._datagram_send(notif_id, pid, args)
             return
         err = errno.EACCES
         val = -1
