@@ -245,6 +245,11 @@ def hand_over(*, wait_pid: int = 0, wait_s: float = WAIT_PID_S,
         if not only and not holder_gone(record):
             rows.append({"session_id": sid, "result": "held"})
             continue
+        if not only and wanted_here(sid):
+            # A dashboard opened since waits for it: it takes it into its
+            # own chat (claim_here), with no detour through the service.
+            rows.append({"session_id": sid, "result": "wanted: a dashboard takes it back"})
+            continue
         path = Path(record["_path"])
         claimed = path.with_name(f".{path.name}.claimed-{os.getpid()}")
         try:
@@ -290,6 +295,150 @@ def hand_over(*, wait_pid: int = 0, wait_s: float = WAIT_PID_S,
         except Exception:
             pass
     return rows
+
+
+# -- back into a dashboard that was opened again ------------------------------
+#
+# A dashboard closed with a kept session and opened again soon after finds
+# the session on its way: its old kernel still holds it (the window grace),
+# or a hand-over is resuming it in the service. The new dashboard says
+# "wanted" and takes the record itself once the old kernel is gone -- the
+# session comes back into its full chat without a stop in the service.
+
+
+def _wanted_path(session_id: str) -> Path:
+    return _path(session_id).with_suffix(".wanted")
+
+
+def where_kept(session_id: str) -> str:
+    """Where Keep session has *session_id* on this host, for a dashboard
+    that wants it back.
+
+    ``"held"``: the kernel that kept it still runs (a closed window's grace,
+    a turn it finishes, or a dashboard that is still open); ``"free"``: that
+    kernel ended and nobody has taken the record yet; ``"moving"``: a
+    hand-over has claimed it and resumes it in the agent service; ``""``:
+    nothing on record here (never kept, taken, or this process holds it).
+    """
+    try:
+        path = _path(session_id)
+    except ValueError:
+        return ""
+    try:
+        for claimed in path.parent.glob(f".{path.name}.claimed-*"):
+            try:
+                pid = int(claimed.name.rsplit("-", 1)[1])
+            except (IndexError, ValueError):
+                continue
+            if _alive(pid, None):
+                return "moving"
+    except OSError:
+        pass
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(data, dict) or str(data.get("host") or "") != _host():
+        return ""
+    try:
+        if int(data.get("pid") or 0) == os.getpid():
+            return ""
+    except (TypeError, ValueError):
+        return ""
+    return "free" if holder_gone(data) else "held"
+
+
+def want(session_id: str) -> None:
+    """This process waits for *session_id*: a hand-over leaves it alone
+    while this process lives (:func:`claim_here` takes it)."""
+    try:
+        path = _wanted_path(session_id)
+    except ValueError:
+        return
+    pid = os.getpid()
+    try:
+        _write(path, {"session_id": str(session_id), "pid": pid,
+                      "start_ticks": _start_ticks(pid), "host": _host()})
+    except OSError:
+        pass
+
+
+def unwant(session_id: str) -> None:
+    try:
+        _wanted_path(session_id).unlink()
+    except (OSError, ValueError):
+        pass
+
+
+def wanted_here(session_id: str) -> bool:
+    """Whether a live process on this host waits for *session_id*."""
+    try:
+        data = json.loads(_wanted_path(session_id).read_text(encoding="utf-8"))
+        if str(data.get("host") or "") != _host():
+            return False
+        return _alive(int(data.get("pid") or 0), data.get("start_ticks"))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+
+
+def _drop_wanted_of(pid: int) -> bool:
+    """Remove the markers *pid* left; True when there were any."""
+    dropped = False
+    try:
+        entries = list(record_dir().glob("*.wanted"))
+    except OSError:
+        return False
+    for path in entries:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if int(data.get("pid") or 0) == pid:
+                path.unlink()
+                dropped = True
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+    return dropped
+
+
+def claim_here(session_id: str) -> tuple[Optional[dict], str]:
+    """Take the record of a kept session whose kernel ended, for this
+    process to resume -- instead of the agent service. The same claim as
+    :func:`hand_over` (an atomic rename: one caller wins).
+
+    Returns ``(record, "")`` when claimed (the record is gone; the caller
+    resumes the session and keeps it again, or gives it back with
+    :func:`put_back`); ``(None, why)`` when it was dropped -- an emergency
+    stop came after it was kept, and nothing starts on its own after a
+    stop; ``(None, "")`` when it is not free or another caller had it.
+    """
+    try:
+        path = _path(session_id)
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, ""
+    if not isinstance(data, dict) or not holder_gone(data):
+        return None, ""
+    claimed = path.with_name(f".{path.name}.claimed-{os.getpid()}")
+    try:
+        os.rename(path, claimed)
+    except OSError:
+        return None, ""
+    try:
+        if _stopped_after(data.get("armed_at") or 0.0):
+            return None, "an emergency stop was given after it was kept"
+        return {k: v for k, v in data.items() if k != "_path"}, ""
+    finally:
+        claimed.unlink(missing_ok=True)
+        unwant(session_id)
+
+
+def put_back(record: dict) -> None:
+    """Give a claimed record back (its session could not be resumed here):
+    the next hand-over finds it as before."""
+    try:
+        _write(_path(str(record.get("session_id") or "")),
+               {k: v for k, v in record.items() if k != "_path"})
+    except (OSError, ValueError):
+        pass
 
 
 def kept_kernel_ids() -> set[str]:
@@ -350,9 +499,13 @@ def on_kernel_end(*, emergency: bool = False) -> Optional[subprocess.Popen]:
     emergency stop hands nothing over (the records are dropped by the
     hand-over that the next caller runs)."""
     if emergency:
+        _drop_wanted_of(os.getpid())
         return None
     mine = [r for r in records() if int(r.get("pid") or 0) == os.getpid()]
-    if not mine:
+    # A session this kernel waited for and never took: the hand-over that
+    # left it alone for this kernel runs again once it is gone.
+    waited = _drop_wanted_of(os.getpid())
+    if not mine and not waited:
         return None
     return spawn_hand_over(wait_pid=os.getpid())
 
