@@ -71,7 +71,8 @@ def test_stop_ends_the_wait_for_a_slot(runtime):
         with pytest.raises(G.SlotWaitCancelled):
             second.acquire(timeout_s=30.0, should_stop=stop.is_set)
         assert time.monotonic() - t0 < 5.0, "ended by the stop, not the deadline"
-        assert second._held_fd is None and getattr(second, "_cap_fd", None) is None
+        assert getattr(second, "_held_fd", None) is None
+        assert getattr(second, "_cap_fd", None) is None
     finally:
         first.release()
 
