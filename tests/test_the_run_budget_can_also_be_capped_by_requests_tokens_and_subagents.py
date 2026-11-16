@@ -70,7 +70,9 @@ def test_the_request_cap_holds_an_empty_session_at_zero(monkeypatch):
     from delfin.agent import turn_metrics
     monkeypatch.setattr(turn_metrics, "read_requests", lambda s, **kw: [])
     led = _ledger(_StandIn(run_budget_requests=2))
-    assert led._run_budget_detail() == (0.0, False, "agent.run_budget_requests")
+    # A dimension at 0 spent names no dim, the same convention the turn
+    # cap follows (share 0.0 is never "> frac 0.0").
+    assert led._run_budget_detail() == (0.0, False, "")
 
 
 def test_the_request_cap_reads_the_attribute_before_the_setting(monkeypatch):
@@ -126,8 +128,7 @@ def test_the_subagent_cap_holds_without_delegates(monkeypatch):
     monkeypatch.setattr("delfin.user_settings.load_settings",
                         lambda: {"agent": {}})
     eng = _StandIn(run_budget_subagents=3)
-    assert _ledger(eng)._run_budget_detail() == (0.0, False,
-                                                 "agent.run_budget_subagents")
+    assert _ledger(eng)._run_budget_detail() == (0.0, False, "")
 
 
 def test_the_worst_dimension_is_reported_across_all_six(monkeypatch):
@@ -138,10 +139,10 @@ def test_the_worst_dimension_is_reported_across_all_six(monkeypatch):
     eng = _with_delegates(
         _StandIn(run_budget_usd=10.0, run_budget_turns=10,
                  run_budget_requests=50, run_budget_tokens=100_000,
-                 run_budget_subagents=5, _measured_cost_turns=2,
+                 run_budget_subagents=10, _measured_cost_turns=2,
                  token_usage={"input": 20_000, "output": 10_000}),
-        count=2, t_in=5_000, t_out=2_000)
-    # usd 0/10, turns 0.2, requests 0, tokens 0.37, subagents 0.4 -> tokens
+            count=2, t_in=5_000, t_out=2_000)
+    # usd 0/10, turns 0.2, requests 0, tokens 0.37, subagents 0.2 -> tokens
     frac, exhausted, dim = _ledger(eng)._run_budget_detail()
     assert dim == "agent.run_budget_tokens"
     assert frac == pytest.approx((20_000 + 10_000 + 5_000 + 2_000) / 100_000)
