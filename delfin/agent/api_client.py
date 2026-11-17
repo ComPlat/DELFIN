@@ -34978,6 +34978,34 @@ class OpenAIClient(_BaseClient):
                     # Track the checkable files (artifact_check) edited this
                     # turn, for the turn-end auto-verify. A new edit
                     # invalidates a prior pass.
+                    # A merge writes files the turn never edited by name:
+                    # worktree_merge applies a patch, so the paths are in
+                    # its RESULT, not in its arguments. Without this the
+                    # work a delegate did in its own worktree arrived in
+                    # the tree and was the only writing in the whole system
+                    # that nothing checked.
+                    if (_av_mode != "off" and fn_name == "worktree_merge"
+                            and not str(result).lstrip().startswith('{"error"')):
+                        try:
+                            _merged = json.loads(str(result))
+                        except Exception:
+                            _merged = {}
+                        if str(_merged.get("status") or "") == "ok":
+                            # "target" is the key the executor returns.
+                            _tgt = str(_merged.get("target") or "")
+                            for _mf in (_merged.get("files") or []):
+                                if not _artifact_checkable(str(_mf)):
+                                    continue
+                                try:
+                                    _abs = (str(_mf) if os.path.isabs(str(_mf))
+                                            else os.path.join(
+                                                _tgt or str(getattr(
+                                                    self._permissions,
+                                                    "workspace", ".") or "."),
+                                                str(_mf)))
+                                    _edited_py[_abs] = True
+                                except Exception:
+                                    pass
                     if (_av_mode != "off"
                             and fn_name in ("edit_file", "multi_edit", "write_file")
                             and not str(result).lstrip().startswith('{"error"')):
