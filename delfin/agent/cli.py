@@ -3615,6 +3615,10 @@ def cmd_credentials(args: argparse.Namespace) -> int:
         print(f"  file:    {_cred.credentials_path()}")
         print(f"  keyring: {kr}")
         print()
+        # list_credentials reports an unreadable store under the empty
+        # name. Printed as a row it is a blank line with a tag, which
+        # tells a person nothing; it is the one entry that is a sentence.
+        damaged = items.pop("", None)
         for name in sorted(items):
             info = items[name]
             src = info.get("source", "?")
@@ -3622,6 +3626,13 @@ def cmd_credentials(args: argparse.Namespace) -> int:
             extra = [s for s in info.get("stores") or [] if s != src]
             also = f"  (also in: {', '.join(extra)})" if extra else ""
             print(f"  {name:<28}  {info.get('value', ''):<14}  {tag}{also}")
+        if damaged is not None:
+            if items:
+                print()
+            print(f"  The file store cannot be read: "
+                  f"{damaged.get('detail', '')}")
+            print("  Keys stored in it are not in use. Storing a key moves "
+                  "the file aside first, so nothing in it is lost.")
         return 0
 
     if action == "migrate":
@@ -3629,6 +3640,9 @@ def cmd_credentials(args: argparse.Namespace) -> int:
         try:
             rows = _cred.migrate_to_keyring(names)
         except _cred.CredentialStoreUnavailable as exc:
+            print(f"Nothing moved: {exc}", file=sys.stderr)
+            return 1
+        except _cred.CredentialStoreUnreadable as exc:
             print(f"Nothing moved: {exc}", file=sys.stderr)
             return 1
         if not rows:
@@ -3652,6 +3666,12 @@ def cmd_credentials(args: argparse.Namespace) -> int:
         except _cred.CredentialStoreUnavailable as exc:
             print(f"{name} is still in the keyring: {exc}", file=sys.stderr)
             return 1
+        except _cred.CredentialStoreUnreadable as exc:
+            # Nothing was removed and the file is untouched: writing a
+            # store built from an unreadable one would drop every other
+            # name. Quarantining it is a decision for the person.
+            print(f"Nothing removed: {exc}", file=sys.stderr)
+            return 1
         if removed:
             print(f"Removed {name}.")
             return 0
@@ -3669,12 +3689,22 @@ def cmd_credentials(args: argparse.Namespace) -> int:
         if not value:
             print("No value entered, aborting.", file=sys.stderr)
             return 1
+        unreadable = ""
         try:
             ok = _cred.set_credential(name, value)
         except (_cred.CredentialStoreNotPrivate,
                 _cred.CredentialStoreUnavailable) as exc:
             print(f"Not stored: {exc}", file=sys.stderr)
             return 1
+        except _cred.CredentialStoreUnreadable as exc:
+            # The key IS stored; what was lost is the damaged store's
+            # other contents, which were moved aside rather than
+            # overwritten. Reporting this as a failed write would send the
+            # person to type the key again for no reason, so the success
+            # line below still prints and the exit code stays 0.
+            ok, unreadable = True, str(exc)
+        if unreadable:
+            print(f"WARNING: {unreadable}", file=sys.stderr)
         if ok:
             # No part of the value, not even a masked one: the first and
             # last four characters of a key stay in the terminal's
