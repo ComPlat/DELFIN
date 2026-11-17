@@ -119,18 +119,19 @@ class TestCageRunsWhenMaskTargetVanishes:
         _cage_decision(monkeypatch)
         perms = A.KitToolPermissions(mode="acceptEdits", workspace=str(ws))
         probe = ("python3", "-c",
-                 "import os;"
+                 "import os,stat;"
                  "d=os.path.expanduser('~/.delfin/approval_codes');"
-                 "print('EXISTS' if os.path.isdir(d) and os.listdir(d) "
-                 "is not None else 'ABSENT')")
+                 "vis = os.path.isdir(d) and not os.access(d, os.R_OK);"
+                 "listed = (not os.path.isdir(d)) or os.listdir(d) == [];"
+                 "print('HIDDEN' if (vis or listed) else 'VISIBLE')")
         argv = A._bash_isolation_argv(
             f"python3 -c {probe[2]!r}", str(ws), perms, mode="bwrap")
         run = _run(argv)
         # The directory is hidden (fresh tmpfs => empty) or absent: either
         # way nothing of it is readable, and the run itself succeeds.
         assert run.returncode == 0, f"stderr: {run.stderr}"
-        assert "EXISTS" not in run.stdout or run.stdout.strip() == "", (
-            f"approval_codes visible inside the cage: {run.stdout}")
+        assert "VISIBLE" not in run.stdout, (
+            f"approval_codes content readable inside the cage: {run.stdout}")
 
 
 def _mask_args_for(argv: list, target: str) -> list:
