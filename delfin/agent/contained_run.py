@@ -56,10 +56,43 @@ def end_group(pgid: int, grace_s: float = _GRACE_S) -> None:
             time.sleep(0.02)
 
 
+class _Sink(list):
+    """Where a reader puts what a pipe delivers: kept in memory, until a
+    demoted command's caller redirects it to a file (BG2). The switch is
+    one locked step -- what arrived so far is handed over first, then
+    every later chunk goes straight there -- so nothing is lost, doubled
+    or reordered, and no second reader ever touches the pipe."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._lock = threading.Lock()
+        self._to: Optional[Callable[[bytes], None]] = None
+
+    def append(self, chunk: bytes) -> None:  # type: ignore[override]
+        with self._lock:
+            if self._to is None:
+                super().append(chunk)
+                return
+            to = self._to
+        to(chunk)
+
+    def redirect(self, to: Callable[[bytes], None]) -> None:
+        with self._lock:
+            so_far = b"".join(self)
+            self.clear()
+            if so_far:
+                to(so_far)
+            self._to = to
+
+
 def _reader(stream, sink: list) -> None:
+    # read1: what the pipe has now. read(n) waits for n bytes or the end,
+    # so a quiet command's output arrived only when it ended -- and a
+    # command handed back alive (BG2) had none to hand over.
+    read = getattr(stream, "read1", None) or stream.read
     try:
         while True:
-            chunk = stream.read(65536)
+            chunk = read(65536)
             if not chunk:
                 break
             sink.append(chunk)
@@ -88,6 +121,7 @@ def run(
     should_stop: Optional[Callable[[], bool]] = None,
     budget: bool = False,
     budget_profile: str | None = None,
+    demote_on_timeout: bool = False,
 ) -> subprocess.CompletedProcess:
     """Like ``subprocess.run(argv, capture_output=True)``, contained.
 
@@ -116,6 +150,16 @@ def run(
     bounds a command that waits; this bounds one that multiplies -- a
     single gate run once fanned out into ~75 nested login shells on a
     shared login node (2026-09-25), and only an outside watcher saw it.
+
+    ``demote_on_timeout`` (BG2): when the timeout passes, the command is
+    NOT ended -- its process, pipes and reader threads are handed back in
+    a :class:`Demoted` so the caller can move a foreground command to the
+    background instead of killing it (the JC3 live run 6, 2026-11-15:
+    the timeout ended an ORCA optimisation minutes in). The demote path
+    changes nothing else: containment, budget, stop and the end-of-run
+    group cleanup are those of the normal path. Everything it returns or
+    raises on -- a normal exit, a stop, a budget breach, an error -- is
+    the normal path's.
     """
     if shell:
         raise TypeError("contained_run.run executes an argv list; a shell "
@@ -131,7 +175,8 @@ def run(
     )
     return _supervise(proc, args, timeout=timeout, input=input, text=text,
                       should_stop=should_stop, budget=budget,
-                      budget_profile=budget_profile)
+                      budget_profile=budget_profile,
+                      demote_on_timeout=demote_on_timeout)
 
 
 def run_shell(
@@ -178,6 +223,7 @@ def _supervise(
     should_stop: Optional[Callable[[], bool]],
     budget: bool,
     budget_profile: str | None,
+    demote_on_timeout: bool = False,
 ) -> subprocess.CompletedProcess:
     """The wait of :func:`run` and :func:`run_shell` on a started ``proc``
     that leads its own session: input, budget, stop, timeout, and the end
@@ -195,14 +241,15 @@ def _supervise(
                 guard = BudgetGuard(proc.pid).start()
         except Exception:
             guard = None
-    out: list[bytes] = []
-    err: list[bytes] = []
+    out: list[bytes] = _Sink()
+    err: list[bytes] = _Sink()
     readers = [threading.Thread(target=_reader, args=(proc.stdout, out), daemon=True),
                threading.Thread(target=_reader, args=(proc.stderr, err), daemon=True)]
     for t in readers:
         t.start()
     timed_out = False
     stopped = False
+    demoted: Optional[Demoted] = None
     try:
         if input is not None:
             try:
@@ -255,7 +302,19 @@ def _supervise(
                         stopped = True
                         break
         except subprocess.TimeoutExpired:
-            timed_out = True
+            if demote_on_timeout:
+                # BG2: the caller asked to move, not to end. Leave the
+                # process, its group, its pipes and its reader threads
+                # alive and hand them back at the bottom (the drain and
+                # the closes below must not run on this path). The
+                # budget guard is NOT stopped either: a demoted command
+                # keeps the same limits it was admitted under.
+                demoted = Demoted(
+                    proc=proc, pgid=pgid, guard=guard,
+                    out_so_far=b"".join(out), err_so_far=b"".join(err),
+                    readers=readers, out_sink=out, err_sink=err)
+            else:
+                timed_out = True
     except BaseException:
         end_group(pgid)
         try:
@@ -265,18 +324,38 @@ def _supervise(
             pass
         raise
     finally:
-        if guard is not None:
-            guard.stop()
-        # Whatever the command left behind in its group ends with it.
-        end_group(pgid, grace_s=_GRACE_S if timed_out else 0.3)
-        if timed_out:
-            try:
-                proc.kill()
-                proc.wait(timeout=5)
-            except Exception:
-                pass
+        if demoted is not None:
+            # The demote path: the group, the guard and the readers stay
+            # with the caller -- touching them here would be the old
+            # kill this flag exists to prevent.
+            pass
+        else:
+            if guard is not None:
+                guard.stop()
+            # Whatever the command left behind in its group ends with it.
+            end_group(pgid, grace_s=_GRACE_S if timed_out else 0.3)
+            if timed_out:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
     # A process that left the group may still hold the pipes open; take
-    # what arrived and stop waiting for the rest.
+    # what arrived and stop waiting for the rest. On the demote path the
+    # wait is over but the run is not: the so-far output goes out with
+    # the TimeoutExpired, and the Demoted carries the live handover.
+    if demoted is not None:
+        demoted.stopped = stopped
+        demoted.out_so_far = b"".join(out)
+        demoted.err_so_far = b"".join(err)
+        stdout = demoted.out_so_far.decode("utf-8", errors="replace") if text \
+            else demoted.out_so_far
+        stderr = demoted.err_so_far.decode("utf-8", errors="replace") if text \
+            else demoted.err_so_far
+        exc = subprocess.TimeoutExpired(args, timeout, output=stdout,
+                                        stderr=stderr)
+        exc.demoted = demoted
+        raise exc
     for t in readers:
         t.join(timeout=_DRAIN_S)
     for stream in (proc.stdout, proc.stderr):
@@ -301,3 +380,30 @@ def _supervise(
         # in the one place every caller already looks.
         code = STOPPED_RETURNCODE
     return subprocess.CompletedProcess(args, code, stdout, stderr)
+
+
+class Demoted:
+    """A timed-out command handed back alive instead of ended (BG2).
+
+    The caller (the shell tool) adopts the process as a background job:
+    it gets the live Popen, its process group, the still-running budget
+    guard, the so-far output, and the two reader threads -- which keep
+    draining the pipes into the caller's hands until they are reattached
+    to the job's output files.
+    """
+
+    def __init__(self, *, proc, pgid: int, guard, out_so_far: bytes,
+                 err_so_far: bytes, readers: list, out_sink=None, err_sink=None):
+        self.proc = proc
+        #: The readers' sinks: ``redirect(fn)`` sends what arrived so far
+        #: and everything after it to ``fn`` (the job's output files).
+        self.out_sink = out_sink
+        self.err_sink = err_sink
+        self.pgid = pgid
+        self.guard = guard
+        self.out_so_far = out_so_far
+        self.err_so_far = err_so_far
+        self.readers = readers
+        #: Whether the run also asked to stop between the timeout and the
+        #: handover. Not used yet; pinned for the caller's contract.
+        self.stopped = False

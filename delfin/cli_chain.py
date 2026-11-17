@@ -57,6 +57,12 @@ def _cmd_status(args) -> int:
         ]
         if step.job_id is not None:
             lines.append(f"    job: {step.job_id}")
+        # JC3: an open step says whether its process still runs.
+        from delfin.tools.chain_liveness import runner_liveness
+
+        _alive, why = runner_liveness(step)
+        if why:
+            lines.append(f"    process: {why}")
         # QS/reviewer note: the persisted params are part of the chain's
         # facts — status shows them so a user sees exactly what a resume
         # would rebuild (and what the inputs hash covers).
@@ -146,6 +152,19 @@ def _cmd_resume(args) -> int:
             f"no chain state file in {args.work_dir} "
             f"(expected {STATE_FILENAME} next to the chain's work dir)"
         )
+        return 1
+
+    # JC3: a step whose process verifiably still runs is not resumed — a
+    # second run of the same step would start next to the first one.
+    from delfin.tools.chain_liveness import RUNNING, runner_liveness
+
+    running = [(st.name, why) for st in chain.steps
+               for alive, why in [runner_liveness(st)] if alive == RUNNING]
+    if running:
+        for name, why in running:
+            print(f"chain '{chain.name}': step '{name}' is {why}")
+        print(f"chain '{chain.name}' NOT resumed: it is still running; "
+              "wait for it to end, or stop it first")
         return 1
 
     # L2: the state file as it was found.  A resume that fails (a bad
