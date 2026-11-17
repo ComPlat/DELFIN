@@ -710,43 +710,15 @@ _build_verify_hint = turn_context.verify_hint
 
 
 def _self_verification_note(verified: bool) -> str:
-    """The line shown after a forced self-correction turn.
-
-    Two outcomes, two lines. The green check is a VERDICT — it may only
-    appear when a re-scan of the corrected answer finds the claims
-    grounded. Spending the correction budget is not the same event: a
-    correction that raised a new claim, or that only rewrote the wording
-    into hedges, is still an answer nobody checked, and printing the
-    check for it told the reader the opposite of what happened.
-    """
-    if verified:
-        return "✓ Self-verification: statements checked, answer corrected."
-    return (
-        "⚠️ Self-verification: the answer was revised, but the claims in it "
-        "are still not backed by anything looked up this turn — treat them "
-        "as unconfirmed."
-    )
+    """Moved to delfin.agent.code_citation_guard (one-line delegate)."""
+    from delfin.agent import code_citation_guard as _ccg
+    return _ccg.self_verification_note(verified)
 
 
 def _correction_verdict_note(scan, text, *, keep=None, **kwargs) -> str:
-    """Re-scan a corrected answer and return the note that matches the
-    verdict, never the fact that a retry ran.
-
-    ``keep`` filters the flags that count as "still ungrounded" (the code
-    citation scan also returns soft, non-forcing flags). A scanner that
-    raises counts as NOT verified: the check must be earned, and an
-    unreadable answer has not earned it.
-    """
-    try:
-        flags = list(scan(text, **kwargs) or ())
-    except Exception:
-        flags = ["rescan-failed"]
-    if keep is not None:
-        try:
-            flags = [f for f in flags if keep(f)]
-        except Exception:
-            pass
-    return _self_verification_note(not flags)
+    """Moved to delfin.agent.code_citation_guard (one-line delegate)."""
+    from delfin.agent import code_citation_guard as _ccg
+    return _ccg.correction_verdict_note(scan, text, keep=keep, **kwargs)
 
 
 # The stall watchdog measures PROVIDER silence. A tool call that is doing
@@ -23176,83 +23148,37 @@ def create_tab(ctx):
                             )
                         except Exception:
                             _vflags = []
-                        # Code-claim citation check: cited paths that
-                        # don't exist force a
-                        # correction turn via the same machinery; existing-
-                        # but-unread paths only soft-warn (injected context
-                        # legitimately surfaces paths).
-                        _cflags = []
+                        # Cited-but-unread paths: a SOFT hint, kept
+                        # here. The hard case (a path that does not
+                        # exist) moved into the engine's grounding
+                        # guard, so every surface forces the one
+                        # correction turn; this hint forces nothing and
+                        # would otherwise have been lost with that
+                        # block. It stays quiet unless nothing else is
+                        # going on.
                         try:
-                            _cflags = _vg.scan_for_ungrounded_code_claims(
-                                "".join(chunks),
-                                repo_root=getattr(engine, "repo_dir", None),
-                                observed_files=getattr(
-                                    engine, "_last_observed_files", None),
-                                named_in=_session_user_text(),
-                            )
-                        except Exception:
-                            _cflags = []
-                        _c_hard = [c for c in _cflags
-                                   if c.kind == "nonexistent"]
-                        _c_soft = [c for c in _cflags
-                                   if c.kind != "nonexistent"]
-                        # One compact line instead of per-flag chat spam;
-                        # soft (unread-path) hints stay quiet unless there
-                        # is nothing else going on.
-                        if _c_soft and not _c_hard:
-                            _refs = ", ".join(
-                                f.path for f in _c_soft[:3])
-                            _more = (f" (+{len(_c_soft) - 3})"
-                                     if len(_c_soft) > 3 else "")
-                            _append_system_message(
-                                f"🔎 Note: cited but not read this turn: "
-                                f"{_refs}{_more}")
-                        if _c_hard and not _vflags:
-                            _refs = ", ".join(
-                                f.path for f in _c_hard[:3])
-                            _append_system_message(
-                                f"🔎 Automatic check: {len(_c_hard)} cited "
-                                f"path(s) not found as written ({_refs}) — "
-                                f"asking the agent to verify them …")
-                            _cfeedback = (
-                                "[Verify] " + _vg.code_claim_feedback(
-                                    _c_hard,
-                                    observed=getattr(
-                                        engine, "_last_observed_files", None))
-                            )
-                            engine.messages.append(
-                                {"role": "user", "content": _cfeedback, "_harness": True}
-                            )
-                            chunks.clear()
-                            thinking_chunks.clear()
-                            engine.stream_response(
-                                user_message=_cfeedback,
-                                on_token=_on_token,
-                                on_tool_use=_on_tool_use,
-                                on_tool_result=_on_tool_result,
-                                on_permission_denied=_on_permission_denied,
-                                on_thinking=_on_thinking,
-                                thinking_budget=_budget,
-                                memory_context=_memory,
-                            )
-                            _flush_held_previews()   # as after the first call
-                            if chunks:
-                                _update_last_assistant(
-                                    "".join(chunks), role_label,
-                                    finalize=True,
-                                )
-                                _append_system_message(
-                                    _correction_verdict_note(
-                                        _vg.scan_for_ungrounded_code_claims,
+                            _c_soft = [
+                                c for c in (
+                                    _vg.scan_for_ungrounded_code_claims(
                                         "".join(chunks),
-                                        keep=lambda f: f.kind == "nonexistent",
                                         repo_root=getattr(
                                             engine, "repo_dir", None),
                                         observed_files=getattr(
                                             engine, "_last_observed_files",
                                             None),
                                         named_in=_session_user_text(),
-                                    ))
+                                    ) or ())
+                                if c.kind != "nonexistent"]
+                        except Exception:
+                            _c_soft = []
+                        if _c_soft and not _vflags:
+                            _refs = ", ".join(
+                                f.path for f in _c_soft[:3])
+                            _more = (f" (+{len(_c_soft) - 3})"
+                                     if len(_c_soft) > 3 else "")
+                            _append_system_message(
+                                f"\U0001F50E Note: cited but not read this "
+                                f"turn: {_refs}{_more}")
                         if _vflags:
                             _kws = ", ".join(
                                 getattr(f, "keyword", str(f))
@@ -23315,7 +23241,7 @@ def create_tab(ctx):
                             _append_system_message(
                                 f"🔎 Verifying {len(_qflags)} "
                                 f"unsourced numeric claim(s) …")
-                        if _qflags and not _vflags and not _c_hard:
+                        if _qflags and not _vflags:
                             _qgrounded = any(
                                 re.search(r"(?i)search|read|grep|fetch|docs",
                                           _t or "")
