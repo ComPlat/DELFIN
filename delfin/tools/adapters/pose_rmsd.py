@@ -33,7 +33,6 @@ from delfin.tools._registry import register
 from delfin.tools._spec import DataKeySpec, ParamSpec
 from delfin.tools._types import ErrorKind, StepResult, StepStatus
 from delfin.tools.bio import (
-    Pose,
     StructureFormatError,
     read_pose_set,
     read_small_molecule,
