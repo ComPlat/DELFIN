@@ -3205,6 +3205,13 @@ class AgentEngine:
             # ledger, or the retry would lose the very evidence it is being
             # judged against.
             self._ambiguous_columns_turn = []
+            # The executed-command ledger is per TURN, like every other
+            # one-shot above it: a path the turn ran is its own evidence,
+            # and a later turn's commands must not ground an earlier
+            # answer's citation. _commit_exec_command fills it on the
+            # same evidence path it already fills the session ledger
+            # from (a result that shows the command ran).
+            self._exec_commands_turn: list[str] = []
             # The figure guard needs it: a number the USER typed is
             # grounded, and flagging it would be the fastest way to teach
             # somebody to ignore the guard.
@@ -5252,6 +5259,15 @@ class AgentEngine:
             if cmd in ledger:
                 return
             ledger.append(cmd)
+            # The per-turn twin: the citation guard exempts a path
+            # THIS turn executed (a fresh real user turn clears it;
+            # see the reset beside the other one-shots).
+            try:
+                self._exec_commands_turn.append(cmd)
+            except AttributeError:
+                self._exec_commands_turn = [cmd]
+            except Exception:
+                pass
             if len(ledger) > 200:
                 del ledger[:len(ledger) - 200]
         except Exception:
@@ -5769,6 +5785,23 @@ class AgentEngine:
                 out.add(m.group(0).rstrip(".,;:)'\">}"))
         return out
 
+    def _person_texts(self) -> list[str]:
+        """What the person actually wrote, this session.
+
+        The same source _urls_the_person_wrote uses
+        (api_client._classifier_user_texts): a path the USER named is
+        the subject of the task, often a file still to be created, and
+        is never reported as an invented citation -- neither by the
+        dashboard's own scans nor by this one. A [Verify] body is the
+        guard's own correction row, not the person's words.
+        """
+        try:
+            from .api_client import _classifier_user_texts
+            return list(_classifier_user_texts(
+                getattr(self, "messages", None) or ()))
+        except Exception:
+            return []
+
     def _enforce_claim_grounding(
         self,
         response_text: str,
@@ -5807,6 +5840,29 @@ class AgentEngine:
         from . import verify_guard as _vg
         loc, qty, arith, url = self._scan_claim_grounding(
             response_text, getattr(self, "_last_turn_tools", None))
+        # A cited path that does not exist is the same defect as an
+        # ungrounded code location, and the dashboard used to own this
+        # scan while the terminal never saw it. The decision lives in
+        # code_citation_guard now: the engine fires its ONE correction
+        # turn for a bare nonexistent path too, so every surface reruns
+        # the same way. The flags stay OUT of ``loc`` and ride in
+        # ``cites``: the location wording would send the model to read
+        # a file that cannot be read, while the nonexistent case gets
+        # code_claim_feedback. The _turn_describes_intent reset below
+        # clears it for plans, whose named files are meant not to
+        # exist yet. ``acted_on`` is the turn's executed-command ledger:
+        # a path the turn RAN is not an ungrounded citation.
+        try:
+            from . import code_citation_guard as _cguard
+            cites = _cguard.nonexistent_citations(
+                response_text, repo_root=self.repo_dir,
+                observed=getattr(self, "_last_observed_files", None),
+                named_in=" ".join(str(t) for t in
+                                   self._person_texts()),
+                acted_on=getattr(self,
+                                 "_exec_commands_turn", None) or ())
+        except Exception:
+            cites = []
         func = self._scan_functional_claims(response_text)
         # A figure over a column the reader could not read joins the caveat
         # class rather than the correction class: the number is not wrong,
@@ -5825,6 +5881,7 @@ class AgentEngine:
         # somebody who wrote in a particular language.
         if self._turn_describes_intent():
             loc, qty, conflicts, func, ambiguous, url = [], [], [], [], [], []
+            cites = []
         # The language the user wrote in. Measured to be necessary: with
         # the prompt rule delivered and nothing German in the prompt, the
         # backend answered an English question in German four times in
@@ -5861,7 +5918,7 @@ class AgentEngine:
             wrong_language = _vg.scan_for_language_mismatch(
                 response_text,
                 "" if _asked.lstrip().startswith("[Verify]") else _asked)
-        if (not loc and not qty and not arith and not url
+        if (not loc and not cites and not qty and not arith and not url
                 and not conflicts and not wrong_language):
             return self._append_answer_caveats(
                 response_text, functional=func, ambiguous=ambiguous,
@@ -5871,11 +5928,20 @@ class AgentEngine:
             # nested continuation re-entered here) — annotate, never loop.
             return self._append_answer_caveats(
                 response_text + _vg.grounding_caveat(
-                    loc, qty, arith, url_flags=url)
+                    list(loc) + list(cites), qty, arith,
+                    url_flags=url)
                 + _vg.conflicting_figure_caveat(conflicts)
                 + _vg.language_mismatch_caveat(wrong_language),
                 functional=func, ambiguous=ambiguous, on_token=on_token)
         parts: list[str] = []
+        if cites:
+            # The nonexistent case says the paths DO NOT EXIST; the
+            # location wording would order the model to read a file
+            # that cannot be read.
+            parts.append(_vg.code_claim_feedback(
+                [_vg.CodeClaimFlag(path=f.path, line=f.line,
+                                   kind="nonexistent") for f in cites],
+                observed=getattr(self, "_last_observed_files", None)))
         if loc:
             parts.append(_vg.location_claim_feedback(
                 loc, observed=getattr(self, "_last_observed_files", None)))
@@ -5932,7 +5998,8 @@ class AgentEngine:
         if not correction:
             return self._append_answer_caveats(
                 response_text + _vg.grounding_caveat(
-                    loc, qty, arith, url_flags=url)
+                    list(loc) + list(cites), qty, arith,
+                    url_flags=url)
                 + _vg.conflicting_figure_caveat(conflicts)
                 + _vg.language_mismatch_caveat(wrong_language),
                 functional=func, ambiguous=ambiguous, on_token=on_token)
@@ -5951,6 +6018,19 @@ class AgentEngine:
         # observed-files snapshot and _last_turn_tools.
         loc2, qty2, arith2, url2 = self._scan_claim_grounding(
             correction, getattr(self, "_last_turn_tools", None))
+        # Same scan for the correction, so the verdict machinery sees a
+        # citation that is still not grounded.
+        try:
+            from . import code_citation_guard as _cguard
+            cites2 = _cguard.nonexistent_citations(
+                correction, repo_root=self.repo_dir,
+                observed=getattr(self, "_last_observed_files", None),
+                named_in=" ".join(str(t) for t in
+                                   self._person_texts()),
+                acted_on=getattr(self,
+                                 "_exec_commands_turn", None) or ())
+        except Exception:
+            cites2 = []
         # The correction may restate the functional claim — scan it too and
         # merge (order-stable, de-duplicated: the flags are frozen).
         func = list(dict.fromkeys(
@@ -5965,10 +6045,11 @@ class AgentEngine:
         url_left = [f for f in self._scan_claim_grounding(
             response_text, getattr(self, "_last_turn_tools", None))[3]
             if f not in url2]
-        if loc2 or qty2 or arith2 or url2:
+        if loc2 or cites2 or qty2 or arith2 or url2:
             # The retry produced its own ungrounded claims.
             caveat = _vg.grounding_caveat(
-                loc2, qty2, arith2, url_flags=url2 + url_left)
+                list(loc2) + list(cites2), qty2, arith2,
+                url_flags=url2 + url_left)
         elif not new_files:
             # It read nothing. The scanners are silent because the wording
             # changed, not because anything was checked — so the ORIGINAL
