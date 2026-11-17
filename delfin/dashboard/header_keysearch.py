@@ -46,13 +46,14 @@ def build_key_search(max_suggestions: int = 8) -> W.DOMWidget:
     # position:fixed on the classes; here only visibility is controlled.
     _overlay_css = W.HTML(
         "<style>"
-        ".delfin-keysearch-dropdown { position: fixed; top: 40px; left: 260px;"
+        ".delfin-keysearch { position: relative; }"
+        ".delfin-keysearch-dropdown { position: absolute; top: 100%; left: 0;"
         " width: 460px; max-height: 300px; overflow-y: auto; z-index: 10000;"
         " background: var(--jp-layout-color1, #fff);"
         " border: 1px solid #ccc; border-radius: 4px; padding: 2px;"
         " box-shadow: 0 2px 8px rgba(0,0,0,.15); }"
-        ".delfin-keysearch-card { position: fixed; top: 40px; left: 260px;"
-        " width: 500px; z-index: 10001;"
+        ".delfin-keysearch-card { position: absolute; top: 100%; left: 0;"
+        " width: 500px; z-index: 10001; margin-top: 4px;"
         " background: var(--jp-layout-color1, #fff);"
         " border: 1px solid #bbb; border-radius: 6px; padding: 10px 12px;"
         " box-shadow: 0 4px 16px rgba(0,0,0,.2); }"
