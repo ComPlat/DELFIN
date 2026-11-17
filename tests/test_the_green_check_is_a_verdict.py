@@ -107,9 +107,10 @@ def test_the_scanner_keeps_its_keyword_arguments():
 # ---------------------------------------------------------------------------
 
 def test_the_line_exists_in_exactly_one_place():
-    """The verdict lives in turn_verification (moved out of the tab); a
+    """The verdict lives in code_citation_guard (moved out of the tab); a
     literal cannot be wrong about the verdict because it never asks."""
     assert _SRC.count("✓ Self-verification") == 1
+    assert _TAB_SRC.count("✓ Self-verification") == 0
     assert "✓ Self-verification" in inspect.getsource(
         T.self_verification_note)
 
