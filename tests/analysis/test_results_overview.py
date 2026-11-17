@@ -514,11 +514,23 @@ def test_xlsx_columns_follow_image_toggles(tmp_path, monkeypatch):
     panel._show_3d = CB(True)
     panel._show_3d_opt = CB(True)
 
-    import types
-    _calls = []
-    monkeypatch.setattr(tab, "smiles_png_bytes", lambda s: b"png")
-    monkeypatch.setattr(tab, "initial_xyz_png_bytes", lambda p: b"png")
-    monkeypatch.setattr(tab, "optimized_3d_png_bytes", lambda p: b"png")
+    # Real 1x1 PNG (openpyxl refuses non-image bytes).
+    import struct, zlib
+
+    def _tiny_png():
+        import _io as _io_mod
+        ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+        idat = zlib.compress(b"\x00\xff\x00\x00")
+        def chunk(tag, payload):
+            c = struct.pack(">I", len(payload)) + tag + payload
+            return c + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+        return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
+                + chunk(b"IDAT", idat) + chunk(b"IEND", b""))
+
+    fake_png = _tiny_png()
+    monkeypatch.setattr(tab, "smiles_png_bytes", lambda s: fake_png)
+    monkeypatch.setattr(tab, "initial_xyz_png_bytes", lambda p: fake_png)
+    monkeypatch.setattr(tab, "optimized_3d_png_bytes", lambda p: fake_png)
 
     xlsx = panel._table_bytes_xlsx()
     wb = openpyxl.load_workbook(_io_mod.BytesIO(xlsx))
@@ -534,7 +546,10 @@ def test_xlsx_columns_follow_image_toggles(tmp_path, monkeypatch):
 def test_latex_contains_all_ticked_images_side_by_side(tmp_path):
     pytest.importorskip("numpy")
     pytest.importorskip("matplotlib")
-    calc = make_calc(tmp_path, "412", data=sample_data(), rss=(
+    data = sample_data()
+    # A SMILES so the 2D image is emitted as well.
+    data["input"] = {"smiles": "O"}
+    calc = make_calc(tmp_path, "412", data=data, rss=(
         "4.0 -1.0\n3.5 -0.5\n2.0 -1.2\n"), pngs=("scan_relative.png",))
     (calc / "initial.xyz").write_text(_WATER_XYZ, encoding="utf-8")
     table = ro.build_table([str(calc)], ["rss_delta_kj"])
