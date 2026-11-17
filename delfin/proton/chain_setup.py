@@ -177,7 +177,12 @@ def bookkeeping(donor_key: str, complex_charge: int = 0,
         # to the complex), the donor becomes its conjugate base (-1).
         # Conservation: (complex+1) + (-1) = complex charge == combined.
         complex_product_charge = complex_charge + 1
-        donor_product = dict(tpl["product"])   # charge -1, mult 1
+        # protic_product overrides product when the template's default
+        # transfer is HAT but the user forces the proton-transfer model
+        # (e.g. phenol -> phenolate instead of phenoxyl radical).
+        donor_product = dict(tpl.get("protic_product")
+                             if tpl.get("protic_product") is not None
+                             else tpl["product"])
     else:
         # H atom (H+ + e-) transferred: donor radical neutral (mult 2),
         # complex product keeps complex charge, multiplicity from pairing
@@ -258,10 +263,14 @@ def build_control(parent_args: Dict[str, str], donor_key: str,
     lines = ["# Proton coordinator CONTROL (auto-generated)",
              "# " + CANONICAL_DONOR_DIRS.get(donor_key, donor_key),
              "------------------------------------"]
+    # Plain keys, NOT proton_-prefixed: the coordinator's minimal CONTROL
+    # parser reads them un-prefixed (CO2 convention, _build_co2_control) —
+    # a prefixed key would silently fall back to defaults (charge=0 etc.).
+    # Only proton_donor / proton_species_delta are namespaced.
     for key in _TRANSFER_KEYS:
         val = parent_args.get(key)
         if val not in (None, ""):
-            lines.append(f"proton_{key}={val}")
+            lines.append(f"{key}={val}")
     lines.append(f"proton_donor={donor_key}")
     lines.append(f"proton_species_delta={species_delta}")
     control_path.write_text("\n".join(lines) + "\n")

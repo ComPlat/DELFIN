@@ -116,8 +116,9 @@ H      0.000000    0.000000    0.980000
     "donor_heavy_index": 12,
     "transfer": "hat",             # HAT: [M-H] + PhO radical (open shell)
     "product": {"name": "phenoxyl_radical", "charge": 0, "multiplicity": 2},
-    # PCET alternative (phenolate, closed shell) is selectable via
-    # proton_transfer_model=pt on top of the HAT default.
+    # PCET alternative (proton transfer, closed-shell phenolate) selectable
+    # via proton_transfer_model=protic; the per-model product lives here:
+    "protic_product": {"name": "phenolate", "charge": -1, "multiplicity": 1},
 }
 
 DONOR_TEMPLATES["hoac"] = {
@@ -380,14 +381,18 @@ def orientation_scan(base_atoms: Atoms, donor_start_index: int,
                      PAL: int = 8, maxcore: int = 2000,
                      broken_sym: str = "",
                      angle_step_deg: int = 10, angle_range_deg: int = 180,
+                     metal_index: int = 0,
                      run_calculator=None) -> Tuple[str, float, Optional[float]]:
     """Rotate ONLY the donor about the M...H axis at fixed distance and run
     SP calcs. run_calculator allows tests to inject a mock.
 
+    metal_index locates the rotation centre (assumed first atom only when
+    the frame was aligned, e.g. by CO2's align_complex).
+
     Returns (best_xyz_path, best_angle_deg, best_energy).
     """
     os.makedirs(outdir, exist_ok=True)
-    m_pos = base_atoms.positions[0]  # metal assumed first (aligned frame)
+    m_pos = base_atoms.positions[metal_index]
     if run_calculator is None:
         run_calculator = _default_sp_runner
     results = []
@@ -580,7 +585,8 @@ def _run_for_donor(args, donor_key, *, xyz_in_abs, charge, multiplicity,
         multiplicity=combined_mult, keywords=keywords,
         PAL=PAL, maxcore=maxcore,
         broken_sym=str(args.get("broken_sym", "") or ""),
-        angle_step_deg=rot_step_deg, angle_range_deg=rot_range_deg)
+        angle_step_deg=rot_step_deg, angle_range_deg=rot_range_deg,
+        metal_index=metal_idx)
 
     atoms_best = read_xyz_robust(best_xyz)
     metal_idx_best = detect_metal_index(atoms_best)

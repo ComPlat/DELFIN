@@ -233,6 +233,28 @@ def test_species_delta_naming_matches_co2_convention():
     assert species_delta_to_name(+1) == "ox_step_1"
 
 
+def test_build_control_keys_roundtrip_through_minimal_parser(tmp_path):
+    # Regression: build_control once wrote proton_-prefixed keys while the
+    # coordinator's minimal parser reads them un-prefixed — charge/mult
+    # silently fell back to defaults (charge=0, mult=1) in the recalc path.
+    # The generated CONTROL must round-trip through _minimal_read_control_file.
+    from delfin.proton.chain_setup import build_control
+    from delfin.proton.proton_coordinator import _minimal_read_control_file
+
+    parent = {"charge": "-2", "multiplicity": "3", "functional": "PBE0",
+              "PAL": "48", "maxcore": "3800", "solvent": "MeCN",
+              "implicit_solvation_model": "CPCM"}
+    target = tmp_path / "TFE_coordinator" / "CONTROL.txt"
+    build_control(parent, "tfe", control_path=target)
+
+    parsed = _minimal_read_control_file(str(target))
+    assert parsed["charge"] == "-2"       # NOT lost to a proton_ prefix
+    assert parsed["multiplicity"] == "3"
+    assert parsed["PAL"] == "48"
+    assert parsed["functional"] == "PBE0"
+    assert parsed["proton_donor"] == "tfe"
+
+
 def test_control_validator_accepts_proton_keys():
     from delfin.common.control_validator import validate_control_config
     result = validate_control_config({
