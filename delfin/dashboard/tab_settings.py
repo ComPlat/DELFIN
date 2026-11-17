@@ -5077,6 +5077,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                               + html.escape(str(exc)) + '</div>')
             return
         diag_out.value = _render_diagnosis(rows)
+        _repair_refresh(rows)
 
     diag_btn.on_click(_run_diagnosis)
 
@@ -5188,6 +5189,146 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     key_name.observe(lambda _c: _refresh_key_status(), names='value')
     _refresh_key_status()
 
+    # -- Repair a row the diagnosis found -------------------------------
+    # The engine already exists: delfin/agent/repair.py turns a doctor row
+    # into a step (only from a row's `command` or `setting`; a prose-only
+    # remedy is not fixable) and applies ONE step per explicit approval,
+    # moving the settings file to a dated backup before any setting write.
+    # It was reachable only as the Agent tab's `/doctor repair` chat
+    # command, and `delfin-agent doctor --repair` refuses outright when
+    # stdin is not a terminal. So the repair existed and the person who
+    # needed it could not reach it.
+    #
+    # This is a thin caller of that engine, not a second one: the steps
+    # come from repair.doctor_repair_plan over the SAME rows the report
+    # above rendered, and applying goes through repair.doctor_repair_apply
+    # with its authorize callback. A dashboard that planned its own steps
+    # would be a second answer to "what can be fixed", free to drift.
+    #
+    # What the approval IS, concretely: Apply stays disabled until the
+    # person has seen this step's what-and-undo, and any change of the
+    # selection disables it again. The authorize callback then returns
+    # True, because the click it reports happened after the preview. That
+    # makes "informed" structural rather than hoped for.
+    repair_pick = widgets.Dropdown(
+        options=[('run the diagnosis first', '')], value='',
+        layout=widgets.Layout(width='420px'))
+    repair_show_btn = widgets.Button(
+        description='What would it do?', icon='question-circle',
+        layout=widgets.Layout(width='190px'))
+    repair_apply_btn = widgets.Button(
+        description='Apply this fix', icon='wrench', disabled=True,
+        button_style='warning', layout=widgets.Layout(width='170px'))
+    repair_out = widgets.HTML()
+    _repair_state: dict = {'steps': [], 'rows': [], 'previewed': None}
+
+    def _repair_refresh(rows):
+        """Offer exactly the rows the engine can act on."""
+        try:
+            from delfin.agent import repair as _rep
+            steps = _rep.doctor_repair_plan(rows)
+        except Exception as exc:
+            repair_out.value = ('<div style="color:#c62828; font-size:12px;">'
+                                'the repair plan could not be built: '
+                                + html.escape(str(exc)) + '</div>')
+            steps = []
+        _repair_state['steps'] = steps
+        _repair_state['rows'] = list(rows or [])
+        _repair_state['previewed'] = None
+        repair_apply_btn.disabled = True
+        if not steps:
+            repair_pick.options = [('nothing here can be repaired '
+                                    'automatically', '')]
+            repair_pick.value = ''
+            return
+        repair_pick.options = [
+            (f"{s.get('check', '')} — {s.get('kind', '')}", str(s.get('id')))
+            for s in steps]
+        repair_pick.value = str(steps[0].get('id'))
+
+    def _repair_show(_b=None):
+        sid = str(repair_pick.value or '')
+        if not sid:
+            return
+        try:
+            from delfin.agent import repair as _rep
+            text = _rep.doctor_repair_preview(_repair_state['steps'], sid)
+        except Exception as exc:
+            repair_out.value = ('<div style="color:#c62828; font-size:12px;">'
+                                + html.escape(str(exc)) + '</div>')
+            return
+        _repair_state['previewed'] = sid
+        repair_apply_btn.disabled = False
+        repair_out.value = (
+            '<pre style="font-size:11px; white-space:pre-wrap; '
+            'margin:4px 0;">' + html.escape(text or '(no preview)')
+            + '</pre>'
+            '<div style="color:#78909c; font-size:11px;">Apply runs exactly '
+            'this. A setting is written only after the settings file has '
+            'been copied to a dated backup; a command has no clean '
+            'inverse, which is what the undo line above says.</div>')
+
+    def _repair_selection_changed(_change=None):
+        # A preview belongs to the step it was shown for.
+        if _repair_state.get('previewed') != str(repair_pick.value or ''):
+            repair_apply_btn.disabled = True
+
+    def _repair_apply(_b=None):
+        sid = str(repair_pick.value or '')
+        if not sid or _repair_state.get('previewed') != sid:
+            repair_apply_btn.disabled = True
+            return
+        repair_apply_btn.disabled = True
+        repair_show_btn.disabled = True
+        repair_out.value = ('<div style="color:#78909c; font-size:12px;">'
+                            'Running … this can take minutes for an '
+                            'install.</div>')
+
+        def work():
+            try:
+                from delfin.agent import repair as _rep
+                res = _rep.doctor_repair_apply(
+                    sid, results=_repair_state['rows'],
+                    authorize=lambda *_a, **_k: True)
+            except Exception as exc:
+                logging.exception('doctor repair failed')
+                repair_out.value = (
+                    '<div style="color:#c62828; font-size:12px;">'
+                    'the repair itself failed: '
+                    + html.escape(str(exc)) + '</div>')
+                return
+            finally:
+                repair_show_btn.disabled = False
+            if not res.get('ok'):
+                repair_out.value = (
+                    '<div style="color:#c62828; font-size:12px;">'
+                    + html.escape(str(res.get('message', 'failed')))
+                    + '</div>')
+                return
+            inner = res.get('result') or {}
+            backup = res.get('backup_path') or inner.get('backup_path')
+            parts = ['<div style="color:#2e7d32; font-size:12px;">'
+                     'Applied.</div>']
+            out = str(inner.get('output') or inner.get('stdout') or '')
+            if out:
+                parts.append('<pre style="font-size:11px; max-height:220px; '
+                             'overflow:auto; white-space:pre-wrap;">'
+                             + html.escape(out[-4000:]) + '</pre>')
+            if backup:
+                parts.append('<div style="color:#78909c; font-size:11px;">'
+                             'previous settings kept at '
+                             + html.escape(str(backup)) + '</div>')
+            parts.append('<div style="color:#78909c; font-size:11px;">'
+                         'Run the diagnosis again to see whether the row '
+                         'has cleared.</div>')
+            repair_out.value = ''.join(parts)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    repair_show_btn.on_click(_repair_show)
+    repair_apply_btn.on_click(_repair_apply)
+    repair_pick.observe(_repair_selection_changed, names='value')
+
     diagnosis_section = widgets.VBox([
         widgets.HTML(
             '<b>Diagnosis</b>'
@@ -5197,6 +5338,14 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             'run from here.</div>'),
         widgets.HBox([diag_btn]),
         diag_out,
+        widgets.HTML(
+            '<b style="margin-top:10px; display:block;">Repair</b>'
+            '<div style="color:#78909c; font-size:11px;">Only rows whose '
+            'remedy is a command or a setting can be applied from here; '
+            'the rest say what to do. One step at a time, and only after '
+            'you have seen what it runs and how to undo it.</div>'),
+        widgets.HBox([repair_pick, repair_show_btn, repair_apply_btn]),
+        repair_out,
         widgets.HTML('<b style="margin-top:10px; display:block;">API key</b>'
                      '<div style="color:#78909c; font-size:11px;">'
                      'Renew or add a key. The value is hidden while typing, '
