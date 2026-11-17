@@ -259,8 +259,12 @@ class BudgetLedger:
         cap off the prompt text is unchanged.
 
         Same precedence as the other dimensions: an explicit
-        ``run_budget_requests`` attribute (set e.g. per scheduler entry or
-        CLI flag) beats the settings value ``agent.run_budget_requests``.
+        ``run_budget_requests`` attribute, which a caller that builds the
+        engine itself (a scheduler entry, a test) may set, beats the
+        settings value ``agent.run_budget_requests``. Unlike the three
+        older dimensions this one has no command-line flag and no
+        unattended default in ``run_limits``: it is off until somebody
+        asks for it.
         """
         engine = self._engine
         reqs = int(getattr(engine, "run_budget_requests", 0) or 0)
@@ -286,7 +290,8 @@ class BudgetLedger:
 
         Same precedence as the other dimensions: an explicit
         ``run_budget_tokens`` attribute beats the settings value
-        ``agent.run_budget_tokens``.
+        ``agent.run_budget_tokens``. No command-line flag and no
+        unattended default: off until somebody asks for it.
         """
         engine = self._engine
         tokens = int(getattr(engine, "run_budget_tokens", 0) or 0)
@@ -315,6 +320,8 @@ class BudgetLedger:
         whoever asked for it and whenever it returned. Same precedence as
         the other dimensions: an explicit ``run_budget_subagents``
         attribute beats the settings value ``agent.run_budget_subagents``.
+        No command-line flag and no unattended default: off until
+        somebody asks for it.
         """
         engine = self._engine
         sub = int(getattr(engine, "run_budget_subagents", 0) or 0)
@@ -478,18 +485,30 @@ class BudgetLedger:
         except Exception:
             pass
         try:
-            frac, exhausted = self._run_budget_status()
+            frac, exhausted, dim = self._run_budget_detail()
         except Exception:
-            frac, exhausted = 0.0, False
+            frac, exhausted, dim = 0.0, False, ""
         if frac >= 0.8:
             pct = min(999, int(frac * 100))
             usd, secs = self._run_budget()
             turn_cap = self._run_budget_turns()
+            # Every dial in force, so the notice says which run this was
+            # and the next line can say which one to turn.
             ceiling = ", ".join(
                 [p for p in (f"${usd:.2f}" if usd > 0 else "",
                              f"{secs:.0f}s" if secs > 0 else "",
-                             f"{turn_cap} turns" if turn_cap > 0 else "")
+                             f"{turn_cap} turns" if turn_cap > 0 else "",
+                             f"{self._run_budget_requests()} requests"
+                             if self._run_budget_requests() > 0 else "",
+                             f"{self._run_budget_tokens()} tokens"
+                             if self._run_budget_tokens() > 0 else "",
+                             f"{self._run_budget_subagents()} sub-agents"
+                             if self._run_budget_subagents() > 0 else "")
                  if p])
+            # The dial that is actually binding, not a fixed pair: a run
+            # stopped by the request cap is not helped by more money.
+            raise_it = (f"Raise {dim}" if dim
+                        else "Raise agent.run_budget_usd / run_budget_s")
             if exhausted:
                 parts.append(
                     "# Run budget EXHAUSTED\n"
@@ -503,8 +522,7 @@ class BudgetLedger:
                     "Run budget exhausted — the agent is wrapping up",
                     f"{pct}% of the run budget ({ceiling}) is spent. The "
                     f"agent finishes the current step and starts no new "
-                    f"work. Raise agent.run_budget_usd / run_budget_s or "
-                    f"start a new run to continue.")
+                    f"work. {raise_it} or start a new run to continue.")
             else:
                 parts.append(
                     "# Run budget wind-down (auto-injected)\n"
