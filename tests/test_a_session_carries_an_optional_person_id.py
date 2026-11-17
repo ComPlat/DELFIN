@@ -27,6 +27,7 @@ import pytest
 
 from delfin.agent import session_store as ss
 from delfin.agent.cli_resume import list_sessions as cli_list_sessions
+from delfin.agent.service import eventlog
 from delfin.agent.service import protocol
 
 
@@ -103,3 +104,26 @@ def test_a_terminal_row_without_person_reads_empty(store):
 
 def test_the_service_declares_person_on_session_info():
     assert protocol.EVENTS["session.info"]["person"] == "string?"
+
+
+def test_the_event_log_carries_person_where_it_carries_the_session_id(tmp_path):
+    """A session.info header event written to the event log keeps its
+    optional person through a replay — the same transport the session id
+    travels on. An entry without a person stays valid."""
+    path = tmp_path / "events.jsonl"
+    log = eventlog.EventLog(path)
+    header = {"type": "session.info", "session": "s1", "seq": 0,
+              "ts": 1.0, "person": "carol"}
+    log.stamp(dict(header))               # durable: numbered, kept
+    log.stamp({"type": "user.message", "session": "s1", "ts": 1.1,
+               "text": "hi"})
+    log.close()
+    replayed = eventlog.tail_turns(eventlog.read_events(path), 0, header=header)
+    info = next(e for e in replayed if e["type"] == "session.info")
+    assert info["person"] == "carol"
+    # A header without a person is still a valid replay header: the turns
+    # stay reachable and no person key is invented.
+    bare = eventlog.tail_turns(eventlog.read_events(path), 0,
+                               header={"type": "session.info", "session": "s1"})
+    assert [e["type"] for e in bare] == ["session.info", "user.message"]
+    assert "person" not in bare[0]
