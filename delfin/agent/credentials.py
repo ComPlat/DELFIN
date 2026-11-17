@@ -47,6 +47,7 @@ Design notes:
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import os
 import re
@@ -73,21 +74,121 @@ def _resolve_path(path: Path | None) -> Path:
     return path if path is not None else _DEFAULT_PATH
 
 
-def _read_store(path: Path | None = None) -> dict[str, str]:
+def _read_store(path: Path | None = None, *,
+                strict: bool = False) -> dict[str, str]:
+    """The stored credentials, or {} where the store is absent.
+
+    ``strict`` separates "there is nothing stored" from "what is stored
+    cannot be read", which a reader may conflate and a WRITER may not.
+
+    Reading leniently is right for a lookup: a damaged store must not
+    stop the agent from using a key supplied in the environment, so
+    ``load_credential`` keeps its empty result and the caller's other
+    sources still apply.
+
+    Writing on that same empty result destroys data. Measured on
+    2026-11-17 before this argument existed: a store truncated the way a
+    full disk or a kill mid-write truncates it, plus one
+    ``set_credential`` call, left ONE key in the file -- the one just
+    written. The two keys that were in it were gone, with no copy
+    anywhere. Every writer below therefore reads with ``strict=True``
+    and quarantines the unreadable file instead of overwriting it.
+    """
     p = _resolve_path(path)
     if not p.exists():
         return {}
     try:
-        raw = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        text = p.read_text(encoding="utf-8")
+    except OSError as exc:
+        if strict:
+            raise CredentialStoreUnreadable(
+                f"{p} cannot be read ({exc.__class__.__name__}); it was "
+                "not changed") from None
+        return {}
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError:
+        if strict:
+            raise CredentialStoreUnreadable(
+                f"{p} is not readable JSON; it was not changed") from None
         return {}
     if not isinstance(raw, dict):
+        if strict:
+            raise CredentialStoreUnreadable(
+                f"{p} does not hold an object; it was not changed")
         return {}
     out: dict[str, str] = {}
     for k, v in raw.items():
         if isinstance(k, str) and isinstance(v, str):
             out[k] = v
     return out
+
+
+def _quarantine_store(path: Path | None = None) -> Path | None:
+    """Move an unreadable store aside, keeping it private, and return where.
+
+    A rename, so the bytes are never rewritten and the mode travels with
+    the file: whatever secrets are still legible in it stay as unreadable
+    to others as they were. Returns None when there was nothing to move.
+
+    The name carries the date because a second corruption must not
+    overwrite the evidence of the first -- a single ``.bak`` slot is how a
+    neighbouring store in this codebase loses the original.
+    """
+    p = _resolve_path(path)
+    if not p.exists():
+        return None
+    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    for n in range(100):
+        suffix = f".unreadable-{stamp}" + (f"-{n}" if n else "")
+        aside = p.with_name(p.name + suffix)
+        # The name is RESERVED with O_EXCL before the rename, because
+        # os.replace overwrites its destination without a word: two
+        # corruptions inside one second would otherwise leave the second
+        # rescue where the first one was, which is the single-slot loss
+        # this dated name exists to avoid. Created 0600 so the moment
+        # between the reservation and the rename exposes nothing.
+        try:
+            fd = os.open(aside, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            continue
+        except OSError:
+            return None
+        os.close(fd)
+        try:
+            os.replace(p, aside)
+        except OSError:
+            try:
+                aside.unlink()
+            except OSError:
+                pass
+            return None
+        return aside
+    return None
+
+
+def _quarantine_note(aside: Path) -> str:
+    """The moved file as a person should see it: the name, not the home."""
+    try:
+        return str(aside.relative_to(Path.home()).as_posix()).join(("~/", ""))
+    except ValueError:
+        return aside.name
+
+
+def _read_store_for_write(path: Path | None = None) -> tuple[dict, Path | None]:
+    """The store to modify, and where an unreadable one was moved to.
+
+    One place decides what a writer does about a damaged store, so the
+    four writers cannot drift apart on it.
+    """
+    try:
+        return _read_store(path, strict=True), None
+    except CredentialStoreUnreadable:
+        return {}, _quarantine_store(path)
+
+
+class CredentialStoreUnreadable(OSError):
+    """The store exists but cannot be read, so a writer must not replace it."""
 
 
 class CredentialStoreNotPrivate(OSError):
@@ -551,11 +652,21 @@ def set_credential(
         except CredentialStoreUnavailable:
             if mode == "keyring":
                 raise
-    current = _read_store(path)
+    current, moved = _read_store_for_write(path)
     if current.get(name) == value:
         return False
     current[name] = value
     _write_store(current, path)
+    if moved is not None:
+        # The key asked for IS stored; what cannot be reported as stored is
+        # whatever the damaged file held. Raised after the write, so the
+        # person does not have to type the key a second time, and naming
+        # the file rather than its contents.
+        raise CredentialStoreUnreadable(
+            f"{name} was stored, but the previous store could not be read "
+            f"and was moved to {_quarantine_note(moved)}. Any other "
+            "credential it held is in that file and is not in use; store "
+            "those again, then delete it.")
     return True
 
 
@@ -568,7 +679,14 @@ def delete_credential(name: str, *, path: Path | None = None) -> bool:
     if not name:
         return False
     removed = False
-    current = _read_store(path)
+    try:
+        current = _read_store(path, strict=True)
+    except CredentialStoreUnreadable:
+        # Deleting from a store that cannot be read would mean writing a
+        # store built from nothing, which removes every OTHER name too.
+        # The file is left exactly as it is: the caller is told, and
+        # quarantining is a decision for a person, not for a delete.
+        raise
     if name in current:
         del current[name]
         _write_store(current, path)
@@ -599,7 +717,10 @@ def migrate_to_keyring(
             "agent.credentials.store is file; set it to auto or keyring "
             "to move keys into the keyring")
     _usable_backend()
-    current = _read_store(path)
+    # strict: an unreadable store read as {} would report every name
+    # "absent" and change nothing, which reads as "there was nothing to
+    # move" instead of "the store is damaged".
+    current = _read_store(path, strict=True)
     wanted = list(names) or sorted(current)
     rows: list[dict] = []
     for name in wanted:
@@ -621,7 +742,17 @@ def migrate_to_keyring(
         except CredentialStoreUnavailable as exc:
             rows.append({"name": name, "action": "failed", "reason": str(exc)})
             continue
-        latest = _read_store(path)
+        try:
+            latest = _read_store(path, strict=True)
+        except CredentialStoreUnreadable:
+            # The keyring copy is verified, so the key is safe; the file
+            # entry stays because removing it would mean writing a store
+            # built from an unreadable one. Reported per name rather than
+            # aborting the whole migration.
+            rows.append({"name": name, "action": "migrated",
+                         "reason": "the file copy was left: the store "
+                                   "became unreadable"})
+            continue
         if latest.get(name) == value:
             del latest[name]
             _write_store(latest, path)
@@ -677,9 +808,21 @@ def list_credentials(
     "keyring" or "file" (env > keyring > file); ``stores`` lists every
     place holding it. A keyring entry that cannot be read right now is
     shown as "(unavailable)", never as an error.
+
+    A store that cannot be read at all is NOT reported as an empty one:
+    the key ``""`` carries ``{"value": "", "source": "unreadable",
+    "detail": ...}``. A caller that only iterates names sees one extra
+    entry; a caller that shows the result to a person can then say the
+    store is damaged instead of saying nothing is stored. The two lead a
+    person to opposite actions, so they are not the same answer.
     """
     out: dict = {}
-    store = _read_store(path)
+    try:
+        store = _read_store(path, strict=True)
+    except CredentialStoreUnreadable as exc:
+        store = {}
+        out[""] = {"value": "", "source": "unreadable", "stores": [],
+                   "detail": str(exc)}
     for name, val in store.items():
         out[name] = {"value": mask(val), "source": "file", "stores": ["file"]}
     for name in _index_names(path):
