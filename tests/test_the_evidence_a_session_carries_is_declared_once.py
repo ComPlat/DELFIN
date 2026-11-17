@@ -262,6 +262,10 @@ _NOT_CARRIED = {
     "_saw_message_start", "_floor_captured_this_turn",
     "_claim_guard_active", "_claim_guard_corrected", "_exec_pending",
     "_trace_pending", "_turn_in_flight", "_turn_start_cost",
+    #    The executed commands of THIS turn (the citation guard's
+    #    acted-on evidence): a path the turn ran is its own proof, and a
+    #    later turn's commands must not ground an earlier answer.
+    "_exec_commands_turn",
     #    What the LAST turn's cost meant (measured / non-billing /
     #    unpriced). Written into that turn's metrics row as it ends, so
     #    the row carries it; a resumed session asks the pricing table
