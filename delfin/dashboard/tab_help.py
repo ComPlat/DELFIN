@@ -256,6 +256,7 @@ def _feature_block(on_open_key) -> tuple[W.DOMWidget, W.Accordion]:
                     tooltip=help_of.get(k, k),
                     layout=W.Layout(margin="0 4px 0 0", padding="0"),
                 )
+                btn.add_class("delfin-link-btn")
                 btn.on_click(lambda _b, name=k: on_open_key(name))
                 buttons.append(btn)
             group_parts.append(W.VBox([
@@ -280,7 +281,54 @@ def _feature_block(on_open_key) -> tuple[W.DOMWidget, W.Accordion]:
     # Start collapsed except the first group, so the page opens compact.
     accordion.selected_index = 0
 
-    return W.VBox([header, accordion]), accordion, _feature_filter
+    tabs_section = _dashboard_tabs_block()
+
+    return W.VBox([header, accordion, W.HTML('<h3 style="margin-top:18px">Dashboard Reiter (tabs)</h3>'), tabs_section]), accordion, _feature_filter
+
+
+_TABS_HELP: tuple[tuple[str, str], ...] = (
+    ("Submit Job", "Configure and start a DELFIN calculation: structure, method, solvent, and the CONTROL.txt of the run."),
+    ("Recalc", "Resume or re-run parts of an existing calculation (step pipeline)."),
+    ("ORCA Builder", "Write and tweak ORCA inputs block by block."),
+    ("TURBOMOLE Builder", "Same for TURBOMOLE (SLURM backends only)."),
+    ("ChemDarwin", "ChemDarwin module integration (if installed)."),
+    ("DELFIN Agent", "Chat with the AI agent: ask about results, methods, and let it run calculations."),
+    ("Agent Activity", "Live log of what the agent is doing."),
+    ("Job Status", "State of submitted jobs, running and queued."),
+    ("Calculations", "Browse the calc/ folder: inputs, outputs and parsed results."),
+    ("Archive", "Finished and archived calculation data."),
+    ("Home", "Overview page (disk usage, current branch, recent activity)."),
+    ("Office", "Office-mode documents and helpers."),
+    ("Literature", "Literature lookup and reference storage."),
+    ("Remote Archive", "Remote archive storage (enable in Settings first)."),
+    ("Tools", "Smaller utilities: atom mapping, geometry tools, etc."),
+    ("Settings", "Global DELFIN configuration: clusters, backends, defaults."),
+    ("Ketcher", "Draw molecules in the browser (2D editor)."),
+    ("Swarm", "Metal-complex builder: PSO swarm search over candidate structures."),
+    ("Swarm Watch", "Live monitoring of a running Swarm search."),
+    ("Reactions", "Reaction graph of a calculation path."),
+    ("Review", "Review and grade calculation results."),
+    ("Pipelines", "Multi-step calculation pipelines."),
+    ("Help", "This tab: features, CONTROL keys, dashboard Reiter."),
+)
+
+
+def _dashboard_tabs_block() -> W.Accordion:
+    """One accordion section per dashboard Reiter: what it can do."""
+    import ipywidgets as _W
+    from html import escape as esc
+
+    children = []
+    for name, text in _TABS_HELP:
+        children.append(_W.HTML(
+            "<div style='padding:6px 10px'><b>" + esc(name)
+            + "</b> — " + esc(text) + "</div>"
+        ))
+    acc = _W.Accordion(children=children)
+    for i, (name, _text) in enumerate(_TABS_HELP):
+        acc.set_title(i, name)
+    acc.selected_index = None  # all collapsed
+    return acc
 
 
 def _key_to_group() -> dict[str, str]:
@@ -427,6 +475,7 @@ def _key_reference_block(
                         ),
                         layout=W.Layout(margin="0", padding="0"),
                     )
+                    btn.add_class("delfin-link-btn")
                     btn.on_click(
                         lambda _b, g=used_group: on_open_feature(g)
                     )
@@ -519,8 +568,41 @@ def _key_reference_block(
     return box, out, state
 
 
+#: Same design tokens and button look as the header (header_ui.py), scoped
+#: to ``delfin-help`` because this tab renders outside the header root.
+HELP_CSS = """
+<style>
+.delfin-help {
+  --dh-bg: var(--jp-layout-color1, #ffffff);
+  --dh-bg2: var(--jp-layout-color2, #f3f5f8);
+  --dh-fg: var(--jp-ui-font-color1, #1f2933);
+  --dh-border: var(--jp-border-color1, #cfd6df);
+  --dh-accent: #3d74b6;
+  --dh-accent-fg: #ffffff;
+  --dh-h: 28px; --dh-r: 8px;
+}
+.delfin-help .jupyter-button.delfin-link-btn,
+.delfin-help .jupyter-button.delfin-btn {
+  height: auto; line-height: 1.4; width: auto; min-width: 0;
+  padding: 0 2px; margin: 0 4px 0 0; border-radius: 4px;
+  border-color: transparent; background: transparent;
+  color: var(--dh-accent); white-space: nowrap; box-shadow: none;
+  font-size: 13px; flex: 0 0 auto;
+}
+.delfin-help .jupyter-button.delfin-link-btn:hover,
+.delfin-help .jupyter-button.delfin-btn:hover {
+  background: var(--dh-bg2); text-decoration: underline;
+}
+.delfin-help .jupyter-button:focus-visible {
+  outline: 2px solid var(--dh-accent); outline-offset: 1px;
+}
+</style>
+"""
+
+
 def create_tab(ctx: Any):
     """Create the Help tab. Returns ``(widget, refs)``."""
+    css = W.HTML(HELP_CSS)
     header = W.HTML(
         "<h2 style='margin-top:0'>DELFIN Help</h2>"
         "<p>An overview of what DELFIN can do and which CONTROL.txt keys "
@@ -573,6 +655,8 @@ def create_tab(ctx: Any):
     tabs.set_title(0, "Features")
     tabs.set_title(1, "CONTROL keys")
     widget = W.VBox([header, W.HBox([global_search, _search_hint]), tabs])
+    widget.add_class("delfin-help")
+    widget.children = (css,) + widget.children
     return widget, {"help_key_state": keys_state}
 
 
