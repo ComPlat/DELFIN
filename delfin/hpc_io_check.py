@@ -14,16 +14,18 @@ walk, no subprocess. Where Lustre is mounted comes from ONE read of
 ``/proc/mounts`` (fs type ``lustre``), injectable as text via
 :class:`MountsSource` for tests -- never a hard-coded cluster name.
 
-Public sources for the rules (the operators' mails are private):
-- bwUniCluster wiki, "Workspaces" and "$TMPDIR / scratch":
-  https://wiki.bwidm.de/doku.php?id=services:bwunicluster:workspaces
-  https://wiki.bwidm.de/doku.php?id=services:bwunicluster:tmpdir
-- Lustre best practice: metadata (stat/open/close) load from many small
-  operations, Intel HPC glossary / LLNL HPC tutorials
-  https://hpc.llnl.gov/banks-jobs/running-jobs/io-best-practices
-- NERSC I/O best practice on Lustre: avoid directory walks, keep temp
-  on node-local scratch
-  https://docs.nersc.gov/filesystems/lustre/best-practices/
+Public sources for the rules (the operators' mails are private; each
+page checked this session via DELFIN's web tools):
+- bwHPC wiki, bwUniCluster 2.0/3.0 Hardware and Architecture (workspaces,
+  node-local scratch): https://wiki.bwhpc.de/e/BwUniCluster2.0/Hardware_and_Architecture
+- INCD "Lustre best practices": writing/accessing thousands of files
+  loads the metadata servers, can take the file system offline:
+  https://wiki.incd.pt/books/filesystem-user-guide/page/lustre-best-practices
+- NAS HECC "Lustre Best Practices" (shared metadata contention):
+  https://www.nas.nasa.gov/hecc/support/kb/lustre-best-practices_226.html
+- University of Helsinki Lustre User Guide: avoid plain ``find`` and
+  long ``ls`` — metadata operation load on the MDS:
+  https://wiki.helsinki.fi/xwiki/bin/view/it4sci/IT%20for%20Science%20group/HPC%20Environment%20User%20Guide/Lustre%20User%20Guide/
 """
 from __future__ import annotations
 
