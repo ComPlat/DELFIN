@@ -16,6 +16,7 @@ from typing import Any
 
 def _key_entries() -> list[dict[str, str]]:
     from delfin.common.control_validator import CONTROL_FIELD_SPECS
+    from delfin.common.control_allowed_values import ALLOWED_BY_KEY
 
     entries = []
     for spec in CONTROL_FIELD_SPECS:
@@ -23,7 +24,8 @@ def _key_entries() -> list[dict[str, str]]:
             "kind": "key",
             "name": spec.name,
             "help": (spec.help or "").strip(),
-            "allowed": (getattr(spec, "allowed", "") or "").strip(),
+            "allowed": (getattr(spec, "allowed", "")
+                        or ALLOWED_BY_KEY.get(spec.name, "")).strip(),
             "default": "" if spec.default is None else str(spec.default),
             "required": bool(spec.required),
         })
