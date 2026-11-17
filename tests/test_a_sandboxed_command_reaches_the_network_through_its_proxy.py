@@ -147,10 +147,17 @@ def tcp(host, p, timeout=3):
     except OSError as e:
         return "refused" if e.errno == 13 else "error"
 def udp():
+    # SX2: under the proxy a datagram socket may be CREATED (OpenMPI reads
+    # its interfaces over one); what must not happen is a datagram leaving
+    # for an outside host. "refused" = creation or the send refused.
     try:
-        socket.socket(socket.AF_INET, socket.SOCK_DGRAM); return "created"
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     except OSError:
         return "refused"
+    try:
+        s.sendto(b"x", ("192.0.2.1", 9)); return "created"
+    except OSError as e:
+        return "refused" if e.errno == 13 else "created"
 res = {}
 t = threading.Thread(target=lambda: res.update(thread=tcp("127.0.0.1", port)))
 t.start(); t.join()
