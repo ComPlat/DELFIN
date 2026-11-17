@@ -160,6 +160,15 @@ def test_an_old_two_field_store_still_loads(tmp_path):
     assert again.touch(sid)
 
 
+def test_a_session_with_an_owner_stays_usable(tmp_path):
+    clock = Clock()
+    sessions = _sessions(tmp_path, clock)
+    sid = sessions.open(owner=NAME)
+    assert sessions.touch(sid)          # use it
+    clock.now += 10
+    assert sessions.touch(sid)          # and again, later
+
+
 def test_an_unknown_session_has_no_owner(tmp_path):
     sessions = _sessions(tmp_path, Clock())
     assert sessions.owner("no-such-session") is None

@@ -215,7 +215,7 @@ class Sessions:
         if entry is None:
             return False
         now = self.clock()
-        created, seen = entry
+        created, seen = entry[0], entry[1]
         if now - seen > self.idle or now - created > self.lifetime:
             del self._live[key]
             self._save()
