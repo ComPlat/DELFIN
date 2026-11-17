@@ -195,6 +195,164 @@ def smiles_png_bytes(smiles: str, size: int = 260):
     return drawer.GetDrawingText()
 
 
+# Covalent radii (Angstrom, Cordero 2008) for bond detection.
+_XYZ_COVALENT = {
+    "H": 0.31, "C": 0.76, "N": 0.71, "O": 0.66, "F": 0.57, "P": 1.07,
+    "S": 1.05, "Cl": 1.02, "B": 0.84, "Si": 1.11, "Br": 1.20, "I": 1.39,
+    "Na": 1.66, "K": 2.03, "Li": 1.28, "Mg": 1.41, "Ca": 1.76,
+    "Ti": 1.60, "V": 1.53, "Cr": 1.39, "Mn": 1.39, "Fe": 1.32,
+    "Co": 1.26, "Ni": 1.24, "Cu": 1.32, "Zn": 1.22, "Mo": 1.54,
+    "Pd": 1.39, "Ag": 1.45, "Sn": 1.39, "Pt": 1.36, "Au": 1.36,
+    "Hg": 1.32, "Pb": 1.46,
+}
+_XYZ_COVALENT_DEFAULT = 1.20
+#: A bond forms when d(i,j) <= BOND_FACTOR * (r_i + r_j).
+BOND_FACTOR = 1.15
+
+# Display radii (Angstrom) per element, roughly ball-and-stick scaled.
+_XYZ_RADII = {
+    "H": 0.32, "C": 0.55, "N": 0.56, "O": 0.53, "F": 0.47, "P": 0.80,
+    "S": 0.80, "Cl": 0.79, "B": 0.70, "Si": 0.85, "Br": 0.94, "I": 1.05,
+    "Na": 0.90, "K": 1.20, "Li": 0.70, "Mg": 0.90, "Ca": 1.10,
+}
+# Default radii for transition metals and any element not listed.
+_XYZ_RADIUS_DEFAULT = 0.95
+
+# CPK-like colours (hex) for the common elements.
+_XYZ_COLORS = {
+    "H": "#f0f0f0", "C": "#404040", "N": "#3050f8", "O": "#ff2d2d",
+    "F": "#90e050", "P": "#ff8000", "S": "#ffff30", "Cl": "#1ff01f",
+    "B": "#ffb5b5", "Si": "#f0c8a0", "Br": "#a62929", "I": "#940094",
+    "Na": "#ab5cf2", "K": "#8f40d4", "Li": "#cc80ff", "Mg": "#8aff00",
+    "Ca": "#3dff00", "Ti": "#bfc2c7", "V": "#a6a6ab", "Cr": "#8a99c7",
+    "Mn": "#9c7ac7", "Fe": "#e06633", "Co": "#f090a0", "Ni": "#50d050",
+    "Cu": "#c88033", "Zn": "#7d80b0", "Si": "#f0c8a0", "Mo": "#54b5b5",
+    "Pd": "#cdA0a0", "Ag": "#c0c0c0", "Sn": "#668f8f", "Pt": "#d0d0e0",
+    "Au": "#ffd123", "Hg": "#b8b8d0", "Pb": "#575961",
+}
+_XYZ_COLOR_DEFAULT = "#d0a070"  # muted metal tone
+
+
+def initial_xyz_png_bytes(calc_dir: str, size: int = 320):
+    """3D ball-and-stick view of ``initial.xyz`` (PNG bytes), or None.
+
+    The structure is rotated onto its principal inertia axes so the largest
+    cross-section faces the camera (most atoms visible), then depth-sorted
+    and drawn with matplotlib (Agg): bonds first, atoms as filled circles
+    with white rims.  Returns None when no readable initial.xyz exists or
+    numpy/matplotlib are unavailable.  It never runs a program.
+    """
+    xyz = os.path.join(calc_dir, "initial.xyz")
+    try:
+        with open(xyz, "r", encoding="utf-8", errors="replace") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return None
+    # Line 0 is a free-text title; line 1 the atom count (standard XYZ).
+    # ORCA's initial.xyz variant instead starts coordinates at line 1 with
+    # the count in the title line 0, so parse robustly: take any line whose
+    # first token is a symbol and next three fields are numbers.
+    atoms = []
+    for line in lines[1:]:
+        parts = line.split()
+        if len(parts) >= 4:
+            try:
+                atoms.append((parts[0].capitalize(), float(parts[1]),
+                              float(parts[2]), float(parts[3])))
+                continue
+            except ValueError:
+                pass
+        if atoms:
+            break  # coordinate block ended
+    if not atoms:
+        return None
+    try:
+        import numpy
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+    except ImportError:
+        return None
+
+    # Rotate onto principal inertia axes (mass-weighted).  Masses: use a
+    # small built-in table; unknown elements default to carbon.
+    _MASS = {
+        "H": 1.008, "He": 4.003, "Li": 6.94, "Be": 9.012, "B": 10.81,
+        "C": 12.011, "N": 14.007, "O": 15.999, "F": 18.998, "Ne": 20.18,
+        "Na": 22.99, "Mg": 24.305, "Al": 26.982, "Si": 28.085,
+        "P": 30.974, "S": 32.06, "Cl": 35.45, "K": 39.098, "Ca": 40.078,
+        "Ti": 47.867, "V": 50.942, "Cr": 51.996, "Mn": 54.938,
+        "Fe": 55.845, "Co": 58.933, "Ni": 58.693, "Cu": 63.546,
+        "Zn": 65.38, "Br": 79.904, "I": 126.904,
+    }
+    sym = [a[0] for a in atoms]
+    pts = numpy.array([[a[1], a[2], a[3]] for a in atoms])
+    pts -= pts.mean(axis=0)  # geometry centre is enough for orientation
+    weights = numpy.array([_MASS.get(s, 12.011) for s in sym])
+    inertia = (pts * weights[:, None]).T @ pts
+    try:
+        _eigvals, eigvecs = numpy.linalg.eigh(inertia)
+    except numpy.linalg.LinAlgError:
+        return None
+    if numpy.linalg.det(eigvecs) < 0:  # keep a right-handed frame
+        eigvecs[:, 2] = -eigvecs[:, 2]
+    rotated = pts @ eigvecs
+    # The camera looks along z; put the SMALLEST extent axis along z so the
+    # largest cross-section faces the viewer.  eigh() sorts ascending, so
+    # column 0 (smallest eigenvalue = smallest extent) must become z.
+    rotated = rotated[:, [1, 2, 0]]
+
+    # Bond detection: covalent radii sum x BOND_FACTOR (Cordero 2008).
+    # A fixed cutoff joined everything within ~2.4 A and drew far too
+    # many bonds; per-element radii keep H-H and ring gaps unbound.
+    radii = numpy.array([_XYZ_RADII.get(s, _XYZ_RADIUS_DEFAULT) for s in sym])
+    cov = numpy.array([_XYZ_COVALENT.get(s, _XYZ_COVALENT_DEFAULT)
+                       for s in sym])
+    extent = max(numpy.ptp(rotated[:, 0]), numpy.ptp(rotated[:, 1]), 1.0)
+    scale = 0.58 * size / extent  # px per Angstrom, molecule fills ~116%
+    n = len(sym)
+    bonds = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            d = rotated[i] - rotated[j]
+            if float(d @ d) <= (BOND_FACTOR * (cov[i] + cov[j])) ** 2:
+                bonds.append((i, j))
+
+    fig = plt.figure(figsize=(size / 100, size / 100), dpi=100)
+    canvas = plt.get_current_fig_manager().canvas if False else None  # noqa
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    canvas = FigureCanvasAgg(fig)
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_axis_off()
+    half = 0.5 * size / scale  # data half-width in Angstrom
+    ax.set_xlim(-half, half)
+    ax.set_ylim(-half, half)
+    ax.set_aspect("equal")
+
+    # Bonds behind atoms, depth-sorted by their average z (far first).
+    for i, j in sorted(bonds, key=lambda b: rotated[b[0]][2] + rotated[b[1]][2]):
+        ax.plot([rotated[i][0], rotated[j][0]],
+                [rotated[i][1], rotated[j][1]],
+                color="#909090", lw=1.4, zorder=1, solid_capstyle="round")
+
+    # Atoms: near atoms (large z) last, on top.
+    for idx in numpy.argsort(rotated[:, 2]):
+        x, y = rotated[idx][0], rotated[idx][1]
+        r_px = radii[idx] * scale * 0.8
+        r_data = r_px / size * (2 * half)
+        ax.add_patch(mpatches.Circle(
+            (x, y), r_data,
+            facecolor=_XYZ_COLORS.get(sym[idx], _XYZ_COLOR_DEFAULT),
+            edgecolor="white", linewidth=0.6,
+            zorder=2 + rotated[idx][2] / (extent + 1e-6)))
+    from io import BytesIO
+    buf = BytesIO()
+    fig.savefig(buf, format="png", dpi=100)
+    plt.close(fig)
+    return buf.getvalue()
+
+
 def rss_metrics(calc_dir: str) -> Dict[str, Any]:
     """RSS energetics: E(2.0 A) vs E(3.5 A) plus shape around the bound point.
 

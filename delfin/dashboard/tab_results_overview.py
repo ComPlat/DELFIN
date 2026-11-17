@@ -15,6 +15,7 @@ import html as _html
 import io as _io
 import json as _json
 import os
+import tempfile
 import zipfile as _zipfile
 from typing import Any, List
 
@@ -32,6 +33,7 @@ from delfin.analysis.results_overview import (
     list_calculations,
     list_rss_pngs,
     smiles_png_bytes,
+    initial_xyz_png_bytes,
     sort_table,
 )
 
@@ -46,16 +48,12 @@ def RO_CARD_H(title: str, hint: str = "") -> str:
 
 
 def RO_TAB_HEADER() -> str:
-    """Top banner of the tab: title chip + subtitle."""
+    """Top banner of the tab: title only (no subtitle - it took space)."""
     return (
         "<div style='background:#f1f5f9;border-left:4px solid #2563eb;"
-        "border-radius:10px;padding:12px 18px;margin-bottom:10px'>"
+        "border-radius:10px;padding:8px 18px;margin-bottom:10px'>"
         "<div style='color:#0f172a;font-size:18px;font-weight:700'>"
-        "Results Overview</div>"
-        "<div style='color:#94a3b8;font-size:12px;margin-top:2px'>"
-        "Select calculations and quantities, compare values - redox "
-        "potentials, multiplicities, RSS energetics; export as "
-        "CSV / XLSX / PNG-ZIP</div></div>")
+        "Results Overview</div></div>")
 
 
 def rows_to_markdownish(columns: List[dict], rows: List[dict],
@@ -143,6 +141,20 @@ class ResultsOverviewPanel:
             description="Show PNGs inline",
             indent=False,
         )
+        # Structure image options: 2D (SMILES) in column 2, 3D (initial.xyz
+        # ball-and-stick) in column 3 -- each independently tickable, both
+        # for the on-screen table and the XLSX export.
+        self._show_2d = widgets.Checkbox(
+            value=True,
+            description="Include 2D images (col 2)",
+            indent=False,
+        )
+        self._show_3d = widgets.Checkbox(
+            value=False,
+            description="Include 3D images (col 3)",
+            indent=False,
+        )
+        self._latex_btn = widgets.Button(description="Export LaTeX/PDF")
         # Gallery controls: relative scan only, size in percent of the
         # 640px default, images per row before wrapping.
         self._png_size = widgets.IntSlider(
@@ -176,11 +188,14 @@ class ResultsOverviewPanel:
         self._refresh_btn.on_click(self._on_build)
         self._rescan_btn.on_click(self._on_rescan)
         self._show_pngs.observe(self._on_png_toggle, names="value")
+        self._show_2d.observe(self._on_png_toggle, names="value")
+        self._show_3d.observe(self._on_png_toggle, names="value")
         self._png_size.observe(self._on_png_opts_change, names="value")
         self._png_cols.observe(self._on_png_opts_change, names="value")
         self._csv_btn.on_click(self._on_export_csv)
         self._xlsx_btn.on_click(self._on_export_xlsx)
         self._zip_btn.on_click(self._on_export_zip)
+        self._latex_btn.on_click(self._on_export_latex)
 
         left = widgets.VBox([
             widgets.HTML(RO_CARD_H("Calculations", "multi-select")),
@@ -202,10 +217,13 @@ class ResultsOverviewPanel:
             self._sortbar,
             widgets.HBox([
                 self._csv_btn, self._xlsx_btn, self._zip_btn,
+                self._latex_btn,
                 self._export_status],
                 layout=widgets.Layout(gap="10px", align_items="center")),
             self._show_pngs,
             self._png_opts,
+            self._show_2d,
+            self._show_3d,
             self._pngs,
         ])
         self.widget.add_class("ro-tab-root")
@@ -458,37 +476,66 @@ class ResultsOverviewPanel:
     def _table_bytes_xlsx(self) -> bytes:
         """XLSX of the current table; missing values as empty cells.
 
-        Column 2: SMILES 2D structure image, column 3: the SMILES text,
-        last column: the relative RSS scan PNG of the calculation.
+        Column 2: SMILES 2D image (if ticked), column 3: 3D ball-and-stick
+        image of initial.xyz (if ticked), then the SMILES text, then the
+        selected metrics, last: the relative RSS scan PNG.  The 2D/3D
+        checkboxes steer which image columns exist at all.
         """
         import openpyxl  # already a DELFIN dependency
         from openpyxl.drawing.image import Image as XLImage
         assert self._table is not None
+        want_2d = bool(getattr(self, "_show_2d", None)
+                       and self._show_2d.value)
+        want_3d = bool(getattr(self, "_show_3d", None)
+                       and self._show_3d.value)
+        header = ["Calculation"]
+        if want_2d:
+            header.append("SMILES 2D")
+        if want_3d:
+            header.append("Structure 3D")
+        if want_2d:
+            header.append("SMILES")
+        header += [c["label"] for c in self._table["columns"]]
+        header.append("RSS PNG (relativ)")
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Results Overview"
-        ws.append(["Calculation", "SMILES 2D", "SMILES"]
-                  + [c["label"] for c in self._table["columns"]]
-                  + ["RSS PNG (relativ)"])
-        # Metrics start in column 4 (1=calc, 2=SMILES 2D, 3=SMILES);
-        # otherwise they land under the SMILES headers.
-        metric_col0 = 4
+        ws.append(header)
+        # Metrics start after: calc(1) + [2D img] + [3D img] + [SMILES text]
+        metric_col0 = 2 + int(want_2d) + int(want_3d) + int(want_2d)
         for r, row in enumerate(self._table["rows"], start=2):
             cells = []
             for c in self._table["columns"]:
                 v = row["values"].get(c["id"])
                 cells.append(v if v is not None else None)
             smiles = get_smiles(row["path"])
-            ws.append([row["label"], None, smiles] + cells + [None])
-            # Column 2: 2D structure drawing (SMILES text sits in the
-            # appended row, column 3).
-            if smiles:
+            row_vals = [row["label"]]
+            if want_2d:
+                row_vals.append(None)
+            if want_3d:
+                row_vals.append(None)
+            if want_2d:
+                row_vals.append(smiles)
+            ws.append(row_vals + cells + [None])
+            row_height = 100
+            # Column 2: 2D structure drawing.
+            if want_2d and smiles:
                 png = smiles_png_bytes(smiles)
                 if png:
                     img = XLImage(_io.BytesIO(png))
                     img.width = img.height = 130
                     ws.add_image(img, f"B{r}")
-                    ws.row_dimensions[r].height = 100
+                    row_height = 100
+            # Column 3: 3D ball-and-stick of initial.xyz.
+            if want_3d:
+                col3 = "C" if want_2d else "B"
+                png3d = initial_xyz_png_bytes(row["path"])
+                if png3d:
+                    img3d = XLImage(_io.BytesIO(png3d))
+                    img3d.width = img3d.height = 130
+                    ws.add_image(img3d, f"{col3}{r}")
+                    row_height = max(row_height, 100)
+            ws.row_dimensions[r].height = row_height
             # Last column: relative scan PNG, aspect ratio preserved
             # (height 100, width scaled from the original pixels).
             rel_only = [
@@ -594,6 +641,151 @@ class ResultsOverviewPanel:
                 "gefunden.</span>")
             return
         self._export_bytes("rss_pngs.zip", payload, "application/zip")
+
+    # -- LaTeX / PDF export ---------------------------------------------------
+
+    _TEX_ESCAPE = str.maketrans({
+        "\\": r"\textbackslash{}", "&": r"\&", "%": r"\%", "$": r"\$",
+        "#": r"\#", "_": r"\_", "{": r"\{", "}": r"\}",
+        "~": r"\textasciitilde{}", "^": r"\textasciicircum{}",
+    })
+
+    @classmethod
+    def _tex_escape(cls, text: str) -> str:
+        return str(text).translate(cls._TEX_ESCAPE)
+
+    def _latex_bytes(self) -> bytes:
+        """LaTeX source: one page per calculation, in the ticked order.
+
+        Per calculation: name, then 2D image (if ticked), then the 3D
+        image (if ticked), then the RSS scan PNG, then the metric list.
+        \\newpage between calculations.
+        """
+        assert self._table is not None
+        want_2d = bool(self._show_2d.value)
+        want_3d = bool(self._show_3d.value)
+        img_dir = "images"
+        lines = [
+            r"\documentclass[a4paper]{article}",
+            r"\usepackage[margin=2cm]{geometry}",
+            r"\usepackage{graphicx}",
+            r"\usepackage{longtable}",
+            r"\usepackage{booktabs}",
+            r"\setlength{\parindent}{0pt}",
+            r"\begin{document}",
+        ]
+        images: List[tuple] = []  # (arcname, png bytes)
+        n_img = 0
+
+        def _add_image(png: bytes) -> str:
+            nonlocal n_img
+            n_img += 1
+            name = f"{img_dir}/img{n_img:04d}.png"
+            images.append((name, png))
+            return name
+
+        for row in self._table["rows"]:
+            lines.append(self._tex_escape(row["label"]))
+            lines.append(r"\par\bigskip")
+            smiles = get_smiles(row["path"])
+            if want_2d and smiles:
+                png = smiles_png_bytes(smiles)
+                if png:
+                    path = _add_image(png)
+                    lines.append(
+                        rf"\includegraphics[width=0.5\textwidth]{{{path}}}")
+                    lines.append(r"\par\bigskip")
+            if want_3d:
+                png = initial_xyz_png_bytes(row["path"])
+                if png:
+                    path = _add_image(png)
+                    lines.append(
+                        rf"\includegraphics[width=0.5\textwidth]{{{path}}}")
+                    lines.append(r"\par\bigskip")
+            rel_only = [
+                p for p in list_rss_pngs(row["path"])
+                if p["rel"].endswith("scan_relative.png")
+            ]
+            if rel_only:
+                try:
+                    with open(rel_only[0]["abs"], "rb") as fh:
+                        scan_png = fh.read(8 * 1024 * 1024)
+                    path = _add_image(scan_png)
+                    lines.append(
+                        rf"\includegraphics[width=0.9\textwidth]{{{path}}}")
+                    lines.append(r"\par\bigskip")
+                except OSError:
+                    pass
+            # Metric list as a two-column table (value column not escaped
+            # twice: format_value already produced a display string).
+            from delfin.analysis.results_overview import format_value
+            lines.append(r"\begin{longtable}{p{0.45\textwidth}"
+                         r"p{0.45\textwidth}}")
+            lines.append(r"\toprule")
+            lines.append(r"Quantity & Value \\")
+            lines.append(r"\midrule")
+            lines.append(r"\endhead")
+            for col in self._table["columns"]:
+                raw = row["values"].get(col["id"])
+                shown = ("-" if raw is None
+                         else self._tex_escape(format_value(raw)))
+                lines.append(self._tex_escape(col["label"]) + " & "
+                             + shown + r" \\")
+            lines.append(r"\bottomrule")
+            lines.append(r"\end{longtable}")
+            lines.append(r"\newpage")
+        lines.append(r"\end{document}")
+        # Store the LaTeX text under .tex key so the handler can also
+        # offer the raw source; images ride along in the zip when asked.
+        self._latex_images = images
+        return ("\n".join(lines)).encode("utf-8")
+
+    def _on_export_latex(self, _btn=None) -> None:
+        if self._table is None:
+            self._export_status.value = (
+                "<span style='color:#dc3545'>Build a table first.</span>")
+            return
+        tex = self._latex_bytes().decode("utf-8")
+        # PDF when pdflatex is available; else the source alone.
+        pdf = None
+        try:
+            import subprocess
+            # pdflatex needs writable TeX-MF variables; on this cluster the
+            # real HOME paths are read-only and the format build would fail
+            # ("I can't find the format file pdflatex.fmt").
+            env = dict(os.environ)
+            tmp_texmf = os.path.join(tempfile.gettempdir(), "delfin_texmf")
+            os.makedirs(os.path.join(tmp_texmf, "web2c"), exist_ok=True)
+            for var in ("TEXMFHOME", "TEXMFVAR", "VARTEXMF"):
+                env[var] = tmp_texmf
+            with tempfile.TemporaryDirectory() as td:
+                with open(os.path.join(td, "doc.tex"), "w",
+                          encoding="utf-8") as fh:
+                    fh.write(tex)
+                for name, png in self._latex_images:
+                    os.makedirs(os.path.join(td, os.path.dirname(name)),
+                                exist_ok=True)
+                    with open(os.path.join(td, name), "wb") as fh:
+                        fh.write(png)
+                try:
+                    proc = subprocess.run(
+                        ["pdflatex", "-interaction=nonstopmode",
+                         "-halt-on-error", "doc.tex"],
+                        cwd=td, capture_output=True, timeout=120, env=env)
+                    pdf_path = os.path.join(td, "doc.pdf")
+                    if proc.returncode == 0 and os.path.exists(pdf_path):
+                        with open(pdf_path, "rb") as fh:
+                            pdf = fh.read()
+                except (OSError, subprocess.TimeoutExpired):
+                    pdf = None
+        except Exception:  # noqa: BLE001 - pdflatex optional
+            pdf = None
+        if pdf:
+            self._export_bytes("results_overview.pdf", pdf, "application/pdf")
+        else:
+            self._export_bytes("results_overview.tex", tex.encode("utf-8"),
+                               "application/x-tex")
+        self._latex_source = tex
 
     def _render(self) -> None:
         """Re-render table + PNG section from current state."""

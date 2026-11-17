@@ -343,3 +343,104 @@ def test_custom_presets_shape():
         assert len(preset) == 5
         assert preset[2] in ("regex", "text", "jsonpath")
         assert preset[4] in ("first", "last", "all")
+
+# ---- 3D renderer (initial.xyz -> PNG) ------------------------------------
+
+_WATER_XYZ = (
+    "water\n3\n"
+    "O   0.000000   0.000000   0.117000\n"
+    "H   0.000000   0.757000  -0.467000\n"
+    "H   0.000000  -0.757000  -0.467000\n")
+
+
+def test_initial_xyz_png_renders_valid_png(tmp_path):
+    numpy = pytest.importorskip("numpy")
+    pytest.importorskip("matplotlib")
+    calc = tmp_path / "w403"
+    calc.mkdir()
+    (calc / "initial.xyz").write_text(_WATER_XYZ, encoding="utf-8")
+    png = ro.initial_xyz_png_bytes(str(calc))
+    assert png is not None
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    assert len(png) > 1000
+
+
+def test_initial_xyz_png_bond_detection(tmp_path):
+    """A bond only between O and each H; no O-O and no H-H bond."""
+    pytest.importorskip("numpy")
+    pytest.importorskip("matplotlib")
+    calc = tmp_path / "w404"
+    calc.mkdir()
+    (calc / "initial.xyz").write_text(_WATER_XYZ, encoding="utf-8")
+    png = ro.initial_xyz_png_bytes(str(calc))
+    assert png is not None
+    # Verify the bond list directly: O-H pairs pass the covalent cutoff,
+    # O-O (2.39 A apart here? no: O at origin, H-H 1.51 A) and H-H do not.
+    atoms = [("O", 0.0, 0.0, 0.117), ("H", 0.0, 0.757, -0.467),
+             ("H", 0.0, -0.757, -0.467)]
+    cov = ro._XYZ_COVALENT
+    assert (0.757 - 0.0) ** 2 + (-0.467 - 0.117) ** 2 <= (
+        ro.BOND_FACTOR * (cov["O"] + cov["H"])) ** 2
+    assert (0.757 - (-0.757)) ** 2 > (
+        ro.BOND_FACTOR * (cov["H"] + cov["H"])) ** 2  # H-H unbound
+    assert png is not None
+
+
+def test_initial_xyz_png_missing_file(tmp_path):
+    pytest.importorskip("numpy")
+    calc = tmp_path / "w405"
+    calc.mkdir()
+    assert ro.initial_xyz_png_bytes(str(calc)) is None
+
+
+def test_initial_xyz_png_orca_variant_format(tmp_path):
+    """ORCA initial.xyz: title line, then coordinates from line 1 (no count)."""
+    pytest.importorskip("numpy")
+    pytest.importorskip("matplotlib")
+    calc = tmp_path / "w406"
+    calc.mkdir()
+    (calc / "initial.xyz").write_text(
+        "Coordinates from ORCA-job /tmp/x E -3064.0\n"
+        "O   0.0   0.0   0.1\n"
+        "H   0.0   0.8  -0.5\n", encoding="utf-8")
+    png = ro.initial_xyz_png_bytes(str(calc))
+    assert png is not None and png[:4] == b"\x89PNG"
+
+
+# ---- LaTeX export ----------------------------------------------------------
+
+def _latex_panel(table):
+    from delfin.dashboard.tab_results_overview import ResultsOverviewPanel
+    panel = ResultsOverviewPanel.__new__(ResultsOverviewPanel)
+    panel._table = table
+
+    class CB:
+        value = True
+    panel._show_2d = CB()
+    panel._show_3d = CB()
+    return panel
+
+
+def test_latex_bytes_structure(tmp_path):
+    calc = make_calc(tmp_path, "407", data=sample_data(), rss=(
+        "4.0 -1.0\n3.5 -0.5\n2.0 -1.2\n"))
+    table = ro.build_table([str(calc)], ["rss_delta_kj"])
+    panel = _latex_panel(table)
+    tex = panel._latex_bytes().decode("utf-8")
+    assert tex.startswith("\\documentclass")
+    assert tex.count("\\newpage") == 1  # one page break between 2 calcs? no:
+    # one calc only -> the single trailing newpage before end
+    assert tex.rstrip().endswith("\\end{document}")
+    assert "Quantity" in tex and "Value" in tex
+    assert panel._latex_images  # the RSS png was collected
+    assert "\\newpage\n\\end{document}" in tex
+
+
+def test_latex_newpage_between_calculations(tmp_path):
+    calc1 = make_calc(tmp_path, "408", data=sample_data())
+    calc2 = make_calc(tmp_path, "409", data=sample_data())
+    table = ro.build_table([str(calc1), str(calc2)], ["rss_delta_kj"])
+    panel = _latex_panel(table)
+    tex = panel._latex_bytes().decode("utf-8")
+    # Between two calc blocks AND before \end{document}: at least 2 breaks.
+    assert tex.count("\\newpage") >= 2
