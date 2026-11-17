@@ -84,7 +84,10 @@ def test_the_store_holds_no_secret_in_clear(tmp_path):
     text = path.read_text(encoding="utf-8")
     assert SECRET not in text
     assert OTHER_SECRET not in text
-    assert accounts_mod.hash_secret(SECRET) in text
+    # argon2 salts are random, so two hashes of one secret differ; the
+    # property is that a hash of the right format is stored.
+    for entry in json.loads(text):
+        assert entry["secret_hash"].startswith("argon2:")
 
 
 def test_exactly_one_account_is_the_head(tmp_path):
