@@ -50,6 +50,8 @@ _WALK_CMDS = ("find", "du", "ls", "rsync", "cp")
 _WALK_FLAGS = re.compile(
     r"(?:^|\s)-{1,2}[a-zA-Z]*(?:[Rr]|recursive|archive|no-compress)[a-zA-Z]*"
     r"(?:\s|$|=)"
+    # rsync -a / cp -a: the GNU/BSD archive flag, recursive by itself.
+    r"|(?:^|\s)-a(?:\s|$)"
     r"|(?:(?<=^)|(?<=\s))ls\s+-[a-zA-Z]*R"
 )
 _MAXDEPTH = re.compile(r"-maxdepth\s+(\d+)")
