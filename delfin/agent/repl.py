@@ -696,7 +696,20 @@ def prepare_fresh_turn(engine, prompt: str, *, workspace=None,
     for the person watching. Nothing is refused: the turn proceeds.
     The check runs BEFORE the budget branch, so it fires on every
     dashboard/cli turn, not only on fresh starts.
+
+    Task-state capture (cap1/g2): the FIRST real user message of the
+    session writes the persistent TaskState store here, so every
+    reduction path (compaction, fresh restart, in-turn compaction)
+    reads a task -- and a stated success criterion -- back verbatim.
+    Only the first message writes; a store that already holds a task
+    (a person's /state edit, a restored session) is never demoted.
     """
+    try:
+        from .task_state_capture import capture_from_first_message
+        capture_from_first_message(
+            engine=engine, workspace=workspace, prompt=prompt)
+    except Exception:
+        pass
     try:
         from . import task_presence as _tp
         _history = list(getattr(engine, "messages", None) or [])
@@ -775,7 +788,22 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
     ``sink`` is called from whatever thread ``stream_response`` runs on.
     It must not touch the terminal; in the REPL it is a queue put, and the
     main thread does the writing.
+
+    Task-state capture (cap1/g2): the FIRST real user message of the
+    session writes the persistent TaskState store here (the terminal's
+    attended path), the same one write ``prepare_fresh_turn`` performs
+    on the headless paths. Best-effort: a failed capture never delays a
+    turn.
     """
+    try:
+        if not isinstance(prompt, HarnessText):
+            _capture_ws = getattr(getattr(engine, "kit_permissions", None),
+                                  "workspace", None)
+            from .task_state_capture import capture_from_first_message
+            capture_from_first_message(
+                engine=engine, workspace=_capture_ws, prompt=prompt)
+    except Exception:
+        pass
     chunks: list[str] = []
     tool_calls: list[dict] = []
     tool_inputs: list[tuple[str, dict]] = []

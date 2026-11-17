@@ -194,13 +194,19 @@ def test_run_turn_fresh_block_carries_the_criterion(tmp_path,
     """run_turn (the terminal's attended path and the worker's) builds
     the same block: the criterion survives there too."""
     from delfin.agent import repl
+    from delfin.agent import working_state
     engine = _fresh_engine(tmp_path)
     engine.messages = _fresh_history(60)
     _capture(engine, tmp_path, f"{TASK} Success criterion: {CRITERION}")
 
+    # TerminalAgent passes run_turn the working-state recap it builds
+    # from opts.cwd; the same block here (the store lives in tmp_path).
+    block = working_state.build_working_state_block(
+        list(engine.messages), session_id=engine.session_id,
+        workspace=tmp_path, refusals=None)
     result = repl.run_turn(engine, "go on", sink=lambda item: None,
                            context_budget=500,
-                           workspace=tmp_path)
+                           working_state_block=block)
     assert not result.error
     context = "\n".join(
         str(m.get("content", "")) for m in engine.messages)
