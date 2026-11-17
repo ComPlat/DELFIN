@@ -728,12 +728,17 @@ def _continue_announced(engine, prompt_sent: str, out: dict[str, Any], *,
     """
     allowed = _resolve_announce_continuations()
     try:
+        from . import turn_outcome as _TO
         from .api_client import _announces_an_action
     except Exception:
         return out
     if allowed <= 0 or not isinstance(out, dict) or out.get("error"):
         return out
-    if str(out.get("stop_reason") or "done") != "done":
+    # A turn that ended on its own terms, which now includes ending with
+    # the task ledger open ("incomplete"): comparing against "done" alone
+    # would have switched this continuation off for exactly the turns that
+    # most need it, the moment that reason stopped being reported as done.
+    if not _TO.ended_by_itself(str(out.get("stop_reason") or "done")):
         return out
     if not _announces_an_action(str(out.get("text") or "")):
         return out
@@ -761,7 +766,9 @@ def _continue_announced(engine, prompt_sent: str, out: dict[str, Any], *,
         out = _run_once(engine, _ANNOUNCE_CONT_PROMPT,
                         max_tokens=max_tokens, emit=emit)
         tools_after = bool(getattr(engine, "_tools_after_last_text", False))
-        if out.get("error") or str(out.get("stop_reason") or "done") != "done":
+        from . import turn_outcome as _TO
+        if out.get("error") or not _TO.ended_by_itself(
+                str(out.get("stop_reason") or "done")):
             break
         if not _announces_an_action(str(out.get("text") or "")):
             # A real answer -- with or without tool calls -- ends it.
