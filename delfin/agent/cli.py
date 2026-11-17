@@ -4482,7 +4482,8 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
             backend=getattr(args, "backend", "") or "",
             repeats=max(1, int(getattr(args, "repeats", 1) or 1)),
         )
-        ent = _sched.Scheduler().schedule_interval(
+        _bench_sched = _sched.Scheduler()
+        ent = _bench_sched.schedule_interval(
             every_seconds=every_s,
             prompt=prompt,
             reason=f"nightly benchmark watch ({model})",
@@ -4490,6 +4491,12 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
         )
         print(f"Scheduled bench entry {ent.id}: every {every_token}, "
               f"workspace {ent.workspace}")
+        # What the write had to say about the file itself: a cron.json that
+        # could not be read was moved aside rather than replaced, and the
+        # person is the only one who can rescue what was in it.
+        _note = _bench_sched.take_store_note()
+        if _note:
+            print(f"WARNING: {_note}", file=sys.stderr)
         print("Cost estimate: ~$8 per run for the 48-task KIT-Qwen suite "
               "at repeats=1 (repeats multiply cost; the suspect recheck "
               "adds up to $3 more on suspect days).")
@@ -4501,6 +4508,33 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
         print(f"Remove anytime: delete entry {ent.id} via the dashboard "
               "scheduler tools, or edit ~/.delfin/cron.json.")
         return 0
+
+    if action == "enable":
+        # The way back from a disabled entry without editing cron.json by
+        # hand. Exit code: 0 when the entry is enabled AND when it already
+        # was (the repair is idempotent, so it can be repeated or
+        # scripted), 1 for a refusal -- an emergency stop's disable, a
+        # workspace that is gone, an id that is not there -- so a caller
+        # can tell "nothing to do" from "this did not happen".
+        from .scheduler import Scheduler
+
+        entry_id = (getattr(args, "entry_id", "") or "").strip()
+        if not entry_id:
+            print("ERROR: an entry id is required; `delfin-agent scheduler "
+                  "status` lists them.", file=sys.stderr)
+            return 2
+        sched = Scheduler()
+        changed, message = sched.enable(entry_id)
+        # "Nothing to do" is read off the entry, not off the message text:
+        # a mechanism keyed on wording stops working when the wording is
+        # improved.
+        enabled_now = any(e.id == entry_id and not e.disabled
+                          for e in sched.list_entries())
+        if changed or enabled_now:
+            print(message)
+            return 0
+        print(f"ERROR: {message}", file=sys.stderr)
+        return 1
 
     if action == "stop":
         st = _sd.daemon_status()
@@ -4523,10 +4557,16 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
     st = _sd.daemon_status()
     state = f"running (PID {st['pid']})" if st["running"] else "not running"
     print(f"Scheduler daemon: {state}")
-    entries = sorted(Scheduler().list_entries(), key=lambda e: e.next_fire_at)
+    sched = Scheduler()
+    entries = sorted(sched.list_entries(), key=lambda e: e.next_fire_at)
     if not entries:
-        print("No scheduled entries (~/.delfin/cron.json is empty).")
-        return 0
+        # A damaged file is not an empty schedule: the two lead a person to
+        # opposite actions (schedule something / rescue what is in the
+        # file), so they are not reported the same way.
+        problem = sched.store_problem()
+        print(problem if problem
+              else "No scheduled entries (~/.delfin/cron.json is empty).")
+        return 1 if problem else 0
     print(f"{len(entries)} entries ({st['disabled']} disabled):")
     now = _time.time()
     for e in entries:
@@ -4541,6 +4581,17 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
         every = f", every {e.every_seconds}s" if e.kind == "interval" else ""
         ws = f" @ {e.workspace}" if e.workspace else ""
         print(f"  {e.id}  [{e.kind}{every}]  {due}{ws}  — {prompt}")
+        if e.disabled:
+            # The route back, printed beside the entry that needs it: a
+            # disabled entry used to be shown with no way to act on it but
+            # editing cron.json.
+            from .scheduler import disabled_by_emergency_stop
+            if disabled_by_emergency_stop(e.disabled_reason):
+                print("      an emergency stop disabled it; schedule the "
+                      "work again yourself to bring it back")
+            else:
+                print(f"      enable again: delfin-agent scheduler enable "
+                      f"{e.id}")
     return 0
 
 
@@ -6007,6 +6058,15 @@ def build_parser() -> argparse.ArgumentParser:
     sched_stop = sched_sub.add_parser(
         "stop", help="Stop the daemon (SIGTERM; finishes the current turn)")
     sched_stop.set_defaults(scheduler_action="stop")
+
+    sched_enable = sched_sub.add_parser(
+        "enable",
+        help=("Re-enable an entry that was disabled by failures or by a "
+              "missing workspace (ids: `scheduler status`). Refuses an "
+              "entry an emergency stop disabled"))
+    sched_enable.add_argument("entry_id",
+                              help="Entry id as `scheduler status` shows it")
+    sched_enable.set_defaults(scheduler_action="enable")
 
     sched_bench = sched_sub.add_parser(
         "add-bench",
