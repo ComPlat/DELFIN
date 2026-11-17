@@ -110,3 +110,13 @@ def test_a_walk_of_the_real_program_with_the_kernel_layout():
     assert run_filter(p, a[2], (3, 0x1000, 16)) == sg._RET_USER_NOTIF
     assert run_filter(p, d[2], (3, 0x1000, 0)) == eacces
     assert run_filter(p, d[3], (3, 0x1000, 1, 0)) == eacces
+
+
+def test_only_socket_reaches_the_family_dispatch():
+    """Any other system call passes whatever its first two arguments are:
+    close(1), write(1, buf, 2), read(2, buf, 2) and friends were refused or
+    notified when the dispatch ran for every call (CI 2026-11-17)."""
+    p = sg._program(block_inet_datagrams=True)
+    for nr in (0, 1, 3, 9, 16, 59, 60, 231):        # read write close mmap ioctl execve exit exit_group
+        for args in ((1, 2, 2), (2, 2, 0), (1, 0x802, 0), (2, 0x80002, 1)):
+            assert run_filter(p, nr, args) == sg._RET_ALLOW, (nr, args)

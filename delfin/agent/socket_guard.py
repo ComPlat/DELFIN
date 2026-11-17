@@ -436,9 +436,13 @@ def _program(block_inet_datagrams: bool = False):
                   # reviewer walk on 9ab3816e9).
                   (_JEQ, nr_sendmsg, "eacces", None),
                   (_JEQ, nr_sendmmsg, "eacces", None)]
-    # socket(): its false edge falls THROUGH to the family dispatch, it
-    # must not terminate in allow (that would skip the sends above).
-    items += [(_JEQ, nr_socket, None, None)]
+    # Only socket() reaches the family dispatch below: every other system
+    # call is allowed here (the sends were judged above). With a
+    # fall-through on both edges every call whose first two arguments
+    # looked like (AF_UNIX, SOCK_DGRAM) or (AF_INET, SOCK_DGRAM) was
+    # refused or notified -- a close() got EACCES and a caged git push
+    # hung (CI, 2026-11-17).
+    items += [(_JEQ, nr_socket, None, "allow")]
     items += [
         (_LD, 16),
         (_JEQ, socket.AF_UNIX, "unix", None),
