@@ -21,6 +21,8 @@ import json
 
 import pytest
 
+from conftest import child_env
+
 from delfin.agent import endpoint_gate as G
 
 
@@ -155,7 +157,7 @@ def test_for_client_reads_the_process_marker(runtime, monkeypatch):
         G.set_process_interactive(False)
 
 
-def test_the_marker_is_not_an_env_var_and_is_not_inherited(runtime):
+def test_the_marker_is_not_an_env_var_and_is_not_inherited(runtime, tmp_path):
     """The interactive marker must not ride os.environ: it is a per-process
     flag, so a child process that forks+execs (a delegate, a --unattended
     run, a background job) starts headless even when the attended session
@@ -169,7 +171,12 @@ def test_the_marker_is_not_an_env_var_and_is_not_inherited(runtime):
              "from delfin.agent import endpoint_gate as G; "
              "print(G.for_client(%r, 'm').interactive)" % URL],
             capture_output=True, text=True, timeout=30,
-            env={k: v for k, v in __import__('os').environ.items()},
+            # conftest.child_env, not the real environment: this child
+            # imports delfin and resolves its own ~/.delfin sinks against
+            # whatever HOME it is given. With the operator's HOME it writes
+            # there, which the repository-wide check refuses (it named this
+            # line, and the same defect was fixed in #741).
+            env=child_env(tmp_path),
         )
     finally:
         G.set_process_interactive(False)
