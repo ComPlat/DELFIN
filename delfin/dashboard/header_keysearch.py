@@ -39,18 +39,43 @@ def build_key_search(max_suggestions: int = 8) -> W.DOMWidget:
         placeholder="🔍 search keys…",
         layout=W.Layout(width="180px"),
     )
+    # Dropdown and card are fixed overlays via CSS CLASS, not Layout: this
+    # ipywidgets (8.1.8) silently drops Layout(position=...) -- there is no
+    # position trait -- which is why earlier Layout-based fixes never took
+    # effect and the page kept stretching.  The CSS block below sets
+    # position:fixed on the classes; here only visibility is controlled.
+    _overlay_css = W.HTML(
+        "<style>"
+        ".delfin-keysearch-dropdown { position: fixed; top: 40px; left: 260px;"
+        " width: 460px; max-height: 300px; overflow-y: auto; z-index: 10000;"
+        " background: var(--jp-layout-color1, #fff);"
+        " border: 1px solid #ccc; border-radius: 4px; padding: 2px;"
+        " box-shadow: 0 2px 8px rgba(0,0,0,.15); }"
+        ".delfin-keysearch-card { position: fixed; top: 40px; left: 260px;"
+        " width: 500px; z-index: 10001;"
+        " background: var(--jp-layout-color1, #fff);"
+        " border: 1px solid #bbb; border-radius: 6px; padding: 10px 12px;"
+        " box-shadow: 0 4px 16px rgba(0,0,0,.2); }"
+        "</style>"
+    )
     dropdown = W.VBox(layout=W.Layout(
-        display="none", position="absolute", z_index="1000",
-        max_height="300px", overflow_y="auto", background="white",
-        border="1px solid #ccc", border_radius="4px", padding="2px",
-        box_shadow="0 2px 8px rgba(0,0,0,.15)",
+        display="none", max_height="300px", overflow_y="auto", width="460px",
     ))
     card = W.HTML("", layout=W.Layout(display="none"))
     wrapper = W.VBox(
-        [W.HBox([search, dropdown]), card],
-        layout=W.Layout(position="relative"),
+        [_overlay_css, search, dropdown, card],
+        layout=W.Layout(width="180px"),
     )
     wrapper.add_class("delfin-keysearch")
+    dropdown.add_class("delfin-keysearch-dropdown")
+    card.add_class("delfin-keysearch-card")
+
+    close_btn = W.Button(
+        description="\u2715", button_style="",
+        tooltip="Hide this explanation",
+        layout=W.Layout(width="26px", height="22px", padding="0",
+                        margin="0 0 4px 0"),
+    )
 
     def _close(_b=None) -> None:
         dropdown.layout.display = "none"
@@ -60,7 +85,7 @@ def build_key_search(max_suggestions: int = 8) -> W.DOMWidget:
         entry = entries[names.index(name)]
         allowed = entry["allowed"] or "— (free-form; see the help text)"
         req = entry["required"]
-        card.value = (
+        card.children = (close_btn, W.HTML(
             "<div class='delfin-keycard'>"
             f"<div><code style='font-weight:700'>{name}</code>"
             f"{' — ' + req if req else ''}"
@@ -72,10 +97,15 @@ def build_key_search(max_suggestions: int = 8) -> W.DOMWidget:
             "In CONTROL.txt write <code>KEY=?</code> for this text; "
             "full reference in the <b>Help</b> tab.</div>"
             "</div>"
-        )
+        ))
         card.layout.display = ""
         _close()
         search.value = ""
+
+    def _close_card(_b=None) -> None:
+        card.layout.display = "none"
+
+    close_btn.on_click(_close_card)
 
     def _refresh() -> None:
         q = (search.value or "").strip().lower()
