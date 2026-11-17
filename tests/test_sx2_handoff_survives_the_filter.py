@@ -44,24 +44,19 @@ def _type_check(p, entry):
 
 
 def test_sendto_notified_only_with_a_destination_pointer():
-    """sendto with dest_addr != NULL is notified; with a NULL pointer it
-    falls through to allow (connected peer, already judged)."""
+    """sendto with dest_addr (args[4]) != NULL is notified; with a NULL
+    pointer it is allowed (connected peer, already judged). Walked on the
+    REAL program with the kernel's seccomp_data layout (args at 16+8*i):
+    the destination was loaded from args[3] (flags) and every sendto
+    passed -- live run 2026-11-17."""
+    from test_sx2_continue_reply_layout import run_filter
     p = SG._program(block_inet_datagrams=True)
     nr_sendto = _x86_sendto()
-    send_idx = next(i for i, x in enumerate(p)
-                    if x[0] == SG._JEQ and x[3] == nr_sendto)
-    ins = p[send_idx]
-    # true edge (dest != NULL): LD args[1] then JEQ 0: NULL -> allow
-    # (peer judged), non-NULL -> notify; false edge (not sendto): the
-    # socket() checks
-    jt = send_idx + 1 + ins[1]
-    assert p[jt] == (SG._LD, 0, 0, 40), p[jt]    # load the dest pointer
-    jeq = p[jt + 1]
-    assert jeq[0] == SG._JEQ and jeq[3] == 0, jeq
-    to_null = jt + 2 + jeq[1]                    # JEQ==0 true edge
-    to_dest = jt + 2 + jeq[2]                    # JEQ!=0 false edge
-    assert p[to_null] == (SG._RET, 0, 0, SG._RET_ALLOW), p[to_null]
-    assert p[to_dest] == (SG._RET, 0, 0, SG._RET_USER_NOTIF), p[to_dest]
+    payload = (5, 0x7F0000001000, 1, 0)                 # fd, buf, len, flags
+    assert run_filter(p, nr_sendto, payload + (0, 0)) == SG._RET_ALLOW
+    assert run_filter(p, nr_sendto, payload + (0x7FFD00001230, 16)) == SG._RET_USER_NOTIF
+    # only the high half set is still a destination
+    assert run_filter(p, nr_sendto, payload + (0x100000000, 16)) == SG._RET_USER_NOTIF
 
 
 def test_sendmsg_sendmmsg_refused_in_kernel():

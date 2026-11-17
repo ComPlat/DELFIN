@@ -65,3 +65,48 @@ def test_the_socket_number_reaches_the_datagram_judge(monkeypatch):
     nr_socket = sg._arch()[3]
     sup._handle(5, 1, (2, 2, 0, 0, 0, 0), nr_socket)
     assert seen == ["socket"], seen
+
+
+def run_filter(program, nr, args, arch=None):
+    """Evaluate a classic-BPF seccomp program on a seccomp_data built with
+    the kernel's layout: nr @0, arch @4, instruction_pointer @8, args[i]
+    @16+8*i (64-bit, little endian). Only the opcodes the guard uses."""
+    arch = sg._arch()[0] if arch is None else arch
+    a6 = list(args) + [0] * (6 - len(args))
+    data = struct.pack("<iIQ6Q", nr, arch, 0x401000, *a6)
+    acc, pc = 0, 0
+    for _ in range(len(program) + 2):
+        code, jt, jf, k = program[pc]
+        if code == sg._RET:
+            return k
+        if code == sg._LD:
+            (acc,) = struct.unpack_from("<I", data, k)
+            pc += 1
+        elif code == sg._AND:
+            acc &= k
+            pc += 1
+        elif code == sg._JEQ:
+            pc += 1 + (jt if acc == k else jf)
+        elif code == sg._JSET:
+            pc += 1 + (jt if acc & k else jf)
+        else:
+            raise AssertionError(f"opcode {code:#x} not modelled")
+    raise AssertionError("program did not return")
+
+
+def test_a_walk_of_the_real_program_with_the_kernel_layout():
+    """socket(AF_INET, SOCK_DGRAM) -> notify; SOCK_STREAM -> allow;
+    unix datagram -> EACCES; sendmsg/sendmmsg -> EACCES; connect -> notify."""
+    import errno
+    import socket as so
+    p = sg._program(block_inet_datagrams=True)
+    a = sg._arch()
+    d = sg._arch_dgram()
+    eacces = sg._RET_ERRNO | errno.EACCES
+    assert run_filter(p, a[3], (so.AF_INET, so.SOCK_DGRAM, 0)) == sg._RET_USER_NOTIF
+    assert run_filter(p, a[3], (so.AF_INET6, so.SOCK_DGRAM, 0)) == sg._RET_USER_NOTIF
+    assert run_filter(p, a[3], (so.AF_INET, so.SOCK_STREAM, 0)) == sg._RET_ALLOW
+    assert run_filter(p, a[3], (so.AF_UNIX, so.SOCK_DGRAM, 0)) == eacces
+    assert run_filter(p, a[2], (3, 0x1000, 16)) == sg._RET_USER_NOTIF
+    assert run_filter(p, d[2], (3, 0x1000, 0)) == eacces
+    assert run_filter(p, d[3], (3, 0x1000, 1, 0)) == eacces

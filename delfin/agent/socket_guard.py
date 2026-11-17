@@ -418,8 +418,15 @@ def _program(block_inet_datagrams: bool = False):
         # msghdr, invisible to BPF: they are refused in-kernel (the
         # measured OpenMPI path needs socket+ioctl and TCP connect
         # only; adding them back needs the pidfd_getfd handoff first).
+        # seccomp_data: nr @0, arch @4, instruction_pointer @8, args @16
+        # (args[i] @ 16 + 8*i): sendto's dest_addr is args[4] @48, a 64-bit
+        # pointer -- NULL only when both halves are 0. It was loaded from
+        # @40 (args[3], the flags, almost always 0), so every sendto was
+        # allowed: UDP left to any host (live run 2026-11-17).
         items += [(_JEQ, nr_sendto, None, "after_sends"),
-                  (_LD, 40),                          # args[1]: dest ptr
+                  (_LD, 48),                          # args[4] low half
+                  (_JEQ, 0, None, "notify"),
+                  (_LD, 52),                          # args[4] high half
                   (_JEQ, 0, "allow", "notify")]       # NULL -> peer judged, allow;
         # dest non-NULL -> notified and judged by _datagram_send.
         items += [("label", "after_sends"),
@@ -645,7 +652,9 @@ class Supervisor:
         inside the msghdr, invisible to BPF). Everything else is refused
         with EACCES, fail closed."""
         try:
-            addr_ptr, addr_len = int(args[1]), int(args[2]) & 0xFFFFFFFF
+            # sendto(fd, buf, len, flags, dest_addr, addrlen): the destination
+            # is args[4], its length args[5] (args[1]/[2] are the payload).
+            addr_ptr, addr_len = int(args[4]), int(args[5]) & 0xFFFFFFFF
             if addr_len < 2:
                 # no destination reached the judge: the filter only
                 # notifies sendto with a non-NULL pointer
