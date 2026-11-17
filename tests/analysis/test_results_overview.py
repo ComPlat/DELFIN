@@ -423,13 +423,13 @@ def _latex_panel(table):
 
 def test_latex_bytes_structure(tmp_path):
     calc = make_calc(tmp_path, "407", data=sample_data(), rss=(
-        "4.0 -1.0\n3.5 -0.5\n2.0 -1.2\n"))
+        "4.0 -1.0\n3.5 -0.5\n2.0 -1.2\n"), pngs=("scan_relative.png",))
     table = ro.build_table([str(calc)], ["rss_delta_kj"])
     panel = _latex_panel(table)
     tex = panel._latex_bytes().decode("utf-8")
     assert tex.startswith("\\documentclass")
-    assert tex.count("\\newpage") == 1  # one page break between 2 calcs? no:
-    # one calc only -> the single trailing newpage before end
+    # One calc -> exactly the single trailing newpage before \end{document}.
+    assert tex.count("\\newpage") == 1
     assert tex.rstrip().endswith("\\end{document}")
     assert "Quantity" in tex and "Value" in tex
     assert panel._latex_images  # the RSS png was collected
