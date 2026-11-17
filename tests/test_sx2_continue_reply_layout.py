@@ -43,3 +43,25 @@ def test_a_refusal_carries_its_errno_and_no_flag(monkeypatch):
     import errno
     nid, val, err, flags = _reply(monkeypatch, lambda s: s._send(8, -1, -errno.EACCES))
     assert (nid, val, err, flags) == (8, -1, -errno.EACCES, 0)
+
+
+def test_a_notification_is_read_at_the_kernels_offsets():
+    """struct seccomp_notif: id @0, pid @8, flags @12, seccomp_data @16
+    (nr @16, arch @20, instruction pointer @24, args @32). Read at 24, the
+    number was the instruction pointer and socket() was never recognised."""
+    raw = struct.pack("<QIIiIQ6Q", 77, 4321, 0, 41, 0xC000003E, 0x7F00DEADBEEF,
+                      2, 2, 0, 0, 0, 0) + b"\0" * 8
+    nid, pid, nr, args = sg.parse_notification(raw)
+    assert (nid, pid, nr) == (77, 4321, 41)
+    assert args[:3] == (2, 2, 0)
+
+
+def test_the_socket_number_reaches_the_datagram_judge(monkeypatch):
+    """The arch's own socket number dispatches to _datagram_socket."""
+    seen = []
+    sup = sg.Supervisor.__new__(sg.Supervisor)
+    monkeypatch.setattr(sup, "_datagram_socket", lambda *a: seen.append("socket"), raising=False)
+    monkeypatch.setattr(sup, "_send", lambda *a: seen.append(("send",) + a), raising=False)
+    nr_socket = sg._arch()[3]
+    sup._handle(5, 1, (2, 2, 0, 0, 0, 0), nr_socket)
+    assert seen == ["socket"], seen

@@ -499,6 +499,21 @@ def install_filter(block_inet_datagrams: bool = False) -> int:
     return _install(_program(block_inet_datagrams), _SECCOMP_FILTER_FLAG_NEW_LISTENER)
 
 
+def parse_notification(raw: bytes) -> tuple[int, int, int, tuple]:
+    """(id, pid, syscall number, args) of a struct seccomp_notif.
+
+    Layout: u64 id @0, u32 pid @8, u32 flags @12, then struct seccomp_data
+    @16 -- s32 nr @16, u32 arch @20, u64 instruction_pointer @24, u64
+    args[6] @32. The number was read at offset 24 (the instruction
+    pointer's low half), so no socket() or sendto() was ever recognised
+    and each fell into the connect() path, which answered EINVAL (live run
+    2026-11-17: OpenMPI's opal_ifinit in the agent's cage)."""
+    notif_id, pid, _flags = struct.unpack_from("<QII", raw, 0)
+    (nr,) = struct.unpack_from("<i", raw, 16)
+    args = struct.unpack_from("<6Q", raw, 32)
+    return int(notif_id), int(pid), int(nr), tuple(int(a) for a in args)
+
+
 class Supervisor:
     """Answers the command's connect() calls until the command ends."""
 
@@ -767,11 +782,7 @@ class Supervisor:
                 buf = ctypes.create_string_buffer(80)
                 if _libc.ioctl(self.listener, ctypes.c_ulong(_NOTIF_RECV), buf) != 0:
                     continue
-                notif_id, pid, _flags = struct.unpack_from("<QII", buf.raw)
-                args = struct.unpack_from("<6Q", buf.raw, 32)
-                # The notified system call number sits at offset 24
-                # (seccomp_data: nr, arch, instruction_pointer, args).
-                (nr,) = struct.unpack_from("<I", buf.raw, 24)
+                notif_id, pid, nr, args = parse_notification(buf.raw)
                 threading.Thread(target=self._handle,
-                                 args=(notif_id, pid, args, int(nr)),
+                                 args=(notif_id, pid, args, nr),
                                  daemon=True).start()
