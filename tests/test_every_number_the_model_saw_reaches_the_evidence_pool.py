@@ -85,6 +85,15 @@ def _openai_client(ws: Path, monkeypatch):
     client = A.create_client(backend="api", provider="kit",
                              model="kit.deepseek-v4-flash", cwd=str(ws),
                              api_key="dummy")
+
+    # The action classifier asks through client.with_options(...), a copy
+    # the scripted create below does not reach; unanswered it went to the
+    # real KIT endpoint with the dummy key and failed there. It fails here,
+    # before set_permissions binds the runner.
+    def _no_classifier(*_a, **_k):
+        raise ConnectionError("no classifier in this test")
+
+    monkeypatch.setattr(client, "_classifier_complete", _no_classifier)
     client.set_permissions(A.KitToolPermissions(
         workspace=ws, mode="bypassPermissions", agent_role="solo_agent"))
     script = ws / "emit.py"

@@ -1,0 +1,2129 @@
+[
+ {
+  "id": "mp2",
+  "keyword": "MP2",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "Canonical second-order Moller-Plesset perturbation theory; the cheapest non-empirical wavefunction correlation method, available for RHF, UHF and high-spin ROHF references.",
+  "requires": "an SCF reference (RHF/UHF/ROHF); frozen core applies by default",
+  "excludes": null,
+  "pairs_with": "an auxiliary basis (/C or /J) when the RI variants are used",
+  "defaults": null,
+  "typical_use": "single-point energies and gradients for closed-shell and open-shell organic systems; properties via %mp2 density settings",
+  "literature": [
+   "Grimme, S., J. Chem. Phys., 2003, 118, 9095-9102 (SCS-MP2)"
+  ],
+  "manual": {
+   "page": "contents/modelchemistries/MP2",
+   "section": "3.9.3 Calculating MP2 and RI-MP2 Energies"
+  },
+  "parser": "accepted",
+  "opi": "Wft.MP2",
+  "status": "grounded"
+ },
+ {
+  "id": "rimp2",
+  "keyword": "RI-MP2",
+  "aliases": [
+   "RIMP2",
+   "MP2RI"
+  ],
+  "category": "wft",
+  "purpose": "RI-approximated MP2: the two-electron integrals are fit in an auxiliary basis in the Coulomb metric, which makes the O(N^5) exchange-operator step a well-parallelised matrix multiplication.",
+  "requires": "an auxiliary basis (e.g. def2/J or cc-pVTZ/C)",
+  "excludes": null,
+  "pairs_with": "the auxiliary basis given in the simple line (e.g. def2-TZVPP/C)",
+  "defaults": null,
+  "typical_use": "the default way to run MP2 in ORCA; faster than canonical MP2 for all but very small molecules",
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/MP2",
+   "section": "3.9.2 RI-MP2"
+  },
+  "parser": "unavailable",
+  "opi": "Wft.RIMP2",
+  "status": "grounded"
+ },
+ {
+  "id": "scs-mp2",
+  "keyword": "SCS-MP2",
+  "aliases": [
+   "RI-SCS-MP2",
+   "SCS-RI-MP2",
+   "SCS-RIMP2",
+   "DLPNO-SCS-MP2",
+   "SCS-DLPNO-MP2",
+   "SOS-MP2",
+   "RI-SOS-MP2",
+   "SOS-RI-MP2",
+   "SOS-RIMP2",
+   "DLPNO-SOS-MP2",
+   "SOS-DLPNO-MP2"
+  ],
+  "category": "wft",
+  "purpose": "Grimme's spin-component-scaled MP2: same-spin and opposite-spin contributions get separate empirical scaling factors, improving non-covalent interaction energies over plain MP2.",
+  "requires": "same as MP2/RI-MP2/DLPNO-MP2 depending on the chosen variant",
+  "excludes": null,
+  "pairs_with": "PS/PT scaling factors can be set in the %mp2 block",
+  "defaults": "PS = 6/5 for SCS-MP2 (opposite-spin; SOS uses its own factors); settable via PS/PT in %mp2",
+  "typical_use": "non-covalent interactions, reaction energies where MP2 overestimates dispersion",
+  "literature": [
+   "Grimme, S., J. Chem. Phys., 2003, 118, 9095-9102"
+  ],
+  "manual": {
+   "page": "contents/modelchemistries/MP2",
+   "section": "3.9.3 Calculating MP2 and RI-MP2 Energies (SCS discussion)"
+  },
+  "parser": "accepted",
+  "opi": "Wft.SCS_MP2",
+  "status": "grounded"
+ },
+ {
+  "id": "dlpno-mp2",
+  "keyword": "DLPNO-MP2",
+  "aliases": [
+   "F12-DLPNO-MP2",
+   "DLPNO-MP2-F12",
+   "F12/D-DLPNO-MP2",
+   "DLPNO-MP2-F12/D",
+   "F12D-DLPNO-MP2",
+   "DLPNO-MP2-F12D"
+  ],
+  "category": "wft",
+  "purpose": "Domain-based local pair-natural-orbital MP2: localises the orbitals and truncates PNO spaces, reproducing RI-MP2 to chemical accuracy at near-linear scaling; beneficial from ~a few hundred atoms on.",
+  "requires": "an auxiliary basis; localized orbitals (default Localize)",
+  "excludes": null,
+  "pairs_with": "LoosePNO/NormalPNO/TightPNO accuracy presets; %mp2 TCutPNO/TCutMKN thresholds",
+  "defaults": "thresholds reproduce about 99.9% of the RI-MP2 correlation energy; UHF variant uses different PNO spaces than RHF",
+  "typical_use": "large molecules (several hundred atoms), energies of weakly interacting systems",
+  "literature": [
+   "Pinski, P.; Riplinger, C.; Valeev, E. F.; Neese, F., J. Chem. Phys., 2015, 143, 034108"
+  ],
+  "manual": {
+   "page": "contents/modelchemistries/MP2",
+   "section": "3.9.10 Local MP2 calculations (DLPNO-MP2)"
+  },
+  "parser": "accepted",
+  "opi": "Wft.DLPNO_MP2",
+  "status": "grounded"
+ },
+ {
+  "id": "oo-ri-mp2",
+  "keyword": "OO-RI-MP2",
+  "aliases": [
+   "OO-RIMP2",
+   "OO-MP2RI",
+   "OO-RI-SCS-MP2",
+   "OO-SCS-RI-MP2",
+   "OO-SCS-RIMP2",
+   "OO-RI-SOS-MP2",
+   "OO-SOS-RI-MP2",
+   "OO-SOS-RIMP2"
+  ],
+  "category": "wft",
+  "purpose": "Orbital-optimized RI-MP2: the molecular orbitals are re-optimised in the presence of the MP2 correction, which eases systems where the HF reference is poor (e.g. bond stretching, biradicals).",
+  "requires": "an auxiliary basis; an SCF reference",
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/MP2",
+   "section": "3.9.17 Orbital Optimized MP2 Methods"
+  },
+  "parser": "accepted",
+  "opi": "Wft.OO_RI_MP2",
+  "status": "grounded"
+ },
+ {
+  "id": "mp2-reg",
+  "keyword": "DoRegMP2",
+  "aliases": [
+   "RegMP2Type",
+   "RegMP2Kappa",
+   "RegMP2Sigma"
+  ],
+  "category": "wft",
+  "purpose": "Regularized MP2 (%mp2 DoRegMP2): damps the first-order amplitudes with an energy-gap dependent regularizer to fix MP2's overbinding for pi-driven dispersion and transition-metal dative bonds; single-point energies only.",
+  "requires": "MP2 or RI-MP2 (RIJDX, RIJCOSX, RIJK)",
+  "excludes": "gradients, densities and Hessians (not yet supported)",
+  "pairs_with": null,
+  "defaults": "RegMP2Type 0 (kappa), RegMP2Kappa 1.1, RegMP2Sigma 0.5; type 1 = sigma, 2 = sigma^2",
+  "typical_use": "noncovalent interactions and transition-metal thermochemistry at MP2 cost",
+  "literature": [
+   "Shee, J.; Loipersberger, M.; Rettig, A.; Lee, J.; Head-Gordon, M., J. Phys. Chem. Lett., 2021, 12, 12084-12097"
+  ],
+  "manual": {
+   "page": "contents/modelchemistries/MP2",
+   "section": "3.9.18 Regularized MP2 and RI-MP2"
+  },
+  "parser": "accepted",
+  "opi": "BlockMp2.DoRegMP2",
+  "status": "grounded"
+ },
+ {
+  "id": "mp2.scs-factors",
+  "keyword": "PS",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%mp2 PS/PT: the opposite-spin (PS) and same-spin (PT) scaling factors of spin-component-scaled MP2.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "PS = 6/5 by default for SCS-MP2; PT default for SCS per Grimme's study",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/MP2",
+   "section": "3.9.3 (SCS scaling factors PS/PT)"
+  },
+  "parser": "accepted",
+  "opi": "BlockMp2.PS",
+  "status": "grounded"
+ },
+ {
+  "id": "mp2.natorb",
+  "keyword": "NatOrb",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%mp2 NatOrb: generate MP2 natural orbitals; the manual recommends inspecting them to judge the single-reference character or to feed more compact wavefunctions to subsequent methods.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "false",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/MP2",
+   "section": "3.9.8 MP2 Properties, Densities and Natural Orbitals"
+  },
+  "parser": "accepted",
+  "opi": "BlockMp2.NatOrb",
+  "status": "grounded"
+ },
+ {
+  "id": "mp2.f12",
+  "keyword": "F12",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%mp2 F12: switch on the explicitly-correlated (F12) correction for MP2, accelerating convergence to the basis-set limit.",
+  "requires": "an auxiliary basis and a CABS basis (F12 modules)",
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "false (the F12 simple keywords set it)",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/MP2",
+   "section": "3.9.15 Explicitly correlated MP2 calculations"
+  },
+  "parser": "accepted",
+  "opi": "BlockMp2.F12",
+  "status": "grounded"
+ },
+ {
+  "id": "mp2.mp2solver",
+  "keyword": "MP2Solver",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%mp2 MP2Solver: chooses the integral-partitioning family for MP2 (e.g. RIJDX conventional RI storage vs RIJCOSX vs RIJK chain-of-spheres).",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "appropriate default for the chosen keyword",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/MP2",
+   "section": "3.9.3 / 3.9.6 (RI- and RIJCOSX-MP2 algorithms)"
+  },
+  "parser": "accepted",
+  "opi": "BlockMp2.MP2Solver",
+  "status": "grounded"
+ },
+ {
+  "id": "mp2.ewin",
+  "keyword": "EWin",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%mp2 EWin: orbital energy window deciding which MOs enter the correlation treatment; a tool for excluding close-lying core/valence levels in edge cases.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "respects %method settings; frozen core on by default",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/MP2",
+   "section": "3.9.4 Frozen Core Options / 3.9.3"
+  },
+  "parser": "accepted",
+  "opi": "BlockMp2.EWin",
+  "status": "grounded"
+ },
+ {
+  "id": "ccsd",
+  "keyword": "CCSD",
+  "aliases": [
+   "AO-CCSD",
+   "AOX-CCSD",
+   "MO-CCSD",
+   "RI-CCSD",
+   "RI34-CCSD"
+  ],
+  "category": "wft",
+  "purpose": "Coupled cluster with singles and doubles; the reference single-reference wavefunction method, size-extensive and usually preferred over QCISD when the HF reference is poor but static correlation is not dominant.",
+  "requires": "RHF or UHF reference; auxiliary basis for the RI variants",
+  "excludes": "CASSCF reference (use AUTOCI/MDCI MR methods instead)",
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": "single-point energies for molecules where DFT fails; S-diagnostic printed to judge reference quality",
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.2 Basic Usage / Table 3.43"
+  },
+  "parser": "accepted",
+  "opi": "Wft.CCSD",
+  "status": "grounded"
+ },
+ {
+  "id": "ccsd-t",
+  "keyword": "CCSD(T)",
+  "aliases": [
+   "AO-CCSD(T)",
+   "AOX-CCSD(T)",
+   "MO-CCSD(T)",
+   "RI-CCSD(T)",
+   "RI34-CCSD(T)"
+  ],
+  "category": "wft",
+  "purpose": "CCSD plus the perturbative triples correction; the 'gold standard' for single-reference energetics, achieving high accuracy largely through error cancellation between (T) and missing connected quadruples.",
+  "requires": "CCSD-capable module; Triples 1 or 2 in %mdci selects the algorithm",
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "triples off unless the (T) keyword is used; algorithm 1 (memory-hungry, fast) vs 2 (less memory, ~2x slower)",
+  "typical_use": "high-accuracy single-point energies for closed-shell and single-reference open-shell molecules",
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.1 Theory / Table 3.43"
+  },
+  "parser": "accepted",
+  "opi": "Wft.CCSD_T",
+  "status": "grounded"
+ },
+ {
+  "id": "ccsd-f12",
+  "keyword": "CCSD-F12",
+  "aliases": [
+   "CCSD(T)-F12",
+   "CCSD-F12/RI",
+   "CCSD-F12D/RI",
+   "CCSD(T)-F12/RI",
+   "CCSD(T)-F12D/RI"
+  ],
+  "category": "wft",
+  "purpose": "CCSD with the explicitly correlated F12 correction for a much faster approach to the complete-basis-set limit; RI-F12 and the cheaper F12D variants exist for large systems.",
+  "requires": "auxiliary and CABS auxiliary bases (e.g. cc-pVTZ/C, cc-pVTZ/CABS)",
+  "excludes": null,
+  "pairs_with": "an RI/F12 aux basis set; %mdci DoF12 sub-settings",
+  "defaults": null,
+  "typical_use": "near-CBS-quality CCSD(T) energies at triple-zeta cost",
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.7 Explicitly Correlated Methods: F12-MP2 and F12-CCSD(T)"
+  },
+  "parser": "accepted",
+  "opi": "Wft.CCSD_F12",
+  "status": "grounded"
+ },
+ {
+  "id": "qcisd",
+  "keyword": "QCISD",
+  "aliases": [
+   "QCISD(T)",
+   "QCISD-F12",
+   "QCISD(T)-F12",
+   "QCISD-F12/RI",
+   "QCISD(T)-F12/RI"
+  ],
+  "category": "wft",
+  "purpose": "Quadratic configuration interaction with singles and doubles; a QC-variant of CISD that is size-extensive, but its linear T1T2 treatment does not fully relax orbitals, so CCSD is preferred for metals.",
+  "requires": "RHF or UHF reference",
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.14 Keywords (Table 3.43)"
+  },
+  "parser": "accepted",
+  "opi": "BlockMdci.CIType",
+  "status": "grounded",
+  "note": "QCISD is not an OPI simple-keyword enum; it is set via the MDCI CIType option (block option)."
+ },
+ {
+  "id": "cepa-1",
+  "keyword": "CEPA/1",
+  "aliases": [
+   "CEPA/2",
+   "CEPA/3",
+   "NCEPA/1",
+   "NCEPA/2",
+   "NCEPA/3",
+   "ACPF",
+   "ACPF_2",
+   "NACPF",
+   "AQCC",
+   "SEOI",
+   "NCPF/1",
+   "NCPF/2",
+   "NCPF/3",
+   "RI-CEPA/1-F12"
+  ],
+  "category": "wft",
+  "purpose": "Coupled-electron pair approximation, variants 1-3; size-selective coupled-pair functionals that add a size-consistency correction to CISD; ORCA also ships modified N-variants.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.14 Keywords (Table 3.43)"
+  },
+  "parser": "accepted",
+  "opi": "BlockMdci.CIType",
+  "status": "grounded",
+  "note": "CEPA/n spellings are not OPI simple-keyword enums; they are set via the MDCI CIType option (block option)."
+ },
+ {
+  "id": "mp3",
+  "keyword": "MP3",
+  "aliases": [
+   "SCS-MP3"
+  ],
+  "category": "wft",
+  "purpose": "Third-order Moller-Plesset energy via the MDCI module, with Grimme's spin-component-scaled SCS-MP3 refinement.",
+  "requires": "an SCF reference; MDCI integral handling",
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.14 Keywords (Table 3.43)"
+  },
+  "parser": "accepted",
+  "opi": "Wft.MP3",
+  "status": "grounded"
+ },
+ {
+  "id": "cisd",
+  "keyword": "CISD",
+  "aliases": [
+   "CISD(T)"
+  ],
+  "category": "wft",
+  "purpose": "Configuration interaction with singles and doubles (truncated CI, not size-extensive); also the CIType inside %mdci and the only method AUTOCI supports for a ROHF reference.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.14 Keywords (%mdci CIType options)"
+  },
+  "parser": "accepted",
+  "opi": "Wft.CISD",
+  "status": "grounded"
+ },
+ {
+  "id": "cc2",
+  "keyword": "CC2",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "Approximate coupled-cluster model offered through AUTOCI (and as a %autoci CIType) plus an MDCI/STEOM response route; mainly used for excited states rather than ground-state energetics.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/autoci",
+   "section": "3.11.2 Basis Usage / List of Features"
+  },
+  "parser": "accepted",
+  "opi": "Wft.CC2",
+  "status": "grounded"
+ },
+ {
+  "id": "eom-ccsd",
+  "keyword": "EOM-CCSD",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "Equation-of-motion CCSD for excited, ionized (IP-EOM) and electron-attached (EA-EOM) states on top of a CCSD ground state.",
+  "requires": "a preceding CCSD treatment of the reference state",
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.13 Excited States (EOM/STEOM/ADC)"
+  },
+  "parser": "accepted",
+  "opi": "Wft.EOM_CCSD",
+  "status": "grounded"
+ },
+ {
+  "id": "steom-ccsd",
+  "keyword": "STEOM-CCSD",
+  "aliases": [
+   "DLPNO-STEOM-CCSD"
+  ],
+  "category": "wft",
+  "purpose": "Similarity-transformed EOM-CCSD: an efficient second-order simplification of EOM-CCSD for many excited states, also available with DLPNO localisation (DLPNO-STEOM-CCSD) for large molecules.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/spectroscopyproperties/excitedstates",
+   "section": "5.4.5 Excited States with STEOM-CCSD"
+  },
+  "parser": "accepted",
+  "opi": "Wft.STEOM_CCSD",
+  "status": "grounded"
+ },
+ {
+  "id": "mdci.citype",
+  "keyword": "CIType",
+  "aliases": [
+   "CEPA_1",
+   "NCPF_1",
+   "ACPF",
+   "AQCC",
+   "SEOI"
+  ],
+  "category": "wft",
+  "purpose": "%mdci CIType: selects the correlation treatment of the MDCI module (CISD, QCISD, CCSD, the CEPA/CPF/ACPF/AQCC coupled-pair variants and SEOI), so one block serves many related methods.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "set by the simple-input method keyword",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.14 Keywords (%mdci block)"
+  },
+  "parser": "accepted",
+  "opi": "BlockMdci.CIType",
+  "status": "grounded"
+ },
+ {
+  "id": "mdci.tcutpno",
+  "keyword": "TCutPNO",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%mdci TCutPNO: cutoff on PNO occupation numbers, the main DLPNO truncation parameter; do not change it directly, use the PNO presets.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": "LoosePNO/NormalPNO/TightPNO presets",
+  "defaults": "3.33e-7 (NormalPNO)",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.10.1 Basic Usage"
+  },
+  "parser": "accepted",
+  "opi": "BlockMdci.TCutPNO",
+  "status": "grounded"
+ },
+ {
+  "id": "mdci.tcutpairs",
+  "keyword": "TCutPairs",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%mdci TCutPairs: cutoff for estimated pair correlation energies, exploiting locality in the internal space of DLPNO methods.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "1e-4 (NormalPNO)",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.10.1 Basic Usage"
+  },
+  "parser": "accepted",
+  "opi": "BlockMdci.TCutPairs",
+  "status": "grounded"
+ },
+ {
+  "id": "mdci.tcutmkn",
+  "keyword": "TCutMKN",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%mdci TCutMKN: cutoff for Mulliken populations controlling the domain size of the local fit (and domain construction for DLPNO2013).",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "1e-3 (NormalPNO)",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.10.1 Basic Usage"
+  },
+  "parser": "accepted",
+  "opi": "BlockMdci.TCutMKN",
+  "status": "grounded"
+ },
+ {
+  "id": "mdci.tcutdo",
+  "keyword": "TCutDO",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%mdci TCutDO: cutoff for the DLPNO domain construction (differential overlap of pairs).",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "1e-2 (NormalPNO)",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.10.1 Basic Usage"
+  },
+  "parser": "accepted",
+  "opi": "BlockMdci.TCutDO",
+  "status": "grounded"
+ },
+ {
+  "id": "mdci.triples",
+  "keyword": "Triples",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%mdci Triples: selects the perturbative-triples algorithm for CCSD(T)-type runs: 0 off, 1 (fast, memory-hungry), 2 (less memory, about twice as slow, UHF unavailable).",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "0 (no triples) unless a (T) keyword is used",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.14 Keywords (%mdci block)"
+  },
+  "parser": "accepted",
+  "opi": "BlockMdci.Triples",
+  "status": "grounded"
+ },
+ {
+  "id": "mdci.ewin",
+  "keyword": "EWin",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%mdci EWin: orbital energy window choosing the MOs included in the MDCI correlation treatment (respects %method settings).",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "-3,1e3",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.14 Keywords (%mdci block)"
+  },
+  "parser": "accepted",
+  "opi": "BlockMdci.EWin",
+  "status": "grounded"
+ },
+ {
+  "id": "mdci.maxiter",
+  "keyword": "MaxIter",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%mdci MaxIter: maximum number of coupled-cluster amplitude iterations.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "35",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.14 Keywords (%mdci block)"
+  },
+  "parser": "accepted",
+  "opi": "BlockMdci.MaxIter",
+  "status": "grounded"
+ },
+ {
+  "id": "mdci.stol",
+  "keyword": "STol",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%mdci STol: convergence threshold (max residual-vector element) for the coupled-cluster iterations.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "1e-5",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.14 Keywords (%mdci block)"
+  },
+  "parser": "accepted",
+  "opi": "BlockMdci.STol",
+  "status": "grounded"
+ },
+ {
+  "id": "mdci.denmat",
+  "keyword": "Denmat",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%mdci Denmat: requests the one-particle density of the CI/CC wavefunction (none, linearized, unrelaxed or relaxed), needed for properties.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "none",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.14 Keywords (%mdci block)"
+  },
+  "parser": "accepted",
+  "opi": "BlockMdci.Denmat",
+  "status": "grounded"
+ },
+ {
+  "id": "mdci.brueckner",
+  "keyword": "Brueckner",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%mdci Brueckner: optimise Brueckner orbitals, i.e. orbitals for which the T1 amplitudes vanish; diagnostic for a poor HF reference.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "false",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.14 Keywords (%mdci block)"
+  },
+  "parser": "accepted",
+  "opi": "BlockMdci.Brueckner",
+  "status": "grounded"
+ },
+ {
+  "id": "mdci.maxcore",
+  "keyword": "MaxCore",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%mdci MaxCore: memory (MB) for integral transformations, batching and storage; the manual warns not to be too generous with it.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "350",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.14 Keywords (%mdci block)"
+  },
+  "parser": "accepted",
+  "opi": "BlockMdci.MaxCore",
+  "status": "grounded"
+ },
+ {
+  "id": "mdci.incore",
+  "keyword": "InCore",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%mdci InCore: how much of the intermediates/integrals is held in central memory (0..5); AUTO decides based on MaxCore.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "AUTO (1 = sigma vector and amplitudes)",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.14 Keywords (%mdci block)"
+  },
+  "parser": "accepted",
+  "opi": "BlockMdci.InCore",
+  "status": "grounded"
+ },
+ {
+  "id": "mdci.locmet",
+  "keyword": "LocMet",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%mdci LocMet: the orbital-localisation method used by local correlation (PM, FB, IAOIBO, IAOBOYS, NEWBOYS, AHFB).",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "AHFB",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.10.2 Keywords"
+  },
+  "parser": "accepted",
+  "opi": "BlockMdci.LocMet",
+  "status": "grounded"
+ },
+ {
+  "id": "mdci.localize",
+  "keyword": "Localize",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%mdci Localize: flag to use localized orbitals in the local-correlation (DLPNO) treatment.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "true for DLPNO methods",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.10.2 Keywords"
+  },
+  "parser": "accepted",
+  "opi": "BlockMdci.Localize",
+  "status": "grounded"
+ },
+ {
+  "id": "loosepno",
+  "keyword": "LoosePNO",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "Simple keyword selecting loose DLPNO truncation thresholds: quick estimates where a few tenths of a kcal/mol do not matter.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": "DLPNO-MP2/DLPNO-CCSD(D(T)) keywords",
+  "defaults": "NormalPNO is the default preset",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/MP2",
+   "section": "3.9.19 Keywords (Table 3.34)"
+  },
+  "parser": "accepted",
+  "opi": "Dlpno.LOOSEPNO",
+  "status": "grounded"
+ },
+ {
+  "id": "normalpno",
+  "keyword": "NormalPNO",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "Simple keyword selecting the default DLPNO truncation thresholds; sensible for general thermochemistry and the recommended baseline.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/MP2",
+   "section": "3.9.19 Keywords (Table 3.34)"
+  },
+  "parser": "accepted",
+  "opi": "Dlpno.NORMALPNO",
+  "status": "grounded"
+ },
+ {
+  "id": "tightpno",
+  "keyword": "TightPNO",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "Simple keyword selecting tight DLPNO thresholds; use when investigating weak interactions or conformational equilibria.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": "DLPNO-MP2/DLPNO-CCSD(D(T)) keywords",
+  "defaults": null,
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/MP2",
+   "section": "3.9.19 Keywords (Table 3.34)"
+  },
+  "parser": "accepted",
+  "opi": "Dlpno.TIGHTPNO",
+  "status": "grounded"
+ },
+ {
+  "id": "dlpno-ccsd",
+  "keyword": "DLPNO-CCSD",
+  "aliases": [
+   "DLPNO-CCSD-F12",
+   "DLPNO-CCSD-F12/D",
+   "DLPNO-CISD"
+  ],
+  "category": "wft",
+  "purpose": "Domain-based local pair natural orbital CCSD: near-linear-scaling CCSD recovering typically 99.8-99.9% of the canonical correlation energy; advantages show beyond ~60 atoms.",
+  "requires": "an auxiliary basis; localized orbitals",
+  "excludes": null,
+  "pairs_with": "LoosePNO/NormalPNO/TightPNO; %mdci TCut* thresholds",
+  "defaults": "Linear-scaling DLPNO (since ORCA 4.0) is the default algorithm",
+  "typical_use": "CCSD-level energies for large molecules (100-1000+ atoms)",
+  "literature": [
+   "Riplinger, C.; Neese, F., J. Chem. Phys., 2013, 138, 034106"
+  ],
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.10 Local correlation (DLPNO)"
+  },
+  "parser": "accepted",
+  "opi": "Wft.DLPNO_CCSD",
+  "status": "grounded"
+ },
+ {
+  "id": "dlpno-ccsd-t",
+  "keyword": "DLPNO-CCSD(T)",
+  "aliases": [
+   "DLPNO-CCSD(T1)",
+   "DLPNO-CCSD(T)-F12",
+   "DLPNO-CCSD(T)-F12/D",
+   "DLPNO-CCSD(T1)-F12",
+   "DLPNO-CCSD(T1)-F12/D"
+  ],
+  "category": "wft",
+  "purpose": "DLPNO-CCSD with perturbative triples, fully linear scaling since 2016; made CCSD(T)-level calculations on entire proteins feasible.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": "LoosePNO/NormalPNO/TightPNO presets",
+  "defaults": "(T) adds about 10-20% runtime over DLPNO-CCSD for large systems; (T1) is the iterative triples variant",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.10 Local correlation (DLPNO)"
+  },
+  "parser": "accepted",
+  "opi": "Wft.DLPNO_CCSD_T",
+  "status": "grounded"
+ },
+ {
+  "id": "dlpno-hfc",
+  "keyword": "DLPNO-HFC1",
+  "aliases": [
+   "DLPNO-HFC2"
+  ],
+  "category": "wft",
+  "purpose": "Special DLPNO truncation settings for hyperfine coupling constants: HFC1 tightened, HFC2 tighter than HFC1, because property calculations are more sensitive to PNO truncation than energies.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.14 Keywords (Table 3.43)"
+  },
+  "parser": "accepted",
+  "opi": "Dlpno.LOOSEPNO",
+  "status": "grounded",
+  "note": "DLPNO-HFC1/2 are not OPI enum members; they select PNO threshold presets like the LoosePNO/NormalPNO/TightPNO family."
+ },
+ {
+  "id": "led",
+  "keyword": "LED",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "Local Energy Decomposition: decomposes a DLPNO-CCSD(T) energy into physical contributions (e.g. intra- and interfragment and orbital-pair terms) to interpret coupled-cluster results.",
+  "requires": "a DLPNO-CCSD(T) calculation",
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": null,
+  "literature": [
+   "Altun, A.; Neese, F.; Bistoni, G., J. Chem. Theory Comput., 2018 et seq. (LED papers, manual refs 775-777)"
+  ],
+  "manual": {
+   "page": "contents/spectroscopyproperties/led",
+   "section": "5.36 Local Energy Decomposition"
+  },
+  "parser": "accepted",
+  "opi": "Dlpno.LED",
+  "status": "grounded"
+ },
+ {
+  "id": "hfld",
+  "keyword": "HFLD",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "HFLD: Hartree-Fock plus a non-empirical London-dispersion correction; quantifies and analyses noncovalent interactions between two user-defined fragments at very low cost.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": null,
+  "literature": [
+   "Altun, A.; Neese, F.; Bistoni, G., J. Chem. Theory Comput., 2019, 15, 5894-5907 (HFLD)"
+  ],
+  "manual": {
+   "page": "contents/spectroscopyproperties/hfld",
+   "section": "5.37 The Hartree-Fock plus London Dispersion (HFLD) Method"
+  },
+  "parser": "accepted",
+  "opi": "Dlpno.HFLD",
+  "status": "grounded"
+ },
+ {
+  "id": "pnoextrapolation",
+  "keyword": "PNOExtrapolation",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "PNOExtrapolation (OPI catalog): automatic extrapolation of the PNO space; the manual documents the related iterative-triples (T1) improvement that reproduces canonical (T) energies more accurately.",
+  "requires": "a DLPNO method",
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.10 Local correlation (DLPNO)"
+  },
+  "parser": "accepted",
+  "opi": "Dlpno.PNOEXTRAPOLATION",
+  "status": "grounded"
+ },
+ {
+  "id": "casscf",
+  "keyword": "CASSCF",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "Complete active space self-consistent field: optimises both orbitals and a full-CI expansion within a chosen active space; the standard treatment for static (strong) correlation.",
+  "requires": "an active space definition (NEl, NOrb, Mult, NRoots) in %casscf and a suitable starting guess (e.g. AVAS, natural orbitals)",
+  "excludes": null,
+  "pairs_with": "AVAS guess keywords; NEVPT2/CASPT2/DCD-CAS(2) for dynamic correlation; TrafoStep RI with a /C basis",
+  "defaults": null,
+  "typical_use": "bond breaking, transition-metal and actinide complexes, excited states via state averaging",
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/CASSCF",
+   "section": "3.13.1 Introduction / 3.13.4 Keywords"
+  },
+  "parser": "accepted",
+  "opi": "Casscf.CASSCF",
+  "status": "grounded"
+ },
+ {
+  "id": "casscf.nel",
+  "keyword": "NEl",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%casscf NEl: number of active electrons, half of the mandatory active space definition together with NOrb.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "no default; mandatory for CASSCF",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/CASSCF",
+   "section": "3.13.4 Keywords (block example)"
+  },
+  "parser": "accepted",
+  "opi": "BlockCasscf.NEl",
+  "status": "grounded"
+ },
+ {
+  "id": "casscf.norb",
+  "keyword": "NOrb",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%casscf NOrb: number of active orbitals; NEl+NOrb define the CAS.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "no default; mandatory for CASSCF",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/CASSCF",
+   "section": "3.13.4 Keywords (block example)"
+  },
+  "parser": "accepted",
+  "opi": "BlockCasscf.NOrb",
+  "status": "grounded"
+ },
+ {
+  "id": "casscf.mult",
+  "keyword": "Mult",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%casscf Mult: requested spin multiplicity; comma-separated list for several multiplicity blocks, each with its own NRoots.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "1",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/CASSCF",
+   "section": "3.13.4 Keywords (block example)"
+  },
+  "parser": "accepted",
+  "opi": "BlockCasscf.Mult",
+  "status": "grounded"
+ },
+ {
+  "id": "casscf.irrep",
+  "keyword": "Irrep",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%casscf Irrep: irreducible representation requested for each multiplicity block (mandatory when symmetry is used).",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "0",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/CASSCF",
+   "section": "3.13.4 Keywords (block example)"
+  },
+  "parser": "accepted",
+  "opi": "BlockCasscf.Irrep",
+  "status": "grounded"
+ },
+ {
+  "id": "casscf.nroots",
+  "keyword": "NRoots",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%casscf NRoots: number of roots (states) computed per multiplicity block; larger values give state-averaged orbitals.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "1",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/CASSCF",
+   "section": "3.13.4 Keywords (block example)"
+  },
+  "parser": "accepted",
+  "opi": "BlockCasscf.NRoots",
+  "status": "grounded"
+ },
+ {
+  "id": "casscf.cistep",
+  "keyword": "CIStep",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%casscf CIStep: the CI solver inside CASSCF - CSFCI (default), ACCCI (faster multi-root), ICE (approximate CI for large active spaces) or DMRGCI (density-matrix renormalisation group).",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": "ICE: TGen/TVar via the CI sub-block; DMRGCI: %dmrg settings",
+  "defaults": "CSFCI",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/CASSCF",
+   "section": "3.13.4 Keywords (block example, CI settings)"
+  },
+  "parser": "accepted",
+  "opi": "BlockCasscf.CIStep",
+  "status": "grounded"
+ },
+ {
+  "id": "casscf.orbstep",
+  "keyword": "OrbStep",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%casscf OrbStep: the orbital-optimisation algorithm - SuperCI_PT (default two-step), TRAH (one-step augmented Hessian), SuperCI, DIIS, KDIIS, SOSCF, NR.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "SuperCI_PT; switchstep switches after SwitchConv",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/CASSCF",
+   "section": "3.13.4 Keywords (block example, orbital optimization)"
+  },
+  "parser": "accepted",
+  "opi": "BlockCasscf.OrbStep",
+  "status": "grounded"
+ },
+ {
+  "id": "casscf.switchconv",
+  "keyword": "SwitchConv",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%casscf SwitchConv: gradient norm at which OrbStep switches to the final (switchstep) optimiser.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "0.03",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/CASSCF",
+   "section": "3.13.4 Keywords (block example)"
+  },
+  "parser": "accepted",
+  "opi": "BlockCasscf.SwitchConv",
+  "status": "grounded"
+ },
+ {
+  "id": "casscf.maxiter",
+  "keyword": "MaxIter",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%casscf MaxIter: maximum number of CASSCF macro-iterations.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "75",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/CASSCF",
+   "section": "3.13.4 Keywords (block example)"
+  },
+  "parser": "accepted",
+  "opi": "BlockCasscf.MaxIter",
+  "status": "grounded"
+ },
+ {
+  "id": "casscf.etol",
+  "keyword": "ETol",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%casscf ETol/GTol: energy and gradient-norm convergence criteria of the CASSCF orbital optimisation.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "ETol 1e-8, GTol 1e-3 (as shown in the block example)",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/CASSCF",
+   "section": "3.13.4 Keywords (block example)"
+  },
+  "parser": "accepted",
+  "opi": "BlockCasscf.ETol",
+  "status": "grounded"
+ },
+ {
+  "id": "casscf.iroot",
+  "keyword": "IRoot",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%casscf IRoot/IMult: selects root and multiplicity block (counting from zero) for state-specific follow-up steps such as numerical gradients.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "0",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/CASSCF",
+   "section": "3.13.4 Keywords (block example)"
+  },
+  "parser": "accepted",
+  "opi": "BlockCasscf.IRoot",
+  "status": "grounded"
+ },
+ {
+  "id": "casscf.ptmethod",
+  "keyword": "PTMethod",
+  "aliases": [
+   "SC_NEVPT2",
+   "FIC_NEVPT2",
+   "DLPNO_NEVPT2"
+  ],
+  "category": "wft",
+  "purpose": "%casscf PTMethod: selects the perturbation treatment on the CASSCF reference - SC_NEVPT2, FIC_NEVPT2, DLPNO_NEVPT2 (underscore spelling; simple input uses hyphens).",
+  "requires": "a converged CASSCF calculation with the NEVPT2-compatible CIStep",
+  "excludes": null,
+  "pairs_with": "PTSettings sub-block; TrafoStep RI",
+  "defaults": null,
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/NEVPT2",
+   "section": "3.16.13 Keywords"
+  },
+  "parser": "accepted",
+  "opi": "BlockCasscf.PTMethod",
+  "status": "grounded"
+ },
+ {
+  "id": "casscf.trafostep",
+  "keyword": "TrafoStep",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%casscf TrafoStep: enables the RI approximation for the CASSCF gradient/Hessian integral transformation, paired with a /C auxiliary basis.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "exact transformation; RI enabled by DLPNO-NEVPT2",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/CASSCF",
+   "section": "3.13.4 Keywords (block example)"
+  },
+  "parser": "accepted",
+  "opi": "BlockCasscf.TrafoStep",
+  "status": "grounded"
+ },
+ {
+  "id": "casscf.bweight",
+  "keyword": "BWeight",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%casscf BWeight: block weights between multiplicity blocks in a state-averaged calculation (e.g. singlets:triplets = 2:1).",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": "Weights[...] per-state weights",
+  "defaults": null,
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/CASSCF",
+   "section": "3.13.4 Keywords (block example, state averaging)"
+  },
+  "parser": "accepted",
+  "opi": "BlockCasscf.BWeight",
+  "status": "grounded"
+ },
+ {
+  "id": "casscf.actorbs",
+  "keyword": "ActOrbs",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%casscf ActOrbs: the orbital type used for the active space at the end of the calculation (NatOrbs default, CanonOrbs, LocOrbs, dOrbs/fOrbs purification for AILFT, SDO).",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "NatOrbs",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/CASSCF",
+   "section": "3.13.4 Keywords (block example, final orbital option)"
+  },
+  "parser": "accepted",
+  "opi": "BlockCasscf.ActOrbs",
+  "status": "grounded"
+ },
+ {
+  "id": "nevpt2",
+  "keyword": "NEVPT2",
+  "aliases": [
+   "SC-NEVPT2"
+  ],
+  "category": "wft",
+  "purpose": "N-electron valence state second-order perturbation theory on a CASSCF reference; adds dynamic correlation while staying (quasi-)size-consistent and intruder-free.",
+  "requires": "a CASSCF calculation; higher-order reduced density matrices (CIStep CSFCI, ACCCI, ICE or DMRGCI)",
+  "excludes": null,
+  "pairs_with": "TrafoStep RI; PTSettings sub-block",
+  "defaults": null,
+  "typical_use": "static+dynamic correlation for transition-metal complexes, bond breaking, excited states",
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/CASSCF",
+   "section": "3.13.4 Keywords (Table 3.46)"
+  },
+  "parser": "accepted",
+  "opi": "Wft.NEVPT2",
+  "status": "grounded"
+ },
+ {
+  "id": "sc-nevpt2",
+  "keyword": "SC-NEVPT2",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "Strongly contracted NEVPT2, the default contraction of the manual's NEVPT2 keyword; block input spells it SC_NEVPT2.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/NEVPT2",
+   "section": "3.16.1 A simple Example / 3.16.13 Keywords"
+  },
+  "parser": "accepted",
+  "opi": "Wft.SC_NEVPT2",
+  "status": "grounded"
+ },
+ {
+  "id": "dlpno-nevpt2",
+  "keyword": "DLPNO-NEVPT2",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "FIC-NEVPT2 in the DLPNO framework for large molecules; automatically switches TrafoStep to RI.",
+  "requires": "a CASSCF reference; auxiliary basis",
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/NEVPT2",
+   "section": "3.16.13 Keywords / block example"
+  },
+  "parser": "accepted",
+  "opi": "Wft.DLPNO_NEVPT2",
+  "status": "grounded"
+ },
+ {
+  "id": "caspt2",
+  "keyword": "CASPT2",
+  "aliases": [
+   "RI-CASPT2",
+   "CASPT2K"
+  ],
+  "category": "wft",
+  "purpose": "Fully internally contracted CASPT2, the FIC variant, as alternative second-order perturbation theory on a CASSCF reference; RI-CASPT2 adds the RI approximation.",
+  "requires": "a CASSCF reference",
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/CASSCF",
+   "section": "3.13.4 Keywords (Table 3.46)"
+  },
+  "parser": "accepted",
+  "opi": "Wft.CASPT2",
+  "status": "grounded"
+ },
+ {
+  "id": "avas-valence-d",
+  "keyword": "AVAS(Valence-D)",
+  "aliases": [
+   "avas(valence-d)"
+  ],
+  "category": "wft",
+  "purpose": "CASSCF initial-guess keyword: builds an active space from the valence d orbitals of all transition-metal atoms via singular-value decomposition against MINAO target AOs; overwrites NEl/NOrb in %casscf.",
+  "requires": "TM atoms in the molecule; overwrites the %casscf active space",
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "threshold 0.4, minimal basis MINAO",
+  "typical_use": "automatic CAS(n,5) d-spaces for TM complexes before CASSCF/NEVPT2",
+  "literature": [
+   "Sayfutyarova, E. R.; Sun, Q.; Chan, G. K.-L.; Knizia, G., J. Chem. Theory Comput., 2017, 13, 4063-4078"
+  ],
+  "manual": {
+   "page": "contents/modelchemistries/CASSCF",
+   "section": "3.13.7 Guess: Atomic Valence Active Space (AVAS)"
+  },
+  "parser": "accepted",
+  "opi": "Avas.AVAS_VALENCE_D",
+  "status": "grounded"
+ },
+ {
+  "id": "avas-double-d",
+  "keyword": "AVAS(Double-D)",
+  "aliases": [
+   "avas(double-d)"
+  ],
+  "category": "wft",
+  "purpose": "AVAS variant with double-shell d targets: both 3d and 4d (or 4d+5d) functions per TM centre, for double-shell active spaces.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/CASSCF",
+   "section": "3.13.7 Guess: AVAS"
+  },
+  "parser": "accepted",
+  "opi": "Avas.AVAS_DOUBLE_D",
+  "status": "grounded"
+ },
+ {
+  "id": "avas-valence-f",
+  "keyword": "AVAS(Valence-F)",
+  "aliases": [
+   "avas(valence-f)",
+   "avas(double-f)"
+  ],
+  "category": "wft",
+  "purpose": "AVAS variant targeting seven f functions per lanthanide or actinide atom; Double-F is the double-shell analogue.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/CASSCF",
+   "section": "3.13.7 Guess: AVAS"
+  },
+  "parser": "accepted",
+  "opi": "Avas.AVAS_VALENCE_F",
+  "status": "grounded"
+ },
+ {
+  "id": "avas-valence-ds",
+  "keyword": "AVAS(Valence-Ds)",
+  "aliases": [
+   "avas(valence-ds)",
+   "avas(double-ds)"
+  ],
+  "category": "wft",
+  "purpose": "AVAS valence-d variant with s functions added for sigma bonding participation, per the OPI catalog; the manual documents the Valence-D/Double-D/Valence-F/Double-F family.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/CASSCF",
+   "section": "3.13.7 Guess: AVAS (variant family)"
+  },
+  "parser": "accepted",
+  "opi": "Avas.AVAS_VALENCE_DS",
+  "status": "draft"
+ },
+ {
+  "id": "autoci",
+  "keyword": "AUTOCI-<method>",
+  "aliases": [
+   "AUTOCI-CCSD",
+   "AUTOCI-CCSD(T)",
+   "AUTOCI-CID",
+   "AUTOCI-CISD"
+  ],
+  "category": "wft",
+  "purpose": "Activates the AUTOCI correlation module (e.g. AUTOCI-CCSD, AUTOCI-CCSD(T), AUTOCI-MP4): automatically code-generated canonical CI/CC/MPn methods with analytic gradients; disables MDCI.",
+  "requires": "RHF (or ROHF with RunROHFasUHF) reference; all integrals on disk",
+  "excludes": "MDCI module (mutually exclusive)",
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": "methods not implemented in the hand-written modules (e.g. MP4, CCSDT variants) and their gradients",
+  "literature": [
+   "Krupicka, M.; Sivalingam, K.; Huntington, L.; Auer, A. A.; Neese, F., J. Comput. Chem., 2017, 38, 1853-1868; Lechner, M. H. et al., Phys. Chem. Chem. Phys., 2024, 26, 15205-15220"
+  ],
+  "manual": {
+   "page": "contents/modelchemistries/autoci",
+   "section": "3.11.9 Keywords (Table 3.44)"
+  },
+  "parser": "accepted",
+  "opi": "AutoCI.AUTOCI_CCSD",
+  "status": "grounded"
+ },
+ {
+  "id": "autoci.citype",
+  "keyword": "CIType",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%autoci CIType: the correlation method of the AUTOCI module - CID, CISD, CISDT, CCD, CCSD, CCSDT, CEPA(0), QCISD, CC2, CC3, CCSD[T], CCSD(T), the CCSDT-1..4 series, FIC-MRCI family, and MP2-MP5.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "set by the AUTOCI-<method> simple keyword",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/autoci",
+   "section": "3.11.9 Keywords (Table 3.45)"
+  },
+  "parser": "accepted",
+  "opi": "BlockAutoCI.CIType",
+  "status": "grounded"
+ },
+ {
+  "id": "autoci.stol",
+  "keyword": "STol",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%autoci STol: residue convergence tolerance of the CI/CC iterations.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "1e-6",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/autoci",
+   "section": "3.11.4.4 Input Options"
+  },
+  "parser": "accepted",
+  "opi": "BlockAutoCI.STol",
+  "status": "grounded"
+ },
+ {
+  "id": "autoci.maxiter",
+  "keyword": "MaxIter",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%autoci MaxIter: maximum number of correlation iterations.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "50",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/autoci",
+   "section": "3.11.9 Keywords (Table 3.45)"
+  },
+  "parser": "accepted",
+  "opi": "BlockAutoCI.MaxIter",
+  "status": "grounded"
+ },
+ {
+  "id": "autoci.maxdiis",
+  "keyword": "MaxDiis",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%autoci MaxDiis: depth of the DIIS memory in the correlation iterations.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "5",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/autoci",
+   "section": "3.11.9 Keywords (Table 3.45)"
+  },
+  "parser": "accepted",
+  "opi": "BlockAutoCI.MaxDIIS",
+  "status": "grounded"
+ },
+ {
+  "id": "autoci.levelshift",
+  "keyword": "LevelShift",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%autoci LevelShift: level shift in the DIIS update / denominators.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "0.2",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/autoci",
+   "section": "3.11.9 Keywords (Table 3.45)"
+  },
+  "parser": "accepted",
+  "opi": "BlockAutoCI.LevelShift",
+  "status": "grounded"
+ },
+ {
+  "id": "autoci.nel",
+  "keyword": "NEl",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%autoci NEl: number of active electrons for the CAS (multireference) AUTOCI methods; taken from the preceding CASSCF run by default.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "6 (CAS only)",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/autoci",
+   "section": "3.11.9 Keywords (Table 3.45)"
+  },
+  "parser": "accepted",
+  "opi": "BlockAutoCI.NEl",
+  "status": "grounded"
+ },
+ {
+  "id": "autoci.norb",
+  "keyword": "NOrb",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%autoci NOrb: number of active orbitals for CAS-based AUTOCI methods.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "7 (CAS only)",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/autoci",
+   "section": "3.11.9 Keywords (Table 3.45)"
+  },
+  "parser": "accepted",
+  "opi": "BlockAutoCI.NOrb",
+  "status": "grounded"
+ },
+ {
+  "id": "autoci.mult",
+  "keyword": "Mult",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%autoci Mult: requested multiplicity block for CAS-based AUTOCI methods.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "1",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/autoci",
+   "section": "3.11.9 Keywords (Table 3.45)"
+  },
+  "parser": "accepted",
+  "opi": "BlockAutoCI.Mult",
+  "status": "grounded"
+ },
+ {
+  "id": "autoci.nroots",
+  "keyword": "NRoots",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%autoci NRoots: number of roots for the multiplicity block (CAS only).",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "1",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/autoci",
+   "section": "3.11.9 Keywords (Table 3.45)"
+  },
+  "parser": "accepted",
+  "opi": "BlockAutoCI.NRoots",
+  "status": "grounded"
+ },
+ {
+  "id": "autoci.irrep",
+  "keyword": "Irrep",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%autoci Irrep: requested irreducible representation for the multiplicity block (CAS only).",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "0",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/autoci",
+   "section": "3.11.9 Keywords (Table 3.45)"
+  },
+  "parser": "accepted",
+  "opi": "BlockAutoCI.Irrep",
+  "status": "grounded"
+ },
+ {
+  "id": "autoci.density",
+  "keyword": "Density",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%autoci Density: the one-body density requested (linearized, unrelaxed or relaxed); gradients compute both unrelaxed and relaxed automatically.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "none",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/autoci",
+   "section": "3.11.9 Keywords (Table 3.45)"
+  },
+  "parser": "accepted",
+  "opi": "BlockAutoCI.Density",
+  "status": "grounded"
+ },
+ {
+  "id": "autoci.runrohfasuhf",
+  "keyword": "RunROHFasUHF",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%autoci RunROHFasUHF: feed ROHF orbitals into the AUTOCI UHF modules, because only CISD is available for a genuine ROHF reference.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "false",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/autoci",
+   "section": "3.11.9 Keywords (Table 3.45, technical note)"
+  },
+  "parser": "accepted",
+  "opi": "BlockAutoCI.RunROHFasUHF",
+  "status": "grounded"
+ },
+ {
+  "id": "autoci.keepints",
+  "keyword": "KeepInts",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%autoci KeepInts: keep the transformed MO integrals on disk for reuse; UseOldInts then reuses them (user is responsible for their validity).",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": "UseOldInts",
+  "defaults": "false",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/autoci",
+   "section": "3.11.9 Keywords (Table 3.45, technical note)"
+  },
+  "parser": "accepted",
+  "opi": "BlockAutoCI.KeepInts",
+  "status": "grounded"
+ },
+ {
+  "id": "autoci.useoldints",
+  "keyword": "UseOldInts",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%autoci UseOldInts: reuse transformed integrals previously stored with KeepInts; only the dimension is checked.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": "KeepInts",
+  "defaults": "false",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/autoci",
+   "section": "3.11.9 Keywords (Table 3.45, technical note)"
+  },
+  "parser": "accepted",
+  "opi": "BlockAutoCI.UseOldInts",
+  "status": "grounded"
+ },
+ {
+  "id": "ice",
+  "keyword": "ICE-CI",
+  "aliases": [
+   "Auto-ICE"
+  ],
+  "category": "wft",
+  "purpose": "Iterative Configuration Expansion CI: selected-CI approximation to full CI controlled by two thresholds; used for near-FCI small-molecule energies, low-lying state searches, or as CI solver for large active-space CASSCF (ICE-SCF).",
+  "requires": "a %ice (or %casscf CIStep ICE) block with NEl/NOrb or the auto-ICE occupation-window selection; MP2 natural orbitals recommended",
+  "excludes": null,
+  "pairs_with": "%casscf CIStep ICE; TGen/TVar thresholds",
+  "defaults": "TGen = 1e-4, TVar = 1e-7*TGen (negative TVar means the ratio); error about 1 mEh vs full CI",
+  "typical_use": "approximate full CI; large CASSCF active spaces beyond the ~14-orbital limit",
+  "literature": [
+   "Chilkuri, V. G.; Neese, F., J. Comput. Chem., 2021, 42, 982-1005; Chilkuri, V. G.; Neese, F., J. Chem. Theory Comput., 2021, 17, 2868-2885"
+  ],
+  "manual": {
+   "page": "contents/modelchemistries/iceci",
+   "section": "3.14.1 Introduction / 3.14.11 Keywords"
+  },
+  "parser": "accepted",
+  "opi": "BlockIce",
+  "status": "grounded"
+ },
+ {
+  "id": "ice.tgen",
+  "keyword": "TGen",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%ice TGen: generator threshold, the parameter that controls ICE-CI accuracy; convergence is limited much more by TGen than by TVar.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "1e-4",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/iceci",
+   "section": "3.14.4 Accuracy / 3.14.11 Keywords"
+  },
+  "parser": "accepted",
+  "opi": "BlockIce.TGen",
+  "status": "grounded"
+ },
+ {
+  "id": "ice.tvar",
+  "keyword": "TVar",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%ice TVar: variational selection threshold of ICE-CI; a negative value means 1e-7 * TGen, which is the recommended default.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "-1e-7 (i.e. 1e-7*TGen)",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/iceci",
+   "section": "3.14.4 Accuracy / 3.14.11 Keywords"
+  },
+  "parser": "accepted",
+  "opi": "BlockIce.TVar",
+  "status": "grounded"
+ },
+ {
+  "id": "ice.icetype",
+  "keyword": "ICEType",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%ice ICEType: the many-particle representation of the ICE expansion - CFGs (default), CSFs or determinants (DETs).",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "CFGs",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/iceci",
+   "section": "3.14.11 Keywords"
+  },
+  "parser": "accepted",
+  "opi": "BlockIce.ICEType",
+  "status": "grounded"
+ },
+ {
+  "id": "ice.integrals",
+  "keyword": "Integrals",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%ice Integrals: integral transformation for the ICE-CI Hamiltonian - exact or RI; the CSF route can run without RI when NOrb >> NEl.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "exact",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/iceci",
+   "section": "3.14.11 Keywords"
+  },
+  "parser": "accepted",
+  "opi": "BlockIce.Integrals",
+  "status": "grounded"
+ },
+ {
+  "id": "ice.nel",
+  "keyword": "NEl",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%ice NEl: number of active electrons of the ICE-CI space.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/iceci",
+   "section": "3.14.11 Keywords"
+  },
+  "parser": "accepted",
+  "opi": "BlockIce.NEl",
+  "status": "grounded"
+ },
+ {
+  "id": "ice.norb",
+  "keyword": "NOrb",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%ice NOrb: number of active orbitals of the ICE-CI space.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/iceci",
+   "section": "3.14.11 Keywords"
+  },
+  "parser": "accepted",
+  "opi": "BlockIce.NOrb",
+  "status": "grounded"
+ },
+ {
+  "id": "ice.nroots",
+  "keyword": "NRoots",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%ice NRoots: number of roots requested from the ICE-CI solver.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "1",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/iceci",
+   "section": "3.14.11 Keywords"
+  },
+  "parser": "accepted",
+  "opi": "BlockIce.NRoots",
+  "status": "grounded"
+ },
+ {
+  "id": "ice.mult",
+  "keyword": "Mult",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%ice Mult: requested spin multiplicity of the ICE-CI calculation.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "1",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/iceci",
+   "section": "3.14.11 Keywords"
+  },
+  "parser": "accepted",
+  "opi": "BlockIce.Mult",
+  "status": "grounded"
+ },
+ {
+  "id": "ice.irrep",
+  "keyword": "Irrep",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%ice Irrep: requested irreducible representation; only supported for ICEType=CFGs.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "0",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/iceci",
+   "section": "3.14.11 Keywords"
+  },
+  "parser": "accepted",
+  "opi": "BlockIce.Irrep",
+  "status": "grounded"
+ },
+ {
+  "id": "ice.etol",
+  "keyword": "ETol",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "%ice ETol: energy convergence tolerance of the ICE-CI iterations.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": "1e-6",
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/iceci",
+   "section": "3.14.11 Keywords"
+  },
+  "parser": "accepted",
+  "opi": "BlockIce.ETol",
+  "status": "grounded"
+ },
+ {
+  "id": "casscf.ciconv",
+  "keyword": "CIConv",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "Not a %casscf option: ORCA's parser rejects this spelling; convergence of the CI step belongs in the CI sub-block (ETol/RTol).",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/CASSCF",
+   "section": "3.13.4 Keywords (CI sub-block)"
+  },
+  "parser": "rejected",
+  "opi": "BlockCasscf.CIConv",
+  "status": "grounded"
+ },
+ {
+  "id": "mp2.maxitpno",
+  "keyword": "MaxItPNO",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "Not an %mp2 option under this spelling (ORCA rejects it); the PNO iteration limit is MaxPNOIter.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/MP2",
+   "section": "3.9.10 Local MP2 calculations (DLPNO-MP2)"
+  },
+  "parser": "rejected",
+  "opi": "BlockMp2.MaxPNOIter",
+  "status": "grounded"
+ },
+ {
+  "id": "mp2.tolx",
+  "keyword": "TolX",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "Not an %mp2 option (ORCA rejects this spelling); orbital-convergence tolerances belong to the SCF/method blocks.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/MP2",
+   "section": "3.9.17 Orbital Optimized MP2 Methods"
+  },
+  "parser": "rejected",
+  "opi": "BlockMp2",
+  "status": "grounded"
+ },
+ {
+  "id": "mdci.trcutpno",
+  "keyword": "TCutPNOResp",
+  "aliases": [],
+  "category": "wft",
+  "purpose": "Not an %mdci option under this spelling (ORCA rejects it); response DLPNO settings use the documented TCut keywords.",
+  "requires": null,
+  "excludes": null,
+  "pairs_with": null,
+  "defaults": null,
+  "typical_use": null,
+  "literature": null,
+  "manual": {
+   "page": "contents/modelchemistries/mdci",
+   "section": "3.10.10.1 Basic Usage"
+  },
+  "parser": "rejected",
+  "opi": "BlockMdci.TCutPNO",
+  "status": "grounded"
+ }
+]

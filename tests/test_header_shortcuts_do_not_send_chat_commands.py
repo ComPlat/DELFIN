@@ -46,8 +46,14 @@ def _scripts():
             continue
         start = js.index(guard)
         end = js.index('}, true);', start) + len('}, true);')
-        listeners.append('(function(){' + js[start:end] + '})();')
+        # Variant 0: the keys script (_enter_key_init_js); 1: the one in the
+        # tab's page script (_AGENT_PAGE_JS, which also holds the chat's
+        # scroll). Told apart by what they are, not by where ast.walk
+        # meets them, so moving a script does not swap the recorded keys.
+        listeners.append(('__delfinChatScroll' in js,
+                          '(function(){' + js[start:end] + '})();'))
     assert len(listeners) == 2
+    listeners = [text for _page, text in sorted(listeners, key=lambda x: x[0])]
     return lookup, listeners
 
 

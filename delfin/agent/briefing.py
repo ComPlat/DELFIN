@@ -28,9 +28,9 @@ from delfin.agent.outcome_tracker import CycleOutcome, load_outcomes, outcomes_f
 _TASK_KEYWORDS: dict[str, list[str]] = {
     "chemistry": [
         "orca", "xtb", "dft", "basis set", "functional", "solvent",
-        "energy", "optimization", "frequency", "neb", "scan", "md ",
-        "thermochemistry", "spin", "multiplicity", "charge",
-        "method", "dispersion", "relativistic", "ecp",
+        "optimization", "frequency", "neb",
+        "thermochemistry", "spin", "multiplicity",
+        "dispersion", "relativistic", "ecp", "molecular dynamics",
     ],
     "dashboard": [
         "dashboard", "tab_", "widget", "voila", "ipywidget", "ui ",
@@ -43,13 +43,65 @@ _TASK_KEYWORDS: dict[str, list[str]] = {
     ],
 }
 
+# Polysemous words that appear in both chemistry and engineering tasks
+# ("energy accounting", "scan method", "charge-coupled device", "md of
+# simd kernels"). They count as chemistry cues ONLY together with a
+# molecular cue; the strong keywords in _TASK_KEYWORDS count alone.
+_CHEMISTRY_WEAK_KEYWORDS = (
+    "energy", "scan", "charge", "method", "md",
+)
+# Molecular context: compound names, element words, structural nouns,
+# common formulas. A weak cue plus any of these is chemistry.
+_CHEMISTRY_MOLECULAR_CUES = (
+    "molecule", "molecular", "complex", "ligand", "atom", "conformer",
+    "geometry", "reaction", "catalyst", "substrate", "dimer", "cluster",
+    "benzene", "butane", "water", "nitrogen", "oxygen", "hydrogen",
+    "carbon", "iron", "copper", "zinc", "dihedral", "torsion",
+    "h2o", "co2", "nh3", "ch4", "o2", "n2",
+)
+
+
+def _molecular_cue(lower: str, text: str) -> bool:
+    """A molecular cue: an element symbol/name in a chemical context or
+    a structural noun / common formula. Deliberately generous -- used
+    only to license a weak cue, never alone."""
+    # Element symbols as words (he, li, be, ne, ...) are too short to
+    # be word-bounded reliably; check element names instead.
+    if re.search(
+        rf"\b{'|'.join(_CHEMISTRY_MOLECULAR_CUES)}\b", lower
+    ):
+        return True
+    # Formulas like H2O, CO2, Fe2O3: element symbols + optional digits
+    return bool(re.search(r"\b(?:[A-Z][a-z]?\d+)+\b", text))
+
 
 def classify_task(text: str) -> str:
-    """Classify a task into a task class based on keyword matching."""
+    """Classify a task into a task class based on keyword matching.
+
+    Keywords match as whole words only: a substring hit like ``"md "``
+    firing inside "simd kernel" or "test" inside "latest" would inject
+    the chemistry or dashboard prompt block into an unrelated task.
+
+    The polysemous words energy/scan/charge/method/md are weak cues:
+    they classify as chemistry only together with a molecular cue
+    (element, compound, formula, structural noun) or a strong chemistry
+    keyword; alone they stay coding.
+    """
     lower = (text or "").lower()
     scores: dict[str, int] = {}
     for cls, keywords in _TASK_KEYWORDS.items():
-        scores[cls] = sum(1 for kw in keywords if kw in lower)
+        scores[cls] = sum(
+            1
+            for kw in keywords
+            if re.search(rf"\b{re.escape(kw.strip())}\b", lower)
+        )
+    weak = sum(
+        1
+        for kw in _CHEMISTRY_WEAK_KEYWORDS
+        if re.search(rf"\b{re.escape(kw)}\b", lower)
+    )
+    if weak and (_molecular_cue(lower, text) or scores["chemistry"]):
+        scores["chemistry"] += weak
     best = max(scores, key=scores.get)  # type: ignore[arg-type]
     return best if scores[best] > 0 else "coding"
 

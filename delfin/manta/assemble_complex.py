@@ -312,6 +312,35 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                                           mol=lg["mol"]) for i in range(_dent)]
             except Exception:
                 _dtp = None
+            # RING CLOSURE FOR BOND-VALENCE LENGTHS (DELFIN_FFFREE_ML_TARGETS_BV_BITE, default OFF ->
+            # byte-identical).  The vertex directions stay at the ideal polyhedron angle while the
+            # bond-valence targets change the two M-D lengths, so the donor-donor distance the embed
+            # is pinned to, |u1 r1 - u2 r2|, changes too -- for Zn(II)-N 1.93 -> 2.16 A a cis pair
+            # moves from 2.73 to 3.05 A apart, which a five-ring chelate cannot span: the embed
+            # stretches or collapses the ring and the self-gate rejects every isomer
+            # (CHELATE_EMPTY -> legacy).  Here the pair keeps the donor-donor distance of the
+            # historic seating (covalent-sum lengths at the ideal angle) and the opening angle is
+            # solved from the new lengths by ring closure, bisector fixed (bite_close), so the
+            # chelate keeps its polyhedron edge.  Bidentates only.
+            if (_dtp is not None and _dent == 2
+                    and os.environ.get("DELFIN_FFFREE_ML_TARGETS_BV_BITE", "0") == "1"):
+                try:
+                    from delfin.manta import polyhedra as _PLYb
+                    from delfin.manta.assemble_chelate import bite_close as _bite_close
+                    _u = [ref[_vts[i]] / np.linalg.norm(ref[_vts[i]]) for i in range(2)]
+                    _rh = [_PLYb.COV.get(metal, 1.5) + _PLYb._donor_cov(_delems[i]) for i in range(2)]
+                    _rn = [float(np.linalg.norm(p)) for p in _dtp]
+                    if any(abs(_rn[i] - _rh[i]) > 1e-6 for i in range(2)):
+                        _ddh = float(np.linalg.norm(_u[0] * _rh[0] - _u[1] * _rh[1]))
+                        _cb = (_rn[0] ** 2 + _rn[1] ** 2 - _ddh ** 2) / (2.0 * _rn[0] * _rn[1])
+                        if -1.0 <= _cb <= 1.0:
+                            _v0, _v1 = _bite_close(_u[0], _u[1], math.degrees(math.acos(_cb)))
+                            _dtp = [_v0 * _rn[0], _v1 * _rn[1]]
+                            from delfin.manta.converter_backend import _ff_trace_write as _tw
+                            _tw("[BV_BITE] dd %.3f r %.3f %.3f angle %.1f" % (_ddh, _rn[0], _rn[1], math.degrees(math.acos(_cb))))
+                except Exception:
+                    from delfin.manta.converter_backend import _ff_trace_write as _tw
+                    _tw("[BV_BITE] failed")
             # CHELATE-BACKBONE hardening is SCOPED to the newly-admitted LARGE backbones
             # (per-arm heavy > the historic cap of 8) so every existing native chelate
             # (per-arm <= 8: en, acac, bipy, terpy, ...) keeps the EXACT historic embed
@@ -551,6 +580,28 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                         or os.environ.get("DELFIN_FFFREE_RIGID_LIGAND_SEAT", "0") == "1"))
                     Q = _orient_chelate_to_vertices(lP, dons_d, targets, asym=_asym,
                                                     rigid=_rigid_seat, lsyms=lsyms)
+                    if os.environ.get("DELFIN_FFFREE_ISO_TRACE", "0") not in ("", "0"):
+                        try:
+                            from delfin.manta.converter_backend import _ff_trace_write as _tw
+                            _ptb = Chem.GetPeriodicTable()
+
+                            def _worst_bond(X):
+                                w = (9.0, "")
+                                for _b in lg["mol"].GetBonds():
+                                    _i, _j = _b.GetBeginAtomIdx(), _b.GetEndAtomIdx()
+                                    _r = float(np.linalg.norm(X[_i] - X[_j])) / (
+                                        _ptb.GetRcovalent(lsyms[_i]) + _ptb.GetRcovalent(lsyms[_j]))
+                                    if _r < w[0]:
+                                        w = (_r, "%s%d-%s%d" % (lsyms[_i], _i, lsyms[_j], _j))
+                                return w
+                            _wl, _wq = _worst_bond(lP), (_worst_bond(Q) if Q is not None else (0, "-"))
+                            _tw("[SEAT] dent=%d donors=%s targets=%s embed_r=%s worst_bond embed %.2f %s seated %.2f %s"
+                                % (dent, [lsyms[d] for d in dons_d],
+                                   ["%.3f" % float(np.linalg.norm(t)) for t in targets],
+                                   ["%.3f" % float(np.linalg.norm(lP[int(d)])) for d in dons_d],
+                                   _wl[0], _wl[1], _wq[0], _wq[1]))
+                        except Exception as _e:
+                            _tw("[SEAT] trace failed %r" % (_e,))
                     # THE LEFTOVER ROTATION, SET BY THE LONE PAIRS INSTEAD OF BY THE SVD.
                     # Seating two donors onto two vertices leaves exactly one rotational
                     # freedom -- about the donor-donor axis -- and the Kabsch fit cannot see
@@ -609,6 +660,12 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                     # build-gate would reject anyway).  Env-gated default OFF.
                     if Q is not None and _has_collapsed_heavy_bonds(lsyms, Q):
                         Q = None
+                        if os.environ.get("DELFIN_FFFREE_ISO_TRACE", "0") not in ("", "0"):
+                            from delfin.manta.converter_backend import _ff_trace_write as _tw
+                            _tw("[SEAT_COLLAPSE] dent=%d donors=%s targets=%s embed_r=%s"
+                                % (dent, [lsyms[d] for d in dons_d],
+                                   ["%.3f" % float(np.linalg.norm(t)) for t in targets],
+                                   ["%.3f" % float(np.linalg.norm(lP[int(d)])) for d in dons_d]))
                     # RIGID PLANAR tridentate (DELFIN_FFFREE_PLANAR_MER): the DG
                     # metallacycle embed yields chelating conformers (outer-outer ~150-
                     # 158deg) but a few carry a collapsed donor-backbone bond.  Reject
@@ -620,6 +677,11 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                 if Q is None and dent == 2:         # embed/orient failed -> rigid fallback (bidentate only)
                     Q = _place_chelate_block(metal, lsyms, lP, dons_d[0], dons_d[1],
                                              targets[0], targets[1], mol=lg["mol"])
+                    if os.environ.get("DELFIN_FFFREE_ISO_TRACE", "0") not in ("", "0"):
+                        from delfin.manta.converter_backend import _ff_trace_write as _tw
+                        _tw("[SEAT_RIGID] ring_confs=%s result=%s collapsed=%s"
+                            % (ring_confs is not None, Q is not None,
+                               Q is not None and _has_collapsed_heavy_bonds(lsyms, Q)))
                 if Q is None:                       # tridentate embed failure -> skip this config
                     continue
             if not np.all(np.isfinite(Q)):

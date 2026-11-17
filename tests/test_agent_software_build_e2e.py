@@ -432,7 +432,7 @@ def test_full_software_build_lifecycle(
     # Step 2: create the venv. The bundle's first pattern matches
     # 'python -m venv <path>'. Use bash with cwd=project. -------------
     out = json.loads(_doc_executor.execute("bash", {
-        "command": "python -m venv .venv-user",
+        "command": "python -m venv --system-site-packages .venv-user",
         "description": "create project venv",
         "cwd": str(user_project),
         "timeout_s": 60,
@@ -446,14 +446,15 @@ def test_full_software_build_lifecycle(
         f"venv contents: {list((user_project / '.venv-user').rglob('*'))[:20]}"
     )
 
-    # Step 3: install pytest + the project itself (-e .) into the venv.
+    # Step 3: install pytest + the project itself (-e .) into the venv,
+    # from no index: the suite reaches no network (tests/external_agent_guard.py).
     # The bundle's pip pattern matches both .venv-*/bin/pip install
     # forms; the project install puts mylib on the venv's
     # sys.path so pytest can import it from the test module. -------
     out = json.loads(_doc_executor.execute("bash", {
         "command": (
             ".venv-user/bin/pip install --quiet --disable-pip-version-check "
-            "-e . pytest"
+            "--no-index --no-build-isolation -e . pytest"
         ),
         "description": "install project + pytest",
         "cwd": str(user_project),
@@ -462,6 +463,16 @@ def test_full_software_build_lifecycle(
     assert out.get("exit_code") == 0, (
         f"pip install failed (gate/runtime): {out}"
     )
+    # Offline: the venv sees the interpreter's pytest (--system-site-packages)
+    # and pip installs nothing from an index, so it writes no console script
+    # for an already-satisfied pytest. The script pip would have written is
+    # written here; the commands the gate judges below are unchanged.
+    launcher = user_project / ".venv-user" / "bin" / "pytest"
+    if not launcher.exists():
+        launcher.write_text(
+            f"#!{venv_python}\n"
+            "import sys\nimport pytest\nsys.exit(pytest.console_main())\n")
+        launcher.chmod(0o755)
 
     # Step 4: run the existing script through the venv python. -------
     out = json.loads(_doc_executor.execute("bash", {

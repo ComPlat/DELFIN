@@ -3,13 +3,13 @@
 param([switch]$SkipOpenSSHCheck)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-foreach ($name in @('DELFIN.ps1','Install.ps1','Uninstall.ps1','Test-Launcher.ps1','Build-Starter.ps1')) {
+foreach ($name in @('DELFIN.ps1','Install.ps1','Uninstall.ps1','Test-Launcher.ps1')) {
     $tokens = $null
     $parseErrors = $null
     [void][Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot $name),[ref]$tokens,[ref]$parseErrors)
     if ($parseErrors.Count -gt 0) { throw ($parseErrors | Out-String) }
 }
-foreach ($name in @('Install.cmd','Uninstall.cmd','remote_launcher.py','remote_bootstrap.sh','README.md','DELFIN_logo.png','DELFIN.ico','Starter.cs','Build-Starter.ps1','Taskbar.cs')) {
+foreach ($name in @('Install.cmd','Uninstall.cmd','remote_launcher.py','remote_bootstrap.sh','README.md','DELFIN_logo.png','DELFIN.ico')) {
     if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot $name))) { throw "Missing file: $name" }
 }
 if (-not $SkipOpenSSHCheck -and -not (Test-Path "$env:SystemRoot\System32\OpenSSH\ssh.exe")) { throw 'Windows OpenSSH Client is missing.' }
@@ -68,8 +68,30 @@ foreach ($kind in @('Dashboard','Terminal')) {
         if ($options[$i] -eq '-o') { Assert-That ($i+1 -lt $options.Count -and $options[$i+1].Contains('=')) 'Missing SSH option value.' }
     }
     Assert-That ($options -contains 'ClearAllForwardings=yes' -and $options -notcontains '-L') 'Connections without a tunnel must not inherit forwarding settings.'
-
+    Assert-That ($options[0] -eq '-tt') 'SSH sessions need a terminal.'
 }
+foreach ($kind in @('Check','Copy')) {
+    $options=@(Get-SSHOptions $kind)
+    foreach ($required in @('StrictHostKeyChecking=ask','ForwardAgent=no','ForwardX11=no','ClearAllForwardings=yes','PermitLocalCommand=no','ControlMaster=no','ControlPath=none')) {
+        Assert-That ($options -contains $required) "Missing SSH protection for ${kind}: $required"
+    }
+    Assert-That ($options -notcontains '-tt' -and $options -notcontains '-L') "$kind must not ask for a terminal or a tunnel."
+}
+Assert-That ((@(Get-SSHOptions 'Check'))[0] -eq '-T' -and (@(Get-SSHOptions 'Copy')) -notcontains '-T') 'Only the ssh check disables the terminal; scp reads -T differently.'
+# The server half travels as two plain files into a content-addressed folder.
+$version = Get-ScriptVersion
+Assert-That ($version.Folder -match '^\.cache/delfin-launcher/[a-f0-9]{32}$') 'Script folder must be named by the scripts digests.'
+$expectedBootstrap = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $PSScriptRoot 'remote_bootstrap.sh')).Hash.ToLowerInvariant()
+Assert-That ($version.Bootstrap -eq $expectedBootstrap -and $version.Folder.EndsWith($expectedBootstrap.Substring(0,16) + $version.Launcher.Substring(0,16))) 'Script version must come from both files.'
+$check = Get-ScriptCheckCommand $version
+Assert-That ($check.StartsWith("bash -c 'umask 077") -and $check.EndsWith(' delfin ' + $version.Folder + ' ' + $version.Bootstrap + ' ' + $version.Launcher)) 'Script check must pass the folder and digests as arguments.'
+Assert-That (-not $check.Contains('"')) 'Script check must not contain double quotes.'
+$commandProfile = Normalize-Profile $testProfile
+$remote = Get-RemoteCommand $commandProfile 'dashboard' '' '' $version
+Assert-That ($remote.StartsWith("bash -ilc '. ~/" + $version.Folder + "/remote_bootstrap.sh' delfin 0 ")) 'The login shell must source the copied bootstrap file.'
+Assert-That ($remote.Contains("'~/" + $version.Folder + "/remote_launcher.py' 'dashboard'")) 'The bootstrap must get the path of the copied launcher.'
+Assert-That (-not $remote.Contains('"') -and -not $remote.Contains('base64') -and -not $remote.Contains('eval')) 'The remote command must carry paths and data only.'
+Assert-Rejected { Get-RemoteCommand $commandProfile 'dashboard' '' '' ([pscustomobject]@{ Folder='.cache/delfin-launcher/../../x' }) }
 
 $tunnelOptions = @(Get-SSHOptions 'Terminal' 8870 9000)
 Assert-That ($tunnelOptions -contains '127.0.0.1:8870:127.0.0.1:9000' -and $tunnelOptions -contains 'ExitOnForwardFailure=yes') 'Local and remote tunnel ports must be independent.'
@@ -95,40 +117,21 @@ $icon.Dispose()
 Assert-That ((Quote-NativeArgument 'a "b" c') -eq '"a \"b\" c"') 'Native Windows arguments must escape quotation marks.'
 Write-Host 'Syntax, connections, SSH options, browser destination and icon checked. Test a real OTP connection separately.'
 
-# Compile the windowless starter and check its Windows GUI subsystem and entry point.
-$starterTestFolder = Join-Path ([IO.Path]::GetTempPath()) ('delfin-starter-test-' + [guid]::NewGuid().ToString())
-[void][IO.Directory]::CreateDirectory($starterTestFolder)
+# Start the actual DELFIN window the way its shortcut does and inspect it.
+$guiTestFolder = Join-Path ([IO.Path]::GetTempPath()) ('delfin-gui-test-' + [guid]::NewGuid().ToString())
+[void][IO.Directory]::CreateDirectory($guiTestFolder)
 try {
-    $starterTest = Join-Path $starterTestFolder 'DELFIN.exe'
-    & (Join-Path $PSScriptRoot 'Build-Starter.ps1') -Destination $starterTest
-    $pe = [IO.File]::ReadAllBytes($starterTest)
-    $peOffset = [BitConverter]::ToInt32($pe,0x3c)
-    Assert-That ([BitConverter]::ToUInt16($pe,$peOffset+24+68) -eq 2) 'Starter must use the Windows GUI subsystem.'
-    $selfTest = Start-Process -FilePath $starterTest -ArgumentList '--self-test' -Wait -PassThru
-    Assert-That ($selfTest.ExitCode -eq 0) 'Starter self-test failed.'
-    # Exercise the actual app-start path with a harmless script instead of the GUI.
-    $probeScript = @'
-Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class ConsoleProbe { [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); }'
-[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'console.txt'),[ConsoleProbe]::GetConsoleWindow().ToInt64().ToString())
-'@
-    $probeScript | Set-Content -LiteralPath (Join-Path $starterTestFolder 'DELFIN.ps1') -Encoding UTF8
-    $appProbe = Start-Process -FilePath $starterTest -Wait -PassThru
-    Assert-That ($appProbe.ExitCode -eq 0) 'Starter could not run its app script.'
-    Assert-That ((Get-Content -LiteralPath (Join-Path $starterTestFolder 'console.txt') -Raw) -eq '0') 'App script must run without an allocated console.'
-    # Launch the actual DELFIN GUI through its real starter, then inspect its HWND.
-    foreach ($name in @('DELFIN.ps1','DELFIN_logo.png','DELFIN.ico','Taskbar.cs')) {
-        Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $starterTestFolder $name) -Force
+    foreach ($name in @('DELFIN.ps1','DELFIN_logo.png','DELFIN.ico')) {
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $guiTestFolder $name) -Force
     }
-    $guiProbe = Start-Process -FilePath $starterTest -ArgumentList '--gui-smoke-test' -PassThru
+    $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $arguments = '-NoProfile -ExecutionPolicy RemoteSigned -File ' + (Quote-NativeArgument (Join-Path $guiTestFolder 'DELFIN.ps1')) + ' -GuiSmokeTest'
+    $guiProbe = Start-Process -FilePath $powershell -ArgumentList $arguments -PassThru
     try {
         if (-not $guiProbe.WaitForExit(30000)) { throw 'Actual DELFIN GUI did not complete its smoke test.' }
         Assert-That ($guiProbe.ExitCode -eq 0) 'Actual DELFIN GUI startup failed.'
-        $guiReport = Get-Content -LiteralPath (Join-Path $starterTestFolder 'gui-smoke.json') -Raw | ConvertFrom-Json
+        $guiReport = Get-Content -LiteralPath (Join-Path $guiTestFolder 'gui-smoke.json') -Raw | ConvertFrom-Json
         Assert-That ($guiReport.Visible -and $guiReport.ShowInTaskbar -and $guiReport.HasIcon) 'DELFIN GUI must be visible with its icon and taskbar entry enabled.'
-        Assert-That ($guiReport.Owner -eq 0 -and ($guiReport.ExtendedStyle -band 0x80) -eq 0) 'DELFIN GUI must be an independent window, not an owned tool window.'
-        Assert-That ($guiReport.RelaunchCommand -eq ('"' + $starterTest + '"')) 'Pinning must relaunch DELFIN.exe, not PowerShell.'
-        Assert-That ($guiReport.RelaunchIcon -eq ((Join-Path $starterTestFolder 'DELFIN.ico') + ',0')) 'Pinned icon must be DELFIN.'
-        Assert-That ($guiReport.RelaunchName -eq 'DELFIN' -and $guiReport.AppId -eq 'ComPlat.DELFIN.Launcher') 'Pinned window must have the DELFIN name and identity.'
-
+        Assert-That ((-not $guiReport.HasOwner) -and $guiReport.TopLevel -and $guiReport.Title -eq 'DELFIN - SSH Dashboard') 'DELFIN GUI must be an independent top-level window.'
     } finally { if (-not $guiProbe.HasExited) { $guiProbe.Kill() }; $guiProbe.Dispose() }
-} finally { Remove-Item -LiteralPath $starterTestFolder -Recurse -Force }
+} finally { Remove-Item -LiteralPath $guiTestFolder -Recurse -Force }

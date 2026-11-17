@@ -54,10 +54,11 @@ import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from .state_paths import state_root
 from typing import Any
 
 
-_FALLBACK_DIR = Path.home() / ".delfin" / "agent_bugs"
+_FALLBACK_DIR = state_root() / "agent_bugs"
 # Conventional sub-folder appended to the configured transfer remote_path
 # when no explicit bug archive is set.
 _BUG_SUBDIR = "AGENT_BUGS"
@@ -1032,7 +1033,7 @@ def push_report_to_remote(
 # Closing the loop: turn a bug report into a regression benchmark task
 # ---------------------------------------------------------------------------
 
-_TASK_DRAFTS_DIR = Path.home() / ".delfin" / "bug_tasks"
+_TASK_DRAFTS_DIR = state_root() / "bug_tasks"
 
 
 def report_surface(report: dict) -> str:

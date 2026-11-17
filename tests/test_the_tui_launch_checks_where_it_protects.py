@@ -65,6 +65,7 @@ def test_inline_is_asked_of_the_window_by_its_flag(monkeypatch, tmp_path):
         raise Exec()
 
     monkeypatch.setattr(cli_service, "_security_preamble", lambda: None)
+    monkeypatch.setattr(cli_service, "_has_terminal", lambda: True)
     monkeypatch.setattr(launcher, "ensure_service", lambda: {"pid": 1})
     monkeypatch.setattr(launcher, "tui_command", lambda: ["/bin/true"])
     monkeypatch.setattr(launcher, "service_command", lambda: ["svc"])

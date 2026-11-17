@@ -1,0 +1,2017 @@
+[
+ {
+  "id": "grid.defgrid1",
+  "keyword": "DEFGRID1",
+  "category": "grid",
+  "purpose": "Selects the smallest of the three predefined integration-grid schemes; grid sizes close to older ORCA defaults but with improved robustness.",
+  "manual": {
+   "page": "contents/essentialelements/numericalintegration",
+   "section": "2.9-2.10.3 The DEFGRIDs"
+  },
+  "parser": "accepted",
+  "opi": "Grid.DEFGRID1",
+  "status": "grounded",
+  "defaults": "default scheme is DEFGRID2; DEFGRID1 must be requested",
+  "typical_use": "quick large calculations; turning the default DEFGRID2 down when speed matters more than grid error",
+  "note": "XC grid AngularGrid 3 / COSX 1,1,2 for SCF per Table 2.48"
+ },
+ {
+  "id": "grid.defgrid2",
+  "keyword": "DEFGRID2",
+  "category": "grid",
+  "purpose": "The default ORCA 6 integration-grid scheme; benchmarked to keep DFT grid errors around 0.01 kcal/mol, so it is adequate for most work.",
+  "manual": {
+   "page": "contents/essentialelements/numericalintegration",
+   "section": "2.9-2.10.3 The DEFGRIDs"
+  },
+  "parser": "accepted",
+  "opi": "Grid.DEFGRID2",
+  "status": "grounded",
+  "defaults": "default since ORCA 5.0 (XC AngularGrid 4 / COSX 1,2,3, Table 2.48)",
+  "typical_use": "the standard choice; upgrade to DEFGRID3 for the cases listed in manual 2.10.7",
+  "literature": "ref 120 (the grid-scheme publication cited in manual 2.9)"
+ },
+ {
+  "id": "grid.defgrid3",
+  "keyword": "DEFGRID3",
+  "category": "grid",
+  "purpose": "The largest predefined grid scheme; very large and conservative, built to keep energy errors well below the default scheme's.",
+  "manual": {
+   "page": "contents/essentialelements/numericalintegration",
+   "section": "2.10.3/2.10.7"
+  },
+  "parser": "accepted",
+  "opi": "Grid.DEFGRID3",
+  "status": "grounded",
+  "typical_use": "anions with charge below -3, very subtle intermolecular interactions, unusual electronic structures, large conjugated systems, or when an error below ~0.2 kcal/mol is required",
+  "note": "XC grid AngularGrid 6 / COSX 2,3,4 for SCF per Table 2.48"
+ },
+ {
+  "id": "grid.refgrid",
+  "keyword": "REFGRID",
+  "category": "grid",
+  "purpose": "Requests the reference-quality grid for energy benchmarks; not described in the 6.1 manual text, so the record stays minimal.",
+  "manual": {
+   "page": "contents/essentialelements/numericalintegration",
+   "section": "2.10.3"
+  },
+  "parser": "accepted",
+  "opi": "Grid.REFGRID",
+  "status": "draft",
+  "note": "keyword present in OPI Grid enum and accepted by the 6.1.1 parser; manual description not found"
+ },
+ {
+  "id": "grid.rotinvgrid",
+  "keyword": "ROTINVGRID",
+  "category": "grid",
+  "purpose": "Requests a rotationally invariant grid construction; not described in the 6.1 manual text, so the record stays minimal.",
+  "manual": {
+   "page": "contents/essentialelements/numericalintegration",
+   "section": "2.10.3"
+  },
+  "parser": "accepted",
+  "opi": "Grid.ROTINVGRID",
+  "status": "draft",
+  "note": "keyword present in OPI Grid enum and accepted by the 6.1.1 parser; manual description not found"
+ },
+ {
+  "id": "method.gridprint",
+  "keyword": "GRIDPRINT",
+  "category": "grid",
+  "purpose": "Prints grid details in the output; accepted by the parser but not described in the 6.1 manual text, so the record stays minimal.",
+  "manual": {
+   "page": "contents/essentialelements/numericalintegration",
+   "section": "2.10.5"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "draft",
+  "note": "accepted by 6.1.1 parser; no manual description found"
+ },
+ {
+  "id": "method.angulargrid",
+  "keyword": "%method AngularGrid",
+  "category": "grid block",
+  "purpose": "Sets the Lebedev angular-grid scheme (1-7, or 0 for a Gauss-Legendre grid) for the XC integration; 1-5 points regions and IntAcc control radial density.",
+  "manual": {
+   "page": "contents/essentialelements/numericalintegration",
+   "section": "2.10.5 SCF Grid Keyword List"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded",
+  "defaults": "set automatically by the DEFGRID scheme (AngularGrid 4 for XC SCF under DEFGRID2)"
+ },
+ {
+  "id": "method.intacc",
+  "keyword": "%method IntAcc",
+  "category": "grid block",
+  "purpose": "Controls the number of radial grid points via the IntAcc value; each unit adds 15 radial points per atom.",
+  "manual": {
+   "page": "contents/essentialelements/numericalintegration",
+   "section": "2.10.2/2.10.5"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded",
+  "defaults": "set by the DEFGRID scheme (XC 4.004 / COSX 4.020 for AngularGrid 2, Table 2.47)"
+ },
+ {
+  "id": "method.specialgridatoms",
+  "keyword": "%method SpecialGridAtoms",
+  "category": "grid block",
+  "purpose": "Raises the radial accuracy (IntAcc) for selected atoms only; the manual notes it is rarely needed any more because the basis is considered in grid construction.",
+  "manual": {
+   "page": "contents/essentialelements/numericalintegration",
+   "section": "2.10.4"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded",
+  "defaults": "in = 0: no change; positive: by element; negative: by atom index"
+ },
+ {
+  "id": "method.vdwgrid",
+  "keyword": "%method VdwAngularGrid/VdwIntAcc",
+  "category": "grid block",
+  "purpose": "Controls the non-local (VV10/NL) dispersion grid; defaults (AngularGrid 2) are not recommended to be changed.",
+  "manual": {
+   "page": "contents/essentialelements/numericalintegration",
+   "section": "2.10.6"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded",
+  "defaults": "VdwAngularGrid 2, VdwIntAcc 5.0, pruning Adaptive, VdwDistTCut 10 A"
+ },
+ {
+  "id": "method.zgridxc",
+  "keyword": "%method Z_GridXC / Z_GridX",
+  "category": "grid block",
+  "purpose": "Sets the XC and COSX grids used in the CP-SCF step (response equations); IntAcc values 3.467 (XC) and 3.067 (COSX) are smaller than the SCF ones by design.",
+  "manual": {
+   "page": "contents/essentialelements/numericalintegration",
+   "section": "2.10.6 Changing CP-SCF grids"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded"
+ },
+ {
+  "id": "method.gridpruning",
+  "keyword": "%method GridPruning",
+  "category": "grid block",
+  "purpose": "Chooses the grid-pruning scheme; default is adaptive pruning which detects core polarization and diffuse functions, OLDPRUNING is the pre-5.0 scheme, UNPRUNED removes pruning.",
+  "manual": {
+   "page": "contents/essentialelements/numericalintegration",
+   "section": "2.10.4"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded",
+  "defaults": "Adaptive (increases grids by 10-20% when needed)"
+ },
+ {
+  "id": "disp.d3",
+  "keyword": "D3",
+  "category": "dispersion",
+  "purpose": "Activates Grimme's D3 dispersion correction with Becke-Johnson damping; per the manual !D3 and !D3BJ are equivalent and BJ damping is generally recommended.",
+  "manual": {
+   "page": "contents/modelchemistries/dispersioncorrections",
+   "section": "3.4.1.3 Basic Usage / 3.4.1.6 Keywords"
+  },
+  "parser": "accepted",
+  "opi": "DispersionCorrection.D3",
+  "status": "grounded",
+  "aliases": [
+   "D3BJ"
+  ],
+  "pairs_with": "a DFT/HF functional that has D3(BJ) parameters (HF is only parameterized with BJ damping)",
+  "defaults": "BJ damping; D3 available for elements up to Pu (Z=94)",
+  "typical_use": "almost every DFT calculation; dispersion corrections are almost always recommended per manual 3.4 intro",
+  "literature": "Grimme, S.; Antony, J.; Ehrlich, S.; Krieg, H. J. Chem. Phys., 2010, 132, 154104; Grimme, S.; Ehrlich, S.; Goerigk, L. J. Comput. Chem., 2011, 32, 1456"
+ },
+ {
+  "id": "disp.d3zero",
+  "keyword": "D3ZERO",
+  "category": "dispersion",
+  "purpose": "Activates the D3 correction with zero damping instead of Becke-Johnson damping; required for functionals (like M06) that are only parameterized with zero damping.",
+  "manual": {
+   "page": "contents/modelchemistries/dispersioncorrections",
+   "section": "3.4.1.3/3.4.1.6"
+  },
+  "parser": "accepted",
+  "opi": "DispersionCorrection.D3ZERO",
+  "status": "grounded",
+  "aliases": [
+   "D30"
+  ],
+  "excludes": "not parameterized for all functionals (HF has no zero-damped parameters)",
+  "note": "D30 is the equivalent spelling the manual lists in Table 3.13"
+ },
+ {
+  "id": "disp.d3tz",
+  "keyword": "D3TZ",
+  "category": "dispersion",
+  "purpose": "Activates special D3 damping parameters optimized for the def2-TZVPP triple-zeta basis set; only available together with zero damping.",
+  "manual": {
+   "page": "contents/modelchemistries/dispersioncorrections",
+   "section": "3.4.1.4 Custom parameters"
+  },
+  "parser": "accepted",
+  "opi": "DispersionCorrection.D3TZ",
+  "status": "grounded",
+  "requires": "D3ZERO",
+  "typical_use": "triple-zeta calculations where the default D3 parameters are fitted for double-zeta-quality results; results slightly worse than QZ with defaults per ref 272 SI"
+ },
+ {
+  "id": "disp.d4",
+  "keyword": "D4",
+  "category": "dispersion",
+  "purpose": "Activates the D4 dispersion correction (atomic-charge-dependent polarizabilities) with Becke-Johnson damping and the three-body (ATM) term included by default; the generally recommended variant.",
+  "manual": {
+   "page": "contents/modelchemistries/dispersioncorrections",
+   "section": "3.4.1.3/3.4.1.6"
+  },
+  "parser": "accepted",
+  "opi": "DispersionCorrection.D4",
+  "status": "grounded",
+  "defaults": "BJ damping and ATM three-body term on by default; D4 available up to Lr (Z=103)",
+  "typical_use": "recommended default dispersion correction for modern functionals; r2SCAN-3c and PWPB95-class work",
+  "literature": "Grimme group D4 papers cited in the manual's dispersion section (refs 159, 274); actinide extension: Wittmann et al. Phys. Chem. Chem. Phys., 2024, 26, 21379-21394"
+ },
+ {
+  "id": "disp.d2",
+  "keyword": "D2",
+  "category": "dispersion",
+  "purpose": "Activates the older D2 dispersion correction; kept for compatibility, superseded by D3 and D4.",
+  "manual": {
+   "page": "contents/modelchemistries/dispersioncorrections",
+   "section": "3.4.1.6 Keywords (Table 3.13)"
+  },
+  "parser": "accepted",
+  "opi": "DispersionCorrection.D2",
+  "status": "grounded",
+  "note": "listed in Table 3.13 without a dedicated section; the manual treats D1/D2 as deprecated via DFTDOPT 1/2"
+ },
+ {
+  "id": "disp.abc",
+  "keyword": "ABC",
+  "category": "dispersion",
+  "purpose": "Activates the three-body (Axilrod-Teller-Muto) dispersion term for D3-type corrections; D4 already includes it by default.",
+  "manual": {
+   "page": "contents/modelchemistries/dispersioncorrections",
+   "section": "3.4.1.2/3.4.1.3"
+  },
+  "parser": "accepted",
+  "opi": "DispersionCorrection.ABC",
+  "status": "grounded",
+  "aliases": [
+   "ATM"
+  ],
+  "pairs_with": "D3 (D3ZERO or D3BJ)",
+  "typical_use": "supramolecular thermochemistry where the three-body term improves accuracy (ref 280)"
+ },
+ {
+  "id": "disp.nl",
+  "keyword": "NL",
+  "category": "dispersion",
+  "purpose": "Activates the non-self-consistent VV10 non-local dispersion correction (DFT-NL): a post-SCF evaluation of the VV10 kernel on the converged density.",
+  "manual": {
+   "page": "contents/modelchemistries/dispersioncorrections",
+   "section": "3.4.2/3.4.2.1"
+  },
+  "parser": "accepted",
+  "opi": "DispersionCorrection.NL",
+  "status": "grounded",
+  "excludes": "TD-DFT with NL not available; second-derivative (Hessian/polarizability) use not available; self-consistent NL not possible with HF",
+  "pairs_with": "functionals with implemented b parameters (Table 3.18: B3LYP, PBE, TPSS, B97M-V, WB97X-V, ...)",
+  "typical_use": "metallic systems or when the electronic structure changes strongly (ionization/oxidation), where NL is preferred over D3/D4",
+  "literature": "Vydrov and Van Voorhis VV10 (ref 275); evaluation ref 276 (GMTKN30/S66); vdW-DF: Langreth and Lundqvist (ref 282)"
+ },
+ {
+  "id": "disp.scnl",
+  "keyword": "SCNL",
+  "category": "dispersion",
+  "purpose": "Activates the self-consistent variant of the VV10 NL correction, where orbitals and density are optimized with the full DFT+VV10 potential; rarely necessary for normal energies.",
+  "manual": {
+   "page": "contents/modelchemistries/dispersioncorrections",
+   "section": "3.4.2.1"
+  },
+  "parser": "accepted",
+  "opi": "DispersionCorrection.SCNL",
+  "status": "grounded",
+  "excludes": "HF (self-consistent NL impossible)",
+  "literature": "Vydrov and Van Voorhis VV10 (ref 275); evaluation ref 276 (GMTKN30/S66); vdW-DF: Langreth and Lundqvist (ref 282)"
+ },
+ {
+  "id": "disp.novdw",
+  "keyword": "NOVDW",
+  "category": "dispersion",
+  "purpose": "Deactivates DFT-D dispersion corrections, e.g. to get the raw functional energy.",
+  "manual": {
+   "page": "contents/modelchemistries/dispersioncorrections",
+   "section": "3.4.1.6 Keywords (Table 3.13)"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded",
+  "note": "listed in Table 3.13"
+ },
+ {
+  "id": "method.dftdopt",
+  "keyword": "%method DFTDOpt",
+  "category": "dispersion block",
+  "purpose": "Selects the dispersion model by number inside %method (5 = D4, 4 = D3(BJ), 3 = D3ZERO, 2 = D2, 1 = original D, deprecated).",
+  "manual": {
+   "page": "contents/modelchemistries/dispersioncorrections",
+   "section": "3.4.1.3/3.4.1.6 Table 3.14"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded",
+  "defaults": "5 (D4) when a D-correction is active"
+ },
+ {
+  "id": "method.d3params",
+  "keyword": "%method D3S6/D3S8/D3A1/D3A2",
+  "category": "dispersion block",
+  "purpose": "Manual D3(BJ) damping parameters for functionals whose parameters ORCA does not yet implement; GGA/hybrids must keep s6 = 1.0.",
+  "manual": {
+   "page": "contents/modelchemistries/dispersioncorrections",
+   "section": "3.4.1.4 Custom parameters"
+  },
+  "parser": "accepted",
+  "opi": "BlockMethod.d3s6",
+  "status": "grounded",
+  "note": "custom parameters are at own risk per the manual's warning; double-hybrids need s6 < 1.0"
+ },
+ {
+  "id": "method.d3rs6",
+  "keyword": "%method D3RS6/D3alpha6",
+  "category": "dispersion block",
+  "purpose": "Manual parameters for the zero-damped D3 variant (rs6 and alpha6); used together with D3ZERO.",
+  "manual": {
+   "page": "contents/modelchemistries/dispersioncorrections",
+   "section": "3.4.1.4"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded",
+  "requires": "D3ZERO"
+ },
+ {
+  "id": "method.d4params",
+  "keyword": "%method D4S6/D4S8/D4A1/D4A2/D4S9",
+  "category": "dispersion block",
+  "purpose": "Manual D4 damping parameters; D4S9 scales the three-body (ABC) term.",
+  "manual": {
+   "page": "contents/modelchemistries/dispersioncorrections",
+   "section": "3.4.1.4"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded"
+ },
+ {
+  "id": "method.dftdscalec6",
+  "keyword": "%method DFTDScaleC6",
+  "category": "dispersion block",
+  "purpose": "Defines the C6 scaling coefficient for the dispersion correction.",
+  "manual": {
+   "page": "contents/modelchemistries/dispersioncorrections",
+   "section": "3.4.1.6 Table 3.14"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded"
+ },
+ {
+  "id": "method.nlb",
+  "keyword": "%method NLb/NLC/NLScal",
+  "category": "dispersion block",
+  "purpose": "Manual parameters for the VV10 NL correction: the b damping parameter, the C long-range kernel parameter, and a global scale for the NL term (for double-hybrids that already cover long-range correlation).",
+  "manual": {
+   "page": "contents/modelchemistries/dispersioncorrections",
+   "section": "3.4.2.2"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded",
+  "note": "vdWDistTCut (default 10 A) is the related correlation-distance cutoff in %method"
+ },
+ {
+  "id": "gcp.dft-sv(p)",
+  "keyword": "GCP(DFT/SV(P))",
+  "category": "gcp",
+  "purpose": "Activates the geometrical counterpoise (gCP) correction for BSSE at a given method/basis level; the level string must match the calculation's basis for a sensible correction.",
+  "manual": {
+   "page": "contents/essentialelements/counterpoise",
+   "section": "2.11.2/2.11.2.1 Table 2.50"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded",
+  "pairs_with": "D3 or D4 (gCP should always be applied together with a dispersion correction)",
+  "typical_use": "double-zeta DFT work on intermolecular/intramolecular BSSE; part of B3LYP-3c as GCP(DFT/SV(P))",
+  "literature": "gCP original paper ref 124 (as cited in the manual's gCP section); B3LYP/6-31G(d) improvement ref 125"
+ },
+ {
+  "id": "gcp.dft-svp",
+  "keyword": "GCP(DFT/SVP)",
+  "category": "gcp",
+  "purpose": "Activates the geometrical counterpoise (gCP) correction for BSSE at a given method/basis level; the level string must match the calculation's basis for a sensible correction.",
+  "manual": {
+   "page": "contents/essentialelements/counterpoise",
+   "section": "2.11.2.1 Table 2.50"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded",
+  "pairs_with": "D3 or D4"
+ },
+ {
+  "id": "gcp.dft-sv",
+  "keyword": "GCP(DFT/SV)",
+  "category": "gcp",
+  "purpose": "Activates the geometrical counterpoise (gCP) correction for BSSE at a given method/basis level; the level string must match the calculation's basis for a sensible correction.",
+  "manual": {
+   "page": "contents/essentialelements/counterpoise",
+   "section": "2.11.2.1 Table 2.50"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded",
+  "pairs_with": "D3 or D4"
+ },
+ {
+  "id": "gcp.dft-tz",
+  "keyword": "GCP(DFT/TZ)",
+  "category": "gcp",
+  "purpose": "Activates the geometrical counterpoise (gCP) correction for BSSE at a given method/basis level; the level string must match the calculation's basis for a sensible correction.",
+  "manual": {
+   "page": "contents/essentialelements/counterpoise",
+   "section": "2.11.2.1 Table 2.50"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded",
+  "note": "def2-TZVP parameterization; for triple-zeta the BSSE is small, gCP matters less"
+ },
+ {
+  "id": "gcp.dft-minis",
+  "keyword": "GCP(DFT/MINIS)",
+  "category": "gcp",
+  "purpose": "Activates the geometrical counterpoise (gCP) correction for BSSE at a given method/basis level; the level string must match the calculation's basis for a sensible correction.",
+  "manual": {
+   "page": "contents/essentialelements/counterpoise",
+   "section": "2.11.2.1 Table 2.50"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded"
+ },
+ {
+  "id": "gcp.dft-lanl",
+  "keyword": "GCP(DFT/LANL)",
+  "category": "gcp",
+  "purpose": "Activates the geometrical counterpoise (gCP) correction for BSSE at a given method/basis level; the level string must match the calculation's basis for a sensible correction.",
+  "manual": {
+   "page": "contents/essentialelements/counterpoise",
+   "section": "2.11.2.1 Table 2.50"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded",
+  "note": "mixed 6-31G(d) + LANL2DZ (Sc-Zn) parameterization; DFT-only, no HF/LANL entry in Table 2.50"
+ },
+ {
+  "id": "gcp.dft-631gd",
+  "keyword": "GCP(DFT/631GD)",
+  "category": "gcp",
+  "purpose": "Activates the geometrical counterpoise (gCP) correction for BSSE at a given method/basis level; the level string must match the calculation's basis for a sensible correction.",
+  "manual": {
+   "page": "contents/essentialelements/counterpoise",
+   "section": "2.11.2.1 Table 2.50"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded",
+  "note": "part of the B3LYP-gCP-D3/6-31G* composite keyword"
+ },
+ {
+  "id": "gcp.dft-631gstar",
+  "keyword": "GCP(DFT/631G*)",
+  "category": "gcp",
+  "purpose": "Activates the geometrical counterpoise (gCP) correction for BSSE at a given method/basis level; the level string must match the calculation's basis for a sensible correction.",
+  "manual": {
+   "page": "contents/essentialelements/counterpoise",
+   "section": "2.11.2.1 (Table 2.50 lists 631GD)"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "draft",
+  "note": "OPI lists the spelling; parser accepts it; manual table lists 631GD for 6-31G(d) - treat as alias of GCP(DFT/631GD)"
+ },
+ {
+  "id": "gcp.dft-svphc",
+  "keyword": "GCP(DFT/SV(P/H,C))",
+  "category": "gcp",
+  "purpose": "Activates the geometrical counterpoise (gCP) correction for BSSE at a given method/basis level; the level string must match the calculation's basis for a sensible correction.",
+  "manual": {
+   "page": "contents/essentialelements/counterpoise",
+   "section": "2.11.2.1 Table 2.50"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "draft",
+  "note": "OPI spelling; not in the manual's Table 2.50 list"
+ },
+ {
+  "id": "gcp.dft-svx",
+  "keyword": "GCP(DFT/SVX)",
+  "category": "gcp",
+  "purpose": "Activates the geometrical counterpoise (gCP) correction for BSSE at a given method/basis level; the level string must match the calculation's basis for a sensible correction.",
+  "manual": {
+   "page": "contents/essentialelements/counterpoise",
+   "section": "2.11.2.1 Table 2.50"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "draft",
+  "note": "OPI spelling; not in the manual's Table 2.50 list"
+ },
+ {
+  "id": "gcp.file",
+  "keyword": "GCP(FILE)",
+  "category": "gcp",
+  "purpose": "Reads gCP parameters from an external parameter file ($HOME/.gcppar) instead of the built-in parameterization.",
+  "manual": {
+   "page": "contents/essentialelements/counterpoise",
+   "section": "2.11.2.1 Technical Notes"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded"
+ },
+ {
+  "id": "gcp.hf-svp",
+  "keyword": "GCP(HF/SVP)",
+  "category": "gcp",
+  "purpose": "Activates the geometrical counterpoise (gCP) correction for BSSE at a given method/basis level; the level string must match the calculation's basis for a sensible correction.",
+  "manual": {
+   "page": "contents/essentialelements/counterpoise",
+   "section": "2.11.2.1 Table 2.50"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded",
+  "pairs_with": "D3 (HF-3c uses GCP(HF/MINIX))"
+ },
+ {
+  "id": "gcp.hf-sv",
+  "keyword": "GCP(HF/SV)",
+  "category": "gcp",
+  "purpose": "Activates the geometrical counterpoise (gCP) correction for BSSE at a given method/basis level; the level string must match the calculation's basis for a sensible correction.",
+  "manual": {
+   "page": "contents/essentialelements/counterpoise",
+   "section": "2.11.2.1 Table 2.50"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded"
+ },
+ {
+  "id": "gcp.hf-tz",
+  "keyword": "GCP(HF/TZ)",
+  "category": "gcp",
+  "purpose": "Activates the geometrical counterpoise (gCP) correction for BSSE at a given method/basis level; the level string must match the calculation's basis for a sensible correction.",
+  "manual": {
+   "page": "contents/essentialelements/counterpoise",
+   "section": "2.11.2.1 Table 2.50"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded"
+ },
+ {
+  "id": "gcp.hf-minis",
+  "keyword": "GCP(HF/MINIS)",
+  "category": "gcp",
+  "purpose": "Activates the geometrical counterpoise (gCP) correction for BSSE at a given method/basis level; the level string must match the calculation's basis for a sensible correction.",
+  "manual": {
+   "page": "contents/essentialelements/counterpoise",
+   "section": "2.11.2.1"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded",
+  "note": "automatically sets the refitted D3 parameters proposed in the gCP paper"
+ },
+ {
+  "id": "gcp.hf-minix",
+  "keyword": "GCP(HF/MINIX)",
+  "category": "gcp",
+  "purpose": "gCP level for the MINIX basis set used by HF-3c; not a Table 2.50 entry but part of the HF-3c compound keyword.",
+  "manual": {
+   "page": "contents/modelchemistries/3cmethods",
+   "section": "3.6.1 (HF-3c decomposition)"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded"
+ },
+ {
+  "id": "gcp.hf-631gd",
+  "keyword": "GCP(HF/631GD)",
+  "category": "gcp",
+  "purpose": "Activates the geometrical counterpoise (gCP) correction for BSSE at a given method/basis level; the level string must match the calculation's basis for a sensible correction.",
+  "manual": {
+   "page": "contents/essentialelements/counterpoise",
+   "section": "2.11.2.1 Table 2.50"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded"
+ },
+ {
+  "id": "gcp.hf-631gstar",
+  "keyword": "GCP(HF/631G*)",
+  "category": "gcp",
+  "purpose": "Activates the geometrical counterpoise (gCP) correction for BSSE at a given method/basis level; the level string must match the calculation's basis for a sensible correction.",
+  "manual": {
+   "page": "contents/essentialelements/counterpoise",
+   "section": "2.11.2.1 (Table 2.50 lists 631GD)"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "draft",
+  "note": "OPI spelling; parser accepts; manual lists 631GD"
+ },
+ {
+  "id": "gcp.hf-svphc",
+  "keyword": "GCP(HF/SV(P/H,C))",
+  "category": "gcp",
+  "purpose": "Activates the geometrical counterpoise (gCP) correction for BSSE at a given method/basis level; the level string must match the calculation's basis for a sensible correction.",
+  "manual": {
+   "page": "contents/essentialelements/counterpoise",
+   "section": "2.11.2.1 Table 2.50"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "draft",
+  "note": "OPI spelling; not in the manual's Table 2.50 list"
+ },
+ {
+  "id": "gcp.hf-svx",
+  "keyword": "GCP(HF/SVX)",
+  "category": "gcp",
+  "purpose": "Activates the geometrical counterpoise (gCP) correction for BSSE at a given method/basis level; the level string must match the calculation's basis for a sensible correction.",
+  "manual": {
+   "page": "contents/essentialelements/counterpoise",
+   "section": "2.11.2.1 Table 2.50"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "draft",
+  "note": "OPI spelling; not in the manual's Table 2.50 list"
+ },
+ {
+  "id": "gcp.hf-sv(p)",
+  "keyword": "GCP(HF/SV(P))",
+  "category": "gcp",
+  "purpose": "Activates the geometrical counterpoise (gCP) correction for BSSE at a given method/basis level; the level string must match the calculation's basis for a sensible correction.",
+  "manual": {
+   "page": "contents/essentialelements/counterpoise",
+   "section": "2.11.2.1 Table 2.50"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "draft",
+  "note": "OPI spelling; Table 2.50 has SV(P) only for DFT"
+ },
+ {
+  "id": "gcp.hf-631g(d)",
+  "keyword": "GCP(HF/631G(D))",
+  "category": "gcp",
+  "purpose": "Activates the geometrical counterpoise (gCP) correction for BSSE at a given method/basis level; the level string must match the calculation's basis for a sensible correction.",
+  "manual": {
+   "page": "contents/essentialelements/counterpoise",
+   "section": "2.11.2.1 Table 2.50"
+  },
+  "parser": "rejected",
+  "opi": "none (no OPI enum or block field)",
+  "status": "draft",
+  "note": "REJECTED by the 6.1.1 parser; use GCP(HF/631G*) or GCP(HF/631GD)"
+ },
+ {
+  "id": "gcp.dft-631g(d)",
+  "keyword": "GCP(DFT/631G(D))",
+  "category": "gcp",
+  "purpose": "Activates the geometrical counterpoise (gCP) correction for BSSE at a given method/basis level; the level string must match the calculation's basis for a sensible correction.",
+  "manual": {
+   "page": "contents/essentialelements/counterpoise",
+   "section": "2.11.2.1 Table 2.50"
+  },
+  "parser": "rejected",
+  "opi": "none (no OPI enum or block field)",
+  "status": "draft",
+  "note": "REJECTED by the 6.1.1 parser; use GCP(DFT/631G*) or GCP(DFT/631GD)"
+ },
+ {
+  "id": "gcp.dft-minix",
+  "keyword": "GCP(DFT/MINIX)",
+  "category": "gcp",
+  "purpose": "Activates the geometrical counterpoise (gCP) correction for BSSE at a given method/basis level; the level string must match the calculation's basis for a sensible correction.",
+  "manual": {
+   "page": "contents/modelchemistries/3cmethods",
+   "section": "3.6.1"
+  },
+  "parser": "rejected",
+  "opi": "none (no OPI enum or block field)",
+  "status": "draft",
+  "note": "REJECTED by the 6.1.1 parser; MINIX gCP is HF-only (HF-3c)"
+ },
+ {
+  "id": "method.dogcp",
+  "keyword": "%method DoGCP/GCPMethod/GCP.D3Minis",
+  "category": "gcp block",
+  "purpose": "gCP control inside %method: DoGCP switches it on, GCPMETHOD gives the level string (e.g. dft/svp), GCP.D3Minis controls the refitted D3-MINIS parameters.",
+  "manual": {
+   "page": "contents/essentialelements/counterpoise",
+   "section": "2.11.2.1/2.11.2.2 Table 2.52"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded"
+ },
+ {
+  "id": "3c.hf-3c",
+  "keyword": "HF-3C",
+  "category": "3c method",
+  "purpose": "Composite Hartree-Fock method (HF/MINIX + D3(BJ) + gCP + SRB short-range bond correction) for structures, frequencies and non-covalent energies of huge systems; conventional integral mode by default.",
+  "manual": {
+   "page": "contents/modelchemistries/3cmethods",
+   "section": "3.6.1"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded",
+  "aliases": [
+   "HF-3c"
+  ],
+  "typical_use": "huge molecular systems; geometry pre-optimization",
+  "literature": "ref 325 (as cited in the manual's composite-methods section)"
+ },
+ {
+  "id": "3c.b97-3c",
+  "keyword": "B97-3C",
+  "category": "3c method",
+  "purpose": "Composite B97 GGA method with D3(BJ)-ATM, short-range bond correction and the def2-mTZVP basis; between HF-3c and PBEh-3c in cost, designed also for transition-metal chemistry.",
+  "manual": {
+   "page": "contents/modelchemistries/3cmethods",
+   "section": "3.6.2"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded",
+  "aliases": [
+   "B97-3c"
+  ],
+  "typical_use": "thermochemistry, structures, noncovalent interactions including transition metals",
+  "literature": "ref 326 (Brandenburg et al., B97-3c paper)"
+ },
+ {
+  "id": "3c.r2scan-3c",
+  "keyword": "R2SCAN-3C",
+  "category": "3c method",
+  "purpose": "The robust 'Swiss army knife' composite: r2SCAN meta-GGA + D4 + gCP on def2-mTZVPP; consistent for open and closed shell transition metal complexes.",
+  "manual": {
+   "page": "contents/modelchemistries/3cmethods",
+   "section": "3.6.3"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded",
+  "aliases": [
+   "R2SCAN-3c"
+  ],
+  "typical_use": "general-purpose thermochemistry, geometries, non-covalent interactions; element range up to Lr (Z=103)",
+  "literature": "ref 221 (Grimme, Hansen, Ehlert, Mewes, J. Chem. Phys., 2021, 154 (6), 064103)"
+ },
+ {
+  "id": "3c.pbeh-3c",
+  "keyword": "PBEH-3C",
+  "category": "3c method",
+  "purpose": "Composite global hybrid (42% HFX PBE) with gCP and D3(BJ) incl. three-body on def2-mSVP; particularly good geometries at low cost.",
+  "manual": {
+   "page": "contents/modelchemistries/3cmethods",
+   "section": "3.6.4"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded",
+  "aliases": [
+   "PBEh-3c"
+  ],
+  "typical_use": "geometry optimizations and non-covalent interaction energies; elements up to Pu (Z=94)"
+ },
+ {
+  "id": "3c.b3lyp-3c",
+  "keyword": "B3LYP-3C",
+  "category": "3c method",
+  "purpose": "Composite B3LYP + D3(BJ)-ATM + gCP on def2-mSVP for gas-phase infrared spectra; equals !B3LYP D3BJ GCP(DFT/SV(P)) def2-mSVP ABC.",
+  "manual": {
+   "page": "contents/modelchemistries/3cmethods",
+   "section": "3.6.5"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded",
+  "aliases": [
+   "B3LYP-3c"
+  ],
+  "typical_use": "gas-phase IR spectra of large systems",
+  "literature": "ref 240 (Pracht et al. IR assessment)"
+ },
+ {
+  "id": "3c.wb97x-3c",
+  "keyword": "WB97X-3C",
+  "category": "3c method",
+  "purpose": "Composite range-separated hybrid wB97X-V with the molecule-optimized vDZP basis (large-core ECPs) and an adapted D4; on par with quadruple-zeta hybrid DFT at much lower cost.",
+  "manual": {
+   "page": "contents/modelchemistries/3cmethods",
+   "section": "3.6.6"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded",
+  "aliases": [
+   "WB97X-3c"
+  ],
+  "typical_use": "benchmark-quality energetics at composite cost; elements up to Rn (Z=86)",
+  "literature": "ref 49 (Mueller, Hansen, Grimme wB97X-3c paper)"
+ },
+ {
+  "id": "3c.b3lyp-gcp-d3",
+  "keyword": "B3LYP-GCP-D3/6-31G(D)",
+  "category": "3c method",
+  "purpose": "Convenience compound keyword equivalent to B3LYP/6-31G* + D3BJ + GCP(DFT/631GD); improves the popular B3LYP/6-31G(d) combination.",
+  "manual": {
+   "page": "contents/essentialelements/counterpoise",
+   "section": "2.11.2.1"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded",
+  "aliases": [
+   "B3LYP-GCP-D3/6-31G*"
+  ],
+  "literature": "gCP original paper ref 124 (as cited in the manual's gCP section); B3LYP/6-31G(d) improvement ref 125"
+ },
+ {
+  "id": "func.lda",
+  "keyword": "LDA",
+  "category": "functional-lda",
+  "purpose": "Local-density approximation functional; in ORCA LDA defaults to the VWN5 correlation parameter set.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.2 Table 3.1"
+  },
+  "parser": "accepted",
+  "opi": "LDA/VWN handled via simple keywords",
+  "status": "grounded",
+  "aliases": [
+   "LSD"
+  ],
+  "literature": "LDA",
+  "note": "alias LSD same behaviour"
+ },
+ {
+  "id": "func.vwn",
+  "keyword": "VWN",
+  "category": "functional-lda",
+  "purpose": "Vosko-Wilk-Nusair LDA correlation, parameter set V.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.2 Table 3.1"
+  },
+  "parser": "accepted",
+  "opi": "LDA",
+  "status": "grounded",
+  "aliases": [
+   "VWN5"
+  ],
+  "literature": "VWN",
+  "note": "VWN-V written as VWN or VWN5; VWN-V spelling rejected by parser"
+ },
+ {
+  "id": "func.vwn3",
+  "keyword": "VWN3",
+  "category": "functional-lda",
+  "purpose": "Vosko-Wilk-Nusair LDA correlation, parameter set III.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.2 Table 3.1"
+  },
+  "parser": "accepted",
+  "opi": "LDA",
+  "status": "grounded",
+  "literature": "VWN3"
+ },
+ {
+  "id": "func.pwlda",
+  "keyword": "PWLDA",
+  "category": "functional-lda",
+  "purpose": "Perdew-Wang parameterization of the LDA; also ORCA's default local part in constructed functionals (LDAOpt C_PWLDA).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.2 Table 3.1 / 3.3.3.1"
+  },
+  "parser": "accepted",
+  "opi": "LDA",
+  "status": "grounded",
+  "literature": "PWLDA"
+ },
+ {
+  "id": "func.hfs",
+  "keyword": "HFS",
+  "category": "functional-lda",
+  "purpose": "Hartree-Fock-Slater exchange-only functional (no correlation).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.2 Table 3.1"
+  },
+  "parser": "accepted",
+  "opi": "LDA",
+  "status": "grounded",
+  "literature": "HFS"
+ },
+ {
+  "id": "func.bp86",
+  "keyword": "BP86",
+  "category": "functional-gga",
+  "purpose": "Becke '88 exchange + Perdew '86 correlation GGA; a fast standard GGA for geometry and screening work.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.3 Table 3.2"
+  },
+  "parser": "accepted",
+  "opi": "Dft.BP86",
+  "status": "grounded",
+  "literature": "refs 198, 199 (Becke '88; Perdew '86)"
+ },
+ {
+  "id": "func.blyp",
+  "keyword": "BLYP",
+  "category": "functional-gga",
+  "purpose": "Becke '88 exchange + Lee-Yang-Parr correlation GGA.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.3 Table 3.2"
+  },
+  "parser": "accepted",
+  "opi": "Dft.BLYP",
+  "status": "grounded",
+  "literature": "ref 200"
+ },
+ {
+  "id": "func.pbe",
+  "keyword": "PBE",
+  "category": "functional-gga",
+  "purpose": "Perdew-Burke-Ernzerhof GGA; the standard non-empirical GGA and the base of PBE0/PBEh-3c.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.3 Table 3.2"
+  },
+  "parser": "accepted",
+  "opi": "Dft.PBE",
+  "status": "grounded",
+  "literature": "ref 206"
+ },
+ {
+  "id": "func.olyp",
+  "keyword": "OLYP",
+  "category": "functional-gga",
+  "purpose": "Handy's 'optimal' exchange + LYP correlation GGA.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.3 Table 3.2"
+  },
+  "parser": "accepted",
+  "opi": "Dft.OLYP",
+  "status": "grounded",
+  "literature": "ref 201"
+ },
+ {
+  "id": "func.xlyp",
+  "keyword": "XLYP",
+  "category": "functional-gga",
+  "purpose": "Xu-Goddard exchange + LYP correlation GGA.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.3 Table 3.2"
+  },
+  "parser": "accepted",
+  "opi": "Dft.XLYP",
+  "status": "grounded",
+  "literature": "ref 203"
+ },
+ {
+  "id": "func.glyph",
+  "keyword": "GLYP",
+  "category": "functional-gga",
+  "purpose": "Gill '96 exchange + LYP correlation GGA.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.3 Table 3.2"
+  },
+  "parser": "accepted",
+  "opi": "Dft.GLYP",
+  "status": "grounded",
+  "literature": "ref 202"
+ },
+ {
+  "id": "func.pw91",
+  "keyword": "PW91",
+  "category": "functional-gga",
+  "purpose": "Perdew-Wang '91 GGA functional.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.3 Table 3.2"
+  },
+  "parser": "accepted",
+  "opi": "Dft.PW91",
+  "status": "grounded",
+  "literature": "ref 204"
+ },
+ {
+  "id": "func.pwp",
+  "keyword": "PWP",
+  "category": "functional-gga",
+  "purpose": "Perdew-Wang '91 exchange + Perdew '86 correlation GGA.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.3 Table 3.2"
+  },
+  "parser": "accepted",
+  "opi": "Dft.PWP",
+  "status": "grounded",
+  "literature": "ref 204"
+ },
+ {
+  "id": "func.mpwpw",
+  "keyword": "MPWPW",
+  "category": "functional-gga",
+  "purpose": "Modified PW exchange + PW correlation GGA.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.3 Table 3.2"
+  },
+  "parser": "accepted",
+  "opi": "Dft.MPWPW",
+  "status": "grounded",
+  "literature": "ref 205"
+ },
+ {
+  "id": "func.mpwlyp",
+  "keyword": "MPWLYP",
+  "category": "functional-gga",
+  "purpose": "Modified PW exchange + LYP correlation GGA.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.3 Table 3.2"
+  },
+  "parser": "accepted",
+  "opi": "Dft.MPWLYP",
+  "status": "grounded",
+  "literature": "ref 205"
+ },
+ {
+  "id": "func.revpbe",
+  "keyword": "REVPBE",
+  "category": "functional-gga",
+  "purpose": "'Revised' PBE GGA (Zhang-Yang style revision).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.3 Table 3.2"
+  },
+  "parser": "accepted",
+  "opi": "Dft.REVPBE",
+  "status": "grounded",
+  "literature": "ref 208"
+ },
+ {
+  "id": "func.rpbe",
+  "keyword": "RPBE",
+  "category": "functional-gga",
+  "purpose": "'Modified' PBE GGA (Hammer-Hansen-Norskov exchange enhancement).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.3 Table 3.2"
+  },
+  "parser": "accepted",
+  "opi": "Dft.RPBE",
+  "status": "grounded",
+  "literature": "ref 207"
+ },
+ {
+  "id": "func.rpw86pbe",
+  "keyword": "RPW86PBE",
+  "category": "functional-gga",
+  "purpose": "PBE correlation with refitted Perdew '86 exchange; the base of original VV10 (b = 5.9).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.3 Table 3.2"
+  },
+  "parser": "accepted",
+  "opi": "Dft.RPW86PBE",
+  "status": "grounded",
+  "literature": "ref 209"
+ },
+ {
+  "id": "func.scanfunc",
+  "keyword": "SCANFUNC",
+  "category": "functional-meta-gga",
+  "purpose": "Perdew's SCAN meta-GGA; needs enhanced numerical grid settings.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.3 Table 3.2 / 3.3 intro"
+  },
+  "parser": "accepted",
+  "opi": "Dft.SCANFUNC",
+  "status": "grounded",
+  "literature": "ref 214",
+  "note": "OPI enum name SCANFUNC; keyword spellings SCAN-like"
+ },
+ {
+  "id": "func.rscan",
+  "keyword": "RSCAN",
+  "category": "functional-meta-gga",
+  "purpose": "Regularized SCAN meta-GGA.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.3 Table 3.2"
+  },
+  "parser": "accepted",
+  "opi": "Dft.RSCAN",
+  "status": "grounded",
+  "literature": "ref 215"
+ },
+ {
+  "id": "func.r2scan",
+  "keyword": "R2SCAN",
+  "category": "functional-meta-gga",
+  "purpose": "Regularized and restored SCAN (r2SCAN) meta-GGA by Furness, Sun et al.; numerically more robust than SCAN.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.3 Table 3.2"
+  },
+  "parser": "accepted",
+  "opi": "Dft.R2SCAN",
+  "status": "grounded",
+  "literature": "ref 216"
+ },
+ {
+  "id": "func.m06l",
+  "keyword": "M06L",
+  "category": "functional-meta-gga",
+  "purpose": "Minnesota M06-L local meta-GGA (pure DFT exchange, no HF portion).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.3 Table 3.2"
+  },
+  "parser": "accepted",
+  "opi": "Dft.M06L",
+  "status": "grounded",
+  "literature": "ref 217"
+ },
+ {
+  "id": "func.tpass",
+  "keyword": "TPSS",
+  "category": "functional-meta-gga",
+  "purpose": "TPSS meta-GGA functional.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.3 Table 3.2"
+  },
+  "parser": "accepted",
+  "opi": "Dft.TPSS",
+  "status": "grounded",
+  "literature": "ref 218"
+ },
+ {
+  "id": "func.revtpss",
+  "keyword": "REVTPSS",
+  "category": "functional-meta-gga",
+  "purpose": "Revised TPSS meta-GGA.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.3 Table 3.2"
+  },
+  "parser": "accepted",
+  "opi": "Dft.REVTPSS",
+  "status": "grounded",
+  "literature": "refs 219, 220"
+ },
+ {
+  "id": "func.b97m-v",
+  "keyword": "B97M-V",
+  "category": "functional-meta-gga",
+  "purpose": "Head-Gordon's B97M-V meta-GGA with built-in VV10 non-local correlation (NL applied by default, no extra keyword).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.3 Table 3.2 / dispersion 3.4.2.1"
+  },
+  "parser": "accepted",
+  "opi": "Dft.WB97M_V",
+  "status": "grounded",
+  "literature": "ref 211"
+ },
+ {
+  "id": "func.b97m-d3bj",
+  "keyword": "B97M-D3BJ",
+  "category": "functional-meta-gga",
+  "purpose": "B97M-V variant with D3(BJ) correction by Najibi and Goerigk instead of VV10.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.3 Table 3.2"
+  },
+  "parser": "accepted",
+  "opi": "Dft.WB97M_D3BJ",
+  "status": "grounded",
+  "literature": "ref 212"
+ },
+ {
+  "id": "func.b97m-d4",
+  "keyword": "B97M-D4",
+  "category": "functional-meta-gga",
+  "purpose": "B97M-V variant with D4 correction by Najibi and Goerigk.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.3 Table 3.2"
+  },
+  "parser": "accepted",
+  "opi": "Dft.WB97M_D4",
+  "status": "grounded",
+  "literature": "ref 213"
+ },
+ {
+  "id": "func.b3lyp",
+  "keyword": "B3LYP",
+  "category": "functional-hybrid",
+  "purpose": "The popular 20%-HFX hybrid GGA (TurboMole definition, LDAOpt C_VWN5); the most used general-purpose hybrid.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4 Table 3.4"
+  },
+  "parser": "accepted",
+  "opi": "Dft.B3LYP",
+  "status": "grounded",
+  "literature": "ref 230",
+  "note": "B3LYP/G is the Gaussian-definition variant (VWN3)"
+ },
+ {
+  "id": "func.b3lyp-g",
+  "keyword": "B3LYP/G",
+  "category": "functional-hybrid",
+  "purpose": "B3LYP as defined in the Gaussian program system (LDAOpt C_VWN3 instead of VWN5).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4 Table 3.4"
+  },
+  "parser": "accepted",
+  "opi": "Dft.B3LYP_G",
+  "status": "grounded",
+  "literature": "ref 230"
+ },
+ {
+  "id": "func.pbe0",
+  "keyword": "PBE0",
+  "category": "functional-hybrid",
+  "purpose": "One-parameter 25%-HFX hybrid version of PBE.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4 Table 3.4"
+  },
+  "parser": "accepted",
+  "opi": "Dft.PBE0",
+  "status": "grounded",
+  "literature": "ref 229"
+ },
+ {
+  "id": "func.revete0",
+  "keyword": "REVPBE0",
+  "category": "functional-hybrid",
+  "purpose": "'Revised' PBE0 hybrid (25% HFX).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4 Table 3.4"
+  },
+  "parser": "accepted",
+  "opi": "Dft.REVPBE0",
+  "status": "grounded",
+  "literature": "ref 234"
+ },
+ {
+  "id": "func.revpbe38",
+  "keyword": "REVPBE38",
+  "category": "functional-hybrid",
+  "purpose": "'Revised' PBE0 with 37.5% HF exchange.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4 Table 3.4"
+  },
+  "parser": "accepted",
+  "opi": "Dft.REVPBE38",
+  "status": "grounded",
+  "literature": "ref 234"
+ },
+ {
+  "id": "func.b1lyp",
+  "keyword": "B1LYP",
+  "category": "functional-hybrid",
+  "purpose": "One-parameter hybrid with Becke '88 exchange + LYP (25% HFX).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4 Table 3.4"
+  },
+  "parser": "accepted",
+  "opi": "Dft.B1LYP",
+  "status": "grounded",
+  "literature": "ref 232"
+ },
+ {
+  "id": "func.b1p86",
+  "keyword": "B1P86",
+  "category": "functional-hybrid",
+  "purpose": "One-parameter hybrid version of BP86 (25% HFX).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4 Table 3.4"
+  },
+  "parser": "accepted",
+  "opi": "Dft.B1P86",
+  "status": "grounded",
+  "literature": "ref 199"
+ },
+ {
+  "id": "func.b3p86",
+  "keyword": "B3P86",
+  "category": "functional-hybrid",
+  "purpose": "Three-parameter hybrid version of BP86 (20% HFX).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4 Table 3.4"
+  },
+  "parser": "accepted",
+  "opi": "Dft.B3P86",
+  "status": "grounded",
+  "literature": "ref 227"
+ },
+ {
+  "id": "func.b3pw91",
+  "keyword": "B3PW91",
+  "category": "functional-hybrid",
+  "purpose": "Three-parameter hybrid version of PW91 (20% HFX).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4 Table 3.4"
+  },
+  "parser": "accepted",
+  "opi": "Dft.B3PW91",
+  "status": "grounded",
+  "literature": "ref 227"
+ },
+ {
+  "id": "func.pw1pw",
+  "keyword": "PW1PW",
+  "category": "functional-hybrid",
+  "purpose": "One-parameter hybrid version of PW91 (25% HFX).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4 Table 3.4"
+  },
+  "parser": "accepted",
+  "opi": "Dft.PW1PW",
+  "status": "grounded",
+  "literature": "ref 229"
+ },
+ {
+  "id": "func.mpw1pw",
+  "keyword": "MPW1PW",
+  "category": "functional-hybrid",
+  "purpose": "One-parameter hybrid version of mPWPW (25% HFX).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4 Table 3.4"
+  },
+  "parser": "accepted",
+  "opi": "Dft.MPW1PW",
+  "status": "grounded",
+  "literature": "ref 205"
+ },
+ {
+  "id": "func.mpw1lyp",
+  "keyword": "MPW1LYP",
+  "category": "functional-hybrid",
+  "purpose": "One-parameter hybrid version of mPWLYP (25% HFX).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4 Table 3.4"
+  },
+  "parser": "accepted",
+  "opi": "Dft.MPW1LYP",
+  "status": "grounded",
+  "literature": "ref 205"
+ },
+ {
+  "id": "func.bhandhlyp",
+  "keyword": "BHANDHLYP",
+  "category": "functional-hybrid",
+  "purpose": "Becke's half-and-half hybrid functional (50% HFX).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4 Table 3.4"
+  },
+  "parser": "accepted",
+  "opi": "Dft.BHANDHLYP",
+  "status": "grounded",
+  "literature": "ref 227"
+ },
+ {
+  "id": "func.x3lyp",
+  "keyword": "X3LYP",
+  "category": "functional-hybrid",
+  "purpose": "Xu-Goddard hybrid functional (21.8% HFX).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4 Table 3.4"
+  },
+  "parser": "accepted",
+  "opi": "Dft.X3LYP",
+  "status": "grounded",
+  "literature": "ref 203"
+ },
+ {
+  "id": "func.o3lyp",
+  "keyword": "O3LYP",
+  "category": "functional-hybrid",
+  "purpose": "Handy's hybrid functional (11.61% HFX).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4 Table 3.4"
+  },
+  "parser": "accepted",
+  "opi": "Dft.O3LYP",
+  "status": "grounded",
+  "literature": "ref 233"
+ },
+ {
+  "id": "func.m06",
+  "keyword": "M06",
+  "category": "functional-hybrid",
+  "purpose": "Minnesota M06 hybrid meta-GGA (27% HFX); zero-damped D3 only.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4 Table 3.4"
+  },
+  "parser": "accepted",
+  "opi": "Dft.M06",
+  "status": "grounded",
+  "literature": "ref 235",
+  "note": "manual notes M06 is only parameterized with zero damping"
+ },
+ {
+  "id": "func.m062x",
+  "keyword": "M062X",
+  "category": "functional-hybrid",
+  "purpose": "Minnesota M06-2X hybrid meta-GGA (54% HFX); describes medium-range dispersion but misses long-range.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4 Table 3.4 / dispersion 3.4 intro"
+  },
+  "parser": "accepted",
+  "opi": "Dft.M062X",
+  "status": "grounded",
+  "literature": "ref 235",
+  "note": "manual: dispersion correction beneficial but not mandatory"
+ },
+ {
+  "id": "func.pw6b95",
+  "keyword": "PW6B95",
+  "category": "functional-hybrid",
+  "purpose": "PW6B95 hybrid meta-GGA (28% HFX); strong for thermochemistry.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4 Table 3.4"
+  },
+  "parser": "accepted",
+  "opi": "Dft.PW6B95",
+  "status": "grounded",
+  "literature": "ref 236"
+ },
+ {
+  "id": "func.tpssh",
+  "keyword": "TPSSH",
+  "category": "functional-hybrid",
+  "purpose": "Hybrid version of TPSS with 10% HF exchange.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4 Table 3.4"
+  },
+  "parser": "accepted",
+  "opi": "Dft.TPSSH",
+  "status": "grounded",
+  "literature": "ref 218"
+ },
+ {
+  "id": "func.tpss0",
+  "keyword": "TPSS0",
+  "category": "functional-hybrid",
+  "purpose": "25%-exchange version of TPSSh with improved energetics.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4 Table 3.4"
+  },
+  "parser": "accepted",
+  "opi": "Dft.TPSS0",
+  "status": "grounded",
+  "literature": "ref 237"
+ },
+ {
+  "id": "func.r2scanh",
+  "keyword": "R2SCANH",
+  "category": "functional-hybrid",
+  "purpose": "Global hybrid variant of r2SCAN with 10% HF exchange.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4 Table 3.4"
+  },
+  "parser": "accepted",
+  "opi": "Dft.R2SCANH",
+  "status": "grounded",
+  "literature": "ref 238"
+ },
+ {
+  "id": "func.r2scan0",
+  "keyword": "R2SCAN0",
+  "category": "functional-hybrid",
+  "purpose": "Global hybrid variant of r2SCAN with 25% HF exchange.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4 Table 3.4"
+  },
+  "parser": "accepted",
+  "opi": "Dft.R2SCAN0",
+  "status": "grounded",
+  "literature": "ref 238"
+ },
+ {
+  "id": "func.r2scan50",
+  "keyword": "R2SCAN50",
+  "category": "functional-hybrid",
+  "purpose": "Global hybrid variant of r2SCAN with 50% HF exchange.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4 Table 3.4"
+  },
+  "parser": "accepted",
+  "opi": "Dft.R2SCAN50",
+  "status": "grounded",
+  "literature": "ref 238"
+ },
+ {
+  "id": "func.wb97",
+  "keyword": "WB97",
+  "category": "functional-rsh",
+  "purpose": "Range-separated hybrid wB97 (0-100% variable HFX, mu = 0.40 bohr^-1).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4.2 Table 3.6"
+  },
+  "parser": "accepted",
+  "opi": "Dft.WB97",
+  "status": "grounded",
+  "literature": "ref 243"
+ },
+ {
+  "id": "func.wb97x",
+  "keyword": "WB97X",
+  "category": "functional-rsh",
+  "purpose": "Range-separated hybrid wB97X with empirical atom-pairwise correction (mu = 0.30).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4.2 Table 3.6"
+  },
+  "parser": "accepted",
+  "opi": "Dft.WB97X",
+  "status": "grounded",
+  "literature": "ref 243"
+ },
+ {
+  "id": "func.wb97x-v",
+  "keyword": "WB97X-V",
+  "category": "functional-rsh",
+  "purpose": "Range-separated hybrid with built-in VV10 non-local correlation (mu = 0.30); NL applied by default.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4.2 Table 3.6"
+  },
+  "parser": "accepted",
+  "opi": "Dft.WB97X_V",
+  "status": "grounded",
+  "literature": "ref 244"
+ },
+ {
+  "id": "func.wb97x-d3",
+  "keyword": "WB97X-D3",
+  "category": "functional-rsh",
+  "purpose": "wB97X re-optimized with D3(0) correction (mu = 0.25).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4.2 Table 3.6"
+  },
+  "parser": "accepted",
+  "opi": "Dft.WB97X_D3",
+  "status": "grounded",
+  "literature": "ref 245"
+ },
+ {
+  "id": "func.wb97x-d3bj",
+  "keyword": "WB97X-D3BJ",
+  "category": "functional-rsh",
+  "purpose": "wB97X variant with D3(BJ) correction (mu = 0.30).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4.2 Table 3.6"
+  },
+  "parser": "accepted",
+  "opi": "Dft.WB97X_D3BJ",
+  "status": "grounded",
+  "literature": "ref 212"
+ },
+ {
+  "id": "func.wb97x-d4",
+  "keyword": "WB97X-D4",
+  "category": "functional-rsh",
+  "purpose": "wB97X variant with D4 correction (mu = 0.30).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4.2 Table 3.6"
+  },
+  "parser": "accepted",
+  "opi": "Dft.WB97X_D4",
+  "status": "grounded",
+  "literature": "ref 213"
+ },
+ {
+  "id": "func.wb97x-d4rev",
+  "keyword": "WB97X-D4REV",
+  "category": "functional-rsh",
+  "purpose": "wB97X variant with revised D4 parameters (mu = 0.30); basis of wB97X-3c.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4.2 Table 3.6"
+  },
+  "parser": "accepted",
+  "opi": "Dft.WB97X_D4REV",
+  "status": "grounded",
+  "literature": "ref 49"
+ },
+ {
+  "id": "func.camb3lyp",
+  "keyword": "CAM-B3LYP",
+  "category": "functional-rsh",
+  "purpose": "Coulomb-attenuated B3LYP (19-65% variable HFX, mu = 0.33); the fixed DFT-exchange part can be modified.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4.2 Table 3.6"
+  },
+  "parser": "accepted",
+  "opi": "Dft.CAM_B3LYP",
+  "status": "grounded",
+  "literature": "ref 242"
+ },
+ {
+  "id": "func.lcblyp",
+  "keyword": "LC-BLYP",
+  "category": "functional-rsh",
+  "purpose": "Long-range-corrected BLYP (0-100% variable HFX, mu = 0.33).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4.2 Table 3.6"
+  },
+  "parser": "accepted",
+  "opi": "Dft.LC_BLYP",
+  "status": "grounded",
+  "literature": "ref 246"
+ },
+ {
+  "id": "func.lcpbe",
+  "keyword": "LC-PBE",
+  "category": "functional-rsh",
+  "purpose": "Long-range-corrected PBE (0-100% variable HFX, mu = 0.47); recreatable via %method RangeSep* keywords.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4.2 Table 3.6 / 3.3.4.2.1"
+  },
+  "parser": "accepted",
+  "opi": "Dft.LC_PBE",
+  "status": "grounded",
+  "literature": "ref 241"
+ },
+ {
+  "id": "func.wb97m-v",
+  "keyword": "WB97M-V",
+  "category": "functional-rsh",
+  "purpose": "Range-separated hybrid meta-GGA wB97M-V with built-in VV10 correlation (mu = 0.30).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4.2 Table 3.6"
+  },
+  "parser": "accepted",
+  "opi": "Dft.WB97M_V",
+  "status": "grounded",
+  "literature": "ref 247"
+ },
+ {
+  "id": "func.wb97m-d3bj",
+  "keyword": "WB97M-D3BJ",
+  "category": "functional-rsh",
+  "purpose": "wB97M variant with D3(BJ) correction.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4.2 Table 3.6"
+  },
+  "parser": "accepted",
+  "opi": "Dft.WB97M_D3BJ",
+  "status": "grounded",
+  "literature": "ref 212"
+ },
+ {
+  "id": "func.wb97m-d4",
+  "keyword": "WB97M-D4",
+  "category": "functional-rsh",
+  "purpose": "wB97M variant with D4 correction.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4.2 Table 3.6"
+  },
+  "parser": "accepted",
+  "opi": "Dft.WB97M_D4",
+  "status": "grounded",
+  "literature": "ref 213"
+ },
+ {
+  "id": "func.wb97m-d4rev",
+  "keyword": "WB97M-D4REV",
+  "category": "functional-rsh",
+  "purpose": "wB97M variant with revised D4 parameters.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4.2 Table 3.6"
+  },
+  "parser": "accepted",
+  "opi": "Dft.WB97M_D4REV",
+  "status": "grounded",
+  "literature": "ref 49"
+ },
+ {
+  "id": "func.wr2scan",
+  "keyword": "WR2SCAN",
+  "category": "functional-rsh",
+  "purpose": "Range-separated w-r2SCAN hybrid (mu = 0.30).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4.2 Table 3.6"
+  },
+  "parser": "accepted",
+  "opi": "Dft.WR2SCAN",
+  "status": "grounded",
+  "literature": "ref 248"
+ },
+ {
+  "id": "func.b2plyp",
+  "keyword": "B2PLYP",
+  "category": "functional-dh",
+  "purpose": "Grimme's original double-hybrid: B88 exchange + LYP correlation with 53% HFX and 27% MP2 correlation.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.5/3.3.5.1"
+  },
+  "parser": "accepted",
+  "opi": "Dft.B2PLYP",
+  "status": "grounded",
+  "literature": "ref 249",
+  "note": "RIJCOSX + RI-MP2 on by default; double-hybrids need their own dispersion parameters (s6 < 1.0)"
+ },
+ {
+  "id": "func.dsdblyp",
+  "keyword": "DSD-BLYP",
+  "category": "functional-dh",
+  "purpose": "Martin's dispersion-corrected spin-component-scaled double-hybrid (69% HFX, D3BJ parameters).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.5.1 Table 3.8"
+  },
+  "parser": "accepted",
+  "opi": "Dft.DSD_BLYP",
+  "status": "grounded",
+  "literature": "ref 251",
+  "note": "parameterization depends on dispersion variant and year suffix"
+ },
+ {
+  "id": "func.dsdblyp2013",
+  "keyword": "DSD-BLYP/2013",
+  "category": "functional-dh",
+  "purpose": "The 2013 re-parameterization of DSD-BLYP (75% HFX without dispersion, 71% with D3BJ).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.5.1 Table 3.8"
+  },
+  "parser": "accepted",
+  "opi": "Dft.DSD_BLYP_2013",
+  "status": "grounded",
+  "literature": "ref 253"
+ },
+ {
+  "id": "func.dsdpep86",
+  "keyword": "DSD-PBEP86",
+  "category": "functional-dh",
+  "purpose": "DSD double-hybrid with PBEP86 components (70% HFX with D3BJ).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.5.1 Table 3.8"
+  },
+  "parser": "accepted",
+  "opi": "Dft.DSD_PBEP86",
+  "status": "grounded",
+  "literature": "ref 252"
+ },
+ {
+  "id": "func.revdsd",
+  "keyword": "REVDSD-PBEP86",
+  "category": "functional-dh",
+  "purpose": "Revised DSD-PBEP86 double-hybrid by Martin et al., accurate for most thermochemistry; used with D4.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.5.1 Table 3.8"
+  },
+  "parser": "accepted",
+  "opi": "Dft.SOS_REVDSD_PBEP86",
+  "status": "grounded",
+  "literature": "ref 254",
+  "note": "OPI spells the D4 variant sos-revdsd-pbep86-d4; bare DSD-PBEP86-D4 spelling is rejected by the parser"
+ },
+ {
+  "id": "func.pwpb95",
+  "keyword": "PWPB95",
+  "category": "functional-dh",
+  "purpose": "Grimme's spin-component-scaled double-hybrid based on PW91 components.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.5.1 Table 3.8 / 3.3.5 intro"
+  },
+  "parser": "accepted",
+  "opi": "Dft.PWPB95",
+  "status": "grounded",
+  "literature": "ref 250"
+ },
+ {
+  "id": "func.wpr2scan50",
+  "keyword": "WPR2SCAN50",
+  "category": "functional-rsh-dh",
+  "purpose": "Range-separated double-hybrid wPR2SCAN50 (b = 9.4149 for NL).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.5.2 Table 3.9"
+  },
+  "parser": "accepted",
+  "opi": "Dft.WPR2SCAN50",
+  "status": "grounded",
+  "literature": "ref 248"
+ },
+ {
+  "id": "func.wb97m2",
+  "keyword": "WB97M(2)",
+  "category": "functional-rsh-dh",
+  "purpose": "Head-Gordon's wB97M(2) range-separated double-hybrid with VV10 correlation.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.5.2 Table 3.9"
+  },
+  "parser": "accepted",
+  "opi": "Dft.WB97M_2",
+  "status": "grounded",
+  "literature": "ref 247"
+ },
+ {
+  "id": "func.doddsd",
+  "keyword": "REVdOD-PBEP86",
+  "category": "functional-dh",
+  "purpose": "DOD-family double-hybrid (opposite-spin scaled) by Martin et al., used with D4.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.5.1 Table 3.8 region"
+  },
+  "parser": "accepted",
+  "opi": "Dft.REVDOD_PBEP86_D4",
+  "status": "draft",
+  "note": "OPI lists revdod-pbep86-d4/2021; manual discusses the DSD/DOD family but this spelling's row was not located in the table text"
+ },
+ {
+  "id": "method.functional",
+  "keyword": "%method Functional",
+  "category": "method block",
+  "purpose": "Selects the functional inside %method (equivalent to the simple keyword); note RI/RIJCOSX are then NOT enabled by default and must be requested explicitly.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.1"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded"
+ },
+ {
+  "id": "method.method",
+  "keyword": "%method Method DFT",
+  "category": "method block",
+  "purpose": "Sets the model chemistry to DFT (equivalent to DFGTO) inside the %method block.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.1"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded"
+ },
+ {
+  "id": "method.exchange",
+  "keyword": "%method Exchange/Correlation/LDAOpt",
+  "category": "method block",
+  "purpose": "Builds a functional from components: exchange (e.g. X_BECKE), correlation (e.g. C_P86), and the local correlation part (LDAOpt, e.g. C_PWLDA); choice of LDAOpt is crucial for reproducibility.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.3.1"
+  },
+  "parser": "accepted",
+  "opi": "BlockMethod.exchange",
+  "status": "grounded",
+  "note": "Table 3.3 lists the available components"
+ },
+ {
+  "id": "method.scalhfx",
+  "keyword": "%method ScalHFX/ScalDFX/ScalGGAC/ScalLDAC",
+  "category": "method block",
+  "purpose": "Customizes hybrid composition: fractions of Hartree-Fock exchange, fixed DFT exchange, GGA correlation, and LDA correlation (ScalLDAC must equal ScalGGAC).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4.x/3.3.4.2.1"
+  },
+  "parser": "accepted",
+  "opi": "BlockMethod.scalhfx",
+  "status": "grounded"
+ },
+ {
+  "id": "method.rangesep",
+  "keyword": "%method RangeSepEXX/RangeSepMu/RangeSepScal",
+  "category": "method block",
+  "purpose": "Activates and parameterizes range-separated exchange: RangeSepEXX switches it on, RangeSepMu is the range-separation parameter (>0), RangeSepScal the fraction of variable HFX.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.4.2.1 Table 3.7"
+  },
+  "parser": "accepted",
+  "opi": "BlockMethod.rangesepexx",
+  "status": "grounded",
+  "note": "ACM_A/B/C is the equivalent ACM syntax; ScalDFX only works for CAM-B3LYP and LC-BLYP"
+ },
+ {
+  "id": "method.xalpha",
+  "keyword": "%method XAlpha/XBeta/XKappa/XMuePBE/CBetaPBE",
+  "category": "method block",
+  "purpose": "Modifies functional parameters of the X-alpha and PBE components (defaults: XAlpha 0.0042? no - XAlpha default 0.7, XKappa 0.804, XMuePBE 0.21952, CBetaPBE 0.066725).",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.3.1 (PBE parameter table)"
+  },
+  "parser": "accepted",
+  "opi": "BlockMethod.xalpha",
+  "status": "draft",
+  "note": "defaults from the manual's %method customization table near section 3.3.3.1"
+ },
+ {
+  "id": "method.domp2",
+  "keyword": "%method DoMP2",
+  "category": "method block",
+  "purpose": "Activates the MP2 correlation part when constructing double-hybrid functionals manually.",
+  "manual": {
+   "page": "contents/modelchemistries/DensityFunctionalTheory",
+   "section": "3.3.5.3 Table 3.10"
+  },
+  "parser": "accepted",
+  "opi": "none (no OPI enum or block field)",
+  "status": "grounded"
+ }
+]

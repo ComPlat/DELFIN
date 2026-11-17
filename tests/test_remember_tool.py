@@ -55,9 +55,10 @@ def test_remember_type_defaults_and_parses_prefix(tmp_path):
 
 
 def test_remember_wired_end_to_end():
-    src = (Path(__file__).resolve().parent.parent / "delfin" / "agent"
-           / "api_client.py").read_text(encoding="utf-8")
-    assert '"name": "remember"' in src              # advertised tool
+    agent = Path(__file__).resolve().parent.parent / "delfin" / "agent"
+    src = (agent / "api_client.py").read_text(encoding="utf-8")
+    schema = (agent / "tool_catalog.py").read_text(encoding="utf-8")
+    assert '"name": "remember"' in schema           # advertised tool
     assert 'name == "remember"' in src              # dispatch route
     assert '"remember",' in src                      # dashboard allow-list
     addendum = (Path(__file__).resolve().parent.parent / "delfin" / "agent"

@@ -532,6 +532,14 @@ def md_distance(metal: str, donor: str, atom=None, mol=None, cn=None) -> float:
     # NEUTRAL O-H DONOR AT IONIC CONTACT (DELFIN_FFFREE_LONE_PAIR_MD, default OFF ->
     # byte-identical): aqua / alcohol O at Shannon r(M^n+, CN) + r(O, CN 3) instead of the
     # covalent sum; see _lone_pair_space.dative_oh_md.
+    # BOND-VALENCE TARGET (DELFIN_FFFREE_ML_TARGETS_BV, default OFF -> byte-identical): the
+    # length of this donor class at the complex's oxidation state and CN, calibrated on
+    # crystal structures; None (no context, no table row) -> the paths below as before.
+    from delfin.manta import _ml_targets_bv as _bvt
+    if _bvt.bv_targets_enabled():
+        _t = _bvt.target_for_donor(metal, donor, atom)
+        if _t is not None:
+            return float(min(4.0, max(0.8, _t)))
     if atom is not None:
         from delfin.manta import _lone_pair_space as _lps
         if _lps.lone_pair_md_enabled():

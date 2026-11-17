@@ -181,3 +181,49 @@ def test_a_harness_row_with_a_tail_stays_marked_through_a_copy(eng):
     wire = eng._wire_messages()
     assert is_harness_row(dict(wire[0]))
     assert wire[0]["content"].endswith("TAIL")
+
+
+def _engine_for(ws):
+    with patch("delfin.agent.engine.create_client", return_value=MagicMock()):
+        e = E.AgentEngine(
+            repo_dir=ws, backend="api", provider="kit",
+            model="kit.glm-5.3", mode="solo")
+    e.client._permissions = A.KitToolPermissions(workspace=ws)
+    e.loader.workspace_root = ws
+    return e
+
+
+def test_a_resume_in_a_new_process_sends_the_same_system_prompt(eng, tmp_path):
+    """Swarm field data (2026-11-08..10, 5677 KIT requests): 378 system-prompt
+    changes, almost all at a resume, each one a cold request for the whole
+    history (median 90k tokens): about 45M uncached tokens in two days. The
+    held prompt lived only in the process; a resume rebuilt it with the new
+    git status and provider statistics."""
+    ws = eng._test_ws
+    seen = _record(eng)
+    eng.stream_response("Hallo", memory_context="- fact: one")
+    saved = copy.deepcopy(eng.export_state())
+    assert saved["held_system_prompt"]["prompt"] == seen[0]["system"]
+
+    (ws / "b.py").write_text("y = 2\n")             # the tree moved meanwhile
+    resumed = _engine_for(ws)
+    resumed.restore_state(saved)
+    again = _record(resumed)
+    resumed.stream_response("Weiter", memory_context="- fact: one")
+    assert again[0]["system"] == seen[0]["system"]
+    assert "b.py" in _tail(again[0])                # the change rides in the tail
+
+
+def test_a_resume_without_a_held_prompt_builds_one(eng, tmp_path):
+    """A session saved before the held prompt was kept resumes as before."""
+    seen = _record(eng)
+    eng.stream_response("Hallo")
+    saved = copy.deepcopy(eng.export_state())
+    saved.pop("held_system_prompt")
+    resumed = _engine_for(eng._test_ws)
+    report = resumed.restore_state(saved)
+    assert "held_system_prompt" not in " ".join(report.missing)
+    again = _record(resumed)
+    resumed.stream_response("Weiter")
+    assert again[0]["system"]                       # built, not empty
+    assert seen[0]["system"]

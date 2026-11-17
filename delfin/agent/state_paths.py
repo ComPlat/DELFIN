@@ -45,6 +45,23 @@ FILE_MODE = 0o600
 # Bits that must never be set on anything in the state tree.
 _SHARED_BITS = 0o077
 
+
+def state_root() -> Path:
+    """The DELFIN state root shared temp directories live under.
+
+    ``~/.delfin`` by default, overridable via the ``DELFIN_STATE``
+    environment variable (used by tests and by callers that keep state
+    elsewhere). Resolution errors fall back to ``~/.delfin`` -- a
+    missing HOME must not turn a temp-path question into a crash.
+    """
+    env = os.environ.get("DELFIN_STATE", "").strip()
+    if env:
+        return Path(env).expanduser()
+    try:
+        return Path.home() / ".delfin"
+    except Exception:  # pragma: no cover - HOME unset
+        return Path("/.delfin")
+
 # A walk over a state tree is bounded so a pathological directory (a user
 # pointing the archive at their home, a runaway trace dir) cannot turn
 # start-up into a multi-minute stat storm.
@@ -128,7 +145,32 @@ def ensure_dir(path: Any, *, mode: int = DIR_MODE) -> Path:
     except OSError:
         return p
     _chmod(p, mode)
+    _tighten_state_root_above(p)
     return p
+
+
+def _tighten_state_root_above(path: Path) -> None:
+    """Make ``~/.delfin`` and every level between it and *path* 0700.
+
+    ``mkdir(parents=True, mode=...)`` gives the mode to the LAST level
+    only; the parents it creates get the umask. On a fresh home under the
+    cluster's umask 002 the first state write therefore made ``~/.delfin``
+    itself 0775 (bug hunt 11.11.2026, #7), and group members could reach
+    everything below it, the memory notes read back into prompts among
+    them. An owner-only root closes the whole tree, whatever the modes
+    further down. Only ``~/.delfin`` and levels inside it: a path
+    elsewhere belongs to the user or to a test. Never raises.
+    """
+    try:
+        root = Path.home() / ".delfin"
+        if path != root and root not in path.parents:
+            return
+        levels = [root, *[a for a in reversed(path.parents)
+                          if root in a.parents]]
+    except Exception:
+        return
+    for level in levels:
+        _chmod(level, DIR_MODE)
 
 
 def secure_file(path: Any, *, mode: int = FILE_MODE) -> Path:
@@ -643,8 +685,14 @@ def workspace_state_dir(workspace: Any) -> Path:
 #: ``(module, attribute, relative path under the redirected home)``.
 USER_STATE_SINKS: tuple[tuple[str, str, str], ...] = (
     ("delfin.messenger.activation", "_DIR", "messenger_sessions"),
+    # Phone pairing requests: a test's request would be answered by the
+    # real gateway with a real invitation.
+    ("delfin.messenger.pairing", "_DIR", "messenger_pairing"),
     # The user's schedules: a test's entry would run in the real service.
     ("delfin.agent.schedules", "_DIR", "user_schedules"),
+    # The workspace freedom profiles share that directory: a test's "free"
+    # profile would open the caged bypass for a real scheduled run.
+    ("delfin.agent.workspace_profiles", "_DIR", "user_schedules"),
     ("delfin.agent.bash_jobs", "_INDEX_PATH", "bash_jobs_index.json"),
     # `delfin-agent pause <session>` flags. A test's flag would pause a real
     # session of the same name.
@@ -774,6 +822,12 @@ USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     ("delfin.agent.session_store", "_handoffs_path", "handoffs"),
     ("delfin.agent.session_store", "_bundles_path", "bundles"),
     ("delfin.agent.attention", "_inbox_path", "attention_inbox.jsonl"),
+    # The jobs DELFIN submitted to a cluster (delfin.remote.jobs), which the
+    # job watcher follows: a run's fixture jobs must not be watched for real.
+    ("delfin.remote.jobs", "_records_path", "remote_jobs.jsonl"),
+    # What the watcher found of each of them, and the lock of its ticks.
+    ("delfin.remote.watch", "_state_path", "remote_watch.json"),
+    ("delfin.remote.watch", "_lock_path", "remote_watch.lock"),
     # What the user said about themselves, loaded into every prompt. A
     # run reading the real one would test against the developer's own
     # self-description, and a run that drove the Send button would write
@@ -785,6 +839,11 @@ USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     # and the launcher's atexit hook then deleted it on the way out --
     # leaving a dashboard that was still serving with no way back to it.
     ("delfin.agent.where", "record_path", "dashboard_here.json"),
+    # This host's dashboard server record (pid, port, token), its lock
+    # and a detached launcher's log. A run that drove the launcher must
+    # not leave its server where a real `delfin-voila` would open it, nor
+    # take the real one's lock.
+    ("delfin.dashboard.server_record", "_state_dir", "dashboard_server"),
     # The header's branch list (pins and hidden entries), the log of
     # deleted branches and worktrees with their undo commands, and the
     # records of running branch previews. A run that pinned a fixture

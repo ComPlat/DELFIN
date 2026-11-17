@@ -23,46 +23,8 @@ import ipywidgets as widgets
 import numpy as np
 from IPython.display import HTML, clear_output, display
 
-from .constants import CALC_SEARCH_OPTIONS
-from .energy_labels import format_xyz_comment_label
-from .input_processing import (
-    parse_inp_resources,
-    parse_resource_settings,
-    smiles_to_xyz,
-    smiles_to_xyz_quick,
-    contains_metal,
-    is_smiles,
-)
-from . import upload_limits as _upload_limits
-from .helpers import (
-    disable_spellcheck, image_data_uri, js_string_literal,
-    neutralise_link_targets, save_neb_trajectory_csv,
-    save_neb_trajectory_plot_png,
-)
-from . import docx_view as _docx
-from . import pdf_view as _pdf
-from . import formula_engine as _formula_engine
-from . import spreadsheet_view as _sheet
-from . import text_view as _text_view
-from . import ketcher as _ketcher
-from . import ketcher_panel as _ketcher_panel
-from .molecule_viewer import (
-    VIEWER_CONTAINER_DYNAMIC_SCALE,
-    VIEWER_CONTAINER_HEIGHT_PX,
-    coord_to_xyz,
-    parse_xyz_frames,
-    get_viewer_profile,
-    measurement_bootstrap_js,
-    molecule_view_style_js,
-    patch_viewer_mouse_controls_js,
-    render_fukui_panel,
-    structure_viewer_fullscreen_bootstrap_js,
-    structure_viewer_fullscreen_css,
-    structure_viewer_fullscreen_kind_js,
-    viewer_disabled_html,
-)
+
 from delfin.ensemble_nmr import CENSO_NMR_SOLVENT_CHOICES
-from delfin.reporting.delfin_docx_report import _orca_plot_binary
 from delfin.ssh_transfer_jobs import (
     create_transfer_job,
     ensure_jobs_dir,
@@ -71,16 +33,67 @@ from delfin.ssh_transfer_jobs import (
 )
 from delfin.user_settings import (
     get_settings_path,
-    is_calc_unread,
     load_remote_archive_enabled,
     load_transfer_settings,
     mark_calc_as_read,
     normalize_ssh_transfer_settings,
     update_calc_running_transitions,
 )
-from rdkit import Chem, RDLogger
-from rdkit.Chem import rdDepictor, AllChem
-from rdkit.Chem.Draw import MolToImage
+
+from . import docx_view as _docx
+from . import formula_engine as _formula_engine
+from . import ketcher as _ketcher
+from . import ketcher_panel as _ketcher_panel
+from . import pdf_view as _pdf
+from . import spreadsheet_view as _sheet
+from . import text_view as _text_view
+from . import upload_limits as _upload_limits
+from .constants import CALC_SEARCH_OPTIONS
+from .energy_labels import format_xyz_comment_label
+from .select_state import replace_options as _replace_options
+from .helpers import (
+    disable_spellcheck,
+    image_data_uri,
+    js_string_literal,
+    neutralise_link_targets,
+    save_neb_trajectory_csv,
+    save_neb_trajectory_plot_png,
+)
+
+def _input_processing():
+    """Import .input_processing on first use.
+
+    That module pulls in delfin.smiles_converter and, through it,
+    delfin.manta.ml_tables, whose module level ``import stk`` costs seconds
+    of every process start. Nothing on the startup path needs it: the names
+    are wanted when a SMILES is parsed or an input is inspected, so the
+    import runs then, once, and is cached by sys.modules afterwards.
+    """
+    from . import input_processing
+    return input_processing
+
+from .molecule_viewer import (
+    VIEWER_CONTAINER_DYNAMIC_SCALE,
+    VIEWER_CONTAINER_HEIGHT_PX,
+    coord_to_xyz,
+    get_viewer_profile,
+    measurement_bootstrap_js,
+    molecule_view_style_js,
+    parse_xyz_frames,
+    patch_viewer_mouse_controls_js,
+    render_fukui_panel,
+    structure_viewer_fullscreen_bootstrap_js,
+    structure_viewer_fullscreen_css,
+    structure_viewer_fullscreen_kind_js,
+    viewer_disabled_html,
+)
+
+def _orca_plot_binary():
+    """``delfin_docx_report._orca_plot_binary``, imported on first use: the
+    report module loads python-docx and the report builders (a few tenths
+    of a second), which the tab's build does not need."""
+    from delfin.reporting.delfin_docx_report import _orca_plot_binary as find
+    return find()
 
 
 ORCA_CPCM_TOP10_SOLVENTS = (
@@ -159,6 +172,27 @@ def _recent_user_processes(user):
         return None
     _user_process_snapshot[:] = [now, result.stdout or '']
     return _user_process_snapshot[1]
+
+
+#: The heading icon of each browser clone, by the tab's title.
+_BROWSER_ICONS = {'Office': '📁', 'Archive': '🗄️', 'Home': '🏠'}
+
+
+def _browser_heading(ctx, is_office_tab):
+    """The tab's heading: its own name, the one on its tab.
+
+    Archive, Home and Office are this browser on another root. Each passes
+    its tab's title as ``ctx.browser_title``; before, only Office had a
+    heading of its own and Archive and Home were headed "Calculations
+    Browser". Without a title the root decides, as it did.
+    """
+    title = str(getattr(ctx, 'browser_title', '') or '').strip()
+    if not title:
+        title = 'Office' if is_office_tab else ''
+    if not title:
+        return '<h3>📂 Calculations Browser</h3>'
+    icon = _BROWSER_ICONS.get(title, '📂')
+    return f'<h3>{icon} {_html.escape(title)}</h3>'
 
 
 def create_tab(ctx):
@@ -242,6 +276,8 @@ def create_tab(ctx):
         # so the viewer can re-render without re-running orca_plot.
         'spin_display': None,
         'delete_current': False,
+        'delete_names': [],
+        'delete_dir': '',
         'table_col_defs': [
             {'name': 'Value 1', 'type': 'text', 'pattern': '', 'occ': 'last'},
         ],
@@ -563,7 +599,7 @@ def create_tab(ctx):
         description='✏ Rename',
         layout=widgets.Layout(width='92px', height='26px'),
     )
-    calc_rename_prompt_label = widgets.HTML('<b>Rename:</b>')
+    calc_rename_prompt_label = widgets.HTML('<b>Rename:</b>', layout=widgets.Layout(flex='0 0 100%'))
     calc_rename_prompt_input = widgets.Text(
         placeholder='New name',
         layout=widgets.Layout(flex='1 1 auto', min_width='120px', height='26px'),
@@ -584,9 +620,10 @@ def create_tab(ctx):
             calc_rename_prompt_ok_btn,
             calc_rename_prompt_cancel_btn,
         ],
-        layout=widgets.Layout(display='none', gap='6px', align_items='center'),
+        layout=widgets.Layout(display='none', gap='6px', align_items='center',
+                              flex_flow='row wrap'),
     )
-    calc_duplicate_prompt_label = widgets.HTML('<b>Duplicate:</b>')
+    calc_duplicate_prompt_label = widgets.HTML('<b>Duplicate:</b>', layout=widgets.Layout(flex='0 0 100%'))
     calc_duplicate_prompt_input = widgets.Text(
         placeholder='Duplicate folder name',
         layout=widgets.Layout(flex='1 1 auto', min_width='120px', height='26px'),
@@ -607,9 +644,10 @@ def create_tab(ctx):
             calc_duplicate_prompt_yes_btn,
             calc_duplicate_prompt_cancel_btn,
         ],
-        layout=widgets.Layout(display='none', gap='6px', align_items='center'),
+        layout=widgets.Layout(display='none', gap='6px', align_items='center',
+                              flex_flow='row wrap'),
     )
-    calc_new_folder_prompt_label = widgets.HTML('<b>New folder name:</b>')
+    calc_new_folder_prompt_label = widgets.HTML('<b>New folder name:</b>', layout=widgets.Layout(flex='0 0 100%'))
     calc_new_folder_prompt_input = widgets.Text(
         placeholder='Folder name',
         layout=widgets.Layout(flex='1 1 auto', min_width='120px', height='26px'),
@@ -630,7 +668,8 @@ def create_tab(ctx):
             calc_new_folder_prompt_ok_btn,
             calc_new_folder_prompt_cancel_btn,
         ],
-        layout=widgets.Layout(display='none', gap='6px', align_items='center'),
+        layout=widgets.Layout(display='none', gap='6px', align_items='center',
+                              flex_flow='row wrap'),
     )
     calc_transfer_jobs_btn = widgets.Button(
         description='Running Transfers',
@@ -874,6 +913,7 @@ def create_tab(ctx):
     calc_sort_dropdown = widgets.Dropdown(
         options=[('A-Z', 'name'), ('Newest', 'date_desc'), ('Oldest', 'date_asc')],
         value='name',
+        tooltip='Sort files',
         layout=widgets.Layout(width='90px', min_width='90px', height='26px', margin='0 0 0 4px'),
     )
     # A dot folder is bookkeeping -- DELFIN's, or the system's. Over a home
@@ -1266,6 +1306,20 @@ def create_tab(ctx):
     calc_file_info = widgets.HTML(
         value='', layout=widgets.Layout(width='100%', overflow_x='hidden'),
     )
+    # One line, as a file header is today: a long name ends in an ellipsis
+    # (hover shows it whole) instead of breaking anywhere onto a second line
+    # beside the action buttons.
+    calc_file_info.add_class('calc-file-info')
+
+    def _calc_file_info_tooltip(change):
+        # The whole header as plain text on hover, for a name cut short.
+        text = re.sub(r'<[^>]+>', '', str(change.get('new') or ''))
+        try:
+            calc_file_info.tooltip = _html.unescape(text).strip() or None
+        except Exception:
+            pass
+
+    calc_file_info.observe(_calc_file_info_tooltip, names='value')
     calc_path_display = widgets.HTML(
         value='', layout=widgets.Layout(width='100%', overflow_x='hidden'),
     )
@@ -1761,6 +1815,12 @@ def create_tab(ctx):
         ],
         layout=widgets.Layout(display='none', margin='8px 0 8px 0', width='100%'),
     )
+    # TS -> GOAT preparation panel: the dialog lives in ts_goat_panel.py
+    # and is attached here when the 'TS -> GOAT' option is selected.
+    calc_ts_goat_panel = widgets.VBox(
+        [],
+        layout=widgets.Layout(display='none', margin='8px 0 8px 0', width='100%'),
+    )
 
 
     # -- preselection widgets ----------------------------------------------
@@ -2109,9 +2169,24 @@ def create_tab(ctx):
     )
 
     # -- helper closures ----------------------------------------------------
-    RDLogger.DisableLog('rdApp.*')
+    # RDKit is imported here, at first use inside create_tab, not at module
+    # load: a cold dashboard start never draws a structure, and the import
+    # (with its module-level RDLogger.DisableLog) is what module load paid
+    # for every startup regardless.
+
+    def _calc_rdkit():
+        from rdkit import Chem, RDLogger
+        RDLogger.DisableLog('rdApp.*')
+        return Chem
+
+    def _calc_rdkit_chem_all():
+        from rdkit import Chem, RDLogger
+        from rdkit.Chem import AllChem, rdDepictor
+        RDLogger.DisableLog('rdApp.*')
+        return Chem, AllChem, rdDepictor
 
     def _calc_parse_complex_mol(smiles):
+        Chem = _calc_rdkit()
         mol = Chem.MolFromSmiles(smiles)
         if mol is not None:
             return mol
@@ -2133,11 +2208,12 @@ def create_tab(ctx):
         return Chem.MolFromSmiles(smiles, sanitize=False)
 
     def _calc_preselect_smiles_to_3d_molblock(smiles, seed=42):
+        Chem, AllChem, rdDepictor = _calc_rdkit_chem_all()
         try:
             seed = int(seed)
         except Exception:
             seed = 42
-        is_complex = contains_metal(smiles)
+        is_complex = _input_processing().contains_metal(smiles)
         mol = None
         if is_complex:
             mol = _calc_parse_complex_mol(smiles)
@@ -3767,6 +3843,8 @@ def create_tab(ctx):
 
         with calc_preselect_img:
             clear_output(wait=True)
+            Chem, _allchem, rdDepictor = _calc_rdkit_chem_all()
+            from rdkit.Chem.Draw import MolToImage
             mol = Chem.MolFromSmiles(smiles)
             if mol is None:
                 mol = Chem.MolFromSmiles(smiles, sanitize=False)
@@ -4623,7 +4701,7 @@ def create_tab(ctx):
                     input_text = input_path.read_text(errors='ignore')
                 except Exception:
                     input_text = ''
-            if not is_smiles(input_text):
+            if not _input_processing().is_smiles(input_text):
                 return False
             smiles_lines = [ln.strip() for ln in input_text.splitlines() if ln.strip()]
             if not smiles_lines:
@@ -4816,9 +4894,9 @@ def create_tab(ctx):
             "if(el) window._batchScrollTop=el.scrollTop;"
         )
         # Force a real widget rerender so changed labels (⬜ -> ✅) become visible.
-        calc_xyz_batch_select.options = ()
-        calc_xyz_batch_select.value = ()
-        calc_xyz_batch_select.options = tuple(candidates)
+        # Each step reaches the browser as one state (labels and selection
+        # together), so it never holds a selection outside the list.
+        _replace_options(calc_xyz_batch_select, ())
         kept = tuple(value for _label, value in candidates if value in previous_selection)
         selected_value = ''
         selected_path = _calc_selected_item_path()
@@ -4829,11 +4907,12 @@ def create_tab(ctx):
             except Exception:
                 selected_value = ''
         if kept:
-            calc_xyz_batch_select.value = kept
+            new_value = kept
         elif selected_value and any(value == selected_value for _label, value in candidates):
-            calc_xyz_batch_select.value = (selected_value,)
+            new_value = (selected_value,)
         else:
-            calc_xyz_batch_select.value = ()
+            new_value = ()
+        _replace_options(calc_xyz_batch_select, tuple(candidates), new_value)
         current_rel = state.get('xyz_batch_path') or ''
         display_rel = f'/{current_rel}' if current_rel else '/'
         marked_count = len(state.get('xyz_batch_marked_paths') or [])
@@ -5068,7 +5147,9 @@ def create_tab(ctx):
         # Fallback: parse orbitals directly from selected ORCA output.
         # This is robust for OCCUPIER directories without DELFIN_Data.json.
         try:
-            from delfin.reporting.delfin_collector import parse_orbitals as _parse_orbitals
+            from delfin.reporting.delfin_collector import (
+                parse_orbitals as _parse_orbitals,
+            )
 
             parsed = _parse_orbitals(selected_path)
             if parsed:
@@ -7080,9 +7161,10 @@ def create_tab(ctx):
             return '\n'.join(lines)
         # input.txt may contain only a SMILES string (optionally with short comment lines).
         # Convert to XYZ so it can be visualized like regular coordinates.
-        if is_smiles(text):
+        if _input_processing().is_smiles(text):
             smiles_line = lines[0].strip()
-            xyz_string, num_atoms, _method, error = smiles_to_xyz_quick(smiles_line)
+            xyz_string, num_atoms, _method, error = (
+                _input_processing().smiles_to_xyz_quick(smiles_line))
             if not error and xyz_string:
                 return f"{num_atoms}\n{title}\n{xyz_string}"
         atom_count = len(lines)
@@ -8033,8 +8115,8 @@ def create_tab(ctx):
         calc_xyz_frame_input.max = len(frames)
         calc_xyz_frame_input.observe(calc_on_xyz_input_change, names='value')
         large_traj_note = (
-            f' <span style="color:#888;font-size:0.85em;">'
-            f'(large trajectory, single-frame mode)</span>'
+            ' <span style="color:#888;font-size:0.85em;">'
+            '(large trajectory, single-frame mode)</span>'
             if len(frames) > CALC_XYZ_LARGE_TRAJ_FRAMES else ''
         )
         calc_xyz_frame_total.value = f"<b>/ {len(frames)}</b>"
@@ -8585,7 +8667,7 @@ def create_tab(ctx):
         state['file_chunk_start'] = 0
         state['file_chunk_end'] = 0
         state['chunk_dom_initialized'] = False
-        calc_file_list.options = []
+        _replace_options(calc_file_list, [])
         # No file is on screen once the listing is rebuilt, so the actions of
         # the one that was must not stay in the dropdown.
         state['open_label'] = ''
@@ -8630,7 +8712,7 @@ def create_tab(ctx):
 
         current_dir = _calc_dir() / state['current_path'] if state['current_path'] else _calc_dir()
         if not current_dir.exists():
-            calc_file_list.options = ['(Folder not found)']
+            _replace_options(calc_file_list, ['(Folder not found)'])
             return
 
         items = []
@@ -8741,7 +8823,7 @@ def create_tab(ctx):
             items = ['(Permission denied)']
 
         state['all_items'] = items if items else ['(Empty folder)']
-        calc_file_list.options = state['all_items']
+        _replace_options(calc_file_list, state['all_items'])
         calc_update_path_display()
         calc_update_report_btn()
         calc_update_download_btn()
@@ -8750,11 +8832,11 @@ def create_tab(ctx):
     def calc_filter_file_list(change=None):
         query = calc_folder_search.value.strip().lower()
         if not query:
-            calc_file_list.options = state['all_items']
+            _replace_options(calc_file_list, state['all_items'])
         else:
             filtered = [item for item in state['all_items'] if query in item.lower()]
             result = filtered if filtered else ['(No matches)']
-            calc_file_list.options = result
+            _replace_options(calc_file_list, result)
 
     # -- recalc helpers -----------------------------------------------------
     def calc_reset_recalc_state():
@@ -8905,7 +8987,9 @@ def create_tab(ctx):
 
     # -- delete helpers -----------------------------------------------------
     def calc_delete_hide_confirm():
+        # A question that is closed has no answer left: forget what it named.
         state['delete_current'] = False
+        state['delete_names'] = []
         calc_delete_confirm.layout.display = 'none'
         calc_delete_status.value = ''
 
@@ -9097,6 +9181,18 @@ def create_tab(ctx):
             calc_options_dropdown.layout.display = 'block'
         elif selected and sel_lower.endswith('.out'):
             out_options = ['(Options)', 'Print Mode', 'MO Plot', 'Print NMR', 'Spin Density']
+            # 'TS -> GOAT' is offered only for a TS output; the panel itself
+            # re-checks and explains why a file does not qualify, so the
+            # dropdown never guesses from the name alone.
+            try:
+                # Head-only check: this runs on every .out selection, so
+                # it must not read a whole (possibly huge) output.
+                out_path_candidate = _calc_path_for_label(selected)
+                from delfin.ts_goat import is_optts_output
+                if is_optts_output(out_path_candidate):
+                    out_options.append('TS → GOAT')
+            except Exception:
+                pass
             if rmsd_available:
                 out_options.append('RMSD')
             calc_options_dropdown.options = out_options
@@ -10196,6 +10292,204 @@ def create_tab(ctx):
             _calc_show_mo_plot_panel(False)
             _calc_show_spin_density_panel(True, visualize=False)
             calc_content_area.layout.display = 'block'
+        elif change['new'] == 'TS → GOAT':
+            calc_override_input.layout.display = 'none'
+            calc_override_time.layout.display = 'none'
+            calc_override_btn.layout.display = 'none'
+            calc_override_status.layout.display = 'none'
+            calc_override_status.value = ''
+            calc_edit_area.layout.display = 'none'
+            _calc_preselect_show(False)
+            _calc_show_xyz_batch_panel(False)
+            _calc_show_print_mode_panel(False)
+            _calc_show_mo_plot_panel(False)
+            _calc_show_spin_density_panel(False)
+            # TS→GOAT owns the entire content pane while open; hiding
+            # only the text body left "File Content" and its toolbar
+            # competing with the panel at the bottom of the window.
+            _ts_file_ui_before = (
+                calc_content_area.layout.display,
+                calc_content_label.layout.display,
+                calc_content_toolbar.layout.display,
+            )
+            calc_content_area.layout.display = 'none'
+            calc_content_label.layout.display = 'none'
+            calc_content_toolbar.layout.display = 'none'
+            calc_ts_goat_panel.children = []
+            calc_ts_goat_panel.layout.display = 'block'
+            _ts_labels = _calc_selected_labels()
+            _ts_path = _calc_path_for_label(_ts_labels[0]) if _ts_labels else None
+            if _ts_path is None:
+                calc_content_area.layout.display = _ts_file_ui_before[0]
+                calc_content_label.layout.display = _ts_file_ui_before[1]
+                calc_content_toolbar.layout.display = _ts_file_ui_before[2]
+                calc_ts_goat_panel.children = [widgets.HTML(
+                    '<b>TS → GOAT:</b> select a .out file first.')]
+            else:
+                def _ts_render_viewer(xyz_lines, indices, arrows=None):
+                    """Render the TS with constraint atoms highlighted."""
+                    _render_3dmol(xyz_lines, fmt='xyz')
+
+                def _ts_render_in_panel(atoms, indices, arrows=None,
+                                        output_widget=None,
+                                        mode_vector=None,
+                                        frames_payload=None):
+                    """Render the TS INTO the panel's own Output widget.
+
+                    The panel passes its ``viewer_out`` Output widget as
+                    ``output_widget`` (the panel owns it, the tab only
+                    draws into it).  Highlights the constraint atoms
+                    and injects the click JS that toggles atoms in the
+                    constraint field.
+                    """
+                    if output_widget is None:
+                        return  # panel shows its own fallback note
+                    from delfin.dashboard import molecule_viewer as _mv
+                    xyz_lines = '\n'.join(
+                        [str(len(atoms)), 'optimized TS']
+                        + [f'{el} {x:.6f} {y:.6f} {z:.6f}'
+                           for el, x, y, z in atoms]
+                    )
+                    # py3Dmol's loader script inside a later-attached
+                    # Output never runs on Voila replay (inert HTML) --
+                    # the exact cause of the "3Dmol.js failed to load"
+                    # banner (user report 2026-11-02).  Store only the
+                    # static div + payload, then instantiate the
+                    # GLViewer through the run_js channel, which Voila
+                    # executes even for panels that come up after the
+                    # page loaded.  The library is already on the page
+                    # from the startup bundle; nothing hits a CDN.
+                    arrows_payload = None
+                    if arrows:
+                        flat = []
+                        for _el, x, y, z in arrows:
+                            flat.extend([x, y, z])
+                        arrows_payload = flat
+                    vid = _mv.render_xyz_static_div(
+                        output_widget, xyz_lines, width=640, height=450,
+                        highlight_indices=list(indices or []),
+                        arrows=arrows_payload,
+                        frames=frames_payload,
+                    )
+                    if vid:
+                        _ts_viewer_state['vid'] = vid
+                        # the animation displaces along mode_vector --
+                        # SEPARATE from the visible arrows toggle: the
+                        # animation data must reach the browser even
+                        # when no arrows are drawn (default).
+                        vec_payload = None
+                        if mode_vector:
+                            vec_payload = [
+                                v for a in mode_vector
+                                for v in (a[1], a[2], a[3])]
+                        _run_js(_mv.ts_goat_viewer_bootstrap_js(
+                            vid, width=640, height=450,
+                            click_sync_css='.ts-goat-click-sync',
+                            arrows=arrows_payload,
+                            mode_vector=vec_payload,
+                        ))
+
+                def _ts_scroll_top():
+                    _run_js(
+                        "setTimeout(function(){"
+                        "var el=document.querySelector('.calc-file-list');"
+                        " if(el) el.scrollTop=0;},80);"
+                    )
+
+                _ts_viewer_state = {'vid': None}
+
+                def _ts_get_viewer_id():
+                    """The last panel viewer id, for 'Ansicht zentrieren'."""
+                    return _ts_viewer_state.get('vid')
+
+                def _ts_update_highlights_in_panel(indices):
+                    """Toggle atom halos without clearing/recreating WebGL."""
+                    vid = _ts_viewer_state.get('vid')
+                    if vid:
+                        from delfin.dashboard import molecule_viewer as _mv
+                        _run_js(_mv.ts_goat_viewer_highlights_js(
+                            vid, indices))
+
+                def _ts_center_viewer(vid):
+                    """Re-center the panel viewer ('Ansicht zentrieren')."""
+                    from delfin.dashboard import molecule_viewer as _mv
+                    _run_js(_mv.ts_goat_viewer_center_js(vid))
+
+                def _ts_animate_in_panel(vid, running):
+                    """Play/pause validated ORCA XYZ frames without camera reset.
+
+                    The speed slider changes the timeout used by each
+                    subsequent frame; no old sinusoidal JS is involved.
+                    """
+                    from delfin.dashboard import molecule_viewer as _mv
+                    if running == 'speed':
+                        period_ms = max(60, int(
+                            200 / (_ts_anim_speed_value() or 1.0)))
+                        _run_js(
+                            "window.__tsGoatPeriodMs=" + str(period_ms) + ";")
+                        return
+                    _run_js(_mv.ts_goat_viewer_frames_js(vid, running))
+
+                _ts_panel_widgets = {'items': []}
+
+                def _ts_collect_speed(widget_box):
+                    """Remember panel widgets for the speed lookup."""
+                    def _walk(w, acc):
+                        for child in getattr(w, 'children', ()):
+                            acc.append(child)
+                            _walk(child, acc)
+                        return acc
+                    try:
+                        _ts_panel_widgets['items'] = _walk(widget_box, [])
+                    except Exception:
+                        pass
+
+                def _ts_anim_speed_value():
+                    """Current speed from the panel widget, if reachable."""
+                    for w in _ts_panel_widgets['items']:
+                        if ('ts-goat-speed-slider' in
+                                getattr(w, '_dom_classes', ()) or
+                                getattr(w, 'description', '') == 'Speed:'):
+                            return getattr(w, 'value', 1.0)
+                    return 1.0
+
+                def _ts_restore_file_ui():
+                    calc_content_area.layout.display = _ts_file_ui_before[0]
+                    calc_content_label.layout.display = _ts_file_ui_before[1]
+                    calc_content_toolbar.layout.display = _ts_file_ui_before[2]
+
+                def _ts_on_close():
+                    calc_ts_goat_panel.children = []
+                    calc_ts_goat_panel.layout.display = 'none'
+                    _ts_restore_file_ui()
+
+                from .ts_goat_panel import open_ts_goat_dialog
+                open_result = open_ts_goat_dialog(
+                    _ts_path,
+                    callbacks={
+                        'backend': ctx.backend,
+                        'reset_dropdown': _calc_reset_options_dropdown,
+                        'render_viewer': _ts_render_viewer,
+                        'scroll_top': _ts_scroll_top,
+                        'render_in_panel': _ts_render_in_panel,
+                        'update_highlights_in_panel': _ts_update_highlights_in_panel,
+                        'on_close': _ts_on_close,
+                        'center_viewer': _ts_center_viewer,
+                        'get_viewer_id': _ts_get_viewer_id,
+                        'animate_in_panel': _ts_animate_in_panel,
+                    },
+                )
+                if open_result['error']:
+                    _ts_restore_file_ui()
+                    # the message carries folder names and exception
+                    # text: external text, escaped like every other
+                    calc_ts_goat_panel.children = [widgets.HTML(
+                        '<b>TS → GOAT:</b> '
+                        + _html.escape(str(open_result['error'])))]
+                else:
+                    calc_ts_goat_panel.children = [open_result['panel']]
+                    _ts_collect_speed(open_result['panel'])
+            _calc_reset_options_dropdown()
         elif change['new'] == 'Calc NMR':
             calc_override_input.layout.display = 'none'
             calc_override_time.layout.display = 'none'
@@ -10504,7 +10798,7 @@ def create_tab(ctx):
                 new_inp.write_text(inp_content)
 
                 slurm_time = calc_override_time.value.strip() or '24:00:00'
-                pal_used, maxcore_used = parse_inp_resources(inp_content)
+                pal_used, maxcore_used = _input_processing().parse_inp_resources(inp_content)
                 if pal_used is None and ctx.orca_pal_widget is not None:
                     pal_used = ctx.orca_pal_widget.value
                 if maxcore_used is None and ctx.orca_maxcore_widget is not None:
@@ -10570,7 +10864,7 @@ def create_tab(ctx):
             maxcore_used = None
             control_path = workspace_path / 'CONTROL.txt'
             if control_path.exists():
-                pal_used, maxcore_used = parse_resource_settings(control_path.read_text())
+                pal_used, maxcore_used = _input_processing().parse_resource_settings(control_path.read_text())
 
             if pal_used is None or maxcore_used is None:
                 inp_candidate = None
@@ -10585,7 +10879,7 @@ def create_tab(ctx):
                     inp_candidate = inp_files[0] if inp_files else None
 
                 if inp_candidate is not None and inp_candidate.exists():
-                    pal_inp, maxcore_inp = parse_inp_resources(inp_candidate.read_text())
+                    pal_inp, maxcore_inp = _input_processing().parse_inp_resources(inp_candidate.read_text())
                     if pal_used is None:
                         pal_used = pal_inp
                     if maxcore_used is None:
@@ -10679,7 +10973,7 @@ def create_tab(ctx):
             inp_path.write_text(inp_content)
 
             slurm_time = calc_recalc_time.value.strip() or '24:00:00'
-            pal_used, maxcore_used = parse_inp_resources(inp_content)
+            pal_used, maxcore_used = _input_processing().parse_inp_resources(inp_content)
             if pal_used is None and ctx.orca_pal_widget is not None:
                 pal_used = ctx.orca_pal_widget.value
             if maxcore_used is None and ctx.orca_maxcore_widget is not None:
@@ -10709,35 +11003,74 @@ def create_tab(ctx):
             msg = result.stderr or result.stdout or 'Unknown error'
             calc_recalc_status.value = f'<span style="color:#d32f2f;">{_html.escape(msg)}</span>'
 
+    def _calc_delete_item_name(name):
+        """The name of one entry *inside* the current folder, or ''.
+
+        Deleting goes ``current folder / name``.  A name that is empty, ``.``,
+        ``..`` or holds a path separator would point that at the current folder
+        itself or above it, so such a name is never a delete target.
+        """
+        name = str(name or '').strip()
+        if not name or name in {'.', '..'} or '/' in name or '\\' in name:
+            return ''
+        return name
+
     def calc_on_delete_click(button=None):
         real = _calc_selected_labels()
-        if real:
-            names = [_calc_label_to_name(s) for s in real]
+        names = [n for n in (_calc_delete_item_name(_calc_label_to_name(s)) for s in real) if n]
+        if names:
             label_str = ', '.join(f'<code>{_html.escape(n)}</code>' for n in names)
             calc_delete_label.value = f'<b>Delete {len(names)} item(s)?</b> {label_str}'
             state['delete_current'] = False
+            # Yes deletes exactly what this prompt names, in the folder it was
+            # asked in -- not whatever is selected by the time Yes is clicked.
+            state['delete_names'] = list(names)
+            state['delete_dir'] = state['current_path']
             calc_delete_confirm.layout.display = 'flex'
             return
+        state['delete_names'] = []
         if state['current_path']:
             calc_delete_label.value = (
                 f'<b>Delete current folder?</b> '
                 f'<code>{_html.escape(state["current_path"])}</code>'
             )
             state['delete_current'] = True
+            state['delete_dir'] = state['current_path']
             calc_delete_confirm.layout.display = 'flex'
         else:
             calc_delete_status.value = '<span style="color:#d32f2f;">No item selected.</span>'
 
+    def calc_on_delete_key():
+        """Delete key (or Cmd/Ctrl+Backspace): the selection, and only that.
+
+        Finder, Explorer, VS Code and JupyterLab all delete the selected items
+        from the keyboard and nothing else.  With nothing selected a key press
+        never offers the folder you are in -- that stays an explicit click on
+        the Delete button -- and it closes any confirm that is still open, so
+        the next Yes cannot belong to an earlier, different question.
+        """
+        if _calc_selected_labels():
+            calc_on_delete_click()
+            return
+        calc_delete_hide_confirm()
+        state['delete_names'] = []
+        calc_delete_status.value = (
+            '<span style="color:#555;">Select the items to delete first.</span>'
+        )
+
     def calc_on_delete_yes(button):
         if not state.get('delete_current', False):
-            real = _calc_selected_labels()
-            if not real:
+            names = [n for n in (_calc_delete_item_name(x) for x in (state.get('delete_names') or [])) if n]
+            state['delete_names'] = []
+            if state.get('delete_dir', state['current_path']) != state['current_path']:
+                # The folder changed under the prompt; its names mean nothing here.
+                names = []
+            if not names:
                 calc_delete_status.value = '<span style="color:#d32f2f;">Nothing to delete.</span>'
                 calc_delete_confirm.layout.display = 'none'
                 return
             errors, deleted = [], []
-            for label in real:
-                name = _calc_label_to_name(label)
+            for name in names:
                 full_path = (
                     (_calc_dir() / state['current_path'] / name)
                     if state['current_path']
@@ -10768,8 +11101,10 @@ def create_tab(ctx):
             calc_file_list.value = ()
             _calc_refresh_related_explorers()
             return
-        # delete_current fallback (delete the folder we are inside)
-        if not state['current_path']:
+        # delete_current fallback (delete the folder we are inside), reached
+        # only from the Delete button.  It deletes the folder the question
+        # named; if the view has moved since, it deletes nothing.
+        if not state['current_path'] or state.get('delete_dir') != state['current_path']:
             calc_delete_status.value = '<span style="color:#d32f2f;">No current folder.</span>'
             calc_delete_confirm.layout.display = 'none'
             state['delete_current'] = False
@@ -12044,7 +12379,8 @@ def create_tab(ctx):
                                 row.append('—')
                     rows.append(row)
         calc_table_output.value = _render_extract_table_html(headers, rows)
-        import io, csv as _csv
+        import csv as _csv
+        import io
         buf = io.StringIO()
         csv_rows = [['' if c == '—' else c for c in row] for row in rows]
         _csv.writer(buf, delimiter=';').writerows([headers] + csv_rows)
@@ -13450,7 +13786,7 @@ def create_tab(ctx):
                 calc_update_view()
                 try:
                     head_bytes = min(CALC_TEXT_CHUNK_BYTES, size)
-                    with open(str(full_path), 'r', errors='ignore') as fh:
+                    with open(str(full_path), errors='ignore') as fh:
                         head_text = fh.read(head_bytes)
                     head_frames = parse_xyz_frames(head_text)
                     _calc_load_text_preview_chunk(full_path, size, 0)
@@ -13962,7 +14298,7 @@ def create_tab(ctx):
                     try:
                         if size > CALC_LOG_XYZ_EXTRACT_MAX:
                             # Read only the tail of large logs (XYZ blocks are near the end)
-                            with open(str(full_path), 'r', errors='ignore') as fh:
+                            with open(str(full_path), errors='ignore') as fh:
                                 fh.seek(max(0, size - CALC_TEXT_CHUNK_BYTES))
                                 xyz_source = fh.read()
                         else:
@@ -14022,7 +14358,7 @@ def create_tab(ctx):
             if name in ('input.txt', 'start.txt'):
                 # For SMILES-only input.txt, open the same side-by-side 2D/3D visual mode
                 # used for mutation-space CSV browsing.
-                if name == 'input.txt' and is_smiles(content):
+                if name == 'input.txt' and _input_processing().is_smiles(content):
                     _set_view_toggle(True, False)
                     _on_view_toggle()
                     return
@@ -14188,6 +14524,14 @@ def create_tab(ctx):
         # construction. Still keyed by folder as well, so the same name in
         # another directory still opens.
         state['last_opened_label'] = (state['current_path'], name)
+        # a newly opened file ends the TS→GOAT session for the previous
+        # .out (single-selection panel is bound to one concrete output)
+        if calc_ts_goat_panel.children:
+            calc_ts_goat_panel.children = []
+            calc_ts_goat_panel.layout.display = 'none'
+            # the panel hid the label and toolbar too; let the view
+            # decide all three for the current mode
+            calc_update_view()
         _calc_open_item(label)
 
     def calc_on_open_request(change):
@@ -14206,6 +14550,13 @@ def create_tab(ctx):
     def calc_on_selection_change(change):
         _calc_update_explorer_action_state()
         labels = [label for label in (change['new'] or ()) if label and not label.startswith('(')]
+        # TS→GOAT belongs to one concrete .out: any other selection
+        # (another file, an .xyz, nothing) hides the panel so the normal
+        # preview shows and no stale constraints/viewer stay around.
+        if calc_ts_goat_panel.children and len(labels) != 1:
+            calc_ts_goat_panel.children = []
+            calc_ts_goat_panel.layout.display = 'none'
+            calc_update_view()
         if len(labels) == 1:
             # The click bridge above has usually opened this one already.  This
             # path still serves keyboard navigation, and stands in whenever the
@@ -14228,7 +14579,13 @@ def create_tab(ctx):
         elif action == 'paste':
             calc_on_explorer_paste()
         elif action == 'delete':
-            calc_on_delete_click()
+            calc_on_delete_key()
+        elif action == 'up':
+            # Backspace / Alt+Up: one folder up, as in Explorer and Finder.
+            # A delete question asked in the folder being left goes with it.
+            if calc_delete_confirm.layout.display != 'none':
+                calc_delete_hide_confirm()
+            calc_on_back(None)
         elif action == 'rename':
             calc_on_explorer_start_rename()
         elif action == 'open':
@@ -14237,6 +14594,9 @@ def create_tab(ctx):
                 calc_on_dblclick({'new': labels[0]})
         elif action == 'deselect':
             calc_file_list.value = ()
+            # Esc also answers an open delete question with No.
+            if calc_delete_confirm.layout.display != 'none':
+                calc_delete_hide_confirm()
 
     # -- wiring -------------------------------------------------------------
     calc_back_btn.on_click(calc_on_back)
@@ -14459,7 +14819,7 @@ def create_tab(ctx):
     if ctx.calc_dir.exists():
         calc_list_directory()
     else:
-        calc_file_list.options = ['(calc folder not found)']
+        _replace_options(calc_file_list, ['(calc folder not found)'])
 
     _explorer_interactions_js = r"""
     (function(){
@@ -15226,7 +15586,10 @@ def create_tab(ctx):
                 if ((e.ctrlKey || e.metaKey) && e.key === 'c') action = 'copy';
                 else if ((e.ctrlKey || e.metaKey) && e.key === 'x') action = 'cut';
                 else if ((e.ctrlKey || e.metaKey) && e.key === 'v') action = 'paste';
-                else if (e.key === 'Delete' || e.key === 'Backspace') action = 'delete';
+                /* Delete (Cmd+Backspace on a Mac) acts on the selection only;
+                 * Backspace and Alt+Up go one folder up (Explorer, Finder). */
+                else if (e.key === 'Delete' || (e.key === 'Backspace' && (e.metaKey || e.ctrlKey))) action = 'delete';
+                else if (e.key === 'Backspace' || (e.altKey && e.key === 'ArrowUp')) action = 'up';
                 else if (e.key === 'Enter') action = 'open';
                 else if (e.key === 'Escape') action = 'deselect';
                 else if (e.key === 'F2') action = 'rename';
@@ -15721,6 +16084,18 @@ def create_tab(ctx):
         '.calc-right { overflow:hidden !important;'
         ' display:flex !important; flex-direction:column !important; }'
         '.calc-left { display:flex !important; flex-direction:column !important; }'
+        # A narrow window (a phone): the list above, the content below, each
+        # the full width. Side by side the list kept its width and left the
+        # content pane none (measured at 390 px). The splitter drags
+        # sideways only, so it goes.
+        '@media (max-width: 700px) {'
+        ' .calc-tab .calc-main-row { flex-direction:column !important; }'
+        ' .calc-tab .calc-main-row > .calc-left { flex:0 0 45% !important; width:100% !important;'
+        ' min-width:0 !important; max-width:100% !important; }'
+        ' .calc-tab .calc-main-row > .calc-right { flex:1 1 0 !important; width:100% !important;'
+        ' min-width:0 !important; min-height:0 !important; }'
+        ' .calc-tab .calc-main-row > .calc-splitter-host { display:none !important; }'
+        '}'
         '.calc-left .widget-select { flex:1 1 0 !important; min-height:0 !important; }'
         '.calc-left .widget-select select { height:100% !important; }'
         '.calc-left .widget-select-multiple { flex:1 1 0 !important; min-height:0 !important; }'
@@ -15783,6 +16158,11 @@ def create_tab(ctx):
         ' text-overflow:ellipsis !important; white-space:nowrap !important; }'
         '.calc-left .widget-text { flex:1 1 auto !important; min-width:0 !important; width:auto !important; }'
         '.calc-left .widget-text input { width:100% !important; }'
+        # A name prompt's field (calc-prompt-row): basis 140 px, so the
+        # field and its two buttons share the line under the label (140 +
+        # 70 + 78 px); at width:auto the input's intrinsic ~210 px sent
+        # Cancel to a line of its own.
+        '.calc-left .calc-prompt-row > .widget-text { flex:1 1 140px !important; min-width:140px !important; width:auto !important; }'
         '.calc-filter-row { width:100% !important; display:flex !important; }'
         '.calc-filter-row > .widget-text { flex:1 1 auto !important; min-width:0 !important; width:auto !important; }'
         '.calc-filter-row > .widget-text input { width:100% !important; min-width:0 !important; }'
@@ -15832,6 +16212,11 @@ def create_tab(ctx):
         '.calc-left .widget-vbox { overflow:hidden !important; }'
         '.calc-left code { display:block !important; overflow:hidden !important;'
         ' text-overflow:ellipsis !important; white-space:nowrap !important; }'
+        '.calc-file-info { flex:1 1 auto !important; min-width:0 !important; }'
+        '.calc-file-info .widget-html-content { white-space:nowrap; overflow:hidden;'
+        ' text-overflow:ellipsis; }'
+        '.calc-file-info .widget-html-content span[style*="break-all"]'
+        ' { word-break:normal !important; }'
         '.calc-splitter { width:8px; height:100%; cursor:col-resize; touch-action:none;'
         ' background:linear-gradient(to right, #d6d6d6, #f2f2f2, #d6d6d6);'
         ' border-radius:4px; display:block;'
@@ -15896,6 +16281,7 @@ def create_tab(ctx):
         calc_print_mode_panel,
         calc_mo_plot_panel,
         calc_spin_density_panel,
+        calc_ts_goat_panel,
         calc_delete_confirm,
         calc_delete_status,
         calc_mol_container,
@@ -15931,20 +16317,20 @@ def create_tab(ctx):
         layout=widgets.Layout(height='100%', width='10px', margin='0', overflow='visible'),
     )
 
+    calc_splitter.add_class('calc-splitter-host')
+    calc_main_row = widgets.HBox(
+        [calc_left, calc_splitter, calc_right],
+        layout=widgets.Layout(
+            width='100%', overflow_x='hidden',
+            align_items='stretch', gap='12px',
+            flex='1 1 0', min_height='0',
+        ),
+    )
+    calc_main_row.add_class('calc-main-row')
     tab_widget = widgets.VBox([
         calc_css,
-        widgets.HTML(
-            '<h3>📁 Office</h3>' if _is_office_tab
-            else '<h3>📂 Calculations Browser</h3>'
-        ),
-        widgets.HBox(
-            [calc_left, calc_splitter, calc_right],
-            layout=widgets.Layout(
-                width='100%', overflow_x='hidden',
-                align_items='stretch', gap='12px',
-                flex='1 1 0', min_height='0',
-            ),
-        ),
+        widgets.HTML(_browser_heading(ctx, _is_office_tab)),
+        calc_main_row,
     ], layout=widgets.Layout(
         padding='10px', overflow_x='hidden',
         width='100%', max_width='100%',
@@ -15959,6 +16345,9 @@ def create_tab(ctx):
     calc_nav_selection_row.add_class('calc-nav-selection-row')
     calc_rename_prompt_row.add_class('calc-rename-prompt-row')
     calc_duplicate_prompt_row.add_class('calc-duplicate-prompt-row')
+    for _prompt_row in (calc_new_folder_prompt_row, calc_rename_prompt_row,
+                        calc_duplicate_prompt_row):
+        _prompt_row.add_class('calc-prompt-row')
     calc_content_area.add_class('calc-content-area')
     calc_table_panel.add_class('calc-table-panel')
     calc_table_output.add_class('calc-table-output')
@@ -16023,10 +16412,24 @@ def create_tab(ctx):
                     }}, 100);
                     return;
                 }}
+                // Built before it is shown (the agent tab builds the tabs it
+                // drives; the dashboard warms it): the tab's DOM appears only
+                // on its first open. Giving up after 4 s left the splitter and
+                // the explorer's clicks unbound for good. Wait for THIS tab's
+                // root instead -- one observer per scope, gone once bound.
                 // No fallback to the first .calc-tab on the page: with three
-                // browsers open that is somebody else's tab, and binding this
-                // tab's splitter and upload target to it is worse than not
-                // binding at all.
+                // browsers open that is somebody else's tab.
+                var waits = (window.__delfinCalcRootWaits = window.__delfinCalcRootWaits || {{}});
+                if (!waits[scopeKey]) {{
+                    waits[scopeKey] = new MutationObserver(function() {{
+                        if (document.querySelector('.' + scopeKey)) {{
+                            waits[scopeKey].disconnect();
+                            delete waits[scopeKey];
+                            initCalcScopeBind(0);
+                        }}
+                    }});
+                    waits[scopeKey].observe(document.body, {{childList: true, subtree: true}});
+                }}
                 return;
             }}
             window.__delfinCalcUploadStagingRoots = window.__delfinCalcUploadStagingRoots || {{}};
@@ -16299,6 +16702,8 @@ def create_tab(ctx):
         'calc_ketcher_container': calc_ketcher_container,
         'calc_recalc_toolbar': calc_recalc_toolbar,
         'calc_content_toolbar': calc_content_toolbar,
+        'calc_content_label': calc_content_label,
+        'calc_ts_goat_panel': calc_ts_goat_panel,
         'calc_sheet_payload_input': calc_sheet_payload_input,
         'calc_sheet_action_btn': calc_sheet_action_btn,
         # the spreadsheet, for driving it the way the browser does
@@ -16382,6 +16787,10 @@ def create_tab(ctx):
         'calc_update_download_btn': calc_update_download_btn,
         # Delete (exposed for blocking only — agent must NOT click)
         'calc_delete_btn': calc_delete_btn,
+        'calc_delete_confirm': calc_delete_confirm,
+        'calc_delete_label': calc_delete_label,
+        'calc_delete_status': calc_delete_status,
+        'calc_keyboard_action_input': calc_keyboard_action_input,
         # Batch from XYZ
         'xyz_batch_prepare_export': _calc_xyz_batch_prepare_export,
         'xyz_batch_state': state,

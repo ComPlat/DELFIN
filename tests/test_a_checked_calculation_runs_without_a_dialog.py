@@ -176,7 +176,11 @@ def test_a_delfin_tree_no_longer_runs_any_xtb_unasked():
     tree = Path(delfin.__file__).resolve().parents[1]
     perms = A.KitToolPermissions(workspace=tree, mode="default")
     assert not perms.matches_bash_auto_allow("xtb mol.xyz --opt -P 64")
-    assert perms.matches_bash_auto_allow("xtb --version")
+    # `xtb --version` is not a pattern on the list any more: the gate's
+    # information route admits it once the bare name resolves to an
+    # installed xtb (tests/test_an_information_call_is_not_a_calculation.py);
+    # a pattern cannot tell that program from a script named xtb.
+    assert not perms.matches_bash_auto_allow("xtb --version")
 
 
 # -- the ops tools ---------------------------------------------------------

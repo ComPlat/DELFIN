@@ -21,6 +21,7 @@ from delfin.manta.converter_flags import (
     _EMBED_TIMEOUT,
     _delfin_env_int,
     _deterministic_embed_seed,
+    _deterministic_mode,
 )
 from delfin.manta.embed_timeout import (
     _embed_with_timeout,
@@ -118,7 +119,7 @@ def _try_multiple_strategies(
 
                 _st = threading.Thread(target=_stk_build, daemon=True)
                 _st.start()
-                _st.join(timeout=_EMBED_TIMEOUT)
+                _st.join(timeout=None if _deterministic_mode() else _EMBED_TIMEOUT)
                 if _st.is_alive():
                     errors.append(f"stk({smi[:30]}...): timed out")
                     continue

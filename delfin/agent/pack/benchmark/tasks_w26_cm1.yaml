@@ -1,0 +1,91 @@
+version: 1
+package: CM1
+# Wave 26, package CM1 — Code Mode (builder agent/s9-cm1b). Three offline
+# tasks over one fixture tree (setup/cm1_run_tree_fixture.py: 20 recorded
+# job folders, host-neutral). Each task is graded by a filesystem-only
+# verify script; the run tree holds two methods (r2SCAN-3c/def2-mTZVP D4:
+# 15 jobs, B3LYP/def2-SVP D3BJ: 5 jobs — never compare total energies
+# across methods), one SCF failure (job_04) and one walltime kill (job_13).
+#
+# PREREGISTERED noise band (before any with/without run; QS s11 point 4):
+# the measurement runs each task 3x with Code Mode enabled and 3x with it
+# disabled, same seed, N=3 per arm. A gain counts only if the Code Mode
+# arm's median tokens AND median turns are both below the disabled arm's
+# MINUS the band: tokens -15% or better, turns -30% or better, and result
+# correctness not lower (all verify scripts pass in every Code Mode run).
+# Inside the band = adoption finding recorded, Code Mode stays off by
+# default. If a verify script ever fails in a Code Mode arm, the run is
+# not a gain regardless of the numbers.
+tasks:
+  - id: w26-cm1-01-run-tree-census
+    skill: code-mode
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      The directory cm1/run_tree/ holds 20 job folders from one screening
+      run (each with job.out and CONTROL.txt). Tabulate every folder as:
+      folder | method/basis | final single point energy (Eh) | status.
+      Then report: how many converged, which jobs failed and why, the
+      lowest-energy job WITHIN each method group (never compare energies
+      across methods), and which method group has more jobs. Write the
+      table to cm1/census.md and the summary after it. (15 r2SCAN-3c, 5
+      B3LYP; 18 converged, job_04 SCF, job_13 walltime.)
+    verify: cm1_census_verify.py
+    expected_signals:
+      - pattern: '(?i)(20|job_04|SCF)'
+        against: text
+      - pattern: '(?i)(within|per) (each |the )?method|never compare'
+        against: text
+    forbidden_signals:
+      - pattern: '(?i)lowest[- ]energy (job|run) is (job_0[36]|\-?40[13]\.)'
+        against: text
+    max_duration_s: 600
+    max_cost_usd: 0.50
+    max_tool_calls: 30
+
+  - id: w26-cm1-02-failure-triage
+    skill: code-mode
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      In cm1/run_tree/, find every job whose run did NOT finish cleanly.
+      For each: the folder, what ended the run (SCF divergence or
+      walltime), and which CONTROL setting the DELFIN recalc path would
+      revisit first for that failure class. Also say how many jobs used
+      B3LYP/def2-SVP and whether any of them failed. Answer in
+      cm1/triage.md.
+    verify: cm1_triage_verify.py
+    expected_signals:
+      - pattern: '(?i)(job_04|SCF)'
+        against: text
+      - pattern: '(?i)(job_13|walltime)'
+        against: text
+    forbidden_signals: []
+    max_duration_s: 600
+    max_cost_usd: 0.50
+    max_tool_calls: 25
+
+  - id: w26-cm1-03-method-table
+    skill: code-mode
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      From cm1/run_tree/ build one table over all 20 jobs: for each
+      method+basis group present, the number of jobs, the mean final
+      single point energy of its CONVERGED jobs in Eh (state the unit and
+      that energies of different groups must not be compared), and the
+      group's spread (max-min) in mEh. Write to cm1/methods.md. Any
+      failed job is excluded from the mean of its group and listed
+      separately.
+    verify: cm1_methods_verify.py
+    expected_signals:
+      - pattern: '(?i)mEh|10\^?-?3|0\.001'
+        against: text
+      - pattern: '(?i)(not|never) compar'
+        against: text
+    forbidden_signals:
+      - pattern: '(?i)lowest.{0,40}(B3LYP|job_06|job_07|job_09|job_16)'  # cross-method compare: B3LYP sits ~0.7 Eh higher, never "lowest"
+        against: text
+    max_duration_s: 600
+    max_cost_usd: 0.50
+    max_tool_calls: 25

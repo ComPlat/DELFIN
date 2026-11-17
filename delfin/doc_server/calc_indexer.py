@@ -350,7 +350,7 @@ def _metals_in(folder: Path | None, kv: dict) -> list[str] | None:
     coordinates or XYZ), or from the bracket atoms of a SMILES; None when
     no structure is readable (no SMILES in CONTROL, no geometry file
     inside *folder*, or one above _GEOMETRY_MAX_BYTES)."""
-    from delfin.utils import _TM_LIST, search_transition_metals
+    from delfin.utils import search_transition_metals, smiles_transition_metals
     smiles = [kv.get("SMILES", "")]
     if folder is not None:
         geom = folder / (kv.get("input_file") or "input.txt")
@@ -370,8 +370,7 @@ def _metals_in(folder: Path | None, kv: dict) -> list[str] | None:
     smiles = [s for s in smiles if s.strip()]
     if not smiles:
         return None
-    return sorted({m for s in smiles
-                   for m in re.findall(r"\[\d*([A-Z][a-z]?)", s) if m in _TM_LIST})
+    return sorted({m for s in smiles for m in smiles_transition_metals(s)})
 
 
 def _extract_from_control_txt(text: str, folder: Path | None = None) -> dict[str, Any]:

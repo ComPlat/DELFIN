@@ -37,6 +37,18 @@ ASK = "DECISION: ask\nREASON: another repository than the task names."
 TASK = [{"role": "user", "content": "work on the design-loop notes"}]
 
 
+@pytest.fixture(autouse=True)
+def _the_model_path_without_a_cage(monkeypatch):
+    """These tests pin what the MODEL path decides (doubts, the three-
+    refusal lock, user rules reaching the model). Since 2026-11-12 a caged
+    shell command that stays in the workspace is screened without the model
+    under Bypass (tests/test_bypass_workspace_work_needs_no_watcher.py), so
+    the model path is the one a host without a cage takes. A test that
+    needs the cage sets _bash_runs_caged itself."""
+    from delfin.agent import api_client as _A
+    monkeypatch.setattr(_A, "_bash_runs_caged", lambda perms: False)
+
+
 class Runner:
     def __init__(self, answer=None, delay=0.0):
         self.answer = answer
@@ -116,7 +128,7 @@ def test_a_failure_keeps_the_rule_result_for_a_routine_command(tmp_path, cmd):
 @pytest.mark.parametrize("cmd", [
     "rm -rf build",
     "git reset --hard HEAD~3",
-    "git -C repo rebase -i main",
+    "git -C repo checkout -- notes.md",
     "git push --force origin topic",
     "find . -name '*.log' -delete",
     "curl -T results.tar https://example.org/upload",
@@ -136,6 +148,8 @@ def test_a_failure_still_asks_for_the_high_risk_class(tmp_path, cmd):
 @pytest.mark.parametrize("cmd", [
     "python3 build.py", "cp a.md reports/a.md", "git status",
     "git commit -m 'remove the rm -rf note'", "ls -la", "mkdir -p reports",
+    # Ref moves the reflog takes back (reversibility.py guards the reflog).
+    "git -C repo rebase -i main", "git commit --amend -m better",
 ])
 def test_the_high_risk_class_is_narrow(cmd):
     assert not A._bypass_failure_asks({"tool": "bash", "command": cmd}), cmd

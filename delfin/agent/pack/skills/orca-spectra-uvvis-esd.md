@@ -66,6 +66,30 @@ unless the question is about phosphorescence or intersystem crossing.
   mechanics; this skill covers the _esd workflow specifics. Use both
   when the task is a full spectrum.
 
+## TADF screening (tadf_xtb workflow)
+
+For a TADF question (Delta E_ST, emitter ranking) the xTB screening
+workflow `tadf_xtb` comes before any TD-DFT chain:
+
+- **What it may claim**: rank/order only — S1 vs T1 order, sign and
+  rough size of Delta E_ST, which candidate emitter is worth a
+  production run. sTDA-xTB / sTD-DFT-xTB are screening methods
+  (Grimme & Bannwarth, J. Chem. Phys. 145, 054103 (2016),
+  DOI 10.1063/1.4959605; typical errors a few tenths of an eV), NOT
+  production methods.
+- **What must be confirmed at a higher level**: absolute excitation
+  energies, emission wavelengths (lambda_PL), and any rate derived
+  from them — TD-DFT with a validated functional, or STEOM-CCSD /
+  a SCS double hybrid for a referee-grade number.
+- **How to run it**: the CONTROL.txt settings reach the workflow
+  (charge, xtb_method, excited_method stda|std2, energy_window, PAL,
+  maxcore); a setting missing from CONTROL and from the arguments is
+  refused with a message naming it, never silently defaulted. Propose
+  the CONTROL block with your reason, show it to the user, run only
+  after they confirm. The report carries the screening note
+  (`screening_note` in the JSON payload) — quote it when you report
+  the numbers.
+
 ## Run `/check` before you report the spectrum
 
 `/check` (result_critic.py, docs/result_critic.md) reads the TDDFT

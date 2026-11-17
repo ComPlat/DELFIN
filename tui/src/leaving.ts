@@ -15,6 +15,46 @@ export interface LeavingSession {
   title?: string | null
   state?: string
   ended?: { reason?: string | null } | null
+  /** Ended on leaving because nothing was asked of it (empty.ts): not
+   *  kept, so no way back to it is printed. */
+  discarded?: boolean
+  /** Keep session (the service's summary `keep`): false, the service ends
+   *  the session once this window, which holds it, has gone. */
+  kept?: boolean
+  /** A dashboard's kernel runs it (summary `host`): it goes on there. */
+  hosted?: boolean
+}
+
+/** Whether a session runs on after its windows leave: the service's Keep
+ *  session flag (`session.setKeep`, `/keep`). A service before the switch
+ *  kept every session and says nothing. */
+export function keptOf(summary?: { keep?: boolean | null } | null): boolean {
+  return summary?.keep !== false
+}
+
+/** The session.create params of a session this window starts: Keep
+ *  session off, held by this window -- leaving it (ctrl+c twice, ctrl+d, a
+ *  closed terminal) ends the session, saved; `/keep on` keeps it running in
+ *  the agent service. A service before the switch ignores the field and
+ *  keeps every session, and keptOf reads that from its summaries. */
+export function startedHere<T extends Record<string, unknown>>(params: T): T & { keep: boolean } {
+  // `delfin-agent tui --keep` puts keep true into the start settings.
+  return { ...params, keep: params.keep === true }
+}
+
+/** Whether a dashboard's kernel runs the session (`session.host`; the
+ *  summary's `host`): leaving this window does not end it, the dashboard
+ *  still has it open. */
+export function hostedOf(summary?: { host?: string | null } | null): boolean {
+  return summary?.host === "dashboard"
+}
+
+/** What leaving the window does to the session in view, as ctrl+c and the
+ *  menu say it. */
+export function leaveWords(kept: boolean, hosted = false): string {
+  if (hosted) return "the session goes on in the dashboard that runs it"
+  return kept ? "the session keeps running in the agent service"
+    : "the session ends -- /keep on keeps it"
 }
 
 /** Characters a session id is made of; anything else is not printed as a
@@ -33,12 +73,19 @@ export function leavingNote(input: { session?: LeavingSession; problem?: string 
   const lines: string[] = []
   if (input.problem) lines.push(`DELFIN: ${plain(input.problem)}`)
   const s = input.session
-  if (s?.id) {
+  if (s?.id && s.discarded) {
+    // Nothing was asked of it: like Claude Code, nothing is kept.
+    if (!input.problem) lines.push("DELFIN: nothing was asked in this session, so it was not kept.")
+  } else if (s?.id) {
     const name = plain(s.title || `session ${s.id.slice(0, 8)}`)
     if (!input.problem) {
       lines.push(s.state === "ended"
         ? `DELFIN: ${name} has ended${s.ended?.reason ? ` (${plain(s.ended.reason)})` : ""}.`
-        : `DELFIN: ${name} keeps running in the agent service (or ← in any window).`)
+        : s.hosted
+          ? `DELFIN: ${name} goes on in the dashboard that runs it.`
+        : s.kept === false
+          ? `DELFIN: ${name} ends with this window (Keep session is off). It is saved.`
+          : `DELFIN: ${name} keeps running in the agent service (or ← in any window).`)
     }
     // The same words chat's session list uses ("resume with: ...").
     if (ID.test(s.id)) lines.push(`resume with: ${resumeCommand(s.id)}`)

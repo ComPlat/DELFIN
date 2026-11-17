@@ -242,7 +242,9 @@ def _write_set(root: Path, shards, specs) -> dict:
 
 
 #: Distribution (or, for epic-MACE, the probed file hash) that shows the tool is installed.
-_TOOL_PACKAGE = {"architector": "architector", "molsimplify": "molSimplify"}
+_TOOL_PACKAGE = {"architector": "architector", "molsimplify": "molSimplify",
+                 "rxembed": "rxembed", "molassembler": "scine_molassembler",
+                 "metallogen": "MetalloGen"}
 
 
 def cbatch_default_tool_python(tool) -> str:
@@ -256,6 +258,10 @@ def cbatch_default_tool_python(tool) -> str:
         raise SystemExit("epic-MACE runs in an environment of its own (Python 3.7): install it "
                          "with  python -m delfin.installer --install epic-mace  or pass "
                          "--tool-python (or set DELFIN_MACE_PYTHON)")
+    info = eb.TOOLS.get(tool, {})
+    if info.get("managed_env") and py == sys.executable:
+        raise SystemExit(f"{info['display']} runs in an environment of its own: install it with  "
+                         f"{info['install']}  or pass --tool-python (or set {info['python_env']})")
     return py
 
 

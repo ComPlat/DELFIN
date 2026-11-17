@@ -33,6 +33,9 @@ Metal Complex ML:
   - architector  — automated metal complex structure generation
   - epic-MACE    — stereomers and 3D conformers of metal complexes
                    (own Python 3.7 environment, called as an external program)
+  - rxembed      — every isomer + conformers of a SMILES (own Python 3.12 environment)
+  - Molassembler — stereoisomers + distance-geometry conformers (own environment)
+  - MetalloGen   — coordination-complex conformers, GFN2-xTB through ORCA (own environment)
 
 Visualization:
   - plotly       — interactive plots for dashboards
@@ -230,6 +233,43 @@ def get_epic_mace_version() -> Optional[str]:
     return "installed"
 
 
+def _own_env_version(builder: str, dist: str) -> str:
+    """The version of *dist* in the environment of its own that *builder* runs in."""
+    from delfin.common.external_builders import tool_python
+    from pathlib import Path
+    prefix = Path(tool_python(builder)).resolve().parent.parent
+    for meta in prefix.glob("lib/python*/site-packages/*.dist-info"):
+        name, _, version = meta.name[:-len(".dist-info")].partition("-")
+        if name.lower().replace("-", "_") == dist.lower():
+            return version
+    return "installed"
+
+def rxembed_available() -> bool:
+    """rxembed in its own environment (Python >= 3.12, RDKit >= 2026.9; DELFIN_RXEMBED_PYTHON)."""
+    from delfin import installer
+    return installer.present(installer.find("rxembed"))
+
+def get_rxembed_version() -> Optional[str]:
+    return _own_env_version("rxembed", "rxembed") if rxembed_available() else None
+
+def molassembler_available() -> bool:
+    """Molassembler in its own environment (DELFIN_MOLASSEMBLER_PYTHON)."""
+    from delfin import installer
+    return installer.present(installer.find("molassembler"))
+
+def get_molassembler_version() -> Optional[str]:
+    return (_own_env_version("molassembler", "scine_molassembler")
+            if molassembler_available() else None)
+
+def metallogen_available() -> bool:
+    """MetalloGen in its own environment (DELFIN_METALLOGEN_PYTHON).  Its builds also need ORCA."""
+    from delfin import installer
+    return installer.present(installer.find("metallogen"))
+
+def get_metallogen_version() -> Optional[str]:
+    return _own_env_version("metallogen", "metallogen") if metallogen_available() else None
+
+
 # ── Visualization ────────────────────────────────────────────────────
 
 def plotly_available() -> bool:
@@ -296,6 +336,18 @@ _TOOL_REGISTRY = [
     ("epic-MACE", "Metal Complex ML", epic_mace_available, get_epic_mace_version,
      "Stereomers and 3D conformers of metal complexes (own Python 3.7 environment)",
      "python -m delfin.installer --install epic-mace"),
+    ("rxembed", "Metal Complex ML", rxembed_available, get_rxembed_version,
+     "Every isomer and conformers of a SMILES, metal complexes included "
+     "(own Python 3.12 / RDKit 2026.9 environment)",
+     "python -m delfin.installer --install rxembed"),
+    ("Molassembler", "Metal Complex ML", molassembler_available, get_molassembler_version,
+     "Stereoisomers and distance-geometry conformers of inorganic molecules "
+     "(own environment; no dative-bond SMILES)",
+     "python -m delfin.installer --install molassembler"),
+    ("MetalloGen", "Metal Complex ML", metallogen_available, get_metallogen_version,
+     "3D conformers of coordination complexes, relaxed with GFN2-xTB through ORCA "
+     "(own environment; needs ORCA, not Gaussian)",
+     "python -m delfin.installer --install metallogen"),
     ("plotly", "Visualization", plotly_available, get_plotly_version,
      "Interactive plots for dashboards",
      "pip install plotly"),

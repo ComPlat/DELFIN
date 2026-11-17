@@ -49,6 +49,18 @@ installs the QM and analysis tools. It needs no root and no module system.
 ```bash
 git clone https://github.com/ComPlat/DELFIN.git ~/software/delfin
 bash ~/software/delfin/install.sh              # DELFIN, ORCA wiring, QM/analysis tools
+```
+
+These two commands are a complete first install. The installer checks first what it
+needs (curl or wget, tar, git, writable directories, about 6 GB free, a C compiler
+where OpenMPI has to be built) and stops before changing anything when something is
+missing. It keeps its output in `~/software/logs/`; a failed step is named, and the
+same command run again continues. It ends with how to start: `source ~/.delfin_env.sh`
+(new shells do it by themselves), `delfin-voila` for the dashboard,
+`cd ~/calc && delfin-agent` for the agent, and, on a cluster login node, the
+`ssh -L 8866:127.0.0.1:8866 ...` tunnel to reach the dashboard from your own computer.
+
+```bash
 bash ~/software/delfin/install.sh --all        # everything, ML and AI stacks too (several GB)
 bash ~/software/delfin/install.sh --only crest,gxtb
 bash ~/software/delfin/install.sh --dry-run    # print the plan, change nothing
@@ -62,7 +74,9 @@ dashboard's Settings tab, or automatically when a calculation first needs it.
 `python -m delfin.installer --list` shows what can be installed, `--status` what is.
 A tool that cannot live in DELFIN's own Python gets an environment of its own: epic-MACE
 (`--install epic-mace`) is built with micromamba as Python 3.7 + RDKit 2020.09 under
-`~/.delfin/ai_tools/.mamba_env/epic_mace` and is called there as an external program.
+`~/.delfin/ai_tools/.mamba_env/epic_mace` and is called there as an external program; rxembed
+(`--install rxembed`, Python 3.12 + RDKit 2026.9), Molassembler (`--install molassembler`) and
+MetalloGen (`--install metallogen`) the same way under `.mamba_env/<name>`.
 
 ### Standard install
 
@@ -358,6 +372,24 @@ Within OCCUPIER this is split once more: keys that only the stage frequency jobs
 | `XTB_preOPT` | `no` | Run xTB geometry optimisation before DFT |
 | `global_optimizer` | (empty) | Global optimisation: `GOAT`, `CREST`, or none |
 | `multiplicity_global_opt` | (empty) | Override multiplicity for pre-optimisation |
+| `global_opt_method` | (empty) | Method GOAT optimises with: empty = the `xTB_method`; `mlip:uma`, `mlip:mace`, `mlip:orb` or `mlip:aimnet2` = an orca-mlips machine-learned potential through ORCA's ExtOpt. Not with CREST |
+| `global_opt_mlip_model` | (empty) | Model name for the orca-mlips plugin (`--model`); empty = its default |
+| `global_opt_mlip_device` | `cuda` | `cuda` or `cpu`; `cuda` without a visible GPU stops the GOAT step |
+| `global_opt_mlip_provider` | `auto` | ExtOpt provider: `auto` takes orca-external-tools (one model server per job) when it is installed with the backend, else orca-mlips; `oet` or `orca-mlips` forces one |
+| `goat_max_workers` | (empty) | GOAT workers of an MLIP GOAT, a multiple of 4; empty = DELFIN's measured choice (docs/MLIP_GOAT_GPU.md) |
+| `mlip_fast_client` | `auto` | orca-external-tools client: `auto` (measured default, the documented `oet_client`), `yes` (the same request sent with curl), `no` |
+| `refuse_noncommercial_weights` | `no` | `yes` refuses MLIP weights under a non-commercial licence (`mlip:mace`) |
+
+With `global_opt_method=mlip:<plugin>` the GOAT step runs inside the
+workflow's own job, so that job must run on a node with the GPU (and the
+orca-mlips environment active). The files keep their names
+(`<xTB_method>_GOAT/XTB_GOAT.inp`, `output_XTB_GOAT.out`,
+`XTB_GOAT.globalminimum.xyz`); `XTB_GOAT.method.json` records the method.
+The ensemble's MLIP energies are a screen: for charged, open-shell or
+metal-containing systems re-rank the lowest conformers with DFT. Weights:
+UMA is gated (your own HuggingFace access), MACE is non-commercial
+(Academic Software License). The four keys are not in the shipped
+template; without them GOAT runs with xTB exactly as before.
 
 The older spellings are still accepted, so existing CONTROL.txt files keep
 working unchanged: `XTB_preOPT` is read as the older `XTB_OPT`, and `XTB_GOAT=yes` /
@@ -821,20 +853,55 @@ delfin doctor --scratch /path/to/scratch
 ### delfin-voila
 
 ```bash
-delfin-voila                     # starts on 127.0.0.1:8866
+delfin-voila                     # starts on 127.0.0.1:8866, in the background
+delfin-voila status              # running? URL, uptime, kept dashboards, kept agent sessions
+delfin-voila stop                # end the server, as Ctrl+C did
 delfin-voila --port 9000         # custom port
 delfin-voila --dark              # dark theme
-delfin-voila --keep              # run inside a tmux session, survives a dropped terminal
+delfin-voila --keep              # every window starts with Keep dashboard on
 delfin-voila --resume SID        # reopen a previous agent session
+delfin-voila --foreground        # run in this terminal (debugging)
 
 # On HPC/login nodes, keep 127.0.0.1 and use an SSH tunnel.
 # Direct network binds require an explicit security override:
 delfin-voila --ip 0.0.0.0 --allow-remote-bind
 ```
 
-Voila prints a URL containing an access token; token authentication is mandatory
-and cannot be switched off. If the port is taken, the next free one is used — read
-the printed URL rather than assuming 8866.
+`delfin-voila` prints a URL containing an access token; token authentication is
+mandatory and cannot be switched off. If the port is taken, the next free one is
+used — read the printed URL rather than assuming 8866.
+
+**The server outlives the terminal.** Typed at a terminal, `delfin-voila` starts
+the server detached from it (its own session, its output in
+`~/.delfin/dashboard_server/logs/<host>.log`), waits until it answers, prints
+the URL and, on a remote host, the `ssh -L` command for your computer, and
+returns the prompt. Closing the terminal or a dropped SSH connection ends
+nothing; no tmux is needed. `--keep` no longer starts tmux; it still switches
+Keep dashboard on in every window the dashboard opens.
+
+**One server per user and host.** A second `delfin-voila` finds the running
+server (its record is `~/.delfin/dashboard_server/run/<host>.json`, owner-only,
+judged by process id and start time) and opens it instead of starting another.
+`delfin-voila status` shows it: URL, uptime, the open dashboards, every kept
+dashboard with its return address and last activity, and the number of kept
+agent sessions. `delfin-voila stop` ends it the way Ctrl+C did: the dashboards
+end, and agent sessions with Keep session on go on in the agent service.
+
+**Several dashboards.** Each window is a dashboard of its own. The header's
+**Dashboards** menu lists the kept ones: **Open** brings one back in a new tab
+with its state, **End** ends it after one confirmation, **New dashboard** opens
+another.
+
+**When it ends by itself.** A server with no open window, no kept dashboard and
+no running kernel ends itself after 10 minutes, so a forgotten one does not hold
+a port and memory on a shared login node; within that time `delfin-voila` and
+the old address reach it again. `DELFIN_DASHBOARD_IDLE_EXIT_MINUTES` sets the
+grace (`0` keeps the server up).
+
+**Stays in the foreground** (as before, Ctrl+C ends it): a launch without a
+terminal (a script, systemd, launchd, the Pi's dashboard unit), inside a SLURM
+job (`--job`), inside tmux or screen (the Windows launcher), with
+`--foreground`, or with `DELFIN_VOILA_FOREGROUND=1`.
 
 ### delfin-build
 
@@ -1023,7 +1090,7 @@ Can also be run standalone: `delfin --imag`.
 One CONTROL key decides, and a run that builds from a SMILES must set it:
 
 ```ini
-smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE]
+smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE|RXEMBED|MOLASSEMBLER|METALLOGEN]
 ```
 
 | Value | What it does |
@@ -1034,10 +1101,15 @@ smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE]
 | `ARCHITECTOR` | The external Architector builder; needs a metal-containing SMILES. Its lowest-energy structure is used. |
 | `MOLSIMPLIFY` | The external molSimplify builder; needs a metal-containing SMILES. Its first geometry (square planar for CN 4, octahedral for CN 6) is used. |
 | `MACE` | The external epic-MACE builder; needs a metal-containing SMILES. The lowest-energy conformer of its first geometry (octahedral for 6 donor sites, square planar for 4) is used. |
+| `RXEMBED` | The external rxembed builder (`rx.embed(rx.isomers(smiles))`, every isomer on its default polyhedron); organic or metal-containing SMILES. The first conformer of the first species is used. |
+| `MOLASSEMBLER` | The external Molassembler builder (every stereoisomer, ten seeded distance-geometry conformers each); charge-separated SMILES only, a dative `->` is refused. The first conformer of the first isomer is used. |
+| `METALLOGEN` | The external MetalloGen builder with its ORCA calculator (every donor arrangement on the usual geometries of the site count, relaxed with GFN2-xTB through ORCA); needs a metal-containing SMILES and ORCA. The lowest-energy frame is used. |
 
-The external builders are optional (Architector and molSimplify: `pip install 'delfin-complat[ai-complex]'`; epic-MACE: `python -m delfin.installer --install epic-mace`, see below) and share one build with the dashboard buttons (`delfin/common/external_builders.py`): the SMILES is split into metal and ligands, the coordination number and oxidation state are read from it, and the tool runs in its own process. When the tool lives in another Python environment, point `DELFIN_ARCHITECTOR_PYTHON` / `DELFIN_MOLSIMPLIFY_PYTHON` / `DELFIN_MACE_PYTHON` to that interpreter. A missing tool is an error; nothing falls back to another builder. Mononuclear complexes only.
+The external builders are optional (Architector and molSimplify: `pip install 'delfin-complat[ai-complex]'`; epic-MACE, rxembed, Molassembler, MetalloGen: `python -m delfin.installer --install epic-mace` / `rxembed` / `molassembler` / `metallogen`, see below) and share one build with the dashboard buttons (`delfin/common/external_builders.py`): the SMILES is split into metal and ligands (rxembed and Molassembler read it as written), the coordination number and oxidation state are read from it, and the tool runs in its own process. When the tool lives in another Python environment, point `DELFIN_ARCHITECTOR_PYTHON` / `DELFIN_MOLSIMPLIFY_PYTHON` / `DELFIN_MACE_PYTHON` / `DELFIN_RXEMBED_PYTHON` / `DELFIN_MOLASSEMBLER_PYTHON` / `DELFIN_METALLOGEN_PYTHON` to that interpreter. A missing tool is an error; nothing falls back to another builder. Mononuclear complexes only (rxembed and Molassembler take any SMILES they can read).
 
 epic-MACE (Chernyshov & Pidko, *J. Chem. Theory Comput.* 2024, 20, 2313; [EPiCs-group/epic-mace](https://github.com/EPiCs-group/epic-mace), GPL-3.0) needs Python 3.7 and RDKit 2020.09, so it is never installed beside DELFIN: `python -m delfin.installer --install epic-mace` (or `install.sh --only epic-mace`, or the Install button in Settings) builds an environment of its own with micromamba under `~/.delfin/ai_tools/.mamba_env/epic_mace` (from the pinned GitHub commit efb5778e, which adds hapto ligands and the TET/SPY/TBP/SAN geometries to the octahedron and square of the PyPI release), and DELFIN calls it there as an external program; `DELFIN_MACE_PYTHON` points it to another interpreter. The geometry follows from the number of donor sites (a hapto ligand is one site): OH for 6, SP + TET for 4, SPY + TBP for 5, SAN for two hapto ligands. Every stereomer (enantiomers kept) gets ten conformers; MACE has no random seed, so two builds can differ.
+
+rxembed ([aligfellow/rxembed](https://github.com/aligfellow/rxembed), MIT), Molassembler (Sobez & Reiher, *J. Chem. Inf. Model.* 2020, 60, 3884; [qcscine/molassembler](https://github.com/qcscine/molassembler), BSD-3) and MetalloGen (Lee, Park, Park & Kim, *J. Chem. Inf. Model.* 2025, 65, 11878; [kyunghoonlee777/MetalloGen](https://github.com/kyunghoonlee777/MetalloGen), BSD-3) each get an environment of their own the same way: `python -m delfin.installer --install rxembed` (pinned commit 9c0ba5a6; it needs Python >= 3.12 and RDKit >= 2026.9.1, newer than DELFIN's), `--install molassembler` (scine-molassembler 3.0.1), `--install metallogen` (pinned commit fa26e2ad); `DELFIN_RXEMBED_PYTHON` / `DELFIN_MOLASSEMBLER_PYTHON` / `DELFIN_METALLOGEN_PYTHON` point elsewhere. Their builds are defined once in `delfin/cluster_bench/tool_workers/smiles_tools.py` (dashboard buttons, CONTROL and `delfin cluster` run the same one). rxembed and Molassembler take the SMILES as written, without DELFIN's split; Molassembler's reader does not parse dative bonds (write `[NH3+][Pt-2]([NH3+])(Cl)Cl`, not `N->[Pt](<-N)(Cl)Cl`) and picks one polyhedron per centre from its graph model (four-coordinate Pt(II): tetrahedral). MetalloGen's default calculator is xTB through Gaussian; DELFIN runs only its ORCA calculator (GFN2-xTB through ORCA's `otool_xtb`), never Gaussian, so it needs ORCA. MetalloGen builds the one arrangement its m-SMILES writes; DELFIN writes one m-SMILES per distinct arrangement of the donor sites on the usual polyhedra of the site count (SP + TET for 4, TBP + SPY for 5, OH for 6; proper rotations, ligand automorphisms and swaps of identical ligands identify arrangements, mirror images are kept, donors of one ligand at most four bonds apart are never trans; at most 48 per geometry, flagged `truncated`), and each is generated, clustered and relaxed as MetalloGen's command line does, with `random` and `numpy.random` seeded per m-SMILES (the xTB relaxations through ORCA can still differ in the last digits, so frame counts can vary). MetalloGen's time limit is 7200 s; a time-out keeps the finished arrangements in a partial xyz. Molassembler counts each stereoisomer once (meso included).
 
 `GUPPY` is still read as a spelling of `MANTA`, as is the older bare `GUPPY=yes`.
 
@@ -1322,6 +1394,15 @@ surfaces share the same engine, modes and slash commands. That one delegates wor
 that stands on its own to **subagents**, which run in parallel with their own tools
 and permissions — so a session is usually several agents, not one.
 
+### How to get into a running session
+
+Sessions live in your agent service, not in a window: the dashboard, the terminal and the phone are views on the same one, at the same time.
+- **Dashboard:** the sidebar's *Running sessions* lists every session of your service (any folder, started anywhere). One click on a session that is done or asleep moves it into the dashboard: the service saves and ends it, and the agent tab's full chat continues the same session with its whole history. A session that is working or waiting for an answer is not interrupted; it opens in the service's view, its recent turns, then live. The pencil renames it. *×* closes only the view; *End session…* (with a confirmation) ends it.
+- **Terminal:** `delfin-agent tui`, then **←** on an empty prompt for the agent view, **↑ ↓** to a session, **Enter** to open it. `/name NAME` (or F2 / ctrl+r in the agent view) renames it.
+- **Phone:** `hol` in the messenger chat.
+
+An approval may be answered in any of them; the first answer counts, and every window shows which one gave it. Names are kept by the service (at most 50 characters; empty: folder and short id). A session started in the dashboard runs in the dashboard's kernel by default, with the agent tab's full chat; the terminal and the phone cannot open it. Sessions of a running service (started in the terminal or on the phone) are still listed under *Running sessions* and open from there. Once a finished session has moved into the dashboard, the terminal and the phone no longer have it, and the page says so. If the service has not saved and released it within 20 s, the page says so and nothing opens; click it again a moment later. `DELFIN_DASHBOARD_SESSIONS=service` (or `agent.dashboard_sessions: "service"` in the settings) starts dashboard sessions in the service instead; their view does not yet have all of the chat's controls.
+
 ### Starting it
 
 ```bash
@@ -1333,6 +1414,8 @@ delfin-agent doctor              # models, keys, sandbox, MCP servers
 ```
 
 In the dashboard: the **DELFIN Agent** tab. Model, mode and permission level are chosen per session.
+
+The message is written in one rounded box at the bottom of the tab. The text field is at the top of the box. Below it, from left to right: `/` (browse the slash commands), **Files** (attach files; they land in the workspace's `.delfin/uploads`), the permission chip (with a shield icon), the model chip, the effort chip, the KIT mode button (shown when the session has KIT permission modes), and the round **Send** button with an arrow at the lower right. Enter also sends. The chips change the same settings as before; mode, provider, auto, stop, the git buttons and the bug report stay in the header above the chat.
 
 ### Modes
 
@@ -1359,6 +1442,12 @@ Switch with `/mode`. Older mode names (`quick`, `reviewed`, `tdd`, `cluster`, `f
 Choose with `--provider` / `--model` or `/model`. Without `--provider` and without a provider in the settings file, a model id that names its provider chooses it (`kit.` / `azure.` → kit, `name:tag` → ollama, `gpt-` / `o1` / `o3` / `o4` → openai, `claude` → claude) and the start notes say so; `--provider` always wins. DELFIN detects each model's real context window and its tool, vision and reasoning support — live from the endpoint where that is possible, otherwise from a built-in table — and sizes context management to it. For Ollama it sends the matching `num_ctx`, so a local model is not silently capped.
 
 **A model that cannot call tools is refused.** Every non-trivial action is a tool call, so such a model could only talk. Small models automatically get a shorter prompt and a reduced tool surface.
+
+### KIT quotas
+
+KIT limits each API key to 6 million tokens an hour, 50 million tokens a day and 2,000 requests a day; the daily counts reset at 00:00 UTC. These limits are KIT's, not DELFIN's. When a key is over a limit, KIT answers with HTTP 429 and its message names the time the limit resets. DELFIN treats a 429 like other temporary endpoint errors: it retries the round up to seven times with growing pauses (about eight minutes in total), then ends the turn with the endpoint's message in the error.
+
+Every request counts, not only the turn's own: the action watcher (below) sends its own requests, and on KIT an allow needs a second model family, which is a second request. A bug report's request list counts the watcher's requests separately from the turn's.
 
 ### API keys
 
@@ -1430,6 +1519,8 @@ Not covered: a program that can read the DELFIN process's memory (on Linux, `ker
 ### The action watcher
 
 Behind the rules, a small model gives a second opinion on actions the rules allowed without anyone seeing them: everything under `bypassPermissions`, messages to other agents and network calls in every mode, and — when nobody can be asked (`delfin agent run`, `chat -p`, the scheduler) — every auto-allowed action that leaves the workspace, such as `git fetch`. It can only add friction: ask you, or refuse with its reason. Plain reads never reach it. Its state — on or off, model, scope, last failure — is in the start banner and in `/status`.
+
+On KIT the watcher picks its model from the models the endpoint serves, the fastest of its lineup first. A refusal or a question from that model stands at once; an allow is only accepted after a model of a second family also allows it. When the process does not yet know the served models, they are fetched once as the session starts, so this also holds in a fresh headless run. When `agent.classifier.model` is set explicitly, that model decides alone. When the endpoint serves only one family, its model decides alone.
 
 When the watcher's model fails (one retry on an error, none on a timeout), an action that leaves the workspace is asked about, or held when nobody can be asked; reading, commands on the auto-allow list and writing inside the workspace go on, so a long unattended run keeps working. After three failures in a row the watcher is reported down, and its model is re-tried at most once a minute until it answers again.
 
@@ -1804,6 +1895,10 @@ itself and goes on with its session. After an update, a window of the new
 release moves an idle service over to it; a busy one is left running, and
 `delfin-agent service restart` moves it once its sessions are done.
 
+**Your HPC clusters.** `/clusters` adds your clusters and logs in to them,
+`/jobs` shows what runs there; see [running jobs on a cluster from your
+PC](#from-your-pc-running-jobs-on-a-cluster).
+
 **On a cluster.** Each login node runs its own service; the window tells
 you when sessions of yours are on another login node. Logging out leaves
 the service and its sessions running for as long as the node allows;
@@ -1883,6 +1978,16 @@ Self-contained work is delegated to an isolated agent with its own tool loop and
 Launch with `/explore`, `/review`, `/plan`, `/delegate <task>`, or let the agent delegate on its own. Several run in parallel — a writing preset gets its own git worktree, so concurrent edits cannot collide — or in the background, and a finished one can be continued with its context intact. Each run is bounded in wall-clock time, tool calls and output, and a subagent may not spawn subagents of its own unless that depth is raised; both in Settings.
 
 Your own presets are markdown files with frontmatter in `~/.delfin/subagents/`.
+
+### A workspace folder without git: local projects
+
+Worktrees, branches, parallel writing subagents and sessions in their own worktree need git. When one of them is requested in a workspace folder that is not a git repository (for example your default `agent_workspace`), the agent asks you once whether the folder should become a **local** repository. A yes runs `git init` (branch `main`), writes a `.gitignore` and makes one first commit of what is there. Kept out of that commit, and of later ones: QM program output and artifacts (`*.out`, `*.gbw`, `*.hess`, `*.engrad`, `*.densities`, `*.tmp`, `*.opt`, ..., and any file whose content is ORCA output whatever its name -- ORCA output may not be redistributed, see LICENSE_GUARD.md), checkpoints and model weights (`*.ckpt`, `*.pt`, `*.pth`, `*.safetensors`), archives, files above 10 MB (listed by name), nested repositories and secrets (`.env`, `credentials*`, `*.key`, `id_*`). An existing `.gitignore` is extended, not replaced. No remote is added: nothing leaves the machine, and adding a remote (`git remote add origin <url>`) is your step. A no leaves the folder unchanged and is not asked again in that session. Refused without a question: your home directory itself, system paths, a mount point, a folder inside another repository, plan mode and auto iterations.
+
+With a local project:
+
+- `orchestrate` gives each writing subagent its own worktree and branch; with `"merge": true` the finished worktrees are merged back into the folder, uncommitted, for review. A conflict is reported (`merges[].status = "conflict"`) and leaves the folder as it was, the conflicting worktree kept for a manual merge. A writer that asked for its own worktree never runs in the folder itself.
+- Several sessions in the same workspace: start each in its own worktree ("Own worktree" in the dashboard's new-session form; `session.create` with `worktree: true` in the agent service -- with `initProject: true` once you agreed to make a plain folder a local project). The trees live in `<workspace>/.delfin/worktrees/`, each on a `session/...` branch. `session.merge` brings a finished session's commits and changes back into the folder (refused while a session still works in that tree); a conflict is reported and nothing is written.
+- The branch views list the local branches; Pull is disabled with the reason (there is no `origin`).
 
 ### Memory and sessions
 
@@ -2107,7 +2212,7 @@ A prompt piped to `delfin-agent --output-format stream-json` on stdin works like
 | `wait` | `text` | The endpoint has not answered yet ("waiting for the model … Ns"). Each one replaces the one before |
 | `permission_request` | `request_id`, `tool`, `shown`, `preview`, `answered_by`, `mode`, `approvals_dir` | A step is waiting for a person (`--supervised` only). `answered_by` is always `"human"`: the line says who decides, it does not ask the driver to. `request_id` is the id `delfin-agent approvals` shows; `approvals_dir` is `true` when the question is in the approvals directory; `shown` is the command or path, `preview` what the person sees |
 | `permission_denied` | `tool`, `reason_code`, `needs_approval`, `text` | The permission gate refused a call. `reason_code` is stable (below); `needs_approval` is `true` when a person could have allowed it; `text` is the gate's own sentence |
-| `result` | `schema_version`, `stop_reason`, `denials`, `files_changed`, `text`, `tool_calls`, `input_tokens`, `output_tokens`, `error`, `session_id` | Always the last line. `--output-format json` prints the same object without `type` |
+| `result` | `schema_version`, `stop_reason`, `denials`, `files_changed`, `text`, `tool_calls`, `input_tokens`, `output_tokens`, `error`, `model_switches`, `session_id` | Always the last line. `--output-format json` prints the same object without `type` |
 
 Credential-looking values in `shown`, `preview` and `text` are masked the way the approval prompt masks them (`TOKEN=<redacted>`).
 
@@ -2118,6 +2223,7 @@ Credential-looking values in `shown`, `preview` and `text` are masked the way th
 | `denials` | Every refusal of the turn in order, `[{"tool": ..., "reason_code": ...}]`, including one the model then worked around |
 | `files_changed` | Files the write tools (`write_file`, `edit_file`, `apply_patch`, the document writers) changed, relative to the workspace. A file a shell command wrote is not listed |
 | `error` | Empty unless the turn failed |
+| `model_switches` | The models the turn left, in order, `[{"before": ..., "after": ..., "reason": ...}]`; `reason` is `model not found` or `model unavailable` (KIT did not serve the model and the session continued on another). `[]` when the turn stayed on one model |
 
 | State | How to tell |
 |-------|-------------|
@@ -2197,6 +2303,10 @@ else:
 ```
 
 The `wait` timeout covers only the time after the stream ended; a driver that must bound the whole run reads the lines in a thread, or kills the process group from a timer.
+
+### Checking the agent tab in a real page (contributors)
+
+The unit tests do not render the dashboard. A change to the agent tab, its sidebar or the agent service it talks to is checked with `scripts/page_check.py`: it starts the real dashboard against a scripted model, drives the agent tab in headless Chromium, writes `record.json`, screenshots and logs to `--out DIR`, and ends everything it started. `--scenario composer` sends one prompt and checks that the reply appears; `--scenario service-session` checks that a session of a private agent service is listed under *Running sessions*. Exit code 0 means pass, 1 means it ran and failed, 2 is a usage error. Requirements, options and the record's fields are in [Real-page check of the agent tab](page_check.md).
 
 ---
 
@@ -2308,6 +2418,111 @@ delfin_NMR output.out         # 1H NMR: writes NMR_<name>.png
 ---
 
 ## 15. Cluster & HPC Usage
+
+### From your PC: running jobs on a cluster
+
+DELFIN can send its calculations to an HPC cluster while it runs on your
+own PC: you work in `delfin-agent tui`, the agent submits DELFIN workflows
+and ORCA inputs to the cluster as Slurm jobs, and the results come back
+into your workspace. The rest of this section, from "SLURM backend" on, is
+about DELFIN installed and started on a cluster itself, which works as
+before.
+
+Everything goes over one ssh login per cluster that you make, held by
+[cluster-tunnel](https://github.com/aimat-lab/cluster-tunnel) (`ctun`,
+installed with DELFIN). How the login and the agent's limits are protected
+is in [SECURITY_MODEL.md](SECURITY_MODEL.md#hpc-clusters).
+
+**Add a cluster.** Open `/clusters` and press `a`.
+
+1. Pick one of the clusters ctun knows (bwUniCluster 3, HoreKa, HAICORE,
+   KCIST, ...), or "another cluster" to give its login host yourself.
+2. Fill in the name DELFIN uses for it, your user name there (the form
+   shows the cluster's hint, e.g. the `ka_` prefix on bwUniCluster 3), the
+   partition DELFIN's jobs go to, the work dir (default `~/delfin/jobs`)
+   and the install root (default `~/delfin/installs`). The partition is
+   filled in where DELFIN knows a good one; change it if your group uses
+   another. For another cluster, also say what its login asks for:
+   `space` switches between "password" and "password + OTP". A known
+   cluster brings its own.
+3. **The host key.** For bwUniCluster 3, HoreKa and HAICORE the cluster's
+   operators publish their key: when the server presents exactly that key
+   it is pinned at once and the form says so. For any other cluster, or a
+   server that presents a different key, the window shows the key it
+   offers. Compare it with what your cluster's documentation or admins say,
+   then press `y` to pin it, `n` to leave it unpinned (DELFIN will not use
+   the cluster until it is pinned; enter on its row shows the key again)
+   or `r` to ask the server again.
+4. **Log in.** The login field opens. Type your password, and the OTP if
+   the cluster asks for one. The screen shows only dots, and what you type
+   goes to ctun alone, never to the agent. Later logins: enter on a
+   logged-out cluster in `/clusters`; `o` logs out.
+
+A preset cluster comes with ctun's budget guard and its default limit per
+login (200 job-hours on bwUniCluster 3, 100 on KCIST); a cluster you gave
+by host has none. You never edit ctun's config or `~/.delfin_settings.json` by hand.
+
+The agent can suggest a cluster as well ("add bwUniCluster 3 for me"): it
+leaves an item in NEEDS YOU that opens the same form filled in. Check it
+and send it, or press esc. The agent cannot add a cluster by itself.
+
+**ORCA on the cluster.** Your ORCA has to be on the cluster: an unpacked
+`orca_*` directory in your home there, or its `.tar.xz`, which the
+installer unpacks. After you log in, the cluster's row says when DELFIN
+finds no ORCA where its installer looks. DELFIN never copies ORCA for you
+(it is your licence).
+
+**Run a job folder there.** Ask the agent, e.g. "run the DELFIN workflow
+in `opt-freq` on bwuni3 with a 30-minute limit".
+
+- Cores, memory and time come from the folder's CONTROL.txt (`PAL`,
+  `maxcore`, `job_timeout_hours`; DELFIN's defaults where it names none)
+  or from the ORCA input. The batch is checked first: the folders, the
+  partition, the budget left, and whether DELFIN is installed there.
+  What does not fit is refused before you are asked.
+- You get **one dialog per batch**: each job's cores, memory and time, the
+  hours against the budget left, and an install it needs first. Exactly
+  what you approved is uploaded and submitted.
+- **The first submit of a DELFIN version the cluster does not have yet**
+  installs that version there first (one install per commit; ORCA,
+  OpenMPI and the tools are shared). The install runs on the login node
+  on one core, so it can take around an hour. The agent does not wait: it
+  ends its turn, and DELFIN submits your approved batch by itself once the
+  install is done, without asking again. `/jobs` shows such a batch as
+  "waiting for install". If the install fails, or the folder or the
+  budget changed meanwhile, nothing is submitted and NEEDS YOU says why.
+
+**Follow the jobs.** `/jobs` lists everything running in the background,
+the jobs on each logged-in cluster included; ↑/↓ move from job to job and
+`space` opens a job's details (Slurm's state, where it runs, the last lines
+of its output). In both screens esc or ← goes back.
+
+**The results.** When a job ends, DELFIN brings its key results into
+`<job folder>/<cluster>-<id>/` in your workspace: DELFIN_Data.json,
+DELFIN.txt and the report, ORCA outputs, inputs, geometries and logs (at
+most 100 MB a file and 500 MB a job). Wave functions, densities and
+scratch stay on the cluster. NEEDS YOU says how the job ended, and the
+session that sent it is told, also when it was asleep.
+
+**When your PC was off.** The jobs run on regardless. The next time
+DELFIN's agent service starts, it brings back what ended meanwhile and
+submits a batch whose install finished. Without a login it asks for one in
+NEEDS YOU first.
+
+**Remove a cluster.** Select it in `/clusters` and press `x`, then `y`. It
+goes from DELFIN's settings and from ctun's config (its key is unpinned and
+its tunnel closed). DELFIN refuses while it still follows a job there,
+since those results could not come back.
+
+**When something does not work**
+
+| What you see | What it means |
+|---|---|
+| "login required", or a login item in NEEDS YOU | Nobody is logged in to that cluster: enter on it in `/clusters`. |
+| The cluster is "refused": no pinned host key | Enter on its row shows the key; compare and press `y`. |
+| "no ORCA where DELFIN looks" | Put your ORCA into the cluster's home (see above). |
+| An install reported as "stopped" | The login node's guard (hpc_guard) paused it because your processes there used more than their share of cores. Nothing resumes it by itself; the batch waiting for it is not submitted, and NEEDS YOU says so. |
+| A job's results did not come back yet | DELFIN looks once a minute while its agent service runs, and tries a failed fetch again over about a day. |
 
 ### SLURM backend
 

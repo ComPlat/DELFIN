@@ -18,6 +18,27 @@ recalculated.  Follow this protocol:
 4. Stop.  Do NOT submit any recalc.  Present the categorised list and ask
    the user which group(s) to submit.
 
+4b. Route the failures to DELFIN's own healing, not to hand edits
+
+For every "definitely needs recalc" folder, name the route the user
+should take instead of re-submitting the same thing:
+
+- A run DELFIN's recovery can heal (SCF/DIIS/TRAH/MPI/memory, plain
+  geometry) → `/recalc` on that folder: the retry carries DELFIN's
+  modified parameters automatically.
+- `SCAN_CONSTRAINT_ERROR` / `SCAN_STEP_NOT_CONVERGED`
+  (`RecoveryStrategy.reason_for_user()`): a recalc of the identical
+  input fails identically — present the reason and the user's options
+  instead of proposing a recalc.
+- A converged optimisation with an imaginary mode → IMAG
+  (`delfin --imag`, or the `imag` workflow on the calculation's
+  .inp/.out), not a recalc.  The default noise floor
+  (`allow_imaginary_freq` = -50 cm-1) skips shallow modes silently;
+  healing a named mode needs an explicit `allow_imaginary_freq`
+  SHALLOWER than that mode (e.g. 20 for -21.86 cm-1), proposed through
+  the `/control` path with its reason and only applied after the user
+  confirms.
+
 Safety rules:
 - Never call `/recalc auto` automatically — always wait for explicit user
   confirmation per folder or per group.

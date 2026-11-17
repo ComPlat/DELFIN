@@ -6,6 +6,7 @@ statement is the original text, only the imports below are new.
 from __future__ import annotations
 
 import numpy as np
+import math
 import os
 from rdkit import Chem
 from rdkit.Chem import AllChem
@@ -13,6 +14,7 @@ from rdkit.Chem import AllChem
 from delfin.manta.assemble_donor_plane import (
     _trilaterate_donor_targets,
 )
+from delfin.manta import bv_embed_geom as _bvg
 
 
 SEED = 42
@@ -146,6 +148,47 @@ def _tighten_ring_bounds(bm, mh, tol=0.06):
             bm[hi][lo] = float(max(d13 - tol, 0.0))
 
 
+def _metal_free_ligand_bounds(lmol, mh, mi):
+    """Bounds matrix of ``mh`` (ligand + placeholder metal ``mi`` + H) whose ligand-ligand entries
+    are those of the ligand ALONE, and whose metal row is left for the caller to set.
+
+    RDKit writes the 1-3 and 1-4 bounds of every ring from its ring-angle rule, and the chelate ring
+    through the placeholder metal is a ring to it: a five-membered metallacycle gets the regular
+    pentagon's 108 deg at every member.  A quinolinate's C8a and C8 sit in the aromatic six-rings
+    as well, whose 120 deg the same matrix also asks for, so the ligand's own 1-3 distances are
+    stated twice and contradict.  Measured on FOJVIL (Zn quinolinate, 22.10.2026): with the M-D
+    radii pinned, triangle smoothing fails for every config; the unconstrained fallback embed then
+    returns the compromise -- the donor N-C bond at 1.16 A and Zn-O at 2.5-2.75 A -- which the
+    radial rescale onto the short covalent-sum radii had been stretching back by accident.  The
+    metal does not change the ligand's bond lengths and angles; it only closes the ring, and that
+    is what the metal row (M-D radii) states.  Returns None when the ligand-only matrix cannot be
+    matched atom for atom (the caller keeps the historic matrix)."""
+    try:
+        from rdkit.Chem import rdDistGeom as _DG
+        lh = Chem.AddHs(lmol)
+        nl = lh.GetNumAtoms()
+        if mh.GetNumAtoms() != nl + 1:
+            return None
+        # mh: ligand heavy atoms, metal at mi, then the hydrogens in the ligand's order
+        idx = [i if i < mi else i + 1 for i in range(nl)]
+        for i in range(nl):
+            a, b = lh.GetAtomWithIdx(i), mh.GetAtomWithIdx(idx[i])
+            if a.GetAtomicNum() != b.GetAtomicNum():
+                return None
+            if sorted(idx[n.GetIdx()] for n in a.GetNeighbors()) != sorted(
+                    n.GetIdx() for n in b.GetNeighbors() if n.GetIdx() != mi):
+                return None
+        bl = _DG.GetMoleculeBoundsMatrix(lh)
+        bm = _DG.GetMoleculeBoundsMatrix(mh)
+        for i in range(nl):
+            for j in range(nl):
+                if i != j:
+                    bm[idx[i]][idx[j]] = bl[i][j]
+        return bm
+    except Exception:
+        return None
+
+
 def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
                         harden=False, force_bite=False):
     """Embed a chelating ligand TOGETHER with a placeholder metal bonded to its
@@ -245,14 +288,27 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
         # targets, so _have_targets, but NOT the bite pin -- dropping the donor-donor entries
         # is the whole point of it (see _bite_free_bounds).
         _bite_free = _bite_free_bounds()
+        # bond-valence targets: embed the ring at the radii it is seated at, the ligand's own
+        # bounds for every ligand pair (default OFF; see _metal_free_ligand_bounds)
+        from delfin.manta import _ml_targets_bv as _bvt
+        _bv_embed = _bvt.embed_at_targets() and _have_targets
+        _bite_free = _bite_free or _bv_embed
+        _geom_state = {"used": False, "bad": [], "failed": False}
         _use_bm = (_have_targets and (_chel_bite or harden or force_bite or _bite_free)) \
             or _oc6_vertex or _ring_b
+        if not _use_bm and os.environ.get("DELFIN_FFFREE_ISO_TRACE", "0") not in ("", "0"):
+            from delfin.manta.converter_backend import _ff_trace_write as _tw
+            _tw("[EMBED_BM] off have_targets=%s bite_free=%s" % (_have_targets, _bite_free))
         if _use_bm:
             try:
                 from rdkit.Chem import rdDistGeom as _DG
                 from rdkit import DistanceGeometry as _DGs
                 nA = mh.GetNumAtoms()
                 bm = _DG.GetMoleculeBoundsMatrix(mh)
+                if _bv_embed:
+                    _mfb = _metal_free_ligand_bounds(lmol, mh, mi)
+                    if _mfb is not None:
+                        bm = _mfb
                 dset = {int(d) for d in donor_idxs}
                 tp = ([np.asarray(p, float) for p in donor_target_pos]
                       if _have_targets else None)
@@ -328,13 +384,82 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
                             _setb(int(da), int(donor_idxs[b]),
                                   float(np.linalg.norm(_tp_use[a] - _tp_use[b])),
                                   tol=_dd_tol)
-                if _DGs.DoTriangleSmoothing(bm):
-                    ep = _DG.EmbedParameters()
-                    ep.randomSeed = SEED
-                    ep.useRandomCoords = True
-                    ep.SetBoundsMat(bm)
+                    if _bv_embed and _bvg.use_mrow():
+                        # DELFIN_FFFREE_BV_EMBED_GEOM: the metal row from the donor's hybridisation
+                        # (lone-pair direction), heavy substituents and H alike -- see bv_embed_geom
+                        _bvg.write_metal_row(bm, mh, mi, [int(d) for d in donor_idxs],
+                                             [float(np.linalg.norm(p)) for p in _tp_use])
+                    elif _bv_embed:
+                        # the metal on the donor's lone-pair side: M-D-X >= 95 deg for every heavy
+                        # neighbour X of a donor (the reset above left M...X at 1.2 A, so the
+                        # ring could close with the metal beside the donor-X bond)
+                        _cmin = math.cos(math.radians(95.0))
+                        for a, da in enumerate(donor_idxs):
+                            _r = float(np.linalg.norm(_tp_use[a]))
+                            for _nb in mh.GetAtomWithIdx(int(da)).GetNeighbors():
+                                _x = _nb.GetIdx()
+                                if _x == mi or _nb.GetAtomicNum() == 1 or _x in dset:
+                                    continue
+                                _dx = 0.5 * (bm[min(_x, int(da))][max(_x, int(da))]
+                                             + bm[max(_x, int(da))][min(_x, int(da))])
+                                _lo = math.sqrt(_r * _r + _dx * _dx - 2.0 * _r * _dx * _cmin)
+                                _l, _h = min(_x, mi), max(_x, mi)
+                                bm[_h][_l] = max(float(bm[_h][_l]), _lo)
+                                bm[_l][_h] = max(float(bm[_l][_h]), _lo + 0.1)
+                _bm_geom = (_bv_embed and _bvg.geom_enabled() and tp is not None)
+                _bm_keep = np.array(bm, float) if _bm_geom else None   # pre-smoothing ligand bounds
+                _smooth = _DGs.DoTriangleSmoothing(bm)
+                if _smooth:
+                    if _bm_geom and _bvg.use_etkdg():
+                        ep = _bvg.embed_params(bm, SEED)
+                    else:
+                        ep = _DG.EmbedParameters()
+                        ep.randomSeed = SEED
+                        ep.useRandomCoords = True
+                        ep.SetBoundsMat(bm)
                     cids = list(AllChem.EmbedMultipleConfs(mh, numConfs=k, params=ep))
-            except Exception:
+                    if _bm_geom and not cids and _bvg.use_etkdg():
+                        # ETKDG's extra terms can refuse a ring the plain DG embeds: never fewer
+                        # conformers than the historic path
+                        ep = _DG.EmbedParameters()
+                        ep.randomSeed = SEED
+                        ep.useRandomCoords = True
+                        ep.SetBoundsMat(bm)
+                        cids = list(AllChem.EmbedMultipleConfs(mh, numConfs=k, params=ep))
+                    if _bm_geom and cids and _bvg.use_refine():
+                        _radii = [float(np.linalg.norm(p)) for p in _tp_use]
+                        for _cid in cids:
+                            _P0 = np.array(mh.GetConformer(_cid).GetPositions(), float)
+                            _Q = _bvg.refine_conformer(lmol, mh, mi, _P0,
+                                                       [int(d) for d in donor_idxs], _radii,
+                                                       _bm_keep)
+                            if _Q is not None:
+                                _cf = mh.GetConformer(_cid)
+                                for _ai in range(mh.GetNumAtoms()):
+                                    _cf.SetAtomPosition(_ai, _Q[_ai].tolist())
+                    if _bm_geom:
+                        # a conformer the constrained ring cannot close (fused strained chelates: the
+                        # windows and the ring closure contradict, KEXHOL) misses its radii or squeezes
+                        # a bond -> it is replaced by the historic conformer of the same index below
+                        _radii_q = [float(np.linalg.norm(p)) for p in _tp_use]
+                        _geom_state["bad"] = [
+                            _i for _i, _cid in enumerate(cids)
+                            if not _bvg.conformer_ok(
+                                mh, mi, np.array(mh.GetConformer(_cid).GetPositions(), float),
+                                [int(d) for d in donor_idxs], _radii_q, _bm_keep)]
+                        _geom_state["used"] = bool(cids)
+                if _bm_geom and not cids:
+                    _geom_state["failed"] = True
+                if os.environ.get("DELFIN_FFFREE_ISO_TRACE", "0") not in ("", "0"):
+                    from delfin.manta.converter_backend import _ff_trace_write as _tw
+                    _tw("[EMBED_BM] metal=%s donors=%s r=%s bite_free=%s smooth=%s confs=%d"
+                        % (metal_sym, [mh.GetAtomWithIdx(int(d)).GetSymbol() for d in donor_idxs],
+                           (["%.3f" % float(np.linalg.norm(p)) for p in tp] if tp is not None else None),
+                           _bite_free, _smooth, len(cids)))
+            except Exception as _e:
+                if os.environ.get("DELFIN_FFFREE_ISO_TRACE", "0") not in ("", "0"):
+                    from delfin.manta.converter_backend import _ff_trace_write as _tw
+                    _tw("[EMBED_BM] failed %r" % (_e,))
                 cids = []
         if not cids:                                      # default / fallback: unconstrained embed
             try:
@@ -409,6 +534,18 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
         for cid in cids:
             P = np.array(mh.GetConformer(cid).GetPositions(), float)
             coords.append(P[keep] - P[mi])                          # metal -> origin
+        if _geom_state["failed"] or (_geom_state["used"] and _geom_state["bad"]):
+            # DELFIN_FFFREE_BV_EMBED_GEOM never builds less than the plain BV embed: where the chemically
+            # constrained ring cannot be closed, that ligand keeps the historic conformer
+            _hist = _bvg.without_geom(lambda: _embed_metallacycle(
+                lmol, donor_idxs, metal_sym, k=k, donor_target_pos=donor_target_pos,
+                harden=harden, force_bite=force_bite))
+            if _hist is not None and list(_hist[0]) == list(lsyms):
+                if _geom_state["failed"]:
+                    return _hist
+                for _i in _geom_state["bad"]:
+                    if _i < len(coords) and _i < len(_hist[1]):
+                        coords[_i] = _hist[1][_i]
         return lsyms, coords
     except Exception:
         return None

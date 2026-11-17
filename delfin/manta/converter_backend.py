@@ -218,6 +218,21 @@ def _cn4_opposite_geometry(geom_name: str) -> Optional[str]:
     return None
 
 
+def _cn5_both_enabled() -> bool:
+    """CN5 dual-geometry completeness on the chelate path: TBP-5 AND SPY-5 (default OFF ->
+    byte-identical when unset)."""
+    return os.environ.get("DELFIN_FFFREE_CN5_BOTH", "0") == "1"
+
+
+def _cn5_opposite_geometry(geom_name: str) -> Optional[str]:
+    """The Berry partner of a CN5 polyhedron (TBP-5 <-> SPY-5), or None."""
+    if geom_name == "TBP-5 trigonal bipyramid":
+        return "SPY-5 square pyramid"
+    if geom_name == "SPY-5 square pyramid":
+        return "TBP-5 trigonal bipyramid"
+    return None
+
+
 # antipodal vertex pairs per geometry (polya vertex ordering) — for universal
 # cis/trans/fac/mer classification from the coloring.  Iter-32d (User 2026-05-28
 # GUVZIH "fac koord fehlt"): extended to CN5 (TBP/SPY) + CN3 (T-shape).
@@ -1551,6 +1566,7 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None,
         return False
 
     n_coll = 0
+    _coll_first = ""                                  # trace detail only (ISO_TRACE)
     for i, j in bonds:
         if _bd._is_metal(syms[i]) or _bd._is_metal(syms[j]):
             continue
@@ -1562,7 +1578,9 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None,
         if _mb_len_exempt and _len_is_multibond(syms[i], syms[j], d_ij):
             continue                                  # length-matches a multibond ideal -> pass
         n_coll += 1
+        _coll_first = _coll_first or "%s%d-%s%d %.2f<%.2f" % (syms[i], i, syms[j], j, d_ij, _coll_floor(syms[i], syms[j]))
     if n_coll > 0:
+        _ff_trace_write("[GATE_DETAIL] COLLAPSED_BOND %s n=%d" % (_coll_first, n_coll))
         return _gate_no("COLLAPSED_BOND")
     # GRAPH ANCHOR (DELFIN_FFFREE_TORN_GATE, default OFF -> byte-identical).  Everything above
     # judges bonds that geometric perception FOUND -- "is this contact too short?".  Nothing asks
@@ -1905,6 +1923,8 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers, union: bool = False):
         # primary frame is then byte-identical to the flag-off build BY CONSTRUCTION, not by a
         # check that has to be trusted.
         built = _build_config_never_worse(d, config, ligands, geom_key)
+        if built is None and _bv_geom_on():
+            built = _historic_bv_config(d, config, ligands, geom_key, _ex, _gb)
         if built is None:
             _iso_trace("BUILD_NONE", k, geom_tag)
             continue
@@ -1966,6 +1986,11 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers, union: bool = False):
                         lambda: _build_config_never_worse(d, config, ligands, geom_key),
                         cn=d.get("cn"), geom=d.get("geometry"),
                         exempt_pairs=_ex, graph_bonds=_gb)
+                if reseated is None and _bv_geom_on():
+                    _hb = _historic_bv_config(d, config, ligands, geom_key, _ex, _gb)
+                    if _hb is not None:
+                        reseated = (_hb[0], _hb[1])
+                        donors = _hb[2]
                 if reseated is None:
                     _iso_trace("SELFGATE", k, geom_tag)
                     continue                          # skip this config
@@ -2697,6 +2722,34 @@ def _coord_filter(results):
         return results
 
 
+def _historic_bv_config(d, config, ligands, geom_key, exempt, graph_bonds):
+    """The configuration built with the plain bond-valence embed (DELFIN_FFFREE_BV_EMBED_GEOM suspended), if it
+    passes the same self-gate -- the never-worse floor of BV_EMBED_GEOM.  A rigid, chemically right ligand can
+    clash in a strained configuration that the distorted one squeezed into (KEXHOL OC-6-chelate-8, whose
+    pucker frames were clean in lc18); that configuration then keeps its historic frame instead of being lost.
+    The realism ranking places such a frame by its score.  None when the historic build fails as well."""
+    from delfin.manta import bv_embed_geom as _bvg
+    try:
+        hb = _bvg.without_geom(lambda: _build_config_never_worse(d, config, ligands, geom_key))
+        if hb is None:
+            return None
+        hs, hP, hd = hb
+        hs, hP = _maybe_relax(hs, hP)
+        if not _build_is_clean(hs, hP, cn=d.get("cn"), geom=d.get("geometry"), donors=hd,
+                               exempt_pairs=exempt, graph_bonds=graph_bonds):
+            return None
+        return hs, hP, hd
+    except Exception:
+        return None
+
+
+def _bv_geom_on() -> bool:
+    """DELFIN_FFFREE_BV_EMBED_GEOM together with the bond-valence embed it repairs."""
+    from delfin.manta import bv_embed_geom as _bvg
+    from delfin.manta import _ml_targets_bv as _bvt
+    return _bvg.geom_enabled() and _bvt.embed_at_targets()
+
+
 def _fffree_isomers(smiles: str, max_isomers: int = 50, union: bool = False
                     ) -> Optional[List[Tuple[str, str]]]:
     # `union`: the caller says whether it places our frames ALONGSIDE legacy's instead
@@ -2764,7 +2817,13 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50, union: bool = False
         # good fallback, and REGRESSES the system (DIPZOV 0.14 -> 0.56).  Purely additive:
         # where the default chelate succeeds, the opposite geometry is still added (YEGGUO
         # wins via the separate non-chelate path, unaffected).
-        if (_cn4_both_enabled() and d.get("cn") == 4 and chel
+        # DELFIN_FFFREE_BV_EMBED_GEOM under UNION: the guard above protects the legacy fallback, and under
+        # UNION the legacy frames are built and merged in any case, so an EMPTY default polyhedron no longer
+        # has to hide its partner.  Needed because the chemically right embed (bv_embed_geom) rejects what
+        # the distorted one let through: a planar Te,N,O pincer (EBOKUC) cannot be tetrahedral, T-4 comes out
+        # empty, and with the guard the SP-4 chelate frames the crystal has were never built (30.10.2026).
+        _both_any = bool(chel) or (union and _bv_geom_on())
+        if (_cn4_both_enabled() and d.get("cn") == 4 and _both_any
                 and _cn4_opposite_geometry(d["geometry"]) is not None):
             opp = _cn4_opposite_geometry(d["geometry"])
             opp_key = _GEOM_TO_POLYA.get(opp)
@@ -2780,6 +2839,26 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50, union: bool = False
                     os.write(2, ("[CN4_BOTH] default_chel=%d extra=%d total=%d geom=%s opp=%s\n"
                                  % (len(chel)-len(extra), len(extra), len(chel),
                                     d["geometry"], opp)).encode())
+        # CN5 dual-geometry completeness for chelates (DELFIN_FFFREE_CN5_BOTH, default OFF ->
+        # byte-identical).  The monodentate path adds SPY-5 next to the decompose default TBP-5
+        # (Berry partner, "CN5 polytopal completeness" below); the chelate path never did, so a
+        # CN5 chelate complex was built on ONE polyhedron only.  Measured 22.10.2026 on dev300:
+        # JOQBAU (Cu(II), N,N,N-tridentate + 2 Cl, crystal tau5 0.55) got two TBP frames
+        # (tau5 0.93) and nothing between; URUGOF (Ni, crystal tau5 0.29) three at 0.88.
+        # Same never-worse shape as CN4_BOTH: only on top of a non-empty default.
+        if (_cn5_both_enabled() and d.get("cn") == 5 and (bool(chel) or (union and _bv_geom_on()))
+                and _cn5_opposite_geometry(d["geometry"]) is not None):
+            opp5 = _cn5_opposite_geometry(d["geometry"])
+            opp5_key = _GEOM_TO_POLYA.get(opp5)
+            if opp5_key is not None and opp5_key in PIC._GROUPS:
+                d_opp5 = dict(d)
+                d_opp5["geometry"] = opp5
+                try:
+                    extra5 = _fffree_chelate_isomers(d_opp5, opp5_key, max_isomers) or []
+                except Exception:
+                    extra5 = []
+                _ff_trace_write("[CN5_BOTH] default=%d extra=%d opp=%s" % (len(chel), len(extra5), opp5))
+                chel = chel + extra5
         _r = _coord_filter(chel or None)
         if os.environ.get("DELFIN_CN4_DEBUG", "0") == "1":
             os.write(2, ("[CN4_BOTH] after _coord_filter: %d (was %d)\n"

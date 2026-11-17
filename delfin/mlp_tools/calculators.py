@@ -206,6 +206,10 @@ def create_calculator(
         raise ValueError(
             f"Backend '{key}' is registered but has no factory implementation."
         )
+    # Test hook: swap the factory without importing torch (tests only).
+    override = kwargs.pop("_factory_override", None)
+    if override is not None:
+        factory = override if callable(override) else (lambda **kw: override)
     # Validate CUDA device availability
     if device != "cpu" and device.startswith("cuda"):
         try:

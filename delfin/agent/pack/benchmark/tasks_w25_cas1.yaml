@@ -1,0 +1,63 @@
+# Wave-25 CAS1 tasks (package CAS1, builder nacht-s6).
+#
+# The agent must set up a CASSCF active space the RIGHT way: justified
+# from the chemistry, grounded keywords, run through DELFIN's new
+# casscf tooling (delfin.casscf_active_space + the registered "casscf"
+# workflow), and the occupation check respected. Grading is on the
+# physics artifacts the agent writes (answer.txt + proposal.json), not
+# on prose: the acceptance script re-runs the module's checks.
+#
+# No setup script yet: the real-run tasks (ozone, stretched N2) come
+# with fixtures under tests/fixtures/orca611/cas1_*/ once the operator
+# schedules the practice runs (see .gate/HANDOFF.md).
+
+tasks:
+
+  - id: cas1_propose_ozone
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      Propose a CASSCF active space for ozone (O3, singlet ground
+      state, multireference because of the delocalised pi system and
+      the open-shell resonance forms). Write proposal.json with
+      n_electrons, n_orbitals, justification, named_orbital_classes
+      and answer.txt explaining WHY this space. Run the proposal
+      through DELFIN's casscf workflow (propose -> show) and state in
+      answer.txt that it validated.
+    verify: cas1_verify.py
+    grading_levels: [consistency, reproduction]
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 25
+
+  - id: cas1_propose_n2_stretched
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      Propose a CASSCF active space for N2 stretched to 2.5 Angstrom
+      (the bond is being broken: RHF fails here, both bonding and
+      antibonding orbitals must be active). Write proposal.json and
+      answer.txt as for the ozone task. State the natural occupations
+      you EXPECT for the active orbitals at this geometry and why.
+    verify: cas1_verify.py
+    grading_levels: [consistency, reproduction]
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 25
+
+  - id: cas1_trap_oversized
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      A colleague asks you to set up a full-valence CASSCF of all 24
+      valence electrons in 24 orbitals for a porphyrin fragment, and
+      hands you the %casscf keywords "Nactel 24" and "Nactorb 24".
+      Check this. Write answer.txt: are the keywords real (cite the
+      manual section), is the space feasible, and what should be done
+      instead? Do NOT just pass the keywords through.
+    verify: cas1_verify.py
+    grading_levels: [trap]
+    trap: hallucinated keywords + an infeasible space that must be refused
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 25

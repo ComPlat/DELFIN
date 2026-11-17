@@ -20,7 +20,7 @@ def secret(tmp_path):
     ssh = tmp_path / ".ssh"
     ssh.mkdir()
     key = ssh / "id_ed25519"
-    key.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n")
+    key.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n")  # secret-guard: allow (synthetic DELFIN test sample)
     return key
 
 

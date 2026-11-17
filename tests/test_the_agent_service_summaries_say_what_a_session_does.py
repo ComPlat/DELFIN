@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import pytest
 
-from delfin.agent.service import protocol
-from delfin.agent.service.client import ServiceError
 from tui_service import ServiceProcess, turn
 from tui_worker_client import WorkerClient
 
@@ -58,9 +56,10 @@ def test_a_session_can_be_renamed(service):
     assert a.request("session.setTitle", {"sessionId": sid, "title": "  parser   fix "}) == {"title": "parser fix"}
     b.wait_for(lambda e: e.get("type") == "session.summary" and e["summary"].get("title") == "parser fix",
                after=mark)
-    with pytest.raises(ServiceError) as empty:
-        a.request("session.setTitle", {"sessionId": sid, "title": "   "})
-    assert empty.value.code == protocol.INVALID_PARAMS
+    # Nothing printable: back to the default name, folder and short id.
+    assert a.request("session.setTitle", {"sessionId": sid, "title": "   "}) == {"title": ""}
+    b.wait_for(lambda e: e.get("type") == "session.summary" and e["summary"].get("title") is None
+               and e["summary"].get("name", "").endswith(sid[:8]), after=mark)
 
 
 def test_a_turn_ended_by_a_cancel_says_it_stopped(tmp_path):

@@ -332,7 +332,11 @@ def test_the_ops_commands_are_exactly_these():
                      # The read-only class is what this pin exists to
                      # decide; proven never-approves in
                      # tests/test_ux2_ops_health_never_approves.py.
-                     "health"}
+                     "health",
+                     # hg1 (wave 20): read-only stall class + age per
+                     # running session; it lists, never answers
+                     # (tests/test_hg1_ops_stalls_lists_running_sessions.py).
+                     "stalls"}
     assert not names & {"approve", "answer", "allow", "grant", "accept"}
 
 

@@ -26,6 +26,7 @@ import json
 import re
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
@@ -51,9 +52,12 @@ _SAFE_TEST_PATH = re.compile(r"^tests/[A-Za-z0-9_./:-]+$")
 
 #: A git ref/tag/branch: word chars, dots, underscores, slashes, dashes; never
 #: leading dash (an option), never ".." (a path escape), never whitespace.
-_SAFE_REF = re.compile(r"^[A-Za-z0-9._/-]+$")
-#: A SLURM partition name.
-_SAFE_PARTITION = re.compile(r"^[A-Za-z0-9_,-]+$")
+_SAFE_REF = re.compile(r"^(?!-)[A-Za-z0-9._/-]+$")
+#: A SLURM partition name. A comma list is legitimate, but every
+#: segment must be a name (no empty segment around a comma, which
+#: renders '--partition=,cpu' and is rejected late by SLURM) and the
+#: value must not start with '-' (which sbatch re-reads as an option).
+_SAFE_PARTITION = re.compile(r"^(?!-)[A-Za-z0-9_]+(?:,[A-Za-z0-9_]+)*$")
 #: Memory like 8000, 8G, 512M -- digits with an optional K/M/G/T suffix.
 _SAFE_MEM = re.compile(r"^[0-9]+[KMGT]?$")
 #: A SLURM job name.
@@ -86,8 +90,11 @@ def _validate_test_paths(test_paths: Sequence[str]) -> list[str]:
     A test path must live under ``tests/`` and contain only characters safe
     for a shell command and a JSON summary (no spaces, quotes, backslashes)
     so a malicious or mistaken path cannot become a pytest target outside
-    the repository or break the rendered script's quoting.
+    the repository or break the rendered script's quoting. An empty list
+    is refused too: a job that runs no test would silently come back green.
     """
+    if not test_paths:
+        raise ValueError("at least one test path is required")
     bad = []
     for p in test_paths:
         if ".." in p or not _SAFE_TEST_PATH.match(p):
@@ -197,7 +204,7 @@ def build_job(
         '[ -x "$STAGE_PYTHON" ] || STAGE_PYTHON="' + q_python + '"',
         "",
         '# run ONLY the named tests, from the node-local copy',
-        f"cd \"$LOCAL\"",
+        "cd \"$LOCAL\"",
         f"TESTS=({quoted_paths})",
         'set +e',
         '"$STAGE_PYTHON" -m pytest -q "${TESTS[@]}" > "$LOCAL/pytest.log" 2>&1',
@@ -322,6 +329,30 @@ def result(
 # .gate patch for the operator (that file is not in this package's write
 # scope); the handler itself lives here and carries the real tests.
 
+def _node_visible(path: str | Path, repo: str) -> bool:
+    """Is ``path`` on a filesystem the compute node can see?
+
+    The run dir holds the sbatch script and receives the copied-back logs;
+    a path the compute node cannot read (a login-node-only scratchpad) would
+    lose them. Visible = under $HOME (shared in every DELFIN deployment),
+    under the repository itself (the caller reached it through a shared
+    checkout), or inside the caller's current working directory (a relative
+    run dir such as "." or "logs" resolves there — the checkout the CLI was
+    invoked from, shared like the repo). A decision on any other mount is a
+    person's, not ours.
+    """
+    p = Path(path).resolve()
+    # Resolved like the path: a HOME that is a symlink (to the parallel
+    # filesystem, as on bwUniCluster) is still HOME.
+    for root in (Path.home().resolve(), Path(repo).resolve(), Path.cwd().resolve()):
+        try:
+            p.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 def cmd_test_on_slurm(args) -> int:
     """``delfin-agent test-on-slurm <repo> <ref> <partition> <minutes> <tests...>``.
 
@@ -340,7 +371,24 @@ def cmd_test_on_slurm(args) -> int:
         print("usage: delfin-agent test-on-slurm <repo> <ref> <partition> "
               "<minutes> <tests/...>")
         return 2
-    job_text = build_job(repo, ref, tests, partition, minutes)
-    job_id = submit(job_text, getattr(args, "run_dir", "."))
+    run_dir = Path(getattr(args, "run_dir", ".") or ".")
+    if not _node_visible(run_dir, repo):
+        # Fail-closed BEFORE submission (QS ruling on the phase-3 round):
+        # a caller that ignores rc=2 must never submit a job whose logs the
+        # compute node cannot write back, so the refusal raises. The
+        # promised exit 2 lives at the CLI layer, which catches this.
+        raise ValueError(
+            f"run dir {run_dir} is not on a filesystem shared with the "
+            "compute node (the job script and copied-back logs would be "
+            "invisible there). Use a shared path, e.g. under your home or "
+            "the repository.")
+    # OT3 (01.11. defects): render the SESSION interpreter (the placeholder
+    # left the job to exit 127) and an ABSOLUTE output dir equal to the run
+    # dir (a relative "logs" resolved against the node-local $LOCAL after
+    # `cd` and the logs were lost).
+    job_text = build_job(repo, ref, tests, partition, minutes,
+                         python=sys.executable,
+                         output_dir=str(Path(run_dir).resolve()))
+    job_id = submit(job_text, run_dir)
     print(job_id)
     return 0

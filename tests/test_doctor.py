@@ -160,7 +160,7 @@ def test_binaries_in_user_qm_tools_are_found(monkeypatch, tmp_path):
 
 
 def test_credentials_missing_key_never_leaks_value(monkeypatch):
-    secret = "sk-super-secret-value-12345"
+    secret = "sk-super-secret-value-12345"  # secret-guard: allow (synthetic DELFIN test sample)
     from delfin.agent import credentials as cred_mod
 
     def fake_load(name, **kw):

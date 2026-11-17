@@ -12,6 +12,9 @@ Every file the scanner finds must be in :data:`ALLOWED`. Those files are the
 sanctioned scheduler callers:
 
 * ``job_monitor`` — routed through the throttled scheduler_client (owned);
+* ``delfin/remote/slurm.py`` — a cluster's Slurm asked over its tunnel, not
+  this machine's; its caller (``clusters_feed``) reuses each answer for a
+  few seconds;
 * the others — pre-existing callers outside this package's ownership that
   migrate separately (listed for the operator) or use the command once
   (``--wait`` farm helper, ``sinfo`` probe).
@@ -46,7 +49,13 @@ ALLOWED = {
     "delfin/cluster_utils.py",
     "delfin/dashboard/backend_slurm.py",
     "delfin/dashboard/tab_calculations_browser.py",
-    "delfin/mlp_tools/__init__.py",
+    # mlp_tools/__init__.py migrated to scheduler_client.query (its sinfo
+    # probe); removed from the list so the bloat check stays honest.
+    "delfin/remote/slurm.py",
+    # A chain resume asks whether a step's job is still queued or running:
+    # one squeue -j <id> through the throttled scheduler_client.query
+    # (chain_state._job_state), like watch_checks; no polling loop.
+    "delfin/tools/chain_state.py",
     "delfin/slurm_submit.py",
 }
 

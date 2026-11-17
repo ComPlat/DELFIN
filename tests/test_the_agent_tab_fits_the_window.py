@@ -91,11 +91,12 @@ def test_the_panels_below_are_folded(tmp_path):
 def test_the_slash_button_sits_beside_the_input(tmp_path):
     import ipywidgets as widgets
     root = _tab(tmp_path)
-    row = _find(root, lambda n: isinstance(n, widgets.HBox) and any(
-        isinstance(b, widgets.Button) and b.description == "/"
-        for b in n.children))
-    assert row is not None, "no row with the / button"
-    assert _has_input(row)
+    # The / button is inside the composer, the same box as the input.
+    box = _find(root, lambda n: "delfin-agent-composer" in _classes(n))
+    assert box is not None, "no composer"
+    assert _has_input(box)
+    assert _find(box, lambda n: isinstance(n, widgets.Button)
+                 and n.description == "/") is not None
     # The suggestions sit at the foot of the chat, in the palette row.
     assert _find(_frame(root),
                  lambda n: "delfin-next-steps" in _classes(n)) is not None

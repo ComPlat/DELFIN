@@ -18,6 +18,18 @@ import os
 from pathlib import Path
 from typing import Optional
 
+# Unified MLP backend registry (task m1) — lazily imported so that this
+# package keeps working with zero ML packages installed.
+def describe_mlp_backends() -> list[dict]:
+    """Describe every registered MLP backend for agent/workflow use.
+
+    Thin wrapper over ``delfin.mlp_tools.registry.describe_backends``;
+    see that module for the full contract (capabilities, availability,
+    device policy, literature keys).
+    """
+    from delfin.mlp_tools.registry import describe_backends
+    return describe_backends()
+
 
 def get_mlp_tools_root() -> Path:
     """Return the root directory of the mlp_tools package."""
@@ -301,13 +313,14 @@ def collect_mlp_summary() -> dict:
     try:
         import shutil
         if shutil.which("sinfo"):
-            import subprocess
-            r = subprocess.run(
-                ["sinfo", "-h", "-o", "%P"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if r.returncode == 0:
-                for line in r.stdout.strip().split("\n"):
+            # Routed through delfin.scheduler_client (throttled + cached);
+            # the direct-call guard forbids a scheduler command run anywhere
+            # else.  Kind is derived from argv, not spelled at the call site.
+            from delfin import scheduler_client
+            argv = ["sinfo", "-h", "-o", "%P"]
+            stdout = scheduler_client.query(scheduler_client.kind_of_argv(argv), argv)
+            if stdout:
+                for line in stdout.strip().split("\n"):
                     name = line.strip().rstrip("*")
                     if "gpu" in name.lower():
                         gpu_partition = name

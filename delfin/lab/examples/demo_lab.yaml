@@ -1,0 +1,97 @@
+# Simulated two-module lab: synthesis -> analysis with a sample hand-over.
+# Every device is the simulator. Copy to <lab_dir>/manifest.yaml, review,
+# then pin it: delfin-agent lab manifest pin
+lab_manifest: 1
+installation: demo-lab
+version: 1
+nodes:
+  - id: edge_synth
+    description: synthesis module controller (a Raspberry Pi 5 in the demo)
+  - id: edge_analysis
+    description: analysis module controller
+modules:
+  - id: synthesis
+    node: edge_synth
+    min_level: benign
+    positions: [S1, S2]
+    devices:
+      - id: hotplate
+        driver: simulator
+        model: hotplate
+        stale_after_s: 5
+        deadman_s: 30
+        reads:
+          temperature: {unit: degC}
+        writes:
+          setpoint: {unit: degC, min: 20, max: 150, max_step: 60,
+                     level: hazardous, tolerance: 0.01}
+          power: {states: [on, off], level: benign}
+        safe_state: {setpoint: 20, power: off}
+        interlocks:
+          - when: "hotplate.setpoint > 40 degC"
+            requires: "stirrer.power == on and fume_hood.power == on"
+          - when: "hotplate.power == on"
+            requires: "hotplate_probe.temperature < 160 degC"
+      - id: stirrer
+        driver: simulator
+        model: stirrer
+        writes:
+          speed: {unit: rpm, min: 0, max: 1200, max_step: 600, level: benign}
+          power: {states: [on, off], level: benign}
+        safe_state: {speed: 0, power: off}
+      - id: fume_hood
+        driver: simulator
+        model: plug
+        reads:
+          power_w: {unit: W}
+        writes:
+          power: {states: [on, off], level: benign}
+        safe_state: {power: on}
+      - id: hotplate_probe
+        driver: simulator
+        model: sensor
+        address: {follows: hotplate}
+        stale_after_s: 5
+        reads:
+          temperature: {unit: degC}
+      - id: pump
+        driver: simulator
+        model: pump
+        writes:
+          flow: {unit: mL/min, min: 0, max: 10, max_step: 5, level: hazardous,
+                 tolerance: 0.01}
+          power: {states: [on, off], level: benign}
+        safe_state: {flow: 0, power: off}
+        interlocks:
+          - when: "pump.flow > 0"
+            requires: "fume_hood.power == on"
+      - id: mains_bypass
+        driver: simulator
+        model: relay
+        writes:
+          power: {states: [on, off], level: forbidden}
+  - id: analysis
+    node: edge_analysis
+    min_level: benign
+    positions: [A1]
+    devices:
+      - id: reader
+        driver: simulator
+        model: reader
+        reads:
+          barcode: {text: true}
+      - id: uvvis
+        driver: simulator
+        model: analyser
+        reads:
+          signal: {unit: au}
+          barcode: {text: true}
+        writes:
+          run: {states: [idle, measure], level: benign}
+        safe_state: {run: idle}
+      - id: lamp
+        driver: simulator
+        model: relay
+        writes:
+          power: {states: [on, off], level: benign}
+        safe_state: {power: off}

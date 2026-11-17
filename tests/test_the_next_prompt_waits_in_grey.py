@@ -87,7 +87,10 @@ def test_the_tab_key_takes_it_and_does_not_send():
     # Up to the NEXT key branch, not a fixed window: the Enter branch
     # right below does click Send, and a window that runs into it would
     # fail this for the wrong reason.
-    branch = src.split("e.key === 'Tab'")[1].split("if (e.key ===")[0]
+    # ... and not past the end of its listener: the submit helper below it
+    # (Enter's path) has a Send fallback of its own.
+    rest = src.split("e.key === 'Tab'")[1]
+    branch = min((rest.split(m)[0] for m in ("if (e.key ===", "}, true);")), key=len)
     assert "placeholder" in branch, branch[:300]
     assert "HTMLTextAreaElement.prototype" in branch, (
         "setting .value directly leaves ipywidgets unaware of it")

@@ -9,6 +9,9 @@ in the prompt it types:
     do-bash <command>      one ``bash`` tool call, then a text answer
     do-bash-secret         a ``bash`` call carrying FAKE_SECRET in a header
     do-write <path> <text> one ``write_file`` tool call, then a text answer
+    do-xyz <path>          one ``write_file`` call writing a water molecule
+                           in XYZ format (a structure the chat draws in 3D)
+    do-webfetch <url>      one ``web_fetch`` tool call, then a text answer
     do-md                  a markdown answer (heading, list, code block)
     do-slow                ~30 s of streamed text, for interrupt tests
     do-delay <s>           headers at once, then <s> seconds before the
@@ -22,6 +25,13 @@ Every chat request is appended as one JSON line to ``$FAKE_MODEL_LOG``
 when that is set, so a test can assert what reached the model (a pasted
 block arriving whole, a cancelled turn never arriving) rather than
 reading it back off the screen.
+
+A test that replaces :func:`plan` may also answer
+``{"tools": [{"tool": name, "args": dict}, ...]}`` -- one response carrying
+several calls, the parallel calls a backend sends in one round -- and add
+``"say": text`` to a tool step, streamed as content before the call(s), or
+``"think": text`` to any streamed step, sent first as ``reasoning_content``
+(the channel a reasoning model's thinking arrives on).
 
 Rejected: a monkeypatched client inside the child. It skips the HTTP
 layer, the streaming parser and the wait indicator, which are the parts
@@ -38,7 +48,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MODEL = "fake-model"
-FAKE_SECRET = "sk-live-FAKE0123456789abcdef"
+FAKE_SECRET = "sk-live-FAKE0123456789abcdef"  # secret-guard: allow (synthetic DELFIN test sample)
 
 
 def _last(messages: list[dict], role: str) -> dict | None:
@@ -79,6 +89,8 @@ def plan(messages: list[dict]) -> dict:
             # keeps the tail, so this is where a narrow line still shows it.
             return {"tool": "bash", "args": {"command": (
                 'curl -sH "Authorization: Bearer ' + FAKE_SECRET + '" x')}}
+        if s.startswith("do-webfetch "):
+            return {"tool": "web_fetch", "args": {"url": s[12:].strip()}}
         if s.startswith("do-bash "):
             return {"tool": "bash", "args": {"command": s[8:]}}
         if s.startswith("do-write "):
@@ -86,6 +98,18 @@ def plan(messages: list[dict]) -> dict:
             return {"tool": "write_file",
                     "args": {"path": path, "content": (rest[0] if rest else "")
                              + "\n"}}
+        if s.startswith("do-xyz "):
+            return {"tool": "write_file",
+                    "args": {"path": s[7:].strip() or "water.xyz",
+                             "content": "3\nwater\nO 0.000 0.000 0.117\n"
+                                        "H 0.000 0.757 -0.467\nH 0.000 -0.757 -0.467\n"}}
+        if s == "do-remember" or s.startswith("do-remember "):
+            # The call the live failure showed: a person said "merk dir
+            # das", the model chose type=finding outside a swarm run.
+            return {"tool": "remember",
+                    "args": {"text": "Der Anwender ist ein schneller "
+                                     "Kaffee-Trinker.",
+                             "type": "finding"}}
         if s == "do-md":
             return {"text": "# Result\n\n- **first** point\n- second point\n\n"
                             "```python\nprint('hi')\n```\n"}
@@ -182,14 +206,27 @@ class _Handler(BaseHTTPRequestHandler):
 
     # -- answers -----------------------------------------------------------
 
+    @staticmethod
+    def _calls(step: dict) -> list[dict]:
+        """The step's tool calls in the wire shape, in order: one for
+        ``tool``, several for ``tools``, none for a text step."""
+        if "tools" in step:
+            pairs = [(c["tool"], c["args"]) for c in step["tools"]]
+        elif "tool" in step:
+            pairs = [(step["tool"], step["args"])]
+        else:
+            pairs = []
+        return [{"id": f"call_{i + 1}", "type": "function",
+                 "function": {"name": name, "arguments": json.dumps(args)}}
+                for i, (name, args) in enumerate(pairs)]
+
     def _whole(self, step: dict) -> None:
         msg: dict = {"role": "assistant", "content": step.get("text", "")}
         finish = "stop"
-        if "tool" in step:
-            msg = {"role": "assistant", "content": None, "tool_calls": [{
-                "id": "call_1", "type": "function",
-                "function": {"name": step["tool"],
-                             "arguments": json.dumps(step["args"])}}]}
+        calls = self._calls(step)
+        if calls:
+            msg = {"role": "assistant", "content": step.get("say"),
+                   "tool_calls": calls}
             finish = "tool_calls"
         if step.get("slow"):
             time.sleep(30)
@@ -222,11 +259,14 @@ class _Handler(BaseHTTPRequestHandler):
             self._chunk({"role": "assistant"})
             if step.get("delay"):
                 time.sleep(step["delay"])
-            if "tool" in step:
-                self._chunk({"tool_calls": [{
-                    "index": 0, "id": "call_1", "type": "function",
-                    "function": {"name": step["tool"],
-                                 "arguments": json.dumps(step["args"])}}]})
+            if step.get("think"):
+                self._chunk({"reasoning_content": step["think"]})
+            calls = self._calls(step)
+            if calls:
+                if step.get("say"):
+                    self._chunk({"content": step["say"]})
+                self._chunk({"tool_calls": [dict(c, index=i)
+                                            for i, c in enumerate(calls)]})
                 self._chunk({}, finish="tool_calls", usage=usage)
             elif step.get("slow"):
                 for i in range(60):

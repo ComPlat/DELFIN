@@ -396,20 +396,40 @@ def _outlived_their_start() -> list[dict]:
                        .replace(b"\0", b" ").decode(errors="replace").strip())
         except OSError:
             continue
-        why = ""
-        root = env.get(ENV_PID, "")
-        if root.isdigit() and int(root) != pid:
-            raw_ticks = env.get(ENV_TICKS, "")
-            ticks = int(raw_ticks) if raw_ticks.isdigit() else None
-            if not _lifeline_alive(int(root), ticks):
-                why = f"its lifeline {root} is gone"
-        server = env.get("JPY_PARENT_PID", "")
-        if (not why and "DELFIN_VOILA_PORT" in env and server.isdigit()
-                and int(server) != pid and not os.path.exists(f"/proc/{server}")):
-            why = f"its dashboard server {server} is gone"
+        why = _why_outlived(pid, env)
         if why:
             out.append({"pid": pid, "why": why, "command": cmdline[:160]})
     return out
+
+
+def _why_outlived(pid: int, env: dict[str, str]) -> str:
+    """Why process ``pid`` with environment ``env`` works on its own though
+    it should not: its lifeline or its dashboard server is gone; "" when
+    neither (a process started without them -- the agent service is one --
+    is not judged here)."""
+    from .lifeline import ENV_PID, ENV_TICKS, _alive as _lifeline_alive
+
+    root = env.get(ENV_PID, "")
+    if root.isdigit() and int(root) != pid:
+        raw_ticks = env.get(ENV_TICKS, "")
+        ticks = int(raw_ticks) if raw_ticks.isdigit() else None
+        if not _lifeline_alive(int(root), ticks):
+            return f"its lifeline {root} is gone"
+    server = env.get("JPY_PARENT_PID", "")
+    if ("DELFIN_VOILA_PORT" in env and server.isdigit()
+            and int(server) != pid and not _pid_exists(int(server))):
+        return f"its dashboard server {server} is gone"
+    return ""
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 # A dashboard session sends a heartbeat every minute; one silent for longer
@@ -485,4 +505,30 @@ def status() -> dict:
         processes.append({"pid": pid, "command": cmdline[:160]})
     result["agent_processes_here"] = processes
     result["outlived_their_start_here"] = _outlived_their_start()
+    result["agent_service"] = _agent_service_here()
     return result
+
+
+def _agent_service_here() -> dict | None:
+    """The agent service of this host, as it is meant to run: on its own,
+    whatever started it (a terminal, a dashboard), with the sessions its
+    roster lists -- None when none runs. Its sessions outlive every window
+    on purpose; this says that they are there."""
+    try:
+        from .service import rundir
+        pid = rundir.service_pid()
+        if not pid:
+            return None
+        info = rundir.read_run_file() or {}
+        try:
+            roster = json.loads(rundir.roster_file().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            roster = {}
+        sessions = roster.get("sessions") or [] if isinstance(roster, dict) else []
+        dormant = roster.get("dormant") or [] if isinstance(roster, dict) else []
+        return {"pid": pid, "socket": str(info.get("socket") or ""),
+                "started_at": info.get("startedAt") or info.get("started_at"),
+                "sessions": len(sessions), "asleep": len(dormant),
+                "runs_on_its_own": True}
+    except Exception:
+        return None

@@ -56,18 +56,20 @@ def test_past_the_cap_it_scrolls_with_a_thin_scrollbar():
         "textarea::-webkit-scrollbar-button")
 
 
-def test_the_buttons_stretch_with_the_box():
-    assert "align-items: stretch !important" in _rule(
-        ".delfin-agent-root .delfin-agent-input-area > .widget-hbox")
-    assert "align-items: stretch !important" in _rule(
-        ".delfin-agent-root .delfin-agent-send-row")
-    buttons = _rule(".delfin-agent-root .delfin-agent-input-area "
-                    ".jupyter-button")
-    assert "height: auto !important" in buttons
-    assert "min-height: 80px" in buttons
+def test_the_composer_is_one_box_with_its_buttons_inside():
+    """The text, the chips and Send share one frame (2026-11-10): the box,
+    not the textarea, carries the border, the corner and the focus ring."""
+    box = _rule(".delfin-agent-root .delfin-agent-composer")
+    assert "border: 1px solid #cbd5e1" in box
+    assert "border-radius: 12px" in box
+    text = _rule(".delfin-agent-root .delfin-agent-input textarea")
+    assert "border: none" in text
+    send = _rule(".delfin-agent-root .delfin-agent-send-row "
+                 ".jupyter-button.delfin-agent-send")
+    assert "border-radius: 50% !important" in send
 
 
 def test_focus_is_a_soft_ring():
-    focus = _rule(".delfin-agent-root .delfin-agent-input textarea:focus")
+    focus = _rule(".delfin-agent-root .delfin-agent-composer:focus-within")
     assert "border-color: #93c5fd" in focus
     assert "0 0 0 4px" in focus

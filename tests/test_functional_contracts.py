@@ -53,6 +53,7 @@ _ENTRY_POINTS = {
     "delfin-docs-server": ("delfin.doc_server.__main__", "main"),
     "delfin-ops-server": ("delfin.ops_server.__main__", "main"),
     "delfin-guppy": ("delfin.guppy_sampling", "main"),
+    "delfin-dev": ("delfin.dev_cli", "main"),
     "delfin-voila": ("delfin.cli_voila", "main"),
     "delfin-step": ("delfin.cli_step", "main"),
     "delfin-pipeline": ("delfin.cli_pipeline", "main"),

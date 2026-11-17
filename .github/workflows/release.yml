@@ -156,7 +156,26 @@ jobs:
           cyclonedx-py environment --pyproject pyproject.toml --mc-type library \
             --output-reproducible --of JSON \
             -o "sbom/delfin_complat-$version.cdx.json" "$RUNNER_TEMP/released/bin/python"
-          python -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d["specVersion"], len(d.get("components", [])), "components")' sbom/*.cdx.json
+          # --output-reproducible drops the serialNumber, because a random
+          # UUID per run is exactly what makes two runs differ. The SBOM
+          # attestation needs one: actions/attest recognises a CycloneDX
+          # document by bomFormat + specVersion + serialNumber, and without
+          # it the whole provenance job fails with "Unsupported SBOM
+          # format" after the build has already succeeded (measured on the
+          # v1.4.0 run). So the serial is DERIVED from the commit: same
+          # commit, same serial, and the output stays byte-reproducible.
+          python - "$GITHUB_SHA" sbom/delfin_complat-$version.cdx.json <<'EOF'
+          import json, sys, uuid
+          sha, path = sys.argv[1], sys.argv[2]
+          doc = json.load(open(path))
+          doc["serialNumber"] = "urn:uuid:" + str(
+              uuid.uuid5(uuid.NAMESPACE_URL,
+                         "https://github.com/ComPlat/DELFIN/commit/" + sha))
+          with open(path, "w", encoding="utf-8") as fh:
+              json.dump(doc, fh, indent=2, sort_keys=True)
+              fh.write("\n")
+          EOF
+          python -c 'import json, sys; d = json.load(open(sys.argv[1])); assert d.get("bomFormat") and d.get("specVersion") and d.get("serialNumber"), "the SBOM attestation needs all three"; print(d["specVersion"], d["serialNumber"], len(d.get("components", [])), "components")' sbom/*.cdx.json
 
       - name: Keep the SBOM
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

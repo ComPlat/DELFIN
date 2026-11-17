@@ -14,6 +14,7 @@ from delfin.common.logging import get_logger
 from delfin.manta.chelate_templates import (
     _best_chelate_conformer_coords,
     _build_topology_xyz_from_scratch,
+    _chelate_conformer_candidates,
     _embed_fragment_procrustes,
 )
 from delfin.manta.conformer_io import (
@@ -23,6 +24,9 @@ from delfin.manta.conformer_io import (
 from delfin.manta.conformer_pools import (
     _cp_basin_6ring,
     _frag_xyz_collapsed,
+    _frag_xyz_compressed,
+    _isolated_fragment_xyz,
+    template_compressed_reseat_enabled,
     _rank_template_conformers,
     _ring_canonical_snap_z,
 )
@@ -72,9 +76,13 @@ from delfin.manta.isomer_labels import (
     _find_bridging_donors,
     _label_from_canonical_form,
 )
+from delfin.manta.interpenetration import u5_trace as _u5_trace, u5_trace_enabled as _u5_trace_on
 from delfin.manta.ligand_placement import (
     _align_and_orient_ligands,
     _build_multimetal_scaffold,
+    _one_sub_lp_scope,
+    one_sub_lp_enabled,
+    one_sub_lp_seating,
     _snap_aromatic_rings_in_xyz,
     _snap_bridging_donors_to_compromise,
 )
@@ -94,6 +102,7 @@ from delfin.manta.mol_prep import (
     _rescale_metal_donor_distances,
 )
 from delfin.manta.openbabel_optimize import (
+    _ob_kekule_orders_enabled,
     _optimize_xyz_openbabel,
     _optimize_xyz_openbabel_safe,
 )
@@ -115,6 +124,199 @@ from delfin.manta.uff_constraints import (
 )
 
 logger = get_logger("delfin.smiles_converter")
+
+
+def _one_sub_lp_has_seat(mol, donor_indices) -> bool:
+    """DELFIN_FFFREE_ORIENT_ONE_SUB_LP: True if one of ``donor_indices`` is a one-substituent donor in
+    the seating's scope (ligand_placement._one_sub_lp_scope) on a MONODENTATE ligand -- the only
+    fragments the lone-pair seat moves.  Graph only."""
+    try:
+        dset = set(int(d) for d in donor_indices)
+        for d in dset:
+            if _one_sub_lp_scope(mol, d) is None:
+                continue
+            seen, stack = {d}, [d]
+            while stack:
+                a = stack.pop()
+                for nb in mol.GetAtomWithIdx(a).GetNeighbors():
+                    j = nb.GetIdx()
+                    if j not in seen and nb.GetSymbol() not in _METAL_SET:
+                        seen.add(j)
+                        stack.append(j)
+            if len(seen & dset) == 1:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+_ONE_SUB_LP_GATE_CATS = ("pi", "mpl", "hyb", "con", "bnd")
+
+
+def _one_sub_lp_sibling_keeps(sib, par) -> bool:
+    """DELFIN_FFFREE_ORIENT_ONE_SUB_LP: an additive lone-pair-seated sibling enters only if, per geometry
+    class, it has no more units beyond the class p99 than its own primary (pi, mpl, hyb, con, bnd) and
+    fewer in dang -- else it adds nothing a crystal would recognise, or a new defect.  ``sib`` / ``par``
+    are frame_realism.category_excess_counts dicts; None (not measurable) -> dropped."""
+    if not sib or not par:
+        return False
+    if any(sib.get(c, 0) > par.get(c, 0) for c in _ONE_SUB_LP_GATE_CATS):
+        return False
+    return sib.get("dang", 0) < par.get("dang", 0)
+
+
+def _one_sub_trace(tag: str, xyz, mol, extra: str = "") -> None:
+    """DELFIN_ONE_SUB_TRACE output (see _legconf_trace): ``M<i>-D<j>-X<k>:<angle>/<D-X length>`` for
+    every donor bonded to exactly one metal and one non-metal atom."""
+    try:
+        if hasattr(xyz, "GetAtomPosition"):
+            P = [tuple(xyz.GetAtomPosition(i)) for i in range(mol.GetNumAtoms())]
+        else:
+            P = [tuple(float(v) for v in _ln.split()[1:4])
+                 for _ln in str(xyz).strip().splitlines() if len(_ln.split()) >= 4]
+        if len(P) != mol.GetNumAtoms():
+            os.write(2, ("[ONESUB] %s %s natoms-mismatch\n" % (tag, extra)).encode())
+            return
+        out = []
+        for d in mol.GetAtoms():
+            if d.GetSymbol() in _METAL_SET or d.GetAtomicNum() <= 1:
+                continue
+            ms = [n for n in d.GetNeighbors() if n.GetSymbol() in _METAL_SET]
+            xs = [n for n in d.GetNeighbors() if n.GetSymbol() not in _METAL_SET]
+            if len(ms) != 1 or len(xs) != 1:
+                continue
+            m, x, di = ms[0].GetIdx(), xs[0].GetIdx(), d.GetIdx()
+            u = [P[m][k] - P[di][k] for k in range(3)]
+            v = [P[x][k] - P[di][k] for k in range(3)]
+            nu, nv = math.dist(P[m], P[di]), math.dist(P[x], P[di])
+            if nu < 1e-6 or nv < 1e-6:
+                continue
+            cs = max(-1.0, min(1.0, sum(a * b for a, b in zip(u, v)) / (nu * nv)))
+            out.append("%s%d-%s%d-%s%d:%.0f/%.3f" % (ms[0].GetSymbol(), m, d.GetSymbol(), di,
+                                                     xs[0].GetSymbol(), x, math.degrees(math.acos(cs)), nv))
+        os.write(2, ("[ONESUB] %s %s %s\n" % (tag, extra, " ".join(out))).encode())
+    except Exception as _os_exc:
+        os.write(2, ("[ONESUB] %s trace-failed %s\n" % (tag, str(_os_exc)[:60])).encode())
+
+
+def _legconf_trace(tag: str, xyz, mol, extra: str = "") -> None:
+    """DELFIN_LEGCONF_TRACE=1 (default off, output only): the worst ligand bond of one legacy topology
+    frame at one stage of the pipeline (template conformer, pre-UFF placement, raw UFF, flattened,
+    kept).  Reads the SMILES graph (``mol``) -- bond ratio = distance / (rcov_i + rcov_j) over every
+    non-metal bond, the longest X-H, and the count of bonds below 0.85 x rcov or X-H above 1.20 A.
+    ``xyz`` is a DELFIN xyz string (atom order of ``mol``) or an RDKit conformer.
+
+    DELFIN_ONE_SUB_TRACE=1 (default off, output only, independent switch): one ``[ONESUB]`` line per
+    call with M-D-X angle (deg) / D-X length (A) of every monodentate one-substituent donor, to name
+    the stage that bends, straightens or stretches a seated donor (DELFIN_FFFREE_ORIENT_ONE_SUB_LP)."""
+    if os.environ.get("DELFIN_ONE_SUB_TRACE", "0") == "1":
+        _one_sub_trace(tag, xyz, mol, extra)
+    if os.environ.get("DELFIN_LEGCONF_TRACE", "0") != "1":
+        return
+    try:
+        from rdkit import Chem as _lc_Chem
+        _pt = _lc_Chem.GetPeriodicTable()
+        if hasattr(xyz, "GetAtomPosition"):
+            P = [tuple(xyz.GetAtomPosition(i)) for i in range(mol.GetNumAtoms())]
+        else:
+            P = []
+            for _ln in str(xyz).strip().splitlines():
+                _p = _ln.split()
+                if len(_p) >= 4:
+                    P.append((float(_p[1]), float(_p[2]), float(_p[3])))
+        if len(P) != mol.GetNumAtoms():
+            os.write(2, ("[LEGCONF] %s natoms-mismatch %d/%d %s\n"
+                         % (tag, len(P), mol.GetNumAtoms(), extra)).encode())
+            return
+        worst, wtxt, xh, xtxt, n_short, n_xh = 9.0, "-", 0.0, "-", 0, 0
+        for b in mol.GetBonds():
+            a1, a2 = b.GetBeginAtom(), b.GetEndAtom()
+            s1, s2 = a1.GetSymbol(), a2.GetSymbol()
+            if s1 in _METAL_SET or s2 in _METAL_SET:
+                continue
+            i, j = a1.GetIdx(), a2.GetIdx()
+            d = math.dist(P[i], P[j])
+            if s1 == "H" or s2 == "H":
+                if d > xh:
+                    xh, xtxt = d, "%s%d-%s%d" % (s1, i, s2, j)
+                n_xh += int(d > 1.20)
+                continue
+            r = d / max(1e-6, _pt.GetRcovalent(a1.GetAtomicNum()) + _pt.GetRcovalent(a2.GetAtomicNum()))
+            n_short += int(r < 0.85)
+            if r < worst:
+                worst, wtxt = r, "%s%d-%s%d:%.3f" % (s1, i, s2, j, d)
+        os.write(2, ("[LEGCONF] %s bond %s r=%.2f nshort=%d xh %s %.2f nxh=%d %s\n"
+                     % (tag, wtxt, worst, n_short, xtxt, xh, n_xh, extra)).encode())
+    except Exception as _lc_exc:
+        os.write(2, ("[LEGCONF] %s trace-failed %s\n" % (tag, str(_lc_exc)[:60])).encode())
+
+
+def _legconf_census(tag: str, mol, results) -> None:
+    """DELFIN_LEGCONF_TRACE=1 (default off, output only): one line per pipeline stage of the legacy
+    post-processing -- frames, frames with a ligand bond below 0.88 x its bond-order-aware reference
+    (rcov sum x 1 / 0.87 / 0.78 / 0.91 for single / double / triple / aromatic), frames with X-H above
+    1.20 A, frames whose atom count does not match ``mol`` (not assessed)."""
+    if os.environ.get("DELFIN_LEGCONF_TRACE", "0") != "1":
+        return
+    try:
+        from rdkit import Chem as _lc_Chem
+        _pt = _lc_Chem.GetPeriodicTable()
+        _sc = {_lc_Chem.BondType.SINGLE: 1.0, _lc_Chem.BondType.DOUBLE: 0.87,
+               _lc_Chem.BondType.TRIPLE: 0.78, _lc_Chem.BondType.AROMATIC: 0.91}
+        bonds = []
+        for b in mol.GetBonds():
+            a1, a2 = b.GetBeginAtom(), b.GetEndAtom()
+            if a1.GetSymbol() in _METAL_SET or a2.GetSymbol() in _METAL_SET:
+                continue
+            ish = 1 in (a1.GetAtomicNum(), a2.GetAtomicNum())
+            ref = (_pt.GetRcovalent(a1.GetAtomicNum()) + _pt.GetRcovalent(a2.GetAtomicNum())) \
+                * _sc.get(b.GetBondType(), 1.0)
+            bonds.append((a1.GetIdx(), a2.GetIdx(), ish, ref))
+        n = nb = nh = nna = 0
+        for item in (results or []):
+            xyz = item[0] if isinstance(item, (tuple, list)) else item
+            P = []
+            for _ln in str(xyz).strip().splitlines():
+                _p = _ln.split()
+                if len(_p) >= 4:
+                    P.append((float(_p[1]), float(_p[2]), float(_p[3])))
+            n += 1
+            if len(P) != mol.GetNumAtoms():
+                nna += 1
+                continue
+            bad_b = bad_h = False
+            for i, j, ish, ref in bonds:
+                d = math.dist(P[i], P[j])
+                if ish:
+                    bad_h = bad_h or d > 1.20
+                else:
+                    bad_b = bad_b or d < 0.88 * ref
+            nb += int(bad_b)
+            nh += int(bad_h)
+        os.write(2, ("[LEGCONF_CENSUS] %s frames=%d bond_short=%d xh_long=%d not_assessed=%d\n"
+                     % (tag, n, nb, nh, nna)).encode())
+    except Exception as _lc_exc:
+        os.write(2, ("[LEGCONF_CENSUS] %s failed %s\n" % (tag, str(_lc_exc)[:60])).encode())
+
+
+def _u5_vwhy(kind: str, m_sym: str, x_sym: str, x_idx: int, d: float) -> None:
+    """DELFIN_U5_TRACE=1 (output only): which metal-sphere test of rule 1 fired, on which atom."""
+    if os.environ.get("DELFIN_U5_TRACE", "0") == "1":
+        try:
+            os.write(2, ("[U5V] rule1 %s %s-%s%d %.2f\n" % (kind, m_sym, x_sym, x_idx, d)).encode())
+        except Exception:
+            pass
+
+
+def _u5_vfail(rule: int) -> bool:
+    """DELFIN_U5_TRACE=1 (output only): name the rule of _verify_topology_from_graph that rejected a
+    frame (its source line in this file at 27.10.2026); always returns False."""
+    if os.environ.get("DELFIN_U5_TRACE", "0") == "1":
+        try:
+            os.write(2, ("[U5V] verify-fail rule L%d\n" % rule).encode())
+        except Exception:
+            pass
+    return False
 
 
 def _verify_topology_from_graph(
@@ -242,7 +444,7 @@ def _verify_topology_from_graph(
                     _is_bonded = o_idx in smiles_nbr_ids
                     if _is_bonded:
                         if _d > _BONDED_MAX_FRAC * _cov_sum:
-                            _violation = True
+                            _violation = True; _u5_vwhy("long", m_sym, other.GetSymbol(), o_idx, _d)
                             break
                         # Lower bound: reject collapsed M-L bonds
                         # (ratio < 0.70 vs the table ideal).  Use the
@@ -254,7 +456,7 @@ def _verify_topology_from_graph(
                         except Exception:
                             _ml_ideal = 0.0
                         if _ml_ideal > 0 and _d < _BONDED_MIN_IDEAL_FRAC * _ml_ideal:
-                            _violation = True
+                            _violation = True; _u5_vwhy("short", m_sym, other.GetSymbol(), o_idx, _d)
                             break
                     else:
                         if o_idx in _phantom_exempt:
@@ -262,10 +464,10 @@ def _verify_topology_from_graph(
                             # close contact (NHC, naphthyridine, salen).
                             continue
                         if _d < _PHANTOM_MIN_FRAC * _cov_sum:
-                            _violation = True
+                            _violation = True; _u5_vwhy("phantom", m_sym, other.GetSymbol(), o_idx, _d)
                             break
                 if _violation:
-                    return False
+                    return _u5_vfail(366)
         except Exception:
             pass
 
@@ -295,7 +497,7 @@ def _verify_topology_from_graph(
                     r2 = _COVALENT_RADII.get(s2)
                     ideal = (r1 + r2 + 0.3) if r1 and r2 else 2.5
                 if d < 0.70 * ideal or d > 1.80 * ideal:
-                    return False
+                    return _u5_vfail(396)
             elif is_metal_1 or is_metal_2:
                 # Metal-ligand bonds are already validated by the
                 # graph-invariance rule above; bridging donors sit at
@@ -320,16 +522,16 @@ def _verify_topology_from_graph(
             else:
                 if a1.GetAtomicNum() <= 1 or a2.GetAtomicNum() <= 1:
                     if d > 1.8:
-                        return False
+                        return _u5_vfail(421)
                 else:
                     if d > 2.4:
-                        return False
+                        return _u5_vfail(424)
 
         for d_idx, metal_entries in bridging_donor_bonds.items():
             for _m_idx, _m_sym, d, ideal in metal_entries:
                 ratio = d / ideal
                 if ratio < 0.55 or ratio > 3.00:
-                    return False
+                    return _u5_vfail(430)
 
         # Rule 2+3: No collapsed heavy atoms or hydrogens.
         heavy_indices = [
@@ -342,7 +544,7 @@ def _verify_topology_from_graph(
                 xj, yj, zj = coords[heavy_indices[j]]
                 dsq = (xi - xj) ** 2 + (yi - yj) ** 2 + (zi - zj) ** 2
                 if dsq < 0.49:  # 0.7²
-                    return False
+                    return _u5_vfail(443)
 
         # Rule 10: Inter-ligand phantom-bond.  Every pair of non-metal
         # atoms that are NOT bonded in the SMILES graph must sit
@@ -393,7 +595,7 @@ def _verify_topology_from_graph(
                         else _HEAVY_FRAC
                     )
                     if _d < _frac * (_ri + _rj):
-                        return False
+                        return _u5_vfail(494)
         except Exception:
             pass
 
@@ -458,7 +660,7 @@ def _verify_topology_from_graph(
                         _u, _s, vh = _np.linalg.svd(centered, full_matrices=False)
                         deviations = _np.abs(centered @ vh[-1])
                         if deviations.max() > planar_tol:
-                            return False
+                            return _u5_vfail(559)
                     except Exception:
                         pass
         except Exception:
@@ -561,7 +763,7 @@ def _verify_topology_from_graph(
                             thresh = DELFIN_RULE5_INTERFRAG_COV_FACT * (ri + rj)
                         dsq = (xi - xj) ** 2 + (yi - yj) ** 2 + (zi - zj) ** 2
                         if dsq < thresh * thresh:
-                            return False
+                            return _u5_vfail(662)
         except Exception:
             pass
 
@@ -587,7 +789,7 @@ def _verify_topology_from_graph(
                         or _b.GetBondTypeAsDouble() >= 1.5
                     ):
                         return True
-                return False
+                return _u5_vfail(688)
 
             metal_idxs = [
                 a.GetIdx() for a in mol_template.GetAtoms()
@@ -640,7 +842,7 @@ def _verify_topology_from_graph(
                         _u, _s, vh = _np.linalg.svd(centered, full_matrices=False)
                         dev = float(_np.abs(centered @ vh[-1]).max())
                         if dev > DELFIN_RULE6_METALLACYCLE_MAX_DEV:
-                            return False
+                            return _u5_vfail(741)
         except Exception:
             pass
 
@@ -747,7 +949,7 @@ def _verify_topology_from_graph(
                         cos_a = max(-1.0, min(1.0, cos_a))
                         angle_deg = math.degrees(math.acos(cos_a))
                         if angle_deg < DELFIN_RULE7_SP_MIN_ANGLE_DEG:
-                            return False
+                            return _u5_vfail(848)
                     continue
 
                 # sp² — exactly 3 heavy neighbours (metal counted) AND
@@ -793,7 +995,7 @@ def _verify_topology_from_graph(
                             else DELFIN_RULE7_SP2_OOP_MAX
                         )
                         if dev > oop_budget:
-                            return False
+                            return _u5_vfail(894)
                     angle_pairs = ((na, nb), (na, nc), (nb, nc))
                     for p, q in angle_pairs:
                         vp = _np.array(coords[p]) - a_pos
@@ -809,7 +1011,7 @@ def _verify_topology_from_graph(
                             ang < DELFIN_RULE7_SP2_ANGLE_MIN
                             or ang > DELFIN_RULE7_SP2_ANGLE_MAX
                         ):
-                            return False
+                            return _u5_vfail(910)
                     continue
 
                 # sp³ — 4 heavy organic neighbours, no π bonds.
@@ -834,14 +1036,14 @@ def _verify_topology_from_graph(
                             if ang < min_angle:
                                 min_angle = ang
                     if min_angle < DELFIN_RULE7_SP3_MIN_ANGLE_DEG:
-                        return False
+                        return _u5_vfail(935)
                     continue
         except Exception:
             pass
 
         return True
     except Exception:
-        return False
+        return _u5_vfail(942)
 
 
 def _build_topology_xyz(
@@ -1310,6 +1512,17 @@ def _build_topology_xyz_from_template(
             try:
                 _reseat_collapse = (os.environ.get("DELFIN_FFFREE_ISOLATED_SEAT", "0") == "1"
                                     and _frag_xyz_collapsed(mol, frag_list, frag_xyz))
+                # DELFIN_FFFREE_TEMPLATE_COMPRESSED_RESEAT (conformer_pools): a compressed template
+                # bond is the same metal-context degeneracy -> the same isolated re-seat.
+                _tpl_compressed = (template_compressed_reseat_enabled()
+                                   and _frag_xyz_compressed(mol, frag_list, frag_xyz))
+                if _tpl_compressed:
+                    _reseat_collapse = True
+                    if len(frag_donors) == 1:
+                        _iso = _isolated_fragment_xyz(mol, frag_list)
+                        if _iso is not None:
+                            frag_xyz = _iso
+                            src = frag_xyz[donor_local, :]
 
                 # Chelate (bidentate or polydentate): if the template's
                 # native donor-donor distance pattern is far from the
@@ -1340,6 +1553,58 @@ def _build_topology_xyz_from_template(
                             mol, frag, frag_donors, target_for_search,
                             rank=chelate_rank,
                         )
+                        # PROCRUSTES-METAL-SPIN (re-embedded chelate): the champion metal-spin above
+                        # only fires when frag_xyz IS the template fragment (np.array_equal guard), so a
+                        # re-embedded chelate's donor-H side is decided purely by the ETKDG conformer
+                        # rank-0 picks.  ETKDG puts an amine N-H into the metal shell for this
+                        # ethylenediamine under RDKit 2026.9.1 (measured fitted H..Zn = 1.695 A).  The
+                        # fitted H..metal distance is invariant to spin about the donor axis, so no spin
+                        # fixes it -- the conformer choice must.  When the flag is on and the caller
+                        # wants the best-fit conformer (chelate_rank == 0; higher ranks are deliberate
+                        # isomer variety and are left alone), prefer the best-bite candidate whose rigid
+                        # fit keeps every donor-bonded H > 2.00 A from the metal, falling back to the
+                        # pre-existing rank-0 pick if none is clean.  Off flag -> byte-identical.
+                        if (os.environ.get("DELFIN_FFFREE_PROCRUSTES_METAL_SPIN", "0") == "1"
+                                and len(frag_donors) == 2
+                                and chelate_rank == 0):
+                            try:
+                                _cands = _chelate_conformer_candidates(
+                                    mol, frag, frag_donors, target_for_search,
+                                )
+                                _safe_map = None
+                                if _cands:
+                                    _target_arr = np.asarray(tgt, dtype=float)
+                                    for _c in _cands:
+                                        _cxyz = np.array(
+                                            [list(_c[o]) for o in frag_list], dtype=float)
+                                        _sd = _cxyz[donor_local, :]
+                                        _sc = _sd.mean(axis=0)
+                                        _tc = _target_arr.mean(axis=0)
+                                        _Xm = _sd - _sc
+                                        _Ym = _target_arr - _tc
+                                        _Hm = _Xm.T @ _Ym
+                                        _Um, _Sm, _Vtm = np.linalg.svd(_Hm)
+                                        _Rm = _Vtm.T @ _Um.T
+                                        if np.linalg.det(_Rm) < 0:
+                                            _Vtm[-1, :] *= -1
+                                            _Rm = _Vtm.T @ _Um.T
+                                        _T = (_cxyz - _sc) @ _Rm.T + _tc
+                                        _off = 9.0
+                                        for _d in frag_donors:
+                                            _da = mol.GetAtomWithIdx(_d)
+                                            for _nb in _da.GetNeighbors():
+                                                if _nb.GetAtomicNum() == 1:
+                                                    _li = frag_list.index(_nb.GetIdx())
+                                                    _off = min(
+                                                        _off,
+                                                        float(np.linalg.norm(_T[_li])))
+                                        if _off > 2.00:
+                                            _safe_map = _c
+                                            break
+                                if _safe_map is not None:
+                                    coords_map = _safe_map
+                            except Exception:
+                                pass
                         if coords_map is not None:
                             new_frag_xyz = np.array(
                                 [list(coords_map[old]) for old in frag_list],
@@ -1357,9 +1622,11 @@ def _build_topology_xyz_from_template(
                                     / max(1, len(frag_donors) * (len(frag_donors) - 1) // 2)
                                 )
                             )
-                            if (new_mismatch < mismatch
-                                    or (_reseat_collapse
-                                        and not _frag_xyz_collapsed(mol, frag_list, new_frag_xyz))):
+                            _new_ok = (_reseat_collapse
+                                       and not _frag_xyz_collapsed(mol, frag_list, new_frag_xyz))
+                            if _tpl_compressed:
+                                _new_ok = _new_ok and not _frag_xyz_compressed(mol, frag_list, new_frag_xyz)
+                            if new_mismatch < mismatch or _new_ok:
                                 frag_xyz = new_frag_xyz
                                 src = new_src
                                 if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1" and _reseat_collapse:
@@ -1382,6 +1649,35 @@ def _build_topology_xyz_from_template(
                     Vt[-1, :] *= -1
                     R = Vt.T @ U.T
                 transformed = (frag_xyz - src_center) @ R.T + tgt_center
+                # ===== THE TEMPLATE'S OWN METAL FIXES THE CHELATE SPIN (DELFIN_FFFREE_PROCRUSTES_METAL_SPIN) =====
+                # Two donors fix a rigid fragment only up to a spin about their axis; the SVD of a rank-1
+                # cross-covariance picks that spin arbitrarily.  The template knows it: it was embedded WITH
+                # the metal (orig is metal-centred, the metal at 0).  Spin the fitted fragment about the D...D
+                # axis so the template's metal lands as close as possible to the real metal (origin): the
+                # chelate plane, the donor lone pairs and the side the backbone points to are the template's
+                # (AGICOJ: the arbitrary spin put an N-methyl 2.1 A from Pd and the frame died at the
+                # verifier).  Donor positions are unchanged.  Off -> byte-identical.
+                if (len(src) == 2 and os.environ.get("DELFIN_FFFREE_PROCRUSTES_METAL_SPIN", "0") == "1"
+                        and frag_xyz.shape == orig[frag_list, :].shape
+                        and np.array_equal(frag_xyz, orig[frag_list, :])):   # template fragment only
+                    try:
+                        _m_t = (np.zeros(3) - src_center) @ R.T + tgt_center
+                        _ax = tgt[1] - tgt[0]
+                        _axn = float(np.linalg.norm(_ax))
+                        if _axn > 1e-8:
+                            _u = _ax / _axn
+                            _piv = 0.5 * (tgt[0] + tgt[1])
+                            _a = _m_t - _piv
+                            _a = _a - float(np.dot(_a, _u)) * _u
+                            _b = -_piv - float(np.dot(-_piv, _u)) * _u
+                            if float(np.linalg.norm(_a)) > 1e-6 and float(np.linalg.norm(_b)) > 1e-6:
+                                _th = math.atan2(float(np.dot(np.cross(_a, _b), _u)), float(np.dot(_a, _b)))
+                                _c, _s = math.cos(_th), math.sin(_th)
+                                _v = transformed - _piv
+                                transformed = (_v * _c + np.cross(_u, _v) * _s
+                                               + np.outer(_v @ _u, _u) * (1.0 - _c)) + _piv
+                    except Exception:
+                        pass
 
                 # Bidentate/multidentate fragments can be mirrored around the
                 # donor-donor axis, yielding two plausible orientations with
@@ -2121,6 +2417,11 @@ def _generate_topological_isomers(
         # siblings) corrects the POST-UFF append cap at ~26413 (the same hole, one stage later).
         _n_add_sib = 0
         _sib_idxs: set = set()
+        # DELFIN_FFFREE_ORIENT_ONE_SUB_LP: build arguments of every primary, for the additive
+        # lone-pair-seated siblings appended after the loop (see the block there).
+        _osl_on = one_sub_lp_enabled() and _one_sub_lp_has_seat(mol, donor_indices)
+        _osl_src: list = []
+        _osl_parent: Dict[int, int] = {}
         for cf, pm in feasible_isomers:
             if len(_pre_uff_batch) + len(results) - _n_add_sib >= _PRE_UFF_CAP:
                 break
@@ -2163,6 +2464,17 @@ def _generate_topological_isomers(
                     _variant_counter[_key] = _variant_counter.get(_key, 0) + 1
                     _conf_idx = _variant_counter[_key] - 1
                     _pre_uff_batch.append((cf, pm, gn, xyz0, coord_c, _conf_idx))
+                    if _osl_on:
+                        _osl_src.append((cf, pm, gn, _tc, 0, _d8t if apply_uff else None,
+                                         len(_pre_uff_batch) - 1))
+                    if "1" in (os.environ.get("DELFIN_LEGCONF_TRACE", "0"), os.environ.get("DELFIN_ONE_SUB_TRACE", "0")):
+                        _lc_x = "b%d %s tc=%s ci=%d" % (len(_pre_uff_batch) - 1,
+                                                        _label_from_canonical_form(cf) or gn, _tc, _conf_idx)
+                        try:
+                            _legconf_trace("TPL", mol.GetConformer(int(_tc)), mol, _lc_x)
+                        except Exception:
+                            pass
+                        _legconf_trace("PRE", xyz0, mol, _lc_x)
                     # ADDITIVE d8 SP-4 (DELFIN_FFFREE_D8_SQ_ADD, default off -> byte-identical).  ONE
                     # self-contained axis: the PRIMARY frame above is the NORMAL (tetrahedral) build, and a
                     # UFF-SP-4 square is added as a PURELY ADDITIVE sibling from the SAME seed (force_d8_sq,
@@ -2317,8 +2629,54 @@ def _generate_topological_isomers(
                         _pre_uff_batch.append(
                             (cf, pm, gn, xyz, coord_c, _conf_idx)
                         )
+                        if _osl_on:
+                            _osl_src.append((cf, pm, gn, _tc, _crank, None, len(_pre_uff_batch) - 1))
                 except Exception as exc:
                     logger.debug("Topo pre-UFF build failed (%s): %s", cf[0], exc)
+
+        # ===== THE LONE-PAIR SEAT IS AN ADDITIVE SIBLING (DELFIN_FFFREE_ORIENT_ONE_SUB_LP) =====
+        # Every primary above was built with the old seat (one-substituent donors at M-D-X 180 deg).
+        # With the switch, each of them is built once more inside one_sub_lp_seating() -- the donors on
+        # their own lone pairs (see ligand_placement._one_sub_lp_directions) -- and appended AFTER all
+        # primaries, as a purely additive sibling: own -confN index beyond the primaries' (their labels
+        # stay), counted out of the isomer caps (_n_add_sib / _sib_idxs, as the d8 / CN6 siblings), a
+        # sibling identical to a frame already in the batch is dropped by the XYZ signature.  The first
+        # version replaced the seat and cost frames and isomer labels; an added sibling cannot.
+        # Off (unset / 0) or no monodentate one-substituent donor in scope -> nothing is built.
+        if _osl_on:
+            for (_ocf, _opm, _ogn, _otc, _ocr, _od8t, _opar) in _osl_src:
+                try:
+                    with one_sub_lp_seating():
+                        _oxyz = _build_topology_xyz(
+                            mol, metal_idx, donor_indices, _opm, _ogn,
+                            False, conf_id=_otc, chelate_rank=_ocr,
+                        )
+                    if _oxyz is None:
+                        continue
+                    _osig = _xyz_sig(_oxyz)
+                    if _osig in _pre_uff_seen:
+                        continue
+                    _pre_uff_seen.add(_osig)
+                    _occ = None
+                    if apply_uff:
+                        try:
+                            if _ocr == 0:
+                                _occ = _build_coordination_constraints_from_xyz(
+                                    mol, _oxyz, d8_trans=_od8t,
+                                )
+                            else:
+                                _occ = _build_coordination_constraints_from_xyz(mol, _oxyz)
+                        except Exception:
+                            _occ = None
+                    _okey = (tuple(_ocf), tuple(_opm))
+                    _variant_counter[_okey] = _variant_counter.get(_okey, 0) + 1
+                    _pre_uff_batch.append(
+                        (_ocf, _opm, _ogn, _oxyz, _occ, _variant_counter[_okey] - 1))
+                    _sib_idxs.add(len(_pre_uff_batch) - 1)
+                    _osl_parent[len(_pre_uff_batch) - 1] = _opar
+                    _n_add_sib += 1
+                except Exception as _osl_exc:
+                    logger.debug("one-sub LP sibling failed (%s): %s", _ogn, _osl_exc)
 
         # Batch UFF via ProcessPool (OB holds GIL → threads don't help).
         if apply_uff and _pre_uff_batch:
@@ -2328,6 +2686,13 @@ def _generate_topological_isomers(
             _uff_inputs = [
                 (xyz, 500, cstr) for _cf, _pm, _gn, xyz, cstr, _ci in _pre_uff_batch
             ]
+            # DELFIN_FFFREE_OB_KEKULE_ORDERS: the batch inputs are built from ``mol`` in its atom
+            # order, so ``mol`` is their template and Open Babel gets the SMILES bond orders
+            # instead of guessing them with the metal in the molecule (see
+            # openbabel_optimize._apply_template_kekule_orders).  Off: the calls are unchanged.
+            if _ob_kekule_orders_enabled():
+                _uff_inputs = [inp + (False, mol) for inp in _uff_inputs]
+            _n_args = len(_uff_inputs[0])
             try:
                 if _n_uff_workers > 1 and len(_uff_inputs) > 2:
                     with concurrent.futures.ProcessPoolExecutor(
@@ -2335,19 +2700,17 @@ def _generate_topological_isomers(
                     ) as _pp:
                         _uff_results = list(_pp.map(
                             _optimize_xyz_openbabel,
-                            [inp[0] for inp in _uff_inputs],
-                            [inp[1] for inp in _uff_inputs],
-                            [inp[2] for inp in _uff_inputs],
+                            *[[inp[_a] for inp in _uff_inputs] for _a in range(_n_args)],
                         ))
                 else:
                     _uff_results = [
-                        _optimize_xyz_openbabel(inp[0], inp[1], inp[2])
+                        _optimize_xyz_openbabel(*inp)
                         for inp in _uff_inputs
                     ]
             except Exception as _ppe:
                 logger.debug("ProcessPool UFF failed, falling back to sequential: %s", _ppe)
                 _uff_results = [
-                    _optimize_xyz_openbabel(inp[0], inp[1], inp[2])
+                    _optimize_xyz_openbabel(*inp)
                     for inp in _uff_inputs
                 ]
             def _tr_mcx(_xyzs, _tag):
@@ -2389,6 +2752,12 @@ def _generate_topological_isomers(
                 xyz_opt = _uff_results[idx] if idx < len(_uff_results) else xyz_pre
                 if not xyz_opt:
                     xyz_opt = xyz_pre
+                _legconf_trace("UFF", xyz_opt, mol, "b%d" % idx)
+                if _u5_trace_on():
+                    _u5_x = "b%d %s ci=%d pm=%s" % (idx, _label_from_canonical_form(cf) or gn, _ci,
+                                                    "".join(str(_q) for _q in pm))
+                    _u5_trace("PRE", xyz_pre, mol, _METAL_SET, donor_indices, _u5_x)
+                    _u5_trace("UFF", xyz_opt, mol, _METAL_SET, donor_indices, _u5_x)
                 _tr_mcx(xyz_opt, "BATCH_POST_UFF")
                 # Post-UFF polish: project sp2 3-coordinate atoms onto
                 # their neighbours' plane to remove residual
@@ -2398,7 +2767,10 @@ def _generate_topological_isomers(
                 _tr_mcx(xyz_opt, "BATCH_POST_FLATTEN")
                 # Conservative UFF: if UFF broke topology, keep pre-UFF.
                 if not _verify_topology_from_graph(xyz_opt, mol):
+                    _legconf_trace("FLAT", xyz_opt, mol, "b%d topology-broken -> keep PRE" % idx)
                     xyz_opt = xyz_pre
+                else:
+                    _legconf_trace("FLAT", xyz_opt, mol, "b%d" % idx)
                 _pre_uff_batch[idx] = (cf, pm, gn, xyz_opt, _cstr, _ci)
 
         # Post-UFF: graph-based topology check (replaces the 5 legacy
@@ -2487,6 +2859,17 @@ def _generate_topological_isomers(
                 # so the downstream label-collapse keeps every pucker.
                 if _cidx and _cidx > 0:
                     lbl = f'{lbl}-conf{_cidx + 1}' if lbl else f'conf{_cidx + 1}'
+                if _batch_i in _osl_parent:
+                    # DELFIN_FFFREE_ORIENT_ONE_SUB_LP: the sibling enters only if no worse than its own
+                    # primary in any geometry class and better in the donor angle (see
+                    # _one_sub_lp_sibling_keeps); both read after the same UFF and flattening.
+                    from delfin.manta import frame_realism as _osl_fr
+                    _osl_p = _pre_uff_batch[_osl_parent[_batch_i]][3]
+                    if not _one_sub_lp_sibling_keeps(_osl_fr.category_excess_counts(xyz),
+                                                     _osl_fr.category_excess_counts(_osl_p)):
+                        continue
+                _legconf_trace("EMIT", xyz, mol, "b%d %s" % (_batch_i, lbl))
+                _u5_trace("EMIT", xyz, mol, _METAL_SET, donor_indices, "b%d %s" % (_batch_i, lbl))
                 results.append((xyz, lbl))
                 if not _is_pref_extra:
                     # record the BASE (non-recovery) fingerprint so a later recovery that collapses onto
@@ -3725,9 +4108,16 @@ def _emit_nonmetal_ring_pucker_variants(
         xyz_in = _rot._format_delfin_xyz(symbols, coords)
         fix = sorted(set(hold_ring_atoms) | template_coord_sphere)
         try:
-            relaxed = _optimize_xyz_openbabel(
-                xyz_in, steps=200, constraints={"fix_atoms": fix},
-            )
+            # DELFIN_FFFREE_OB_KEKULE_ORDERS: symbols/coords are in mol's atom order (the
+            # topology gate below reads them against mol), so mol is the template.
+            if _ob_kekule_orders_enabled():
+                relaxed = _optimize_xyz_openbabel(
+                    xyz_in, steps=200, constraints={"fix_atoms": fix}, mol_template=mol,
+                )
+            else:
+                relaxed = _optimize_xyz_openbabel(
+                    xyz_in, steps=200, constraints={"fix_atoms": fix},
+                )
             _syms2, _coords2 = _rot._parse_delfin_xyz(relaxed)
             if len(_coords2) == len(coords):
                 return [tuple(c) for c in _coords2]

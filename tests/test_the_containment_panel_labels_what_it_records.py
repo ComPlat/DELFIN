@@ -88,3 +88,16 @@ def test_a_labelled_kind_renders_its_label():
     assert "Locked scope: link out of the folder" in html
     assert "•" not in html
     security_events.clear()
+
+
+def test_an_information_call_renders_its_label():
+    """The bash gate records `information_call` when it admits
+    `xtb --version` and the like unasked (calc_policy.information_call)."""
+    security_events.clear()
+    security_events.record("information_call", "bash",
+                           "information only: xtb --version", blocked=False)
+    html = security_events.format_panel_html()
+    assert "Program asked for its version or help, run unasked" in html
+    assert "xtb --version" in html
+    assert "•" not in html
+    security_events.clear()

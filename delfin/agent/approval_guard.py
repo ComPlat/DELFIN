@@ -161,6 +161,14 @@ def answer_rooms() -> tuple[Path, ...]:
     except Exception:
         pass
     try:
+        # The lab directory: approvals, the manifest pin, locks and e-stop
+        # state. The kernel writes it in-process; no write tool may.
+        from delfin.lab.store import lab_dir as _lab_dir
+        _add(_lab_dir())
+        _add(Path.home() / ".delfin" / "lab")
+    except Exception:
+        pass
+    try:
         # The agent service (delfin-agent tui): a window answers a session's
         # approvals through its socket, found by its run files.
         from .service import rundir as _rd
@@ -294,6 +302,19 @@ def _acting_subcommand(args: list, xargs: bool) -> str:
         return ""
     if rest[0] in _TOP_ACTS and (len(rest) > 1 or xargs):
         return f"delfin-agent {rest[0]}"
+    # Lab control (delfin/lab/cli.py): approving a hazardous action,
+    # clearing a latched device or an e-stop, pinning the manifest and
+    # making a node key are the person's. Stopping and reading stay free.
+    if rest[0] == "lab":
+        verb = rest[1] if len(rest) > 1 else ""
+        if verb in ("approve", "clear") or (
+                verb == "estop" and "--clear" in args) or (
+                verb == "manifest" and "pin" in rest[2:]) or (
+                verb == "node" and "keygen" in rest[2:]):
+            return f"delfin-agent lab {verb}"
+        if not verb and xargs:
+            return "delfin-agent lab with its verb from stdin"
+        return ""
     # Accepting a changed MCP tool description is the person's decision.
     if rest[0] == "mcp-pins" and (
             (len(rest) > 1 and rest[1] == "accept") or (len(rest) == 1

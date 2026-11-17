@@ -60,7 +60,7 @@ def _until(cond, timeout: float = 15.0):
     ("x" * 120, "x" * protocol.TITLE_MAX),
     ("\n\t \x1b", ""),
 ])
-def test_a_title_is_one_plain_line_of_at_most_eighty_characters(text, kept):
+def test_a_title_is_one_plain_line_of_at_most_fifty_characters(text, kept):
     assert protocol.clean_title(text) == kept
 
 
@@ -76,8 +76,11 @@ def test_a_rename_changes_what_it_is_called_not_where_it_is_reached(tmp_path):
         # One record, under the address it started with, called what it is now.
         assert [r["key"] for r in mine] == ["scan-a"]
         assert [r["key"] for r in _presence(w) if r.get("session_id") == sid] == ["scan-a"]
-        with pytest.raises(Exception):
-            w.request("session.setTitle", {"title": " \x1b[0m "})
+        # Nothing printable left: back to the default name (the service's
+        # summary then names it by its folder and short id).
+        mark = len(w.events)
+        assert w.request("session.setTitle", {"title": " \x1b[0m "}) == {"title": ""}
+        w.wait_for(lambda e: e.get("type") == "session.updated" and e.get("title") == "", after=mark)
 
 
 def test_the_title_is_saved_at_each_turn_and_a_resume_without_a_name_keeps_it(tmp_path):

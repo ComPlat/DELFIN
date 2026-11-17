@@ -617,6 +617,121 @@ def unsafe_install_refusal(cmd: str, session_python: str, *,
     return None
 
 
+#: conda / mamba / micromamba subcommands that write an environment
+#: (``env create|update|remove`` included).
+_CONDA_PROGRAMS = frozenset({"conda", "mamba", "micromamba"})
+_CONDA_WRITING_SUBCOMMANDS = frozenset({
+    "create", "install", "update", "upgrade", "remove", "uninstall"})
+#: Short options that take a value; in a cluster the value is the rest of
+#: the word (``-yp /x``, ``-nmlip``).
+_CONDA_SHORT_VALUE_OPTS = frozenset("npcfr")
+#: Options whose value is the next word, passed over when looking for the
+#: subcommand (``micromamba -r /root create``).
+_CONDA_VALUE_OPTS = frozenset({
+    "-r", "--root-prefix", "--rc-file", "-n", "--name", "-p", "--prefix",
+    "-c", "--channel", "-f", "--file"})
+
+
+def conda_env_writes(rest: list[str]) -> Optional[tuple[str, list[str], bool]]:
+    """What a conda / mamba / micromamba argument list writes, or None.
+
+    Input: the arguments after the program name, quotes removed. Output
+    for a writing subcommand (``_CONDA_WRITING_SUBCOMMANDS``, also after
+    ``env``): (subcommand, the directories named by ``-p`` / ``--prefix``
+    / ``--prefix=`` / ``p`` in a short cluster, whether the environment
+    lies under the program's root prefix). Under the root prefix means:
+    ``-r`` / ``--root-prefix`` given, or no directory named and either
+    ``-n`` / ``--name`` given or the subcommand is ``create`` (``env create
+    -f FILE`` takes the name from the file). None for every other
+    subcommand and for ``-h`` / ``--help``.
+
+    The root prefix is the program's configuration (``MAMBA_ROOT_PREFIX``,
+    ``.condarc``), not the command text, so no path can be judged; the
+    caller asks instead (api_client, own-dialog tier).
+    """
+    if any(a in ("-h", "--help") for a in rest):
+        return None
+    words: list[str] = []
+    skip = False
+    for a in rest:
+        if skip:
+            skip = False
+            continue
+        if a in _CONDA_VALUE_OPTS:
+            skip = True
+            continue
+        if not a.startswith("-"):
+            words.append(a)
+    sub = words[1] if words[:1] == ["env"] and len(words) > 1 else (
+        words[0] if words else "")
+    if sub not in _CONDA_WRITING_SUBCOMMANDS:
+        return None
+    prefixes: list[str] = []
+    named = root = False
+    for i, a in enumerate(rest):
+        nxt = rest[i + 1] if i + 1 < len(rest) else ""
+        if a in ("-p", "--prefix"):
+            if nxt:
+                prefixes.append(nxt)
+        elif a.startswith("--prefix="):
+            prefixes.append(a.split("=", 1)[1])
+        elif a in ("-n", "--name") or a.startswith("--name="):
+            named = True
+        elif a in ("-r", "--root-prefix") or a.startswith("--root-prefix="):
+            root = True
+        elif a.startswith("-") and not a.startswith("--"):
+            for k, ch in enumerate(a[1:], start=1):
+                if ch in _CONDA_SHORT_VALUE_OPTS:
+                    val = a[k + 1:].lstrip("=") or nxt
+                    if ch == "p" and val:
+                        prefixes.append(val)
+                    elif ch == "n":
+                        named = True
+                    elif ch == "r":
+                        root = True
+                    break
+    under_root = root or (not prefixes and (named or sub == "create"))
+    return sub, prefixes, under_root
+
+
+def root_prefix_env_command(cmd: str, _depth: int = 0) -> str:
+    """The first conda / mamba / micromamba command in *cmd* that writes an
+    environment under the program's root prefix (:func:`conda_env_writes`),
+    as ``"<program> <subcommand>"``, or "".
+
+    Read like :func:`unsafe_install_refusal`: per shell segment after
+    quote removal, leading assignments and wrappers dropped, ``sh -c`` /
+    ``eval`` payloads and command substitutions read as commands.
+    """
+    if not cmd or not cmd.strip() or _depth > 3:
+        return ""
+    for m in _SUBSTITUTION_RE.finditer(cmd):
+        hit = root_prefix_env_command(m.group(1) or m.group(2) or "",
+                                      _depth + 1)
+        if hit:
+            return hit
+    for seg in _segments(cmd):
+        argv = _strip_prefix(seg, set())
+        if not argv:
+            continue
+        base = os.path.basename(argv[0])
+        rest = argv[1:]
+        if base in _SHELLS and "-c" in rest:
+            at = rest.index("-c") + 1
+            hit = root_prefix_env_command(
+                rest[at] if at < len(rest) else "", _depth + 1)
+        elif base == "eval":
+            hit = root_prefix_env_command(" ".join(rest), _depth + 1)
+        elif base in _CONDA_PROGRAMS:
+            got = conda_env_writes(rest)
+            hit = f"{base} {got[0]}" if got and got[2] else ""
+        else:
+            hit = ""
+        if hit:
+            return hit
+    return ""
+
+
 def _session_python() -> str:
     """:func:`delfin.installer.session_python`, or '' when it cannot load."""
     try:
@@ -1021,11 +1136,121 @@ _HOME_SECRET_DIRS = (
     # The account key and the MCP pins (trust_store): read by DELFIN's
     # own processes, never by a command an agent runs.
     ".delfin/trust_store",
+    # cluster-tunnel (delfin.remote): its config with the ssh options and
+    # budget scripts DELFIN's own process uses, the pinned host keys, and
+    # the control sockets of the logged-in masters -- the user's identity
+    # on every cluster. The default locations; ``runtime_masked_dirs`` adds
+    # the real ones wherever ctun keeps them.
+    ".config/cluster-tunnel",
+    ".cache/cluster-tunnel",
     ".delfin/messenger_sessions",
+    # Phone pairing requests and the gateway's answers, invitation links
+    # among them (delfin.messenger.pairing): the person's, never an agent's.
+    ".delfin/messenger_pairing",
     # The user's schedules (delfin.agent.schedules): what runs unattended
     # is the user's to write and confirm, never an agent's.
     ".delfin/user_schedules",
+    # The workspace freedom profiles (delfin.agent.workspace_profiles)
+    # share the schedules directory.
+    ".delfin/user_schedules/workspace_profiles.json",
+    # Rootless messenger (delfin.messenger.rootless): one user with the
+    # agent, so its daemon database, gateway store and units are masked.
+    ".local/share/delfin-messenger",
+    ".config/systemd/user/delfin-messenger-chat.service",
+    ".config/systemd/user/delfin-messenger-bridge.service",
+    ".config/systemd/user/delfin-messenger-gateway.service",
 )
+
+
+def _account_homes(home: Path) -> list[Path]:
+    """The account homes a cage of this HOME must consider: HOME itself,
+    and in people mode (HOME is ``<account>/people/<name>``) the account's."""
+    out = [home]
+    if home.parent.name == "people":
+        out.append(home.parent.parent)
+    defaults = os.environ.get("DELFIN_SETTINGS_DEFAULTS", "").strip()
+    if defaults:
+        out.append(Path(defaults).parent)
+    seen, unique = set(), []
+    for h in out:
+        try:
+            key = str(h.resolve())
+        except OSError:
+            continue
+        if key not in seen:
+            seen.add(key)
+            unique.append(Path(key))
+    return unique
+
+
+def people_secret_paths(home: Path | None = None) -> list[str]:
+    """People mode's messenger state of every person and of the account,
+    for every cage on this account: ``<account>/.delfin/messenger_pairing``
+    and ``.../messenger_sessions``, and for each ``<account>/people/<name>``
+    the same two plus its runtime directory ``.run`` (agent service socket,
+    pairing doors). Existing paths only (a mount point must exist), resolved.
+    Same Unix user: this hides them from agents' commands, it does not
+    separate people. Never raises."""
+    home = Path(home) if home is not None else Path.home()
+    out: list[str] = []
+
+    def add(p: Path) -> None:
+        try:
+            if os.path.islink(p) or not p.exists():
+                return
+            r = str(p.resolve())
+        except OSError:
+            return
+        if r not in out:
+            out.append(r)
+
+    for account in _account_homes(home):
+        for rel in (".delfin/messenger_pairing", ".delfin/messenger_sessions"):
+            add(account / rel)
+        try:
+            people = sorted((account / "people").iterdir())
+        except OSError:
+            people = []
+        for person in people:
+            if person.is_symlink() or not person.is_dir():
+                continue
+            for rel in (".delfin/messenger_pairing", ".delfin/messenger_sessions", ".run"):
+                add(person / rel)
+    return out
+
+
+def home_secret_paths(home: Path | None = None) -> list[str]:
+    """Every home secret a cage masks: ``_HOME_SECRET_DIRS`` under HOME
+    (resolved) and :func:`people_secret_paths`. Existing or not for the
+    first part (callers check), resolved."""
+    home = Path(home) if home is not None else Path.home()
+    out: list[str] = []
+    for rel in _HOME_SECRET_DIRS:
+        try:
+            r = str((home / rel).resolve())
+        except OSError:
+            continue
+        if r not in out:
+            out.append(r)
+    out += [p for p in people_secret_paths(home) if p not in out]
+    return out
+
+
+def _bwrap_home_mask_args(home: Path | None = None) -> list[str]:
+    """bubblewrap masks for :func:`home_secret_paths`: tmpfs over a
+    directory, /dev/null over a file. Placed AFTER every bind by both
+    builders: a bind of a parent (the repository at $HOME, a granted
+    ~/.delfin or ~/people) would otherwise cover the mask again."""
+    args: list[str] = []
+    for p in home_secret_paths(home):
+        try:
+            if os.path.isdir(p):
+                args += ["--tmpfs", p]
+            elif os.path.isfile(p):
+                args += ["--ro-bind", "/dev/null", p]
+        except OSError:
+            continue
+    return args
 
 
 #: Paths a run hides from its own cage: absolute paths joined by
@@ -1094,6 +1319,14 @@ def runtime_masked_dirs() -> list[str]:
             out.append(str(d.resolve()))
     except Exception:
         pass
+    try:
+        # cluster-tunnel's config, cache and socket directories, at their
+        # real (possibly redirected) locations, created so that nothing can
+        # be planted there before the user writes ctun's config.
+        from delfin.remote import state_dirs as _ctun_dirs
+        out += [d for d in _ctun_dirs() if d not in out]
+    except Exception:
+        pass
     # Not the messenger's activation records: they live in
     # ~/.delfin/messenger_sessions, masked with the other home secrets
     # (_HOME_SECRET_DIRS) and refused by the path deny globs, like the trust
@@ -1123,21 +1356,7 @@ def _bwrap_argv(cmd: str, repo_dir: Path, allow_network: bool) -> list[str]:
         "--tmpfs", "/tmp",
         "--tmpfs", "/root",
     ]
-    # Mask each secret path individually if it exists on the host. tmpfs
-    # only works on directories; for single files we mask with /dev/null
-    # (read-only bind of an empty source). Missing paths are skipped.
     late_masks = runtime_masked_dirs()
-    for rel in _HOME_SECRET_DIRS:
-        p = Path(home) / rel
-        try:
-            is_dir = p.is_dir()
-            is_file = p.is_file()
-        except OSError:
-            continue
-        if is_dir:
-            args += ["--tmpfs", str(p)]
-        elif is_file:
-            args += ["--ro-bind", "/dev/null", str(p)]
     args += ["--bind", repo, repo]
     # The session scratch dir: bound read-write, TMPDIR/TMP/TEMP point at
     # it (in-cage path == host path, "/" is bound at itself), so a file
@@ -1151,6 +1370,10 @@ def _bwrap_argv(cmd: str, repo_dir: Path, allow_network: bool) -> list[str]:
                  "--setenv", "TEMP", scratch]
     except Exception:
         pass
+    # Each secret path masked if it exists on the host, AFTER the binds (a
+    # repository at $HOME covered masks placed before its bind): tmpfs for a
+    # directory, /dev/null for a file; missing paths are skipped.
+    args += _bwrap_home_mask_args(Path(home))
     for d in late_masks:
         args += ["--tmpfs", d]
     # The run's own hidden paths, after every bind like the masks above.

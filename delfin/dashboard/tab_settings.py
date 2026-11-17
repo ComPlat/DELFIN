@@ -43,6 +43,8 @@ from delfin.runtime_setup import (
 )
 from delfin.qm_runtime import canonical_tool_name, discover_tool_installations, settings_selectable_tools
 from delfin.user_settings import (
+    carry_runtime_sections,
+    get_settings_defaults_path,
     get_settings_path,
     load_settings,
     normalize_choice_setting,
@@ -1243,7 +1245,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
 
     def _persist_runtime_payload(runtime_payload):
         settings_payload = load_settings()
-        settings_payload['runtime'] = runtime_payload
+        settings_payload['runtime'] = carry_runtime_sections(
+            settings_payload.get('runtime'), runtime_payload)
         settings_payload = save_settings(settings_payload, settings_path)
         _set_runtime_widgets(settings_payload)
         backend_switch_required, effective_backend, effective_orca_base = _apply_runtime_settings(
@@ -3852,7 +3855,14 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         value=(
             f'<div style="color:#455a64;">'
             f'<b>Local settings:</b> <code>{html.escape(str(settings_path))}</code><br>'
-            'This file lives in your HOME, outside the git repo. '
+            + (
+                f'<b>Shared defaults:</b> <code>{html.escape(str(_defaults_path))}</code> '
+                '(read under your own file; your file keeps only what you changed, '
+                'a later change of a default reaches you unless you set it yourself)<br>'
+                if (_defaults_path := get_settings_defaults_path(settings_path)) is not None
+                else ''
+            )
+            + 'This file lives in your HOME, outside the git repo. '
             '<code>git pull</code> will not overwrite it. Missing future settings are '
             'added without replacing your existing values.<br>'
             f'Leave path fields empty to use the defaults '
@@ -5019,14 +5029,32 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     main_accordion.set_title(8, 'SSH Transfer & Remote Archive')
     main_accordion.selected_index = None  # all settings sections collapsed by default
 
+    # The sections' rows line up: the first label of a row is a column of
+    # its own (at least 190 px), and a full-width field takes the room left
+    # beside it (basis 280 px, growing) instead of a line of its own, so
+    # label, field and Scan share one line where the row is wide enough.
+    # Measured at 1366 px before: each binary field on its own line with
+    # Scan on a third, the Detected dropdowns starting at x = 161 to 186.
+    # The field keeps its own width everywhere else (the rule matches only
+    # a field the code made 100 % wide, directly in a row).
+    settings_css = widgets.HTML(
+        '<style>'
+        '.delfin-settings .widget-accordion .widget-hbox > .widget-html:first-child { min-width: 190px; }'
+        '.delfin-settings .widget-accordion .widget-hbox > .widget-text[style*="width: 100%"] { flex: 1 1 280px; }'
+        # A phone: the fields' 280 px minimum ran past the pane's edge.
+        '@media (max-width: 600px) { .delfin-settings .widget-accordion .widget-text { min-width: 0 !important; } }'
+        '</style>'
+    )
     tab = widgets.VBox(
         [
+            settings_css,
             info_box,
             top_bar,
             main_accordion,
         ],
         layout=widgets.Layout(width='100%', gap='12px', padding='10px'),
     )
+    tab.add_class('delfin-settings')
 
     _apply_sensitive_visibility()
     _load_settings_to_widgets(set_status=True)

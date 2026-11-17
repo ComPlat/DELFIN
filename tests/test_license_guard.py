@@ -82,3 +82,25 @@ def test_path_guard_blocks_data_files(path):
 @pytest.mark.parametrize("path", ["delfin/manta/cod_ideals.py", "docs/intro.md"])
 def test_path_guard_allows_clean_paths(path):
     assert lg.check_path(path) is None, f"path guard wrongly blocked {path}"
+
+
+@pytest.mark.parametrize("path", [
+    "data/sample.finalensemble.xyz",
+    "data/sample.globalminimum.xyz",
+    "calculations/run/GOAT_x.finalensemble.xyz",
+])
+def test_orca_generated_paths_are_blocked(path):
+    assert lg.check_path(path) is not None
+
+
+def test_synthetic_xyz_is_allowed():
+    assert lg.check_path("tests/fixtures/synthetic_ethane.xyz") is None
+
+
+@pytest.mark.parametrize("path", [
+    "delfin/orca_knowledge/cards/casscf.json",
+    "delfin/agent/pack/benchmark/keywords_groundtruth_orca.json",
+    "docs/orca_notes.md",
+])
+def test_delfins_own_orca_named_files_are_not_blocked(path):
+    assert lg.check_path(path) is None

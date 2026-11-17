@@ -11,7 +11,7 @@
   <a href="https://pypi.org/project/delfin-complat/"><img src="https://img.shields.io/pypi/v/delfin-complat.svg?style=for-the-badge" alt="PyPI version"></a>
 </p>
 
-**DELFIN** is an open-source, AI-orchestrated computational chemistry platform for automated molecular property prediction and inverse molecular design. Behind a single **SMILES-in / property-out** interface, it connects structure generation, quantum-chemistry workflows, machine-learning potentials, interactive dashboards, automated reports, and AI agents into one practical research platform.
+**DELFIN** is an open-source, AI-orchestrated computational chemistry platform for automated molecular property prediction and inverse molecular design, with a focus on enabling small, open-weight AI models to produce scientifically meaningful data. Behind a single **SMILES-in / property-out** interface, it connects structure generation, quantum-chemistry workflows, machine-learning potentials, interactive dashboards, automated reports, and AI agents into one practical research platform.
 
 **DELFIN is operated by AI agents.** They configure and submit calculations, monitor them, interpret the outputs, and modify DELFIN's own code where a workflow has to be extended. Work that stands on its own is delegated to subagents running in parallel, each with its own tools and permissions.
 
@@ -120,10 +120,23 @@ Domain legend: 🧪 organic · 🧲 metal complex · 🔬 both / general · 🧱
 
 ### Install methods
 
-**Installer (any Linux workstation or cluster login node):**
+**Installer (any Linux workstation or cluster login node):** two commands are a complete first install.
 ```bash
 git clone https://github.com/ComPlat/DELFIN.git ~/software/delfin
-bash ~/software/delfin/install.sh              # DELFIN, ORCA wiring, QM/analysis tools, Ketcher
+bash ~/software/delfin/install.sh
+```
+
+Before it changes anything, the installer checks what it needs — curl or wget, tar, git, a writable `~/software` and `$HOME`, about 6 GB of free disk space for the default (3 GB with `--core`, 20 GB with `--all`), a C compiler where OpenMPI has to be built — and stops with what to install when something is missing. A run takes a few minutes plus the OpenMPI build where one is needed (about 25 minutes). Its whole output is kept in `~/software/logs/`; when a step fails, it names the step, and running the same command again continues from what is already in place. It ends with how to start:
+
+```bash
+source ~/.delfin_env.sh       # a new shell does this by itself
+delfin-voila                  # the dashboard: open the URL it prints
+cd ~/calc && delfin-agent     # the agent in a terminal, working in that folder
+```
+
+On a cluster login node the dashboard listens on 127.0.0.1 only; from your own computer, `ssh -L 8866:127.0.0.1:8866 USER@LOGIN-NODE`, then open the printed URL there. The agent needs a language model: store a key with `delfin-agent credentials set KIT_TOOLBOX_API_KEY` (or `OPENAI_API_KEY`), or run a local OpenAI-compatible server, then choose the provider and model in the dashboard's DELFIN Agent tab; until one is connected, that tab and `delfin-agent` say how. Where `$HOME` has a small quota, clone into a workspace and pass `--prefix` there; the tools of `~/.delfin` (about 1 GB for the default) and the pip cache in `~/.cache` stay in `$HOME`. An older DELFIN venv activated from `~/.bashrc` keeps the new one from being activated; the installer names such a line.
+
+```bash
 bash ~/software/delfin/install.sh --all        # everything, ML and AI stacks included (several GB)
 bash ~/software/delfin/install.sh --only crest,gxtb
 bash ~/software/delfin/install.sh --dry-run    # print the plan, change nothing
@@ -264,15 +277,29 @@ Some tabs are hidden by default and are enabled in Settings.
 
 ```bash
 delfin-voila                 # 127.0.0.1:8866, prints a URL with an access token
+delfin-voila status          # is it running, its URL, the kept dashboards
+delfin-voila stop            # end it (kept agent sessions go on in the agent service)
 delfin-voila --port 9000     # custom port
 delfin-voila --dark          # dark theme
-delfin-voila --keep          # run inside a tmux session, survives a dropped terminal
+delfin-voila --keep          # every window starts with Keep dashboard on
 delfin-voila --resume SID    # reopen a previous agent session
+delfin-voila --foreground    # run in this terminal; Ctrl+C or closing it ends it
 
 # On HPC/login nodes keep the default 127.0.0.1 bind and use an SSH tunnel.
 # A direct network bind needs an explicit override:
 delfin-voila --ip 0.0.0.0 --allow-remote-bind
 ```
+
+Typed at a terminal, `delfin-voila` starts the server in the background,
+prints its URL and returns the prompt: closing the terminal or a dropped SSH
+connection ends nothing. There is one server per user and host; a second
+`delfin-voila` opens the running one. Dashboards with **Keep dashboard** on
+are listed by `delfin-voila status` and in the header's **Dashboards** menu
+(Open, End, New dashboard). A server without a window, a kept dashboard or a
+running kernel ends itself after 10 minutes
+(`DELFIN_DASHBOARD_IDLE_EXIT_MINUTES`, `0` keeps it up). A launch without a
+terminal (a script, systemd, launchd, a SLURM job) and one inside tmux or
+screen stays in the foreground as before.
 
 Windows SSH desktop launcher (OTP, separate working terminal, tmux reconnect):
 [Setup and installation](tools/windows-launcher/README.md). Copy that folder to your Windows PC.
@@ -403,7 +430,7 @@ The DOCX and JSON reports are written at the end of every main run; a failure th
 Which builder runs is decided by one CONTROL key, and a SMILES run must set it:
 
 ```ini
-smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE]
+smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE|RXEMBED|MOLASSEMBLER|METALLOGEN]
 ```
 
 | Value | What it does | Best for |
@@ -414,12 +441,17 @@ smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE]
 | `ARCHITECTOR` | [architector](https://github.com/lanl/Architector) automated 3D generation; needs a metal-containing SMILES. | Metal complexes, instant preview |
 | `MOLSIMPLIFY` | [molSimplify](https://molsimplify.mit.edu/), one structure per geometry of the coordination number; needs a metal-containing SMILES. | Metal complexes |
 | `MACE` | [epic-MACE](https://github.com/EPiCs-group/epic-mace) (Chernyshov & Pidko, JCTC 2024): every stereomer of the geometries that fit the donor sites, ten conformers each; runs in its own Python 3.7 environment. | Metal complexes, hapto ligands |
+| `RXEMBED` | [rxembed](https://github.com/aligfellow/rxembed) (MIT): `rx.embed(rx.isomers(smiles))` -- every stereoisomer and coordination arrangement on its default polyhedron of the coordination number, its default conformers; runs in its own Python 3.12 / RDKit 2026.9 environment. | Organic molecules and metal complexes |
+| `MOLASSEMBLER` | [Molassembler](https://github.com/qcscine/molassembler) (Sobez & Reiher, JCIM 2020; BSD-3): every stereoisomer, ten seeded distance-geometry conformers each; reads charge-separated SMILES only (no `->`); runs in its own environment. | Inorganic stereoisomers |
+| `METALLOGEN` | [MetalloGen](https://github.com/kyunghoonlee777/MetalloGen) (Lee et al., JCIM 2025; BSD-3): every arrangement of the donors on the usual geometries of the site count, generated and relaxed with GFN2-xTB through ORCA; needs ORCA; runs in its own environment. | Metal complexes, xTB-relaxed |
+
+rxembed, Molassembler and MetalloGen are installed like epic-MACE, each into an environment of its own under `~/.delfin/ai_tools/.mamba_env/<name>`: `python -m delfin.installer --install rxembed` (pinned GitHub commit 9c0ba5a6, version 0.2.0; it needs Python >= 3.12 and RDKit >= 2026.9.1, newer than DELFIN's own), `--install molassembler` (scine-molassembler 3.0.1) and `--install metallogen` (pinned GitHub commit fa26e2ad); `DELFIN_RXEMBED_PYTHON`, `DELFIN_MOLASSEMBLER_PYTHON` and `DELFIN_METALLOGEN_PYTHON` point to another interpreter. rxembed and Molassembler take the SMILES as written; Molassembler's SMILES reader does not parse dative bonds, so `N->[Pt](<-N)(Cl)Cl` is refused and `[NH3+][Pt-2]([NH3+])(Cl)Cl` builds. MetalloGen's default calculator is xTB through Gaussian; DELFIN uses only its ORCA calculator (GFN2-xTB through ORCA's `otool_xtb`) and never Gaussian, so it needs ORCA. MetalloGen builds the one arrangement its m-SMILES writes; DELFIN writes one m-SMILES per distinct arrangement of the donor sites (proper rotations, ligand automorphisms and swaps of identical ligands identify arrangements, mirror images are kept, donors of one ligand at most four bonds apart are never trans; at most 48 per geometry, flagged `truncated` when cut) on the usual polyhedra of the site count (SP + TET for 4, TBP + SPY for 5, OH for 6, ...), and every frame carries its GFN2-xTB energy. Its random embeddings are seeded per m-SMILES; the xTB relaxations through ORCA can still differ in the last digits, so the frame count of an arrangement can vary between builds. Its time limit is 7200 s; a build that hits it keeps the finished arrangements in a partial xyz and names it. Paths with blanks or shell characters (ORCA, work directory) are refused, because MetalloGen hands them to the shell unquoted. Molassembler counts every stereoisomer once (meso forms included), as the benchmark runner does.
 
 epic-MACE (Chernyshov & Pidko, *J. Chem. Theory Comput.* 2024, 20, 2313; [EPiCs-group/epic-mace](https://github.com/EPiCs-group/epic-mace), GPL-3.0) needs Python 3.7 and RDKit 2020.09, so it is never installed beside DELFIN: `python -m delfin.installer --install epic-mace` (or `install.sh --only epic-mace`, or the Install button in Settings) builds an environment of its own with micromamba under `~/.delfin/ai_tools/.mamba_env/epic_mace` (from the pinned GitHub commit efb5778e, which adds hapto ligands and the TET/SPY/TBP/SAN geometries to the octahedron and square of the PyPI release), and DELFIN calls it there as an external program; `DELFIN_MACE_PYTHON` points it to another interpreter. The geometry follows from the number of donor sites (a hapto ligand is one site): OH for 6, SP + TET for 4, SPY + TBP for 5, SAN for two hapto ligands. Every stereomer (enantiomers kept) gets ten conformers; MACE has no random seed, so two builds can differ.
 
 In the Submit tab the same choice appears as the converter dropdown, next to `BUILD COMPLEX` (stepwise assembly using ORCA's `%DOCKER`, submitted as a job) and the `CONVERT SMILES`, `QUICK CONVERT SMILES` and `CONVERT SMILES + UFF` buttons of the structure editor.
 
-For many SMILES at once -- a list of `ID;SMILES` lines, up to hundreds of thousands -- `delfin cluster` builds with MANTA, Architector, molSimplify or epic-MACE as a sharded, resumable Slurm array (or shard by shard on a workstation) and merges the result into one multi-frame xyz archive, with code and environment recorded for reproduction: see [docs/CONSTRUCTION_BATCH.md](docs/CONSTRUCTION_BATCH.md).
+For many SMILES at once -- a list of `ID;SMILES` lines, up to hundreds of thousands -- `delfin cluster` builds with MANTA, Architector, molSimplify, epic-MACE, rxembed, Molassembler or MetalloGen as a sharded, resumable Slurm array (or shard by shard on a workstation) and merges the result into one multi-frame xyz archive, with code and environment recorded for reproduction: see [docs/CONSTRUCTION_BATCH.md](docs/CONSTRUCTION_BATCH.md).
 
 ### MANTA
 
@@ -465,6 +497,7 @@ DELFIN is configured by `CONTROL.txt` in the working directory. `delfin --define
 * `MANTA_*` — the MANTA builder and its funnel: construction quality, gates, screening, optimisation, refinement, time budget
 * `XTB_preOPT = yes | no` / `global_optimizer = GOAT | CREST`
   * the older spellings `XTB_OPT` / `XTB_GOAT` / `CREST` are still accepted
+  * `global_opt_method = mlip:uma | mlip:mace | mlip:orb | mlip:aimnet2` (optional, GOAT only) runs GOAT with an orca-mlips MLIP on the job's GPU; `global_opt_mlip_model`, `global_opt_mlip_device = cuda | cpu`, `refuse_noncommercial_weights = yes | no`
 * `XTB_SOLVATOR = yes | no`
 
 ### Resource management
@@ -742,7 +775,7 @@ delfin/
   # ── Tool integrations ──
   tools/                   # step and pipeline system, 25 adapters, mcp_server.py
   mlp_tools/               # ML potentials (ANI-2x, MACE, CHGNet, M3GNet, …)
-  ai_tools/                # AI/ML tool registry (21 tools across 9 categories)
+  ai_tools/                # AI/ML tool registry (25 tools across 9 categories)
   analysis_tools/          # cclib, Packmol, Multiwfn, CENSO, morfeus wrappers
   csp_tools/               # crystal structure generation (Genarris)
   qm_tools/                # external QM binary management
@@ -892,10 +925,13 @@ Of the AI/ML tools listed below, DELFIN detects and installs all of them, and **
 [DeepChem](https://deepchem.io/),
 [ADMETlab](https://admetlab3.scbdd.com/)
 
-**AI/ML — Metal Complex ML (3):**
+**AI/ML — Metal Complex ML (6):**
 [molSimplify](https://molsimplify.mit.edu/),
 [architector](https://github.com/lanl/Architector),
-[epic-MACE](https://github.com/EPiCs-group/epic-mace)
+[epic-MACE](https://github.com/EPiCs-group/epic-mace),
+[rxembed](https://github.com/aligfellow/rxembed),
+[Molassembler](https://github.com/qcscine/molassembler),
+[MetalloGen](https://github.com/kyunghoonlee777/MetalloGen)
 
 **Analysis / Post-Processing (15):**
 [cclib](https://cclib.github.io/),
@@ -1046,7 +1082,7 @@ DELFIN is provided "AS IS" without warranty of any kind. The authors disclaim al
 If you use DELFIN in a scientific publication, please cite the article and the software version you used. The same metadata are in [CITATION.cff](CITATION.cff).
 
 - Hartmann, M.; Schoenle, F.; Wagner, J.; Herrmann, D.; Hodapp, P.; Jung, N.; Bräse, S. (2025). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials*. ChemRxiv (preprint). https://doi.org/10.26434/chemrxiv-2025-4c256 · [article page](https://www.cambridge.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a)
-- Hartmann, M. (2026). *DELFIN: Automated prediction of preferred spin states and associated redox potentials* (v1.3.3). Zenodo. https://doi.org/10.5281/zenodo.17208144
+- Hartmann, M. (2026). *DELFIN: Automated prediction of preferred spin states and associated redox potentials* (v1.4.0). Zenodo. https://doi.org/10.5281/zenodo.17208144
 
 The concept DOI [10.5281/zenodo.17208144](https://doi.org/10.5281/zenodo.17208144) stands for all versions and resolves to the latest; each release has its own version DOI on Zenodo.
 
@@ -1064,7 +1100,7 @@ The concept DOI [10.5281/zenodo.17208144](https://doi.org/10.5281/zenodo.1720814
 @software{hartmann2026delfin,
   author    = {Hartmann, Maximilian},
   title     = {DELFIN: Automated prediction of preferred spin states and associated redox potentials},
-  version   = {1.3.3},
+  version   = {1.4.0},
   year      = {2026},
   publisher = {Zenodo},
   doi       = {10.5281/zenodo.17208144},
