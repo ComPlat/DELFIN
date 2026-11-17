@@ -38,6 +38,7 @@ from .harness_rows import (
     harness_row as _harness_row, is_harness_row as _is_harness_row,
     user_row as _user_row,
 )
+from . import tool_context as _tool_context
 
 
 def _auto_install(package: str, pip_spec: str = "") -> None:
@@ -16035,10 +16036,78 @@ class _DocToolExecutor:
         # Where the index was actually built from, filled in by
         # _ensure_calc_loaded so a calc answer can name its corpus.
         self._calc_roots: dict[str, str] = {}
-        # Undo journal: seqs of file changes captured THIS turn (reset by
-        # the client at turn start) so undo_changes(scope="turn") knows
-        # the turn boundary.
-        self._turn_change_seqs: list[int] = []
+        # Per-session tool-executor state (undo-window seqs, pending
+        # view images, live history-search messages): one ToolContext per
+        # session, created lazily and owned by the session's client, which
+        # passes it to execute(). Direct callers (nothing passed) fall back
+        # to one default context per process, as before.
+        self._tool_contexts: dict = {}
+        self._default_tool_context = _tool_context.ToolContext()
+
+    @staticmethod
+    def _active_tool_context() -> "_tool_context.ToolContext":
+        """The tool_context set for the current execute() call, or None."""
+        return _tool_context._ACTIVE_TOOL_CONTEXT.get()
+
+    def _ctx_for(self, session_id: str) -> "_tool_context.ToolContext":
+        """The ToolContext for a session id: its per-session context when
+        one exists, else a lazily created one. An empty id means the
+        process-wide default (one context per process, as before)."""
+        if not session_id:
+            return self._default_tool_context
+        ctx = self._tool_contexts.get(session_id)
+        if ctx is None:
+            ctx = self._tool_contexts[session_id] = _tool_context.ToolContext()
+        return ctx
+
+    def _active_ctx(self, session_id: str) -> "_tool_context.ToolContext":
+        """The context a method should route to: the client-passed one set
+        for the current execute() call, else the per-session (or default)
+        context keyed by the session id."""
+        active = self._active_tool_context()
+        if active is not None:
+            return active
+        return self._ctx_for(session_id)
+
+    @property
+    def _turn_change_seqs(self):
+        return self._active_ctx("")._turn_change_seqs
+
+    @_turn_change_seqs.setter
+    def _turn_change_seqs(self, value):
+        self._active_ctx("")._turn_change_seqs = value
+
+    @property
+    def _turn_seqs_by_session(self):
+        return self._active_ctx("")._turn_seqs_by_session
+
+    @_turn_seqs_by_session.setter
+    def _turn_seqs_by_session(self, value):
+        self._active_ctx("")._turn_seqs_by_session = value
+
+    @property
+    def _turn_seqs_seen(self):
+        return self._active_ctx("")._turn_seqs_seen
+
+    @_turn_seqs_seen.setter
+    def _turn_seqs_seen(self, value):
+        self._active_ctx("")._turn_seqs_seen = value
+
+    @property
+    def live_messages(self):
+        return self._active_ctx("").live_messages
+
+    @live_messages.setter
+    def live_messages(self, value):
+        self._active_ctx("").live_messages = value
+
+    @property
+    def _pending_view_images(self):
+        return self._active_ctx("")._pending_view_images
+
+    @_pending_view_images.setter
+    def _pending_view_images(self, value):
+        self._active_ctx("")._pending_view_images = value
 
     def _capture_change(
         self, tool: str, resolved: Path, old_text: "Optional[str]",
@@ -16311,45 +16380,18 @@ class _DocToolExecutor:
     def _note_change_seq(
         self, rec: "Optional[dict]", perms: "KitToolPermissions",
     ) -> None:
-        """Remember a journal seq as belonging to the CURRENT turn.
-
-        Keyed by session: this executor is a module-level singleton
-        shared by every parallel sub-agent, so a single flat list let a
-        turn-scoped undo revert a sibling's writes. The flat list is
-        still fed because the turn reset and the document-write capture
-        path use it.
-        """
-        if not rec:
-            return
-        seq = rec.get("seq")
-        if not isinstance(seq, int):
-            return
-        if not hasattr(self, "_turn_change_seqs"):
-            self._turn_change_seqs = []
-        if not hasattr(self, "_turn_seqs_by_session"):
-            self._turn_seqs_by_session = {}
-        # The turn boundary is marked by the client emptying the flat
-        # list. Detecting that here keeps the per-session cursor honest
-        # without a second reset point that could be forgotten.
-        if len(self._turn_change_seqs) < getattr(self, "_turn_seqs_seen", 0):
-            self._turn_seqs_by_session = {}
-        self._turn_change_seqs.append(seq)
-        self._turn_seqs_seen = len(self._turn_change_seqs)
+        """Remember a journal seq as belonging to the CURRENT turn, in
+        the session's own ToolContext. Per-session by construction: the
+        client owns one context per session and passes it to execute();
+        a direct caller routes to the context keyed by
+        perms.task_session_id (see tool_context.py)."""
         sid = getattr(perms, "task_session_id", "") or ""
-        self._turn_seqs_by_session.setdefault(sid, []).append(seq)
+        self._active_ctx(sid).note_change_seq(rec, perms)
 
     def _turn_seqs_for(self, session_id: str) -> list[int]:
-        """The journal seqs written this turn BY THIS SESSION.
-
-        Falls back to the shared flat list only when the per-session
-        cursor holds nothing for it, so a turn that only produced
-        document writes (whose capture path feeds the flat list) still
-        has a turn to undo."""
-        per = getattr(self, "_turn_seqs_by_session", None) or {}
-        seqs = list(per.get(session_id or "", []) or [])
-        if seqs:
-            return seqs
-        return list(getattr(self, "_turn_change_seqs", []) or [])
+        """The journal seqs written this turn BY THIS SESSION, read from
+        the session's own ToolContext."""
+        return self._active_ctx(session_id).turn_seqs_for(session_id)
 
     def _stage_pending_change(
         self, tool: str, resolved: Path, old_text: "Optional[str]",
@@ -16531,6 +16573,7 @@ class _DocToolExecutor:
         name: str,
         arguments: dict,
         permissions: Optional["KitToolPermissions"] = None,
+        tool_context: Optional["_tool_context.ToolContext"] = None,
     ) -> str:
         """Execute a doc/calc/coding tool by name. Returns the result string.
 
@@ -16552,19 +16595,33 @@ class _DocToolExecutor:
         before they get here (_split_multi_read_calls); this covers the
         callers that enter the executor directly (Code Mode).
         """
-        if _bare_tool_name(name) == "read_file":
-            files, err = _read_file_targets(arguments)
-            if err:
-                return json.dumps({"error": err})
-            if files is not None:
-                with _pin_permission_mode(permissions):
-                    return "\n\n".join(
-                        f"=== {p} ===\n" + self._execute_pinned(
-                            name, _read_file_single_args(arguments, p),
-                            permissions)
-                        for p in files)
-        with _pin_permission_mode(permissions):
-            return self._execute_pinned(name, arguments, permissions)
+        # A client-owned ToolContext, when given, is the authority for
+        # this call's per-session state: set it active for the duration
+        # and register it as the session's context so later direct reads
+        # (_turn_seqs_for, the round-loop drain) find the same object.
+        _ctx_token = None
+        if tool_context is not None:
+            _sid = getattr(permissions, "task_session_id", "") or ""
+            if _sid:
+                self._tool_contexts[_sid] = tool_context
+            _ctx_token = _tool_context._ACTIVE_TOOL_CONTEXT.set(tool_context)
+        try:
+            if _bare_tool_name(name) == "read_file":
+                files, err = _read_file_targets(arguments)
+                if err:
+                    return json.dumps({"error": err})
+                if files is not None:
+                    with _pin_permission_mode(permissions):
+                        return "\n\n".join(
+                            f"=== {p} ===\n" + self._execute_pinned(
+                                name, _read_file_single_args(arguments, p),
+                                permissions)
+                            for p in files)
+            with _pin_permission_mode(permissions):
+                return self._execute_pinned(name, arguments, permissions)
+        finally:
+            if _ctx_token is not None:
+                _tool_context._ACTIVE_TOOL_CONTEXT.reset(_ctx_token)
 
     def _execute_pinned(
         self,
@@ -19047,9 +19104,13 @@ class _DocToolExecutor:
                 getattr(perms, "task_session_id", "") or "",
                 tool=tool, path=str(path), pre_bytes=pre_bytes)
             if rec is not None:
-                if not hasattr(self, "_turn_change_seqs"):
-                    self._turn_change_seqs = []
-                self._turn_change_seqs.append(rec["seq"])
+                # Route to THIS session's context so the seq lands in
+                # the same undo window turn_seqs_for reads. The property
+                # would hit the process-wide default; perms names the
+                # owning session.
+                self._active_ctx(
+                    getattr(perms, "task_session_id", "") or ""
+                )._turn_change_seqs.append(rec["seq"])
         except Exception:
             pass
 
@@ -19074,9 +19135,11 @@ class _DocToolExecutor:
             return json.dumps({"error": f"cannot load image: {exc}"})
         # A tool result can only carry text, so stash the loaded image; the
         # stream loop injects it as visual content for the NEXT model round.
-        pend = getattr(self, "_pending_view_images", None)
+        _vctx = self._active_ctx(
+            getattr(perms, "task_session_id", "") or "")
+        pend = _vctx._pending_view_images
         if pend is None:
-            pend = self._pending_view_images = []
+            pend = _vctx._pending_view_images = []
         pend.append(img)
         return json.dumps({
             "status": "ok",
@@ -28425,7 +28488,11 @@ class _DocToolExecutor:
         hits = _hs.history_search(
             sid,
             str(arguments.get("query", "") or ""),
-            messages=getattr(self, "live_messages", None),
+            # This session's conversation. The bare attribute routes to the
+            # active context, so it is right inside the round loop and the
+            # PROCESS DEFAULT for a caller that enters the executor
+            # directly; sid is known here, so ask for it by session.
+            messages=self._active_ctx(sid).live_messages,
             max_results=_as_int(arguments.get("max_results"), 8),
         )
         return json.dumps(hits, indent=2, ensure_ascii=False)
@@ -28443,7 +28510,7 @@ class _DocToolExecutor:
         rec = _hs.history_get(
             sid,
             str(arguments.get("ref", "") or ""),
-            messages=getattr(self, "live_messages", None),
+            messages=self._active_ctx(sid).live_messages,
             max_chars=_as_int(arguments.get("max_chars"), 4000),
         )
         return json.dumps(rec, indent=2, ensure_ascii=False)
@@ -32081,6 +32148,10 @@ class OpenAIClient(_BaseClient):
         self._sdk_kwargs = dict(kwargs)
         # KIT-Toolbox coding-agent permissions (None disables write/edit/bash).
         self._permissions: Optional[KitToolPermissions] = permissions
+        # This session's per-turn tool-executor state (undo window, pending
+        # view images, live history-search messages), owned by the client and
+        # passed to execute() see tool_context.py. One per session.
+        self._tool_context = _tool_context.ToolContext()
         # Mid-loop steering inbox: the dashboard pushes a user message here WHILE
         # the tool loop is running; stream_message drains it between rounds and
         # injects it so the model reacts within the SAME turn (no need to wait
@@ -33226,9 +33297,11 @@ class OpenAIClient(_BaseClient):
         # can tell grounded statements from invented ones. The session half
         # is bound to its owner — see _begin_observed_ledgers.
         _begin_observed_ledgers(self)
-        # Undo journal: new turn — reset the turn-scope seq window so
-        # undo_changes(scope="turn") only covers this turn's changes.
-        _doc_executor._turn_change_seqs = []
+        # Undo journal: new turn — reset this session's turn-scope seq
+        # window so undo_changes(scope="turn") only covers this turn's
+        # changes. Each session owns its own context, so this never
+        # touches a sibling session's window.
+        _tool_context.for_client(self).begin_turn()
         # A new turn: what was latched "for this turn" (a timed-out
         # command, an approval nobody answered) is open again.
         if getattr(self, "_permissions", None) is not None:
@@ -34696,7 +34769,7 @@ class OpenAIClient(_BaseClient):
                             # so history_search/history_get resolve live:<i>
                             # refs against the caller's messages even when a
                             # nested subagent stream ran in between.
-                            _doc_executor.live_messages = messages
+                            _tool_context.for_client(self).live_messages = messages
                             # A file the model already has, unchanged and
                             # still in this request: say so instead of
                             # sending it again (reread.py).
@@ -34710,7 +34783,8 @@ class OpenAIClient(_BaseClient):
                             else:
                                 result = _doc_executor.execute(
                                     fn_name, fn_args,
-                                    permissions=self._permissions)
+                                    permissions=self._permissions,
+                                    tool_context=_tool_context.for_client(self))
                         except Exception as exc:
                             result = json.dumps({
                                 "error": f"tool '{fn_name}' failed: {exc}"
@@ -34998,9 +35072,9 @@ class OpenAIClient(_BaseClient):
                 # view_image: a tool result is text-only, so the handler stashed
                 # any image the agent opened. Inject it now as visual content
                 # for the NEXT round so a vision-capable model actually SEES it.
-                _pending_imgs = getattr(_doc_executor, "_pending_view_images", None)
+                _pending_imgs = _tool_context.for_client(
+                    self).take_pending_images()
                 if _pending_imgs:
-                    _doc_executor._pending_view_images = []
                     try:
                         from .image_input import model_supports_vision as _msv
                         if _msv(self.model, _caps):

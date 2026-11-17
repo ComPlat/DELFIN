@@ -395,3 +395,42 @@ def test_real_client_two_sessions_keep_their_own_turn_windows(
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_two_sessions_a_history_search_reads_its_own_conversation(
+        tmp_path, _pristine_executor):
+    """The fourth moved field, which the two files above did not assert.
+
+    ``history_search`` / ``history_get`` resolve against the conversation
+    the session's client bound. Inside the round loop the bare attribute
+    is right, because the client's own context is the active one. A caller
+    that enters the executor directly has no active context, so the bare
+    attribute read the PROCESS-WIDE default: session A would have searched
+    whatever was bound last, which is the sharing this step removes. The
+    session id is known at both call sites, so they ask by session.
+    """
+    ex = A._doc_executor
+    pa = _perms(tmp_path, "sess-A")
+    ex._ctx_for("sess-A").live_messages = [
+        {"role": "user", "content": "alpha marker"}]
+    ex._ctx_for("sess-B").live_messages = [
+        {"role": "user", "content": "beta marker"}]
+    # Bound last, and what the default context holds: B's conversation.
+    ex.live_messages = [{"role": "user", "content": "beta marker"}]
+
+    seen = {}
+
+    def _fake_search(sid, query, messages=None, max_results=8):
+        seen["messages"] = messages
+        return {"hits": []}
+
+    import delfin.agent.history_search as _hs
+    import pytest as _pytest
+    mp = _pytest.MonkeyPatch()
+    try:
+        mp.setattr(_hs, "history_search", _fake_search)
+        ex._execute_history_search({"query": "marker"}, pa)
+    finally:
+        mp.undo()
+    texts = [m.get("content") for m in (seen.get("messages") or [])]
+    assert texts == ["alpha marker"], texts

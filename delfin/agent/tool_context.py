@@ -141,3 +141,23 @@ class ToolContext:
         imgs = self._pending_view_images
         self._pending_view_images = []
         return list(imgs)
+
+
+def for_client(client) -> "ToolContext":
+    """The client's own context, created on first use.
+
+    A client built without ``__init__`` raises ``AttributeError`` in the
+    round loop otherwise. That is not a corner case here: 31 test files
+    build one with ``OpenAIClient.__new__`` and set only the attributes
+    they need, and any subclass that skips ``__init__`` behaves the same.
+    Creating it on demand keeps the per-session state exactly as it is for
+    a client that was built normally.
+    """
+    ctx = getattr(client, "_tool_context", None)
+    if ctx is None:
+        ctx = ToolContext()
+        try:
+            client._tool_context = ctx
+        except Exception:      # a client that refuses attributes
+            pass
+    return ctx
