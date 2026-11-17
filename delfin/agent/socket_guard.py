@@ -56,9 +56,15 @@ _ARCHES = {
 }
 
 #: machine: (bind, sendto, sendmsg, sendmmsg)
+# From the kernel headers (operator live-run #3, recvfrom(45) was
+# refused and sendmmsg missed with the old rows): x86_64
+# asm/unistd_64.h -- bind 49, sendto 44, sendmsg 46, sendmmsg 307;
+# aarch64 asm-generic -- bind 200, sendto 206, sendmsg 211, sendmmsg
+# 269. Guarded by tests/test_sx2_syscall_numbers.py (header table +
+# name mapping), never hand-copied again.
 _ARCH_DGRAM = {
-    "x86_64": (49, 44, 45, 46),
-    "aarch64": (200, 205, 211, 212),
+    "x86_64": (49, 44, 46, 307),
+    "aarch64": (200, 206, 211, 269),
 }
 
 

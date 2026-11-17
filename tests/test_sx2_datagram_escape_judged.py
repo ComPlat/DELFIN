@@ -49,8 +49,8 @@ def test_arch_reports_socket_and_bind():
     for machine, entry in SG._ARCHES.items():
         assert entry[3] == {"x86_64": 41, "aarch64": 198}[machine], entry
         d = SG._ARCH_DGRAM[machine]
-        assert d == {"x86_64": (49, 44, 45, 46),
-                     "aarch64": (200, 205, 211, 212)}[machine], (entry, d)
+        assert d == {"x86_64": (49, 44, 46, 307),
+                     "aarch64": (200, 206, 211, 269)}[machine], (entry, d)
 
 
 # -- finding 2: no dead bind branch ------------------------------------------
