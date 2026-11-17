@@ -29820,6 +29820,11 @@ def _scrubbed_bash_env() -> dict:
         _scratch = _session_scratch_dir()
         for _t in ("TMPDIR", "TMP", "TEMP"):
             env[_t] = _scratch
+        # Named export for code inside the cage that must find the
+        # session scratch without guessing it from TMPDIR (a cage layer
+        # may remap TMPDIR): DELFIN's ORCA scratch choice keys on this
+        # together with DELFIN_AGENT_SESSION (orca._ensure_orca_scratch_dir).
+        env["DELFIN_SESSION_SCRATCH"] = _scratch
     except Exception:
         pass
     # Every process an agent session starts says so: `delfin-agent
