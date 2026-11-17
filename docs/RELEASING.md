@@ -50,8 +50,33 @@ sha256sum -c SHA256SUMS.txt     # from the GitHub release
 `gh attestation verify` checks that the file was built by
 `release.yml` in ComPlat/DELFIN, from which commit and ref; with
 `--predicate-type https://cyclonedx.org/bom` it checks the SBOM attested
-for that file instead. PyPI shows the PEP 740 provenance on each file's
-page. The SBOM lists the dependency versions a plain install resolved on
+for that file instead.
+
+PyPI's own copy of the provenance is asked for like this:
+
+```sh
+# the Simple API carries it; one provenance URL per file
+curl -s -H 'Accept: application/vnd.pypi.simple.v1+json' \
+    https://pypi.org/simple/delfin-complat/ \
+    | jq '.files[] | select(.filename | test("1\\.4\\.0")) | {filename, provenance}'
+
+# the document itself, and who PyPI recorded as the publisher
+curl -s https://pypi.org/integrity/delfin-complat/1.4.0/\
+delfin_complat-1.4.0-py3-none-any.whl/provenance \
+    | jq '.attestation_bundles[].publisher'
+# -> {"environment": "pypi", "kind": "GitHub",
+#     "repository": "ComPlat/DELFIN", "workflow": "release.yml"}
+```
+
+**Do not ask the legacy JSON API** (`https://pypi.org/pypi/<name>/<version>/json`)
+for this. It was never extended for PEP 740: it has no `provenance` key and
+no `uploaded_via_trusted_publisher` key, so a reader gets `null` for an
+absent field and concludes the provenance is missing. That happened in the
+1.4.0 release and cost an investigation; the provenance was there all
+along. `uploaded_via_trusted_publisher` is in no public PyPI API at all —
+it exists only behind the web page — so it can never answer whether an
+upload used Trusted Publishing. The publisher block above is the one
+machine-readable place that does. The SBOM lists the dependency versions a plain install resolved on
 the release day; a later install can resolve newer ones inside the
 ranges of `pyproject.toml`.
 
