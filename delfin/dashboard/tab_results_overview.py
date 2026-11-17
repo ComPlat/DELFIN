@@ -685,23 +685,29 @@ class ResultsOverviewPanel:
             return name
 
         for row in self._table["rows"]:
-            lines.append(self._tex_escape(row["label"]))
+            lines.append(r"\begin{center}\textbf{"
+                         + self._tex_escape(row["label"]) + r"}\end{center}")
             lines.append(r"\par\bigskip")
             smiles = get_smiles(row["path"])
+            blocks_2d = []
             if want_2d and smiles:
                 png = smiles_png_bytes(smiles)
                 if png:
-                    path = _add_image(png)
-                    lines.append(
-                        rf"\includegraphics[width=0.5\textwidth]{{{path}}}")
-                    lines.append(r"\par\bigskip")
+                    blocks_2d.append(
+                        rf"\includegraphics[width=0.25\textwidth]"
+                        rf"{{{_add_image(png)}}}")
             if want_3d:
                 png = initial_xyz_png_bytes(row["path"])
                 if png:
-                    path = _add_image(png)
-                    lines.append(
-                        rf"\includegraphics[width=0.5\textwidth]{{{path}}}")
-                    lines.append(r"\par\bigskip")
+                    blocks_2d.append(
+                        rf"\includegraphics[width=0.25\textwidth]"
+                        rf"{{{_add_image(png)}}}")
+            if blocks_2d:
+                # 2D and 3D side by side (was: stacked).
+                lines.append(r"\begin{center}")
+                lines.append(r"\hfill".join(blocks_2d))
+                lines.append(r"\end{center}")
+                lines.append(r"\par\bigskip")
             rel_only = [
                 p for p in list_rss_pngs(row["path"])
                 if p["rel"].endswith("scan_relative.png")
@@ -780,11 +786,12 @@ class ResultsOverviewPanel:
                     pdf = None
         except Exception:  # noqa: BLE001 - pdflatex optional
             pdf = None
+        # The .tex source is always delivered alongside the PDF so the
+        # document can be edited or re-compiled elsewhere (user request).
+        self._export_bytes("results_overview.tex", tex.encode("utf-8"),
+                           "application/x-tex")
         if pdf:
             self._export_bytes("results_overview.pdf", pdf, "application/pdf")
-        else:
-            self._export_bytes("results_overview.tex", tex.encode("utf-8"),
-                               "application/x-tex")
         self._latex_source = tex
 
     def _render(self) -> None:
