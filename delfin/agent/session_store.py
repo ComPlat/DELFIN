@@ -841,19 +841,36 @@ def _render_chain_offer(session_id: str, workspace: str | Path | None = None) ->
         if not unfinished:
             continue
         lines.append(f"  chain '{chain.name}' — work dir: {wd}")
+        still_running = False
         for s in unfinished:
             line = f"    step '{s.name}' ({s.tool}): {s.state}"
+            # JC3: say whether the step's process still runs.  Live run 4
+            # of JC2: the restarted agent read an interrupted ORCA run's
+            # temporary files as "actively running".
+            from delfin.tools import chain_liveness
+
+            alive, why = chain_liveness.runner_liveness(s)
+            if why:
+                line += f" — {why}"
+            still_running = still_running or alive == chain_liveness.RUNNING
             if s.error:
                 line += f" — {s.error}"
             lines.append(line)
-        lines.append(
-            f"    resume with: delfin chain resume {wd}  (NOT resumed "
-            "automatically — ask the user first)")
+        if still_running:
+            lines.append(
+                "    still running — do NOT resume it while it runs; "
+                "check again later")
+        else:
+            lines.append(
+                f"    resume with: delfin chain resume {wd}  (NOT resumed "
+                "automatically — ask the user first)")
     if not lines:
         return None
     return (
         "[unfinished chains] This session started calculation chains "
-        "that are not finished:"
+        "that are not finished (files an interrupted step left behind, "
+        "such as ORCA temporary files or a partial output, do not mean "
+        "it is still running — the lines below say whether it is):"
         "\n" + "\n".join(lines)
     )
 

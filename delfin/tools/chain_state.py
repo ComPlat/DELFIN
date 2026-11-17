@@ -90,6 +90,13 @@ class ChainStep:
     #: from the recorded cores, an explicit --cores flag wins).
     cores: Optional[int] = None
     attempts: List[Dict[str, Any]] = field(default_factory=list)
+    #: The process that runs the step, recorded at submission: pid, its
+    #: start fingerprint, host, PID namespace and heartbeat file
+    #: (chain_liveness.this_runner).
+    #: Lets a later reader tell "still running" from "interrupted" — files
+    #: an interrupted ORCA run left behind look like a live one (JC3,
+    #: read by :mod:`delfin.tools.chain_liveness`).
+    runner: Optional[Dict[str, Any]] = None
 
     # -- transitions -------------------------------------------------------
 
@@ -101,10 +108,12 @@ class ChainStep:
             )
 
     def mark_submitted(self, job_id: str, inputs_hash: Optional[str] = None,
-                       attempt_no: Optional[int] = None) -> None:
+                       attempt_no: Optional[int] = None,
+                       runner: Optional[Dict[str, Any]] = None) -> None:
         self._require("pending", "mark_submitted")
         self.state = "submitted"
         self.job_id = job_id
+        self.runner = dict(runner) if runner else None
         # The attempt number comes from whoever owns the attempt lifecycle:
         # a fresh step counts up on its first submission (attempt 1); a
         # retry's number was already advanced by reset_for_retry (L5/L6 —
@@ -186,6 +195,7 @@ class ChainStep:
         self.attempt += 1
         self.state = "pending"
         self.job_id = None
+        self.runner = None
         self.error = None
         self.error_kind = None
         self.evidence = None
@@ -210,6 +220,7 @@ class ChainStep:
             "explicit_params": list(self.explicit_params),
             "cores": self.cores,
             "attempts": list(self.attempts),
+            "runner": dict(self.runner) if self.runner else None,
         }
 
     @classmethod
@@ -233,6 +244,8 @@ class ChainStep:
             explicit_params=list(data.get("explicit_params", [])),
             cores=data.get("cores"),
             attempts=list(data.get("attempts", [])),
+            runner=(dict(data["runner"])
+                    if isinstance(data.get("runner"), dict) else None),
         )
 
 
