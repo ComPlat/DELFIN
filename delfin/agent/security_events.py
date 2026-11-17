@@ -354,6 +354,24 @@ def record(kind: str, tool: str, detail: str, *, blocked: bool = True) -> None:
         pass
 
 
+def _record_security_event(kind: str, tool: str, detail: str,
+                           *, blocked: bool = True) -> None:
+    """Surface a containment decision to the visible security-event panel.
+    Lazy + best-effort: never affects the gate's behaviour. Also counted
+    as the channel ``security:<kind>`` (channels.py), so a benchmark
+    attempt records which gate decisions it reached.
+
+    Moved here (was api_client._record_security_event) next to the labels
+    and ``record`` it calls; api_client re-exports it, so callers that
+    import it from there still get this same object."""
+    try:
+        from . import channels as _channels
+        _channels.fire(f"security:{kind}")
+    except Exception:
+        pass
+    record(kind, tool, detail, blocked=blocked)
+
+
 def recent(limit: int = 20) -> list[SecurityEvent]:
     with _LOCK:
         evs = list(_EVENTS)

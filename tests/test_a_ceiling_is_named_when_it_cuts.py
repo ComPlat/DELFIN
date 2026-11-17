@@ -26,6 +26,18 @@ import pytest
 from delfin.agent.api_client import KitToolPermissions
 
 
+@pytest.fixture(autouse=True)
+def _ended_at_the_timeout(monkeypatch):
+    """Since BG2 a command that reaches its timeout is moved to the
+    background rather than ended; the message tested here is the one a
+    command still ended at the timeout gets (git push, PR publishing, a
+    workspace overlay, a login-node calculation). The login-node
+    calculation exception stands in for all of them."""
+    import delfin.agent.api_client as A
+    monkeypatch.setattr(A, "_calculation_needs_foreground",
+                        lambda *a, **k: True)
+
+
 @pytest.fixture()
 def perms(tmp_path):
     p = KitToolPermissions(workspace=tmp_path)
