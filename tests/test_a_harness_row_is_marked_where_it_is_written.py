@@ -442,9 +442,13 @@ def test_the_dashboard_marks_the_turns_it_starts_on_its_own():
 
 def test_the_dashboard_marks_the_rows_it_appends_itself():
     src = _tab_source()
-    for name in ("feedback", "_cfeedback", "_vfeedback", "_qfeedback"):
+    # _cfeedback is no longer written by the tab: the engine's grounding
+    # guard appends the code-citation correction row (also marked _harness)
+    # via stream_response, so the tab only appends keyword/quantity feedback.
+    for name in ("feedback", "_vfeedback", "_qfeedback"):
         assert ('{"role": "user", "content": %s, "_harness": True}' % name
                 in src), name
+    assert "_cfeedback" not in src
 
 
 def test_the_dashboard_marks_mail_and_an_on_its_own_steer():
