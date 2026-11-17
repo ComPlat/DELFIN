@@ -120,6 +120,12 @@ CO2 Coordination:
 co2_coordination=off
 co2_species_delta=0
 ------------------------------------------------------
+Proton Coordination (HER competition; donors: tfe|bih|phenol|hoac|h3o):
+----------
+proton_coordination=off
+proton_donor=tfe,phenol,bih,h3o
+proton_species_delta=0
+------------------------------------------------------
 calc_prop_of_interest=no
 properties_of_interest=IP,EA
 reorganisation_energy=lambda_p,lambda_m

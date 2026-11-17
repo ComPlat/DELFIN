@@ -2369,6 +2369,12 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("approximate_spin_projection_APMethod", _as_ap_method, default=2),
     FieldSpec("co2_coordination", _as_on_off, default="off"),
     FieldSpec("co2_species_delta", _as_int, default=0),
+    FieldSpec("proton_coordination", _as_on_off, default="off",
+              help="Run the proton coordinator (HER competition study) after the main run. Mirrors co2_coordination."),
+    FieldSpec("proton_donor", _as_str, default="tfe",
+              help="Comma-separated proton donors: tfe | bih | phenol | hoac | h3o. Each gets its own <Donor>_coordinator/ folder."),
+    FieldSpec("proton_species_delta", _as_int, default=0,
+              help="Which redox species the proton coordinator starts from (same convention as co2_species_delta)."),
     FieldSpec("ESD_modus", _as_esd_modus, default="tddft"),
     FieldSpec("ESD_T1_opt", _as_esd_t1_opt, default="uks"),
     # TD-DFT: every %tddft block DELFIN writes reads these through

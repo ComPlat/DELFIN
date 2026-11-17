@@ -4944,6 +4944,37 @@ _DELFIN_FEATURES: dict[str, dict] = {
             "delfin/define.py (co2_coordination=off, co2_species_delta=0)",
         ],
     },
+    "proton": {
+        "category": "workflow",
+        "summary": (
+            "Proton Coordinator: HER competition study at a metal catalyst, "
+            "analogue of the CO2 Coordinator. A proton donor MOLECULE (never "
+            "a bare proton) is placed next to the metal with its donor H "
+            "pointing at it; an orientation scan at fixed M...H distance "
+            "selects the best rotation, then a relaxed M...H distance scan "
+            "maps the proton/hydrogen-transfer path. Donors: TFE, BIH (HAT "
+            "-> BI radical), phenol (HAT -> PhO radical), HOAc, H3O(H2O)3; "
+            "protic donors transfer H+ (conjugate base products), HAT "
+            "donors transfer H-atom (radical products, open shell). "
+            "`proton_coordination` (default off) switches it; "
+            "`proton_donor` (comma list) selects donors -- each gets its "
+            "own <Donor>_coordinator/ folder (H3O+_coordinator, "
+            "TFE_coordinator, ...); `proton_species_delta` selects the "
+            "redox species like co2_species_delta. Entries: `delfin proton` "
+            "(standalone; --define writes a CONTROL template) and the "
+            "recalc cascade via _run_proton_recalc_if_enabled."
+        ),
+        "see_also": [
+            "delfin/proton/proton_coordinator.py (DONOR_TEMPLATES, "
+            "orient_donor_toward_metal, orientation_scan, "
+            "relaxed_distance_scan, plot_scan_result)",
+            "delfin/proton/chain_setup.py (bookkeeping, "
+            "prepare_proton_coordination, resolve_species_spin)",
+            "delfin/cli.py (_run_proton_recalc_if_enabled, "
+            "_run_proton_subcommand)",
+            "delfin/co2/CO2_Coordinator6.py (the architecture this mirrors)",
+        ],
+    },
     "tadf_xtb": {
         "category": "workflow",
         "summary": (

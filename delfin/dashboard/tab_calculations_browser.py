@@ -8553,6 +8553,17 @@ def create_tab(ctx):
         if any(marker.exists() for marker in co2_markers):
             return True
 
+        # Proton coordinator: any per-donor folder's scan artifacts count.
+        try:
+            for donor_dir in folder.glob('*_coordinator'):
+                if any((donor_dir / sub / name).exists() for sub, name in (
+                        ('orientation_scan', 'orientation_scan.csv'),
+                        ('relaxed_surface_scan', 'scan.relaxscanact.dat'),
+                        ('relaxed_surface_scan', 'scan.out'))):
+                    return True
+        except Exception:
+            pass
+
         for scan_dir in (
             folder,
             folder / 'builder',

@@ -77,6 +77,11 @@ _CONTROL_KEY_ALIASES: Dict[str, str] = {
     "co2delta": "co2_species_delta",
     "co2coordination": "co2_coordination",
     "co2coordinationonoff": "co2_coordination",
+    "protoncoordination": "proton_coordination",
+    "protoncoordinationonoff": "proton_coordination",
+    "protondonor": "proton_donor",
+    "protonsdelta": "proton_species_delta",
+    "protonspeciesdelta": "proton_species_delta",
     "thermodynamics": "stability_constant",
     "thermodynamicconstant": "stability_constant",
     "thermodynamicsconstant": "stability_constant",
@@ -113,7 +118,8 @@ _CONTROL_KEY_ALIASES: Dict[str, str] = {
     "esdfollowiroot": "TDDFT_followiroot",
     "esdsoc": "TDDFT_SOC",
 }
-_COLON_ASSIGNMENT_KEYS: Set[str] = {"co2_coordination", "co2_species_delta"}
+_COLON_ASSIGNMENT_KEYS: Set[str] = {"co2_coordination", "co2_species_delta",
+                                    "proton_coordination", "proton_species_delta"}
 _STRING_ONLY_KEYS: Set[str] = {"smiles"}
 
 

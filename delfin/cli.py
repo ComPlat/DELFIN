@@ -1574,6 +1574,67 @@ def _run_co2_recalc_if_enabled(config: dict, workspace_root: Path) -> bool:
             os.environ["DELFIN_CO2_RECALC"] = prev_env
 
 
+def _run_proton_recalc_if_enabled(config: dict, workspace_root: Path) -> bool:
+    """Run proton coordinator (per-donor folders) in recalc mode when enabled
+    via CONTROL. Mirrors _run_co2_recalc_if_enabled."""
+    if not _is_enabled_flag(config.get("proton_coordination", "off")):
+        return True
+
+    donor_raw = str(config.get("proton_donor", "tfe"))
+    delta_raw = config.get("proton_species_delta", 0)
+    try:
+        delta = int(delta_raw)
+    except Exception:
+        delta = 0
+
+    try:
+        from delfin.proton.chain_setup import prepare_proton_coordination
+
+        logger.info(
+            "[recalc] Proton coordinator: preparing per-donor folders (donors=%s, delta=%s).",
+            donor_raw, delta,
+        )
+        folders = prepare_proton_coordination(workspace_root, species_delta=delta,
+                                              donor=donor_raw)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[recalc] Failed to prepare proton coordinator workspace: %s", exc,
+                     exc_info=True)
+        return False
+
+    prev_cwd = Path.cwd()
+    prev_env = os.environ.get("DELFIN_PROTON_RECALC")
+    os.environ["DELFIN_PROTON_RECALC"] = "1"
+    try:
+        from delfin.proton.proton_coordinator import main as proton_main
+
+        for folder in folders:
+            logger.info("[recalc] Starting proton coordinator recalc in %s", folder)
+            os.chdir(folder)
+            proton_main(control_path=str(folder / "CONTROL.txt"))
+        logger.info("[recalc] Proton coordinator recalc finished")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[recalc] Proton coordinator recalc failed: %s", exc, exc_info=True)
+        return False
+    finally:
+        os.chdir(prev_cwd)
+        if prev_env is None:
+            os.environ.pop("DELFIN_PROTON_RECALC", None)
+        else:
+            os.environ["DELFIN_PROTON_RECALC"] = prev_env
+
+
+def _run_proton_subcommand(arg_list: list[str]) -> int:
+    """Standalone `delfin proton` entry: --define writes a CONTROL template."""
+    if arg_list and arg_list[0] == "--define":
+        from delfin.proton.chain_setup import write_default_control
+        force = "--force" in arg_list[1:]
+        write_default_control(overwrite=force)
+        return 0
+    from delfin.proton.proton_coordinator import main as proton_main
+    return proton_main()
+
+
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1612,6 +1673,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_stop_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "co2":
         return _run_co2_subcommand(arg_list[1:])
+    if arg_list and arg_list[0] == "proton":
+        return _run_proton_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "run_orca":
         return _run_run_orca_subcommand(arg_list[1:])
     # ---- Parse flags first; --help/--version handled by argparse automatically ----
@@ -2287,6 +2350,9 @@ def main(argv: list[str] | None = None) -> int:
             logger.warning("Failed to generate DELFIN.docx: %s", exc, exc_info=True)
 
         if RECALC_MODE and not _run_co2_recalc_if_enabled(config, workspace_root):
+            return _finalize(1)
+
+        if RECALC_MODE and not _run_proton_recalc_if_enabled(config, workspace_root):
             return _finalize(1)
 
         # A classic recalc keeps finished jobs whatever CONTROL says, so they
