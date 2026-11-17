@@ -127,3 +127,24 @@ def test_masks_have_no_try_form():
             "--ro-bind-try", "--bind-try")
     assert "--tmpfs-try" not in CB.BIND_FLAGS
     assert CB.MASK_FLAGS == ("--tmpfs",)
+
+
+def test_try_bind_missing_source_is_not_created(home):
+    # s4 F1: bwrap's contract for a -try bind is SKIP when the source is
+    # missing. Creating that source would turn the skip into a bind of a
+    # fresh empty dir; the destination is still ensured.
+    src = home / "state" / "missing_src"
+    dst = home / "state" / "dst"
+    argv = ["bwrap", "--ro-bind-try", str(src), str(dst), "x"]
+    CB.ensure_argv_bind_targets(argv)
+    assert not src.exists()      # the skip semantics for src are kept
+    assert dst.is_dir()          # the target side is still made to exist
+
+
+def test_plain_bind_missing_source_is_created(home):
+    # Contrast (the DELFIN form, src==dst): a plain bind with a missing
+    # source gets it created -- bwrap would refuse, not skip.
+    src = home / "state" / "missing_plain"
+    argv = ["bwrap", "--ro-bind", str(src), str(src), "x"]
+    CB.ensure_argv_bind_targets(argv)
+    assert src.is_dir()

@@ -116,6 +116,13 @@ def _ensure_flag_target(argv: list[str], i: int, flag: str) -> None:
     rest = argv[i + 1:]
     if not rest:
         return
+    # A "-try" bind whose source is missing is SKIPPED by bwrap -- that is
+    # its contract. Creating such a source would turn the skip into a bind
+    # of a freshly created empty dir, so for -try flags only the
+    # DESTINATION is ensured (the skip semantics for the source are kept).
+    # DELFIN's builders also bind paths at themselves (src==dst), so for
+    # them the two operands are the same path and no content is affected.
+    try_flag = flag.endswith("-try")
     if flag == "--tmpfs":
         if os.path.isabs(rest[0]):
             _mkdir_parents(rest[0], _owner_mode(rest[0]))
@@ -126,9 +133,11 @@ def _ensure_flag_target(argv: list[str], i: int, flag: str) -> None:
         # A file-type mask (--ro-bind /dev/null <file>): the destination
         # must be a regular file too, or bwrap refuses the type mismatch.
         _ensure_file(dst)
-        _mkdir_parents(src, _owner_mode(src))
+        if not try_flag:
+            _mkdir_parents(src, _owner_mode(src))
         return
-    for t in (a for a in rest[:2] if os.path.isabs(a)):
+    targets = rest[1:] if try_flag else rest[:2]
+    for t in (a for a in targets if os.path.isabs(a)):
         if not _mkdir_parents(t, _owner_mode(t)):
             # Not createable (no permission, rofs): leave it to bwrap's
             # own refusal -- never degrade the mount to a -try form.
@@ -153,7 +162,11 @@ def _ensure_file(path: str) -> bool:
         if p.is_file():
             return True
         if p.is_dir():
-            return True  # a dir over a file mask still hides: tmpfs-like
+            # A directory at a file-mask destination: creating a file over
+            # it is not possible, so leave it to bwrap's diagnosable
+            # refusal (a file-over-dir bind is refused) -- nothing is
+            # silently weakened.
+            return True
         p.parent.mkdir(parents=True, exist_ok=True)
         p.touch(exist_ok=True)
         os.chmod(p, _owner_mode(str(p.parent)))
