@@ -233,14 +233,13 @@ _XYZ_COLORS = {
 _XYZ_COLOR_DEFAULT = "#d0a070"  # muted metal tone
 
 
-def initial_xyz_png_bytes(calc_dir: str, size: int = 320):
-    """3D ball-and-stick view of ``initial.xyz`` (PNG bytes), or None.
+def _parse_xyz(calc_dir: str):
+    """Read initial.xyz -> [(symbol, x, y, z), ...] or None.
 
-    The structure is rotated onto its principal inertia axes so the largest
-    cross-section faces the camera (most atoms visible), then depth-sorted
-    and drawn with matplotlib (Agg): bonds first, atoms as filled circles
-    with white rims.  Returns None when no readable initial.xyz exists or
-    numpy/matplotlib are unavailable.  It never runs a program.
+    Line 0 is a free-text title; line 1 the atom count (standard XYZ).
+    ORCA's initial.xyz variant instead starts coordinates at line 1 with
+    the count in the title line 0, so parse robustly: take any line whose
+    first token is a symbol and next three fields are numbers.
     """
     xyz = os.path.join(calc_dir, "initial.xyz")
     try:
@@ -248,10 +247,6 @@ def initial_xyz_png_bytes(calc_dir: str, size: int = 320):
             lines = fh.readlines()
     except OSError:
         return None
-    # Line 0 is a free-text title; line 1 the atom count (standard XYZ).
-    # ORCA's initial.xyz variant instead starts coordinates at line 1 with
-    # the count in the title line 0, so parse robustly: take any line whose
-    # first token is a symbol and next three fields are numbers.
     atoms = []
     for line in lines[1:]:
         parts = line.split()
@@ -264,64 +259,123 @@ def initial_xyz_png_bytes(calc_dir: str, size: int = 320):
                 pass
         if atoms:
             break  # coordinate block ended
+    return atoms or None
+
+
+_XYZ_MASS = {
+    "H": 1.008, "He": 4.003, "Li": 6.94, "Be": 9.012, "B": 10.81,
+    "C": 12.011, "N": 14.007, "O": 15.999, "F": 18.998, "Ne": 20.18,
+    "Na": 22.99, "Mg": 24.305, "Al": 26.982, "Si": 28.085,
+    "P": 30.974, "S": 32.06, "Cl": 35.45, "K": 39.098, "Ca": 40.078,
+    "Ti": 47.867, "V": 50.942, "Cr": 51.996, "Mn": 54.938,
+    "Fe": 55.845, "Co": 58.933, "Ni": 58.693, "Cu": 63.546,
+    "Zn": 65.38, "Br": 79.904, "I": 126.904,
+}
+
+
+def _detect_bonds(sym, cov, pts):
+    """Bond pairs (i, j) with d <= BOND_FACTOR * (cov_i + cov_j).
+
+    A fixed cutoff joined everything within ~2.4 A and drew far too
+    many bonds; per-element radii keep H-H and ring gaps unbound.
+    """
+    import numpy
+    cov = numpy.asarray(cov, dtype=float)
+    n = len(sym)
+    bonds = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            d = pts[i] - pts[j]
+            if float(d @ d) <= (BOND_FACTOR * (cov[i] + cov[j])) ** 2:
+                bonds.append((i, j))
+    return bonds
+
+
+def initial_xyz_png_bytes(calc_dir: str, size: int = 320):
+    """3D ball-and-stick view of ``initial.xyz`` (PNG bytes), or None.
+
+    The structure is rotated onto its principal inertia axes so the largest
+    cross-section faces the camera (most atoms visible), then depth-sorted
+    and drawn with matplotlib (Agg): bonds first, atoms as filled circles
+    with white rims.  Returns None when no readable initial.xyz exists or
+    numpy/matplotlib are unavailable.  It never runs a program.
+    """
+    atoms = _parse_xyz(calc_dir)
     if not atoms:
         return None
     try:
         import numpy
         import matplotlib
         matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        import matplotlib.patches as mpatches
     except ImportError:
         return None
 
-    # Rotate onto principal inertia axes (mass-weighted).  Masses: use a
-    # small built-in table; unknown elements default to carbon.
-    _MASS = {
-        "H": 1.008, "He": 4.003, "Li": 6.94, "Be": 9.012, "B": 10.81,
-        "C": 12.011, "N": 14.007, "O": 15.999, "F": 18.998, "Ne": 20.18,
-        "Na": 22.99, "Mg": 24.305, "Al": 26.982, "Si": 28.085,
-        "P": 30.974, "S": 32.06, "Cl": 35.45, "K": 39.098, "Ca": 40.078,
-        "Ti": 47.867, "V": 50.942, "Cr": 51.996, "Mn": 54.938,
-        "Fe": 55.845, "Co": 58.933, "Ni": 58.693, "Cu": 63.546,
-        "Zn": 65.38, "Br": 79.904, "I": 126.904,
-    }
     sym = [a[0] for a in atoms]
     pts = numpy.array([[a[1], a[2], a[3]] for a in atoms])
-    pts -= pts.mean(axis=0)  # geometry centre is enough for orientation
-    weights = numpy.array([_MASS.get(s, 12.011) for s in sym])
-    inertia = (pts * weights[:, None]).T @ pts
     try:
-        _eigvals, eigvecs = numpy.linalg.eigh(inertia)
+        rotated = _rotate_inertia(sym, pts)
     except numpy.linalg.LinAlgError:
         return None
+
+    # Bond detection: covalent radii sum x BOND_FACTOR (Cordero 2008).
+    cov = [_XYZ_COVALENT.get(s, _XYZ_COVALENT_DEFAULT) for s in sym]
+    bonds = _detect_bonds(sym, cov, rotated)
+
+    return _render_ball_stick(sym, rotated, bonds, size)
+
+
+def _rotate_inertia(sym, pts):
+    """Mass-weighted principal inertia rotation: largest cross-section on z.
+
+    The camera looks along z; the SMALLEST extent axis must become z so the
+    largest cross-section faces the viewer.  eigh() sorts ascending, so
+    column 0 (smallest eigenvalue) becomes z.
+    """
+    import numpy
+    pts = numpy.asarray(pts, dtype=float)
+    pts = pts - pts.mean(axis=0)  # geometry centre is enough for orientation
+    weights = numpy.array([_XYZ_MASS.get(s, 12.011) for s in sym])
+    inertia = (pts * weights[:, None]).T @ pts
+    _eigvals, eigvecs = numpy.linalg.eigh(inertia)
     if numpy.linalg.det(eigvecs) < 0:  # keep a right-handed frame
         eigvecs[:, 2] = -eigvecs[:, 2]
     rotated = pts @ eigvecs
-    # The camera looks along z; put the SMALLEST extent axis along z so the
-    # largest cross-section faces the viewer.  eigh() sorts ascending, so
-    # column 0 (smallest eigenvalue = smallest extent) must become z.
-    rotated = rotated[:, [1, 2, 0]]
+    return rotated[:, [1, 2, 0]]
 
-    # Bond detection: covalent radii sum x BOND_FACTOR (Cordero 2008).
-    # A fixed cutoff joined everything within ~2.4 A and drew far too
-    # many bonds; per-element radii keep H-H and ring gaps unbound.
-    radii = numpy.array([_XYZ_RADII.get(s, _XYZ_RADIUS_DEFAULT) for s in sym])
-    cov = numpy.array([_XYZ_COVALENT.get(s, _XYZ_COVALENT_DEFAULT)
-                       for s in sym])
-    extent = max(numpy.ptp(rotated[:, 0]), numpy.ptp(rotated[:, 1]), 1.0)
-    scale = 0.58 * size / extent  # px per Angstrom, molecule fills ~116%
+
+def _detect_bonds(sym, cov, pts):
+    """Bond pairs (i, j) with d <= BOND_FACTOR * (cov_i + cov_j)."""
+    import numpy
+    cov = numpy.asarray(cov, dtype=float)
     n = len(sym)
     bonds = []
     for i in range(n):
         for j in range(i + 1, n):
-            d = rotated[i] - rotated[j]
+            d = pts[i] - pts[j]
             if float(d @ d) <= (BOND_FACTOR * (cov[i] + cov[j])) ** 2:
                 bonds.append((i, j))
+    return bonds
 
-    fig = plt.figure(figsize=(size / 100, size / 100), dpi=100)
-    canvas = plt.get_current_fig_manager().canvas if False else None  # noqa
+
+def _render_ball_stick(sym, rotated, bonds, size, atom_scale=0.8,
+                       bond_lw=1.4):
+    """Draw a depth-sorted ball-and-stick projection (PNG bytes).
+
+    ``atom_scale`` scales the display radii (0.8 = classic filling),
+    ``bond_lw`` the bond line width.  The dashboard 3Dmol viewer style
+    corresponds to small spheres on thick sticks (molecule_viewer.py:
+    sphere scale 0.28 of vdW, bond radius 0.11 A).
+    """
+    import numpy
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
     from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from io import BytesIO
+
+    radii = numpy.array([_XYZ_RADII.get(s, _XYZ_RADIUS_DEFAULT) for s in sym])
+    extent = max(numpy.ptp(rotated[:, 0]), numpy.ptp(rotated[:, 1]), 1.0)
+    scale = 0.58 * size / extent  # px per Angstrom, molecule fills ~116%
+    fig = plt.figure(figsize=(size / 100, size / 100), dpi=100)
     canvas = FigureCanvasAgg(fig)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_axis_off()
@@ -334,12 +388,12 @@ def initial_xyz_png_bytes(calc_dir: str, size: int = 320):
     for i, j in sorted(bonds, key=lambda b: rotated[b[0]][2] + rotated[b[1]][2]):
         ax.plot([rotated[i][0], rotated[j][0]],
                 [rotated[i][1], rotated[j][1]],
-                color="#909090", lw=1.4, zorder=1, solid_capstyle="round")
+                color="#909090", lw=bond_lw, zorder=1, solid_capstyle="round")
 
     # Atoms: near atoms (large z) last, on top.
     for idx in numpy.argsort(rotated[:, 2]):
         x, y = rotated[idx][0], rotated[idx][1]
-        r_px = radii[idx] * scale * 0.8
+        r_px = radii[idx] * scale * atom_scale
         r_data = r_px / size * (2 * half)
         ax.add_patch(mpatches.Circle(
             (x, y), r_data,
@@ -351,6 +405,127 @@ def initial_xyz_png_bytes(calc_dir: str, size: int = 320):
     fig.savefig(buf, format="png", dpi=100)
     plt.close(fig)
     return buf.getvalue()
+
+
+
+def optimize_view_direction(sym, pts3d, bonds, n_samples: int = 500):
+    """Fibonacci-sphere search for the least-overlapping camera direction.
+
+    Samples ~500 directions (Fibonacci sphere) plus the three PCA axes;
+    scores each by projected atom overlap and bond crossings and breaks
+    ties by the larger projected area.  Returns the view unit vector.
+    """
+    import numpy
+    pts3d = numpy.asarray(pts3d, dtype=float)
+    radii = numpy.array([_XYZ_RADII.get(s, _XYZ_RADIUS_DEFAULT)
+                         for s in sym])
+    # Fibonacci sphere directions.
+    i = numpy.arange(n_samples, dtype=float) + 0.5
+    phi = numpy.pi * (3.0 - numpy.sqrt(5.0))
+    z = 1.0 - 2.0 * i / n_samples
+    r = numpy.sqrt(numpy.maximum(0.0, 1.0 - z * z))
+    dirs = numpy.stack([r * numpy.cos(phi * i), r * numpy.sin(phi * i), z],
+                       axis=1)
+    # PCA axes as candidates: the inertia-view (smallest extent on z) and
+    # the two neighbours.
+    pts3d_c = pts3d - pts3d.mean(axis=0)
+    cov = (pts3d_c * 1.0).T @ pts3d_c  # unweighted for extent ordering
+    try:
+        _w, vecs = numpy.linalg.eigh(cov)
+    except numpy.linalg.LinAlgError:
+        vecs = numpy.eye(3)
+    for k in range(3):
+        dirs = numpy.vstack([dirs, vecs[:, k]])
+
+    # Precompute pairwise projected data once per direction; scoring is
+    # vectorized.  Bond-crossing penalty: count segment intersections.
+    def total_score(view):
+        helper = numpy.array([1.0, 0.0, 0.0])
+        if abs(view[0]) > 0.9:
+            helper = numpy.array([0.0, 1.0, 0.0])
+        x = numpy.cross(view, helper)
+        x /= numpy.linalg.norm(x)
+        y = numpy.cross(view, x)
+        px, py = pts3d_c @ x, pts3d_c @ y
+        dx = px[:, None] - px[None, :]
+        dy = py[:, None] - py[None, :]
+        d = numpy.sqrt(dx * dx + dy * dy)
+        iu = numpy.triu_indices(len(sym), 1)
+        sums = 0.8 * (radii[:, None] + radii[None, :])
+        overlap = numpy.maximum(0.0, sums[iu] - d[iu])
+        s = float(overlap.sum())
+        # Crossing bonds in projection: segment intersection test.
+        cross = 0
+        for a, b in bonds:
+            for c, d2 in bonds:
+                if len({a, b} & {c, d2}) == 1:
+                    # 2D segment intersection (cross products).
+                    p0, p1 = (px[a], py[a]), (px[b], py[b])
+                    q0, q1 = (px[c], py[c]), (px[d2], py[d2])
+                    d1 = (p1[0] - p0[0], p1[1] - p0[1])
+                    d2v = (q1[0] - q0[0], q1[1] - q0[1])
+                    denom = d1[0] * d2v[1] - d1[1] * d2v[0]
+                    if abs(denom) < 1e-12:
+                        continue
+                    t = ((q0[0] - p0[0]) * d2v[1]
+                         - (q0[1] - p0[1]) * d2v[0]) / denom
+                    u = ((q0[0] - p0[0]) * d1[1]
+                         - (q0[1] - p0[1]) * d1[0]) / denom
+                    if 0.02 < t < 0.98 and 0.02 < u < 0.98:
+                        cross += 1
+        area = float(numpy.ptp(px) * numpy.ptp(py))
+        return s + 2.0 * cross, area
+
+    best = None
+    for k in range(dirs.shape[0]):
+        sc, area = total_score(dirs[k])
+        if best is None or sc < best[0] or (sc == best[0] and area > best[1]):
+            best = (sc, area, dirs[k])
+    return best[2]
+
+
+def optimized_3d_png_bytes(calc_dir: str, size: int = 320):
+    """Structure view with the camera direction optimized for least overlap,
+
+    drawn in the style of the dashboard 3Dmol viewer: small van-der-Waals
+    spheres (scale 0.28) on thick bonds (0.11 A radius), Jmol palette.
+    ~500 Fibonacci-sphere directions (+ the three PCA axes) are scored for
+    projected atom overlap and bond crossings, the best faces the camera.
+    Returns None on any failure.
+    """
+    atoms = _parse_xyz(calc_dir)
+    if not atoms:
+        return None
+    try:
+        import numpy
+        import matplotlib
+        matplotlib.use("Agg")
+    except ImportError:
+        return None
+    sym = [a[0] for a in atoms]
+    pts = numpy.array([[a[1], a[2], a[3]] for a in atoms])
+    cov = [_XYZ_COVALENT.get(s, _XYZ_COVALENT_DEFAULT) for s in sym]
+    bonds = _detect_bonds(sym, cov, pts)
+    try:
+        view = optimize_view_direction(sym, pts, bonds)
+    except Exception:
+        return None
+    # Rotate onto that view: z-axis along the view vector.
+    z = numpy.asarray(view, dtype=float)
+    z /= numpy.linalg.norm(z)
+    helper = numpy.array([1.0, 0.0, 0.0])
+    if abs(z[0]) > 0.9:
+        helper = numpy.array([0.0, 1.0, 0.0])
+    x = numpy.cross(z, helper)
+    x /= numpy.linalg.norm(x)
+    y = numpy.cross(z, x)
+    pts_c = pts - pts.mean(axis=0)
+    rotated = numpy.stack([pts_c @ x, pts_c @ y, pts_c @ z], axis=1)
+    # Dashboard viewer style: small spheres on thick sticks
+    # (molecule_viewer.py DEFAULT_3DMOL_ATOM_SCALE=0.28,
+    # DEFAULT_3DMOL_BOND_RADIUS=0.11 vs. the classic 0.8/1.4 here).
+    return _render_ball_stick(sym, rotated, bonds, size,
+                              atom_scale=0.35, bond_lw=3.2)
 
 
 def rss_metrics(calc_dir: str) -> Dict[str, Any]:

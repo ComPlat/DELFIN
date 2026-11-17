@@ -409,15 +409,17 @@ def test_initial_xyz_png_orca_variant_format(tmp_path):
 
 # ---- LaTeX export ----------------------------------------------------------
 
-def _latex_panel(table):
+def _latex_panel(table, **toggles):
     from delfin.dashboard.tab_results_overview import ResultsOverviewPanel
     panel = ResultsOverviewPanel.__new__(ResultsOverviewPanel)
     panel._table = table
 
     class CB:
-        value = True
-    panel._show_2d = CB()
-    panel._show_3d = CB()
+        def __init__(self, v):
+            self.value = v
+    panel._show_2d = CB(toggles.get("2d", True))
+    panel._show_3d = CB(toggles.get("3d", True))
+    panel._show_3d_opt = CB(toggles.get("opt", False))
     return panel
 
 
@@ -444,3 +446,99 @@ def test_latex_newpage_between_calculations(tmp_path):
     tex = panel._latex_bytes().decode("utf-8")
     # Between two calc blocks AND before \end{document}: at least 2 breaks.
     assert tex.count("\\newpage") >= 2
+
+
+# ---- structure image method 5 (optimized 3D view, viewer style) ------------
+
+
+def test_optimized_3d_png_renders_valid_png(tmp_path):
+    pytest.importorskip("numpy")
+    pytest.importorskip("matplotlib")
+    calc = tmp_path / "o404"
+    calc.mkdir()
+    (calc / "initial.xyz").write_text(_WATER_XYZ, encoding="utf-8")
+    png = ro.optimized_3d_png_bytes(str(calc))
+    assert png is not None
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    assert len(png) > 500
+
+
+def test_optimized_3d_png_none_without_xyz(tmp_path):
+    assert ro.optimized_3d_png_bytes(str(tmp_path)) is None
+
+
+def test_render_ball_stick_pixel_identical(tmp_path):
+    """Column-3 regression: the refactored renderer is deterministic."""
+    pytest.importorskip("numpy")
+    pytest.importorskip("matplotlib")
+    import hashlib
+    calc = tmp_path / "r405"
+    calc.mkdir()
+    (calc / "initial.xyz").write_text(_WATER_XYZ, encoding="utf-8")
+    a = ro.initial_xyz_png_bytes(str(calc))
+    b = ro.initial_xyz_png_bytes(str(calc))
+    assert a is not None and b is not None
+    assert hashlib.sha256(a).hexdigest() == hashlib.sha256(b).hexdigest()
+
+
+def test_optimize_view_direction_prefers_visible_view():
+    pytest.importorskip("numpy")
+    import numpy
+    # Flat molecule in the xy plane: the best camera looks down z
+    # (all atoms visible, no overlap), not edge-on.
+    pts = numpy.array([[x, y, 0.0] for x, y in
+                       [(0, 0), (1.5, 0), (0, 1.5), (1.5, 1.5)]])
+    view = ro.optimize_view_direction(["C"] * 4, pts, [(0, 1), (1, 3)])
+    assert abs(abs(view[2]) - 1.0) < 0.35  # close to the z axis
+
+
+def test_xlsx_columns_follow_image_toggles(tmp_path, monkeypatch):
+    """All four image checkboxes steer the XLSX column order; metrics keep
+    their own columns (the old overwrite bug)."""
+    ipywidgets = pytest.importorskip("ipywidgets")
+    openpyxl = pytest.importorskip("openpyxl")
+    import _io as _io_mod
+    from delfin.dashboard import tab_results_overview as tab
+
+    calc = make_calc(tmp_path, "411", data=sample_data(), rss=(
+        "4.0 -1.0\n3.5 -0.5\n2.0 -1.2\n"), pngs=("scan_relative.png",))
+    table = ro.build_table([str(calc)], ["rss_delta_kj"])
+
+    class CB:
+        def __init__(self, v):
+            self.value = v
+
+    panel = tab.ResultsOverviewPanel.__new__(tab.ResultsOverviewPanel)
+    panel._table = table
+    panel._show_2d = CB(True)
+    panel._show_3d = CB(True)
+    panel._show_3d_opt = CB(True)
+
+    import types
+    _calls = []
+    monkeypatch.setattr(tab, "smiles_png_bytes", lambda s: b"png")
+    monkeypatch.setattr(tab, "initial_xyz_png_bytes", lambda p: b"png")
+    monkeypatch.setattr(tab, "optimized_3d_png_bytes", lambda p: b"png")
+
+    xlsx = panel._table_bytes_xlsx()
+    wb = openpyxl.load_workbook(_io_mod.BytesIO(xlsx))
+    ws = wb.active
+    hdr = [c.value for c in ws[1]]
+    assert hdr == ["Calculation", "SMILES 2D", "Structure 3D",
+                   "3D view (optimized, viewer style)",
+                   "SMILES", hdr[5], "RSS PNG (relativ)"]
+    # Metric cell sits after the SMILES text column, not overwritten.
+    assert any(isinstance(c.value, (int, float)) for c in ws[2][5:6])
+
+
+def test_latex_contains_all_ticked_images_side_by_side(tmp_path):
+    pytest.importorskip("numpy")
+    pytest.importorskip("matplotlib")
+    calc = make_calc(tmp_path, "412", data=sample_data(), rss=(
+        "4.0 -1.0\n3.5 -0.5\n2.0 -1.2\n"), pngs=("scan_relative.png",))
+    (calc / "initial.xyz").write_text(_WATER_XYZ, encoding="utf-8")
+    table = ro.build_table([str(calc)], ["rss_delta_kj"])
+    panel = _latex_panel(table, opt=True)
+    tex = panel._latex_bytes().decode("utf-8")
+    # Three structure images on one line: width shrinks to 0.16.
+    assert tex.count("includegraphics[width=0.16\\textwidth]") == 3

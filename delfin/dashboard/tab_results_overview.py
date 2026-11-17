@@ -34,6 +34,7 @@ from delfin.analysis.results_overview import (
     list_rss_pngs,
     smiles_png_bytes,
     initial_xyz_png_bytes,
+    optimized_3d_png_bytes,
     sort_table,
 )
 
@@ -154,6 +155,11 @@ class ResultsOverviewPanel:
             description="Include 3D images (col 3)",
             indent=False,
         )
+        self._show_3d_opt = widgets.Checkbox(
+            value=False,
+            description="Include 3D optimized images (col 4)",
+            indent=False,
+        )
         self._latex_btn = widgets.Button(description="Export LaTeX/PDF")
         # Gallery controls: relative scan only, size in percent of the
         # 640px default, images per row before wrapping.
@@ -190,6 +196,7 @@ class ResultsOverviewPanel:
         self._show_pngs.observe(self._on_png_toggle, names="value")
         self._show_2d.observe(self._on_png_toggle, names="value")
         self._show_3d.observe(self._on_png_toggle, names="value")
+        self._show_3d_opt.observe(self._on_png_toggle, names="value")
         self._png_size.observe(self._on_png_opts_change, names="value")
         self._png_cols.observe(self._on_png_opts_change, names="value")
         self._csv_btn.on_click(self._on_export_csv)
@@ -224,6 +231,7 @@ class ResultsOverviewPanel:
             self._png_opts,
             self._show_2d,
             self._show_3d,
+            self._show_3d_opt,
             self._pngs,
         ])
         self.widget.add_class("ro-tab-root")
@@ -488,11 +496,15 @@ class ResultsOverviewPanel:
                        and self._show_2d.value)
         want_3d = bool(getattr(self, "_show_3d", None)
                        and self._show_3d.value)
+        want_o3d = bool(getattr(self, "_show_3d_opt", None)
+                        and self._show_3d_opt.value)
         header = ["Calculation"]
         if want_2d:
             header.append("SMILES 2D")
         if want_3d:
             header.append("Structure 3D")
+        if want_o3d:
+            header.append("3D view (optimized, viewer style)")
         if want_2d:
             header.append("SMILES")
         header += [c["label"] for c in self._table["columns"]]
@@ -501,8 +513,9 @@ class ResultsOverviewPanel:
         ws = wb.active
         ws.title = "Results Overview"
         ws.append(header)
-        # Metrics start after: calc(1) + [2D img] + [3D img] + [SMILES text]
-        metric_col0 = 2 + int(want_2d) + int(want_3d) + int(want_2d)
+        # Metrics start after: calc(1) + image columns + [SMILES text].
+        metric_col0 = (1 + int(want_2d) + int(want_3d)
+                       + int(want_o3d) + int(want_2d) + 1)
         for r, row in enumerate(self._table["rows"], start=2):
             cells = []
             for c in self._table["columns"]:
@@ -513,6 +526,8 @@ class ResultsOverviewPanel:
             if want_2d:
                 row_vals.append(None)
             if want_3d:
+                row_vals.append(None)
+            if want_o3d:
                 row_vals.append(None)
             if want_2d:
                 row_vals.append(smiles)
@@ -534,6 +549,15 @@ class ResultsOverviewPanel:
                     img3d = XLImage(_io.BytesIO(png3d))
                     img3d.width = img3d.height = 130
                     ws.add_image(img3d, f"{col3}{r}")
+                    row_height = max(row_height, 100)
+            # Column 4: 3D view with optimized camera, viewer style.
+            if want_o3d:
+                colo = chr(ord("A") + 1 + int(want_2d) + int(want_3d))
+                pngo = optimized_3d_png_bytes(row["path"])
+                if pngo:
+                    imgo = XLImage(_io.BytesIO(pngo))
+                    imgo.width = imgo.height = 130
+                    ws.add_image(imgo, f"{colo}{r}")
                     row_height = max(row_height, 100)
             ws.row_dimensions[r].height = row_height
             # Last column: relative scan PNG, aspect ratio preserved
@@ -657,13 +681,17 @@ class ResultsOverviewPanel:
     def _latex_bytes(self) -> bytes:
         """LaTeX source: one page per calculation, in the ticked order.
 
-        Per calculation: name, then 2D image (if ticked), then the 3D
-        image (if ticked), then the RSS scan PNG, then the metric list.
-        \\newpage between calculations.
+        Per calculation: name, then the ticked structure images side by
+        side (2D SMILES, 3D ball-and-stick, 3D optimized viewer style),
+        then the RSS scan PNG, then the metric list.
+        \newpage between calculations.  With more than two images the
+        width shrinks so all fit on one line.
         """
         assert self._table is not None
         want_2d = bool(self._show_2d.value)
         want_3d = bool(self._show_3d.value)
+        want_o3d = bool(getattr(self, "_show_3d_opt", None)
+                        and self._show_3d_opt.value)
         img_dir = "images"
         lines = [
             r"\documentclass[a4paper]{article}",
@@ -689,23 +717,31 @@ class ResultsOverviewPanel:
                          + self._tex_escape(row["label"]) + r"}\end{center}")
             lines.append(r"\par\bigskip")
             smiles = get_smiles(row["path"])
-            blocks_2d = []
+            # Collect ALL ticked structure images, then place them side
+            # by side; 0.25\textwidth each for two, smaller for more.
+            n_struct = (int(want_2d) + int(want_3d)
+                        + int(want_o3d))
+            width = {1: 0.5, 2: 0.25, 3: 0.16}.get(n_struct, 0.12)
+            struct_blocks = []
             if want_2d and smiles:
                 png = smiles_png_bytes(smiles)
                 if png:
-                    blocks_2d.append(
-                        rf"\includegraphics[width=0.25\textwidth]"
+                    struct_blocks.append(
+                        rf"\includegraphics[width={width}\textwidth]"
                         rf"{{{_add_image(png)}}}")
-            if want_3d:
-                png = initial_xyz_png_bytes(row["path"])
+            for enabled, fn in (
+                    (want_3d, initial_xyz_png_bytes),
+                    (want_o3d, optimized_3d_png_bytes)):
+                if not enabled:
+                    continue
+                png = fn(row["path"])
                 if png:
-                    blocks_2d.append(
-                        rf"\includegraphics[width=0.25\textwidth]"
+                    struct_blocks.append(
+                        rf"\includegraphics[width={width}\textwidth]"
                         rf"{{{_add_image(png)}}}")
-            if blocks_2d:
-                # 2D and 3D side by side (was: stacked).
+            if struct_blocks:
                 lines.append(r"\begin{center}")
-                lines.append(r"\hfill".join(blocks_2d))
+                lines.append(r"\hfill".join(struct_blocks))
                 lines.append(r"\end{center}")
                 lines.append(r"\par\bigskip")
             rel_only = [
