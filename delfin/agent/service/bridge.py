@@ -355,6 +355,16 @@ class Bridge:
 
     # -- the service side ---------------------------------------------------------------
 
+    #: How often the connection to the agent service is rebuilt before the
+    #: process gives up and lets systemd deal with it. A restart of the
+    #: service costs one; the cap is there so a service that cannot come
+    #: back is not papered over for ever.
+    SERVICE_RECONNECTS = 60
+    #: Seconds between attempts. Longer than the service needs to come back
+    #: after a restart (measured: under a second), short enough that a phone
+    #: message waits rather than fails.
+    SERVICE_RECONNECT_WAIT = 2.0
+
     def _connect_service(self):
         from .client import ServiceClient
 
@@ -393,14 +403,43 @@ class Bridge:
         self._loop = asyncio.get_running_loop()
         serving = None
         try:
-            self._connect_service()
-            self._pump_task = self._loop.run_in_executor(None, self._pump_service)
             serving = asyncio.create_task(server.serve_forever())
-            done, _ = await asyncio.wait(
-                [serving, self._pump_task], return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                task.result()
-            raise ConnectionError("agent service connection closed")
+            # The connection to the agent service is rebuilt, not fatal.
+            # Before, losing it raised out of serve() and the process died:
+            # a deploy restarts the agent service, so EVERY deploy left a
+            # traceback and a five-second gap (measured 2026-11-17), and
+            # systemd's Restart=on-failure was what put the bridge back.
+            # Five such deaths inside the start-limit window would have
+            # latched the unit in `failed`, where neither a deploy nor
+            # anything else starts it again -- the phone would simply stop
+            # answering, with nobody told. The gateway's own socket stays
+            # bound across a reconnect, so a phone message is never met by
+            # a missing socket.
+            attempts = 0
+            while True:
+                self._connect_service()
+                attempts += 1
+                self._pump_task = self._loop.run_in_executor(
+                    None, self._pump_service)
+                done, _ = await asyncio.wait(
+                    [serving, self._pump_task],
+                    return_when=asyncio.FIRST_COMPLETED)
+                if serving in done:
+                    serving.result()          # the gateway side ended: done
+                    return
+                self._pump_task.result()      # surface a pump error, if any
+                # The pump ended, so the service connection is gone.
+                if self._service is not None:
+                    try:
+                        self._service.close()
+                    except Exception:
+                        pass
+                    self._service = None
+                if attempts > self.SERVICE_RECONNECTS:
+                    raise ConnectionError(
+                        "agent service connection closed "
+                        f"{attempts} times; giving up")
+                await asyncio.sleep(self.SERVICE_RECONNECT_WAIT)
         finally:
             server.close()
             await server.wait_closed()
