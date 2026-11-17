@@ -27,7 +27,7 @@ def test_aws_access_key_redacted():
 
 
 def test_private_key_block_redacted():
-    pem = ("-----BEGIN RSA PRIVATE KEY-----\n"
+    pem = ("-----BEGIN RSA PRIVATE KEY-----\n"  # secret-guard: allow (synthetic DELFIN test sample)
            "MIIEpAIBAAKCAQEA7fBvGxN2K8sQwZrTyUiOpLkJhGfDsAqWeRtYuIoPmNbVcXz1\n"
            "-----END RSA PRIVATE KEY-----")
     r = run_output_guards(f"here:\n{pem}\ndone", config={})
@@ -38,7 +38,7 @@ def test_private_key_block_redacted():
 
 
 def test_dangling_private_key_header_redacted_without_eating_prose():
-    text = ("-----BEGIN OPENSSH PRIVATE KEY-----\n"
+    text = ("-----BEGIN OPENSSH PRIVATE KEY-----\n"  # secret-guard: allow (synthetic DELFIN test sample)
             "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAABFwAAAAdz\n"
             "The key above is truncated.")
     r = run_output_guards(text, config={})
@@ -66,7 +66,7 @@ def test_slack_token_redacted():
 
 def test_bearer_header_token_redacted_but_bearer_word_kept():
     r = run_output_guards(
-        "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.x9Yz",
+        "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.x9Yz",  # secret-guard: allow (synthetic DELFIN test sample)
         config={})
     assert "eyJhbGciOiJIUzI1NiJ9" not in r.text
     assert "Bearer [redacted:bearer-token]" in r.text
@@ -166,7 +166,7 @@ def test_disabled_via_settings_file(monkeypatch):
 
 
 def test_redact_secrets_off_keeps_certainty_scan():
-    text = "token ghp_A1b2C3d4E5f6G7h8I9j0K1L2M3n4O5p6Q7r8 is guaranteed."
+    text = "token ghp_A1b2C3d4E5f6G7h8I9j0K1L2M3n4O5p6Q7r8 is guaranteed."  # secret-guard: allow (synthetic DELFIN test sample)
     r = run_output_guards(text, config={"redact_secrets": False})
     assert "ghp_" in r.text
     assert not r.changed
@@ -178,7 +178,7 @@ def test_settings_read_never_raises(monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("settings unreadable")
     monkeypatch.setattr(us, "load_settings", boom)
-    r = run_output_guards("key AKIAIOSFODNN7EXAMPLE")
+    r = run_output_guards("key AKIAIOSFODNN7EXAMPLE")  # secret-guard: allow (synthetic DELFIN test sample)
     assert "[redacted:aws-access-key]" in r.text   # defaults applied
 
 
@@ -222,7 +222,7 @@ def _engine(agent_tree, client):
                            mode="quick", pack_dir=agent_tree)
 
 
-_LEAKED = "ghp_A1b2C3d4E5f6G7h8I9j0K1L2M3n4O5p6Q7r8"
+_LEAKED = "ghp_A1b2C3d4E5f6G7h8I9j0K1L2M3n4O5p6Q7r8"  # secret-guard: allow (synthetic DELFIN test sample)
 
 
 def test_engine_redacts_stored_message_and_appends_note(agent_tree):

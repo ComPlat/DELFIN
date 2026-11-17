@@ -360,7 +360,7 @@ def test_3dmol_is_vendored_and_satisfies_both_loader_guards():
         Path(__file__).resolve().parents[1] / "delfin" / "dashboard" / "__init__.py"
     ).read_text(encoding="utf-8")
     assert "vendored_3dmol_js()" in dashboard
-    init_list = dashboard.split("_calc_init = ")[1].split("])")[0]
+    init_list = dashboard.split("_startup_parts = [")[1].split("\n    ]\n")[0]
     assert init_list.index("vendored_3dmol_js()") < init_list.index(
         "RIGHT_MOUSE_TRANSLATE_PATCH_JS"
     )

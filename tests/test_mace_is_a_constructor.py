@@ -208,7 +208,7 @@ def test_control_accepts_mace_and_the_pipeline_builds_with_it(tmp_path, monkeypa
     from delfin.workflows import pipeline
 
     assert _as_smiles_converter("mace") == "MACE"
-    assert "smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE]" in TEMPLATE
+    assert "smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE|RXEMBED|MOLASSEMBLER|METALLOGEN]" in TEMPLATE
     assert pipeline._resolve_smiles_converter({"smiles_converter": "MACE"}) == "MACE"
 
     calls = []

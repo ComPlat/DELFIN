@@ -11,6 +11,10 @@ from collections import Counter
 from typing import Dict, List, Optional, Tuple
 
 from delfin.common.logging import get_logger
+from delfin.manta._ring_snap_length import (
+    inplane_trilaterate as _rs_inplane_trilaterate,
+    ring_snap_keep_length_enabled,
+)
 from delfin.manta.converter_flags import (
     DELFIN_COLLAPSE_BOND_MIN_SCALE,
     DELFIN_COLLAPSE_TETRA_VOL_MIN,
@@ -24,7 +28,7 @@ from delfin.manta.ml_tables import (
     RDKIT_AVAILABLE,
     _METAL_ATOMICNUMS,
     _METAL_SET,
-    _get_ml_bond_length,
+    _check_ml_bond_length as _get_ml_bond_length,  # every M-D length here is a check (BV scope "lengths")
     _target_mc_dist,
     pybel,
 )
@@ -1471,6 +1475,7 @@ def _flatten_sp2_atoms_xyz(xyz_delfin: str, mol_template) -> str:
             symbols.append(parts[0])
             coords_list.append([float(parts[1]), float(parts[2]), float(parts[3])])
         coords = np.array(coords_list, dtype=float)
+        _keep_len = ring_snap_keep_length_enabled()
 
         def _is_sp2_graph(_atom):
             for _b in _atom.GetBonds():
@@ -1572,6 +1577,19 @@ def _flatten_sp2_atoms_xyz(xyz_delfin: str, mol_template) -> str:
                     and os.environ.get("DELFIN_FFFREE_DONOR_SIGMA_COUNT", "0") == "1"
                     and (_sig_tot >= 4 or (_sig_tot == 3 and _period3))):
                 continue          # tetrahedral or pyramidal -- in both cases NOT flat
+            # PERIOD 3+ WITH THREE OR MORE SIGMA PARTNERS IS NEVER FLAT
+            # (DELFIN_FFFREE_FLATTEN_P3_PYRAMIDAL, default off).  A sulfoxide or sulfinyl S, a
+            # selenoxide Se, an arsine-oxide-like As carries a formal double bond, so the
+            # bond-graph sp2 test above fires, but it is pyramidal (three partners and a lone
+            # pair) or tetrahedral (S-bound DMSO: C, C, O and the metal).  The projection into
+            # the plane of its three heavy neighbours, done while keeping the three lengths as
+            # well as a plane allows, shortens them: an O-bound DMSO S=O leaves Open Babel at
+            # 1.53 A and this step at 1.27-1.38 A; an S-bound DMSO S=O (JIQTOV, CUDVEF) at
+            # 1.25-1.38 A.  This is the period-3 half of the DONOR_SIGMA_COUNT rule, for every
+            # atom, metal-bonded or not.  Aromatic atoms keep the flattening.
+            if (_sig_tot >= 3 and _period3 and not atom.GetIsAromatic()
+                    and os.environ.get("DELFIN_FFFREE_FLATTEN_P3_PYRAMIDAL", "0") == "1"):
+                continue
             if len(heavy_nbrs) != 3:
                 continue
             idx = atom.GetIdx()
@@ -1585,6 +1603,11 @@ def _flatten_sp2_atoms_xyz(xyz_delfin: str, mol_template) -> str:
             centroid = (pa + pb + pc) / 3.0
             # Signed distance from X to plane(A,B,C)
             d = float(np.dot(coords[idx] - centroid, normal))
+            if _keep_len and abs(d) > 1e-9:
+                # DELFIN_FFFREE_RING_SNAP_KEEP_LENGTH: in the plane, at the point that keeps
+                # its three bond lengths best (see _ring_snap_length.inplane_trilaterate)
+                coords[idx] = _rs_inplane_trilaterate(coords[idx], [pa, pb, pc], centroid, normal)
+                continue
             coords[idx] = coords[idx] - d * normal
 
         out_lines: List[str] = []

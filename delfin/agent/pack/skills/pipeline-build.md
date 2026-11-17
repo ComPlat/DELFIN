@@ -22,6 +22,12 @@ Start by calling **`get_guide`**, then:
    the steps.
 2. **BUILD** — write a spec per `schemas.pipeline_spec`; set only the
    params that are actually needed (defaults + autowiring fill the rest).
+   The OPI-backed ORCA blocks (`orca_sp_opi`, `orca_opt_opi`,
+   `orca_freq_opi`, `orca_opt_freq_opi`, `orca_dlpno_opi`) chain like any
+   other step: an opt's geometry feeds the next step, its `.gbw` is
+   auto-wired as MOREAD start orbitals, and every keyword is validated
+   against the knowledge store. Template `opi_opt_freq_dlpno` composes
+   opt+freq then DLPNO-CCSD(T).
    Check what will really run with `resolve_spec`.
 3. **VALIDATE** — `validate_spec`; implement every diagnostic fix
    concretely until it is clean.

@@ -382,6 +382,43 @@ def test_the_script_follows_only_from_the_end():
 
 
 @pytest.mark.skipif(_NODE is None, reason="node not installed")
+def test_idle_poll_does_not_snap_back_after_a_browser_scroll(tmp_path):
+    """A browser scroll can consume a pending automatic-scroll flag.
+
+    With no new content, the polling fallback must not then snap back a
+    frame later. Actual output must still bring a following reader along.
+    """
+    checks = r"""
+const assert = require('node:assert/strict');
+window.__delfinChatToBottom(jump); flush();
+sync();
+working = {working: true};
+// Leave the script's scroll event pending, then deliver the browser move.
+chat.scrollHeight += 100;
+window.__delfinChatSync(chat);
+// Browsers coalesce scroll events for the same element within a frame.
+pendingScroll = [];
+browserScroll(end() - 12);
+const idleTop = chat.scrollTop;
+const idleWrites = scrollWrites;
+assert.equal(idleTop, end() - 12);
+for (let i = 0; i < 10; i++) tick();
+assert.equal(scrollWrites, idleWrites, 'idle polling caused a delayed snap');
+assert.equal(chat.scrollTop, idleTop);
+assert.equal(S().follow, true);
+chat.scrollHeight += 100;
+tick();
+assert.equal(chat.scrollTop, end(), 'new output was no longer followed');
+"""
+    script = _DRIVER.replace("__SCRIPT__", _chat_scroll_js()) + checks
+    path = tmp_path / "chat_idle_poll.js"
+    path.write_text(script, encoding="utf-8")
+    done = subprocess.run([_NODE, str(path)], capture_output=True, text=True,
+                          timeout=30)
+    assert done.returncode == 0, done.stderr[-3000:]
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not installed")
 def test_refresh_and_late_resize_follow_before_the_next_paint(tmp_path):
     """Drive the gap between HTML replacement and the delayed onerror/poll.
 
@@ -457,13 +494,11 @@ def test_the_chat_script_is_not_inside_the_keyboard_guard():
     resumed page. Nested inside that block, the chat script never ran
     there: the page came back with its library and without its chat.
     Each block guards itself and stands on its own."""
-    import inspect
-
     from delfin.dashboard import tab_agent
 
-    src = inspect.getsource(tab_agent)
-    start = src.index('_enter_js_output = widgets.Output()')
-    block = src[start:src.index('"""))', start)]
+    # The page script every agent tab (and every agent-service view) shows.
+    block = tab_agent._AGENT_PAGE_JS
+    assert "_ipyd(_JS(_VISIBLE_LOOKUP_JS + _AGENT_PAGE_JS))" in _module_source()
     guard = block.index("if (window.__delfinAgentKeys) return;")
     first_close = block.index("})();", guard)
     keyboard_block = block[guard:first_close]

@@ -37,7 +37,7 @@ from delfin.tools._base import StepAdapter
 from delfin.tools._types import StepResult, StepStatus
 from delfin.tools._registry import register
 from delfin.tools._spec import DataKeySpec, ParamSpec
-from delfin.tools.adapters.xtb import _read_xyz_coords
+from delfin.tools.adapters.xtb import _mpi_note, _read_xyz_coords
 
 logger = get_logger(__name__)
 
@@ -340,10 +340,18 @@ class _OrcaBase(StepAdapter):
             if not moread_src.suffix:
                 moread_src = moread_src.with_suffix(".gbw")
             if moread_src.is_file():
-                dest = work_dir / moread_src.name
+                # The guess must not carry this job's own name: ORCA writes
+                # <calc_name>.gbw itself when it starts, so a guess copied in
+                # as calc.gbw (an upstream step's default name) is replaced
+                # before the guess is read -- "No orbitals were found in the
+                # gbw file", error termination in GUESS.
+                stem = moread_src.stem
+                if stem == calc_name:
+                    stem = f"{calc_name}_guess"
+                dest = work_dir / f"{stem}.gbw"
                 if not dest.exists():
                     shutil.copy2(moread_src, dest)
-                moread = moread_src.stem  # just the name without .gbw
+                moread = stem  # just the name without .gbw
 
         coords = _read_xyz_coords(geometry)
 
@@ -413,7 +421,8 @@ class _OrcaBase(StepAdapter):
             output_file=out_path if out_path.is_file() else None,
             data=data,
             artifacts=artifacts,
-            error=None if success else "ORCA calculation failed",
+            error=None if success else (
+                _mpi_note(out_path) or "ORCA calculation failed"),
         )
 
 

@@ -216,9 +216,13 @@ def test_the_dashboard_keeps_its_bundle_and_registers_the_getter():
     from delfin import dashboard as d
 
     src = inspect.getsource(d.create_dashboard)
-    assert "ctx.keep_js(_calc_init)" in src, (
+    assert "ctx.page_scripts.append(_calc_init)" in src, (
         "the 3Dmol + startup bundle must be a kept script"
     )
+    # ... and it runs from the page itself: in ctx.js_output a tab's own
+    # run_js (built at start) cleared it before the browser ran it (11.11.).
+    assert "self_running_html(*_startup_parts)" in src
+    assert "ctx.keep_js(_calc_init)" not in src
     assert "_session.register_bootstrap(ctx.resume_bootstrap_js, before=_body_root)" in src
     # After the roots are registered and before they are shown.
     assert src.index("_session.register_root(") < src.index(

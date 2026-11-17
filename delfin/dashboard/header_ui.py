@@ -246,6 +246,13 @@ HEADER_CSS = """
 }
 .delfin-topbar { flex-wrap: wrap; align-items: center; gap: 8px; row-gap: 6px; }
 .delfin-hdr .delfin-group { align-items: center; gap: 6px; flex-wrap: wrap; }
+/* The status chips (the busy spinner, the agent's working line) live in the
+   spacer between the two sides (top_bar): they never count when the bar
+   decides on a second row, and a chip the space left cannot hold shrinks
+   and ends in an ellipsis; its whole text is its tooltip. */
+.delfin-hdr .delfin-topbar-spacer { gap: 6px; }
+.delfin-hdr .delfin-topbar-chip { flex: 0 1 auto; min-width: 0; overflow: hidden; }
+.delfin-hdr .delfin-topbar-chip > .widget-html-content { flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 /* buttons: one height, rounded, no wrapped labels, auto width */
 .delfin-hdr .jupyter-button.delfin-btn,
 .delfin-hdr .jupyter-button.delfin-icon-btn,
@@ -343,7 +350,7 @@ HEADER_CSS = """
 .delfin-hdr .jupyter-button.delfin-hint.is-warn { color: var(--dh-err); border-color: var(--dh-err); }
 .delfin-hdr .delfin-home { font-size: 12px; color: var(--dh-muted); white-space: nowrap; }
 .delfin-hdr .delfin-home.is-warn { color: var(--dh-err); font-weight: 600; }
-/* switch (Keep session) */
+/* switch (Keep dashboard) */
 .delfin-hdr .jupyter-button.delfin-switch {
   height: var(--dh-h); width: auto; padding: 0 10px 0 40px; position: relative;
   border-radius: 999px; border: 1px solid var(--dh-border); background: var(--dh-bg);
@@ -361,6 +368,28 @@ HEADER_CSS = """
 .delfin-hdr .jupyter-button.delfin-switch.mod-active::before { background: var(--dh-ok); }
 .delfin-hdr .jupyter-button.delfin-switch.mod-active::after { left: 22px; }
 .delfin-hdr .jupyter-button.delfin-switch i { display: none; }
+/* the Dashboards menu (dashboards_menu): hangs below its button, right-aligned */
+.delfin-dash-wrap { position: relative; flex: 0 0 auto; }
+.delfin-hdr .delfin-dash-pop {
+  position: absolute; top: calc(var(--dh-h) + 6px); right: 0; z-index: 60;
+  width: min(480px, calc(100vw - 32px)); max-height: 60vh; overflow-y: auto;
+  background: var(--dh-bg); color: var(--dh-fg);
+  border: 1px solid var(--dh-border); border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.18); padding: 8px; gap: 6px;
+}
+.delfin-hdr .delfin-dash-rows { gap: 1px; }
+.delfin-hdr .delfin-dash-row { align-items: center; gap: 6px; min-height: 34px; padding: 0 4px; border-radius: var(--dh-r); }
+.delfin-hdr .delfin-dash-row:hover { background: var(--dh-bg2); }
+.delfin-hdr .delfin-dash-label { flex: 1 1 auto; min-width: 0; overflow: hidden; }
+.delfin-hdr .delfin-dash-name { font-family: var(--jp-code-font-family, monospace); margin-right: 8px; }
+.delfin-hdr .delfin-dash-meta { color: var(--dh-muted); font-size: 11px; white-space: nowrap; }
+.delfin-hdr .delfin-dash-link {
+  display: inline-block; height: var(--dh-h); line-height: calc(var(--dh-h) - 2px);
+  padding: 0 12px; border-radius: var(--dh-r); border: 1px solid var(--dh-border);
+  background: var(--dh-bg); color: var(--dh-accent); text-decoration: none;
+  font-size: 13px; white-space: nowrap;
+}
+.delfin-hdr .delfin-dash-link:hover { background: var(--dh-bg2); }
 /* the more row and panels under the bar */
 .delfin-hdr .delfin-more-row { gap: 6px; align-items: center; flex-wrap: wrap; padding: 6px 0 2px 0; }
 .delfin-hdr .delfin-panel {
@@ -484,3 +513,72 @@ def icon_button(description: str, tooltip: str = "", *names: str,
     if on_click is not None:
         b.on_click(lambda _b: on_click())
     return b
+
+
+def plain_text(markup) -> str:
+    """The text a person reads in ``markup``: tags dropped, entities read,
+    each run of white space one space."""
+    import re
+    text = re.sub(r"<[^>]*>", " ", str(markup or ""))
+    return " ".join(html.unescape(text).split())
+
+
+def _shown_with_its_text(chip):
+    """The widget the bar shows for ``chip``: the chip's markup, with its
+    whole text as the tooltip of that markup, kept in step with
+    ``chip.value``. The chip itself stays what its writers write to.
+
+    Rejected: the widget's ``tooltip`` trait. ipywidgets 8 puts it on the
+    description label of an HTML widget, which is hidden while the
+    description is empty, and a Box's view reads a ``description`` it does
+    not have."""
+    import ipywidgets as W
+    shown = classed(W.HTML(), "delfin-topbar-chip")
+
+    def _set(value):
+        value = str(value or "")
+        text = plain_text(value)
+        shown.value = (
+            f'<span class="delfin-topbar-chip-text" '
+            f'title="{html.escape(text, quote=True)}">{value}</span>'
+            if text else value)
+
+    chip.observe(lambda change: _set(change["new"]), names="value")
+    _set(chip.value)
+    return shown
+
+
+def top_bar(left, chips, right):
+    """The header's top row.
+
+    Input: the widgets on the left (title, preview banner, branch row), the
+    status chips (busy spinner, the agent's working line) and the right-hand
+    group (usage, session strip, log out). Output: an HBox with class
+    ``delfin-topbar`` that wraps rather than shrinks; the right-hand group
+    gets class ``delfin-group``.
+
+    The chips are shown in the spacer between the two sides, in their order
+    and right-aligned against the right-hand group. The spacer's flex basis
+    is 0 and its minimum width fixed, so what the chips say never counts
+    when the bar decides on a second row; a chip the space left cannot hold
+    shrinks and ends in an ellipsis, and its whole text is the tooltip of
+    what is shown. The agent's line is rewritten every second while a turn
+    runs. As the first items of the right-hand group, a longer line moved
+    the group to a second row where the bar was nearly full, the agent tab
+    below the header 40 px with it, and a shorter one moved both back
+    (measured 2026-11-03 at 1130-1280 px, DPR 1.5; numbers in
+    tests/test_the_status_chips_never_wrap_the_top_bar.py). The minimum
+    (2em) keeps the start of a chip and its tooltip on screen when the rest
+    of the row is full.
+
+    Rejected: a fixed width for the chips. It keeps the room when nothing
+    runs, and a longer line still overflows it.
+    """
+    import ipywidgets as W
+    shown = [_shown_with_its_text(chip) for chip in chips]
+    spacer = classed(W.HBox(shown, layout=W.Layout(
+        flex="1 1 0", min_width="2em", justify_content="flex-end",
+        align_items="center")), "delfin-topbar-spacer")
+    classed(right, "delfin-group")
+    return classed(W.HBox(list(left) + [spacer, right],
+                          layout=W.Layout(width="100%")), "delfin-topbar")

@@ -263,7 +263,7 @@ def test_a_clean_turn_is_done_and_exits_zero(headless, capsys):
 
 def test_a_secret_in_a_refused_command_never_reaches_the_event(
         headless, capsys):
-    secret = "sk-live-abcdef0123456789"
+    secret = "sk-live-abcdef0123456789"  # secret-guard: allow (synthetic DELFIN test sample)
     headless(["--output-format", "stream-json"], [
         _call("bash", {"command": f"TOKEN={secret} python3 -c 1"}),
         _answer(),
@@ -287,7 +287,7 @@ def test_under_supervised_the_request_is_an_event_a_human_answers(
     answer here is a refusal written the way `delfin-agent approvals` does."""
     from delfin.agent import file_confirm as FC
 
-    secret = "sk-live-abcdef0123456789"
+    secret = "sk-live-abcdef0123456789"  # secret-guard: allow (synthetic DELFIN test sample)
     stop = threading.Event()
 
     def _deny_when_asked():

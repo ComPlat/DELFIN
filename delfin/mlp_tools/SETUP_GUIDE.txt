@@ -164,4 +164,25 @@ Fix:     pip install torch
   INSTALL_MACE             Set to 1 to install MACE   (default: 0)
   FORCE_REINSTALL          Set to 1 to force reinstall
 
+
+
+9. GUIDED SET-UP FOR ORCA ExtOpt (orca-mlips) ON A SLURM CLUSTER
+---------------------------------------------------------------------------
+
+  delfin mlp_setup probe       # GPU partitions, driver, CUDA/ORCA modules,
+                               # conda tool, existing MLIP envs (read-only)
+  delfin mlp_setup plan        # partition, backend + code/weight licence,
+                               # the exact install commands, settings diff
+  delfin mlp_setup install     # runs each command after your y/N
+  delfin mlp_setup configure --write   # runtime.slurm.gpu_partitions,
+                               # runtime.mlp.* via the settings file
+  delfin mlp_setup verify --submit     # water gradient + short ExtOpt Opt
+  delfin mlp_setup result      # pass/fail, cold vs warm call, likely cause
+  delfin mlp_setup remove      # deletes the environment (asked)
+
+  Options: --backend uma|orb|mace|aimnet2, --partition, --env-name, --cuda.
+  UMA weights are gated: accept the terms on Hugging Face and run
+  `hf auth login` yourself; DELFIN never sees the token.  MACE foundation
+  weights are non-commercial.
+
 ===========================================================================

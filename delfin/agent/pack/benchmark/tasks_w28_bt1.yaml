@@ -1,0 +1,65 @@
+# Wave 28 BT1: butane rotational profile, end to end (benchmark task).
+#
+# One science_analysis task graded on the ARTIFACT (chem_* pattern,
+# tasks_chem.yaml): the verify script re-derives the verdict from what
+# the run left in chem/butane and the prose is additionally judged on
+# the values it states (expected_values bands).
+#
+# Literature bands (cited, marked as bands, widened for the DFT levels a
+# practice run uses):
+#  - gauche-anti energy difference of n-butane: experimental ~0.89
+#    kcal/mol (0.9 +/- 0.1 kcal/mol, condensed-phase and gas-phase
+#    Raman/microwave consensus). Band used: 0.6-1.15 kcal/mol.
+#  - rotational barrier (eclipsed TS relative to anti minimum): ~5.0-5.5
+#    kcal/mol experimentally (~5.1-5.4 kcal/mol). Band used:
+#    4.5-5.8 kcal/mol.
+version: 1
+package: BT1
+tasks:
+  - id: w28_bt1_butane_rotation_profile
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      In chem/butane/ there is start.xyz of n-butane (anti-periplanar;
+      the scan dihedral is D 0 1 2 3). Do the state-of-the-art rotational
+      profile end to end: pre-optimise cheaply (xtb_opt or mlp_preoptimize),
+      run a relaxed dihedral scan of phi(C1-C2-C3-C4) through 360 degrees
+      with r2SCAN-3c (ORCA %geom Scan through DELFIN's OPI adapters,
+      exactly one scan coordinate), locate the anti and gauche minima and
+      the eclipsed transition states from the scan; confirm the two TS
+      with OptTS (orca_ts_opt + orca_ts_freq_check: exactly one imaginary
+      mode, the C-C-C-C torsion) and an IRC; optimise the anti and gauche
+      minima with frequencies (0 imaginary modes); report the
+      anti->eclipsed-TS barrier and the anti->gauche gap in kcal/mol at
+      one level of theory (literature bands: gap 0.6-1.15 kcal/mol,
+      barrier 4.5-5.8 kcal/mol); state the level of theory. For the
+      heavier final single points (e.g. DLPNO-CCSD(T) on the stationary
+      points) write the ORCA inputs / sbatch scripts, do not run them
+      (>2 cores / >30 min). Build the rotation movie from the scan frames
+      as a multi-frame xyz and show it with show_molecule. Write the
+      summary as chem/butane/summary.md.
+    setup: w28_bt1_seed.py
+    verify: w28_bt1_verify.py
+    expected_signals:
+      - pattern: '(?i)(barrier|gauche)'
+        against: text
+      - pattern: '(?i)(scan|constraint)'
+        against: text
+      - pattern: '(?i)(kcal)'
+        against: text
+      - pattern: '(?i)(show_molecule|movie)'
+        against: any
+      - pattern: '(?i)(orca_ts_opt|imaginary)'
+        against: text
+    expected_values:
+      - label: butane_rotational_barrier_kcal
+        value: 5.0
+        tolerance: 0.8
+        against: text
+      - label: butane_gauche_gap_kcal
+        value: 0.89
+        tolerance: 0.3
+        against: text
+    max_duration_s: 3600
+    max_cost_usd: 4.00
+    max_tool_calls: 60

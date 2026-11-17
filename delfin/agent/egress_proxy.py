@@ -26,6 +26,11 @@ as an upload (default 1 MiB), ``upload_domains`` the hosts (same forms as
 Decisions per request (``EgressProxy.decide``), for the session whose
 token the request carries (``token_for``):
 
+0. a server of the session's own on the loopback (``_own_server``: a port
+   its background jobs listen on, or one only processes of the command
+   that sent the request listen on, told apart by the sending helper's
+   pid) passes in every mode, writes included, and is connected to the
+   loopback directly;
 1. a port outside ``allowed_ports`` is refused;
 2. a ``web_fetch(domain:...)`` permission rule (``permission_rules``,
    when that module is present) denies, asks or allows first;
@@ -49,6 +54,25 @@ token the request carries (``token_for``):
    session has an approval channel and is not in plan or bypass mode;
    otherwise refused with a message naming the host and the rule that
    would allow it. An answer is kept for the session.
+
+5. a plain-HTTP request to a host steps 1-4 let through whose URL carries
+   encoded data (``web_tools.url_payload_reason``: a long query, or a run
+   that looks like hex, a UUID or base64 in the query or the host name)
+   is asked once per host where someone can be asked and refused
+   otherwise (``egress_payload_refused``), unless the host is named for
+   uploads.
+
+Known hosts include the hosts of URLs the user wrote in a typed message
+of the session (``user_named_hosts``). ``web_fetch``, which reads in the
+agent process and not through the proxy, takes the same host decision
+before it resolves anything (``settle_fetch``); a question answered for
+one of them holds for the other.
+
+What a session sends is counted per host (``note_sent``: every byte a
+command writes through the proxy, and each web_fetch's request) and
+recorded when the total crosses 1 byte, 64 KiB, 1 MiB, 16 MiB or 256
+MiB: a non-blocking ``egress_sent`` event and an ``egress`` line in the
+audit log. ``sent_by_host`` reads the totals.
 
 The process-wide token (``self.token``) carries no session: allow-list
 only, unknown refused -- the behaviour before sessions existed.
@@ -74,6 +98,7 @@ import re
 import secrets
 import select
 import socket
+import struct
 import tempfile
 import threading
 import weakref
@@ -121,6 +146,51 @@ def _own_ports(perms) -> set:
             str(getattr(perms, "task_session_id", "") or ""))
     except Exception:
         return set()
+
+
+def _loopback_addr(host: str) -> str:
+    """The address the proxy connects to for a loopback ``host``."""
+    return "::1" if str(host).strip("[]") == "::1" else "127.0.0.1"
+
+
+def _peer_pid(conn) -> int:
+    """The process on the other end of a Unix-socket connection (the
+    sandbox helper whose forwarder carries the command's request), or 0."""
+    try:
+        cred = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+                               struct.calcsize("3i"))
+        pid, _uid, _gid = struct.unpack("3i", cred)
+        return pid if pid > 0 else 0
+    except (OSError, AttributeError, struct.error):
+        return 0
+
+
+def _own_server(perms, host: str, port: int, peer_pid: int = 0) -> bool:
+    """Whether ``host:port`` is a server of the requesting session's own on
+    the loopback: a port one of its running background jobs listens on
+    (``_own_ports``), or one only processes below the sandbox helper that
+    sent the request listen on (``peer_pid``, ``socket_guard.owns_loopback``):
+    a test that serves a fake endpoint to itself, a server started in the
+    same command. Such a request stays on this machine between the
+    session's own processes: it is let through for a session's token in
+    every mode, writes included, and connected to the loopback itself.
+
+    The helper's own sockets (the forwarder) do not count. The process
+    token, other ports and every other host go on to the rules. Measured
+    2026-11-15: 118 refusals in one unattended swarm run, each a POST of a
+    test to the scripted endpoint it served itself."""
+    if perms is None or not _is_loopback(host):
+        return False
+    if port in _own_ports(perms):
+        return True
+    if not peer_pid:
+        return False
+    try:
+        from . import socket_guard as _sg
+        return _sg.owns_loopback(ipaddress.ip_address(_loopback_addr(host)),
+                                 port, (), peer_pid, include_root=False)
+    except Exception:
+        return False
 
 
 def _settings() -> dict:
@@ -262,6 +332,101 @@ def configured_domains(workspace=None) -> list[str]:
     return out
 
 
+def named_domains() -> list[str]:
+    """The hosts the user's configuration names for reads: the default
+    allow-list and ``agent.sandbox_network.allowed_domains``. Not the
+    workspace's remotes or the model endpoints (``configured_domains``
+    adds those): a repository names its remotes itself."""
+    return list(DEFAULT_ALLOWED_DOMAINS) + _string_list(
+        _settings().get("allowed_domains"))
+
+
+def upload_named_domains() -> list[str]:
+    """The hosts ``agent.sandbox_network.upload_domains`` names: where the
+    user said uploads may go."""
+    return _string_list(_settings().get("upload_domains"))
+
+
+def user_named_hosts(perms) -> list[str]:
+    """Hosts of the http(s) URLs the user wrote in a typed message of this
+    session (``KitToolPermissions.user_named_urls``, filled only from the
+    person's own words: never a sub-agent's prompt or harness text). The
+    user asked for them, so they count as known: reads pass unasked, and
+    an upload to them is judged as for every known host."""
+    out: list[str] = []
+    for url in list(getattr(perms, "user_named_urls", None) or ()):
+        host = _host_of(url)
+        if host and host not in out:
+            out.append(host)
+    return out
+
+
+# -- bytes sent, per session and host ---------------------------------------
+
+#: Totals at which a session's bytes to one host are recorded (security
+#: event ``egress_sent`` and an ``egress`` line in the audit log): the
+#: first byte, then 64 KiB, 1 MiB, 16 MiB and 256 MiB.
+_SENT_REPORT_AT = (1, 64 * 1024, 1024 * 1024, 16 * 1024 * 1024,
+                   256 * 1024 * 1024)
+_SENT: dict = {}
+_SENT_LOCK = threading.Lock()
+
+
+def _session_key(perms) -> str:
+    """The count's key: the session id, else a token kept on the
+    permissions object itself. Not id(perms): CPython reuses an id once
+    the object is gone, and a new session then inherited the old one's
+    total (and missed its own first-byte record)."""
+    sid = str(getattr(perms, "task_session_id", "") or "")
+    if sid:
+        return sid
+    if perms is None:
+        return "process"
+    token = getattr(perms, "_egress_count_key", "")
+    if not token:
+        token = "perms-" + secrets.token_hex(8)
+        try:
+            setattr(perms, "_egress_count_key", token)
+        except Exception:
+            return f"perms-{id(perms)}"
+    return token
+
+
+def note_sent(perms, host: str, nbytes: int, via: str) -> None:
+    """Count ``nbytes`` the session of ``perms`` sent to ``host`` (through
+    the proxy, or a web tool's request). Records the total when it crosses
+    one of ``_SENT_REPORT_AT``. Never raises."""
+    try:
+        n = int(nbytes)
+        host = str(host or "").lower()
+        if n <= 0 or not host:
+            return
+        key = (_session_key(perms), host)
+        with _SENT_LOCK:
+            before = _SENT.get(key, 0)
+            after = before + n
+            _SENT[key] = after
+        if not any(before < t <= after for t in _SENT_REPORT_AT):
+            return
+        detail = f"{host}: {after} bytes sent this session ({via})"
+        _note_event("egress_sent", detail, False)
+        from . import audit_log
+        audit_log.append({"tool": "egress", "decision": "ok",
+                          "command": detail, "host": host,
+                          "bytes_sent": after, "via": via},
+                         session_id=str(getattr(perms, "task_session_id", "")
+                                        or ""))
+    except Exception:
+        pass
+
+
+def sent_by_host(perms) -> dict:
+    """``{host: bytes}`` the session of ``perms`` has sent so far."""
+    key = _session_key(perms)
+    with _SENT_LOCK:
+        return {h: n for (k, h), n in _SENT.items() if k == key}
+
+
 def _resolve(host: str, port: int) -> list[str]:
     try:
         return sorted({f"{info[4][0]}:{port}" for info in socket.getaddrinfo(
@@ -295,9 +460,7 @@ def _ssh_route_allowed(host: str, url: str) -> bool:
     which the workspace does not write. A direct route bypasses the proxy
     (no upload limit, no question), so a host the repository alone names
     gets none; that is recorded once."""
-    named = list(DEFAULT_ALLOWED_DOMAINS) + _string_list(
-        _settings().get("allowed_domains"))
-    if domain_allowed(host, named):
+    if domain_allowed(host, named_domains()):
         return True
     if host not in _SSH_REMOTE_NOTED:
         _SSH_REMOTE_NOTED.add(host)
@@ -563,7 +726,7 @@ class EgressProxy:
 
     def known(self, host: str, perms=None) -> bool:
         return domain_allowed(host, list(self.allowed_domains) + configured_domains(
-            getattr(perms, "workspace", None)))
+            getattr(perms, "workspace", None)) + user_named_hosts(perms))
 
     def upload_allowed(self, host: str) -> bool:
         """Whether ``host`` may receive an upload when nobody can be asked:
@@ -607,14 +770,13 @@ class EgressProxy:
                 "data another way.")
 
     def decide(self, host: str, port: int, *, method: str = "CONNECT",
-               body_bytes: int = 0, perms=None) -> tuple[str, str, bool]:
+               body_bytes: int = 0, perms=None,
+               peer_pid: int = 0) -> tuple[str, str, bool]:
         """``(verdict, reason, upload)``; verdict is allow, ask or deny."""
-        # The session's own server on this machine (bash_jobs.
-        # own_listening_ports): a port one of ITS running background jobs
-        # listens on, on the loopback, for a session's token only -- the
-        # process token and every other port and host go on below.
-        if (perms is not None and _is_loopback(host)
-                and port in _own_ports(perms)):
+        # The session's own server on this machine (_own_server), for a
+        # session's token only -- the process token and every other port
+        # and host go on below.
+        if _own_server(perms, host, port, peer_pid):
             return "allow", "", False
         if port not in self.allowed_ports:
             return "deny", (
@@ -658,10 +820,15 @@ class EgressProxy:
                 "agent.sandbox_network.allowed_domains in ~/.delfin_settings.json.")
 
     def settle(self, host: str, port: int, *, method: str = "CONNECT",
-               body_bytes: int = 0, perms=None) -> Optional[str]:
+               body_bytes: int = 0, perms=None,
+               peer_pid: int = 0) -> Optional[str]:
         """Apply ``decide``: None to proceed, else the refusal reason. Asks
         the session's approval channel where there is one and the mode
         allows a question; a known host's upload passes unasked otherwise."""
+        # A write to the session's own server is not an upload: it stays
+        # between the session's processes on this machine.
+        if _own_server(perms, host, port, peer_pid):
+            return None
         verdict, why, upload = self.decide(host, port, method=method,
                                            body_bytes=body_bytes, perms=perms)
         if verdict == "deny":
@@ -707,6 +874,87 @@ class EgressProxy:
         return (f"blocked by DELFIN's egress proxy: the user refused "
                 f"{'the upload to ' if upload else ''}{host}. Do not retry it "
                 "or reach the same host another way.")
+
+    def settle_fetch(self, url: str, perms) -> Optional[str]:
+        """The host decision of ``decide`` for a URL a web tool would read
+        in the agent process (``web_fetch``): None to proceed, else the
+        refusal. Taken before anything is resolved or sent.
+
+        A known host passes, as for a command. An unknown host is asked
+        once per session where someone can be asked; the answer is the
+        one ``settle`` keeps for the same host, so one question covers a
+        command and a fetch. With nobody to ask it is refused. A
+        ``web_fetch(domain:...)`` ask rule was already put to the person
+        when the call was dispatched, so it is not asked twice here."""
+        try:
+            parts = urlsplit(str(url or "").strip())
+            host = (parts.hostname or "").lower()
+            port = parts.port or (443 if parts.scheme == "https" else 80)
+        except ValueError:
+            return None          # the fetch itself reports the bad URL
+        if not host or parts.scheme not in ("http", "https"):
+            return None
+        verdict, why, _upload = self.decide(host, port, method="GET",
+                                            perms=perms)
+        if verdict == "deny":
+            return why
+        if verdict == "allow" or why.startswith("the permission rule"):
+            return None
+        key = (id(perms), host, "domain")
+        with self._ask_lock:
+            answered = self._answers.get(key)
+        if answered is None and not self._can_ask(perms):
+            return (f"web_fetch refused: {host} is not a host this session "
+                    "knows, and nobody can be asked. Nothing was sent, not "
+                    f"even a name lookup. A URL can be read when the user "
+                    "wrote it in a message, when a web_search result or a "
+                    "page fetched in this session showed it, or when its "
+                    "host is known (the permission rule "
+                    f"web_fetch(domain:{host}) or "
+                    "agent.sandbox_network.allowed_domains). For a paper, "
+                    "use verify_source or the literature tools; to find a "
+                    "page, use web_search and fetch one of its results.")
+        if answered is None:
+            callback = getattr(perms, "confirm_callback", None)
+            preview = (f"web_fetch wants to read {url[:300]} -- {host} is not "
+                       "a host this session knows (not an allowed domain, "
+                       "not named by you). Allowing it lets this session "
+                       f"read from {host} for the rest of the session.")
+            try:
+                answered = bool(callback("web_fetch", {"url": url}, preview))
+            except Exception:
+                answered = False
+            with self._ask_lock:
+                self._answers[key] = answered
+            _note_event("egress_asked", f"{host} domain (web_fetch): "
+                        + ("approved" if answered else "refused"),
+                        not answered)
+        if answered:
+            return None
+        return (f"web_fetch refused: the user refused {host}. Do not retry "
+                "it or reach the same host another way.")
+
+    def host_answers(self, perms) -> dict:
+        """``{host: answer}``: the person's answers to the unknown-host
+        question (``settle_fetch``) for the session of ``perms``.
+
+        For a caller whose permissions object lives for one decision only
+        -- the external CLI backend's gate hook, one process per tool call
+        (cli_gate) -- and which keeps the answers in its own session
+        state, so the person is asked once per host and session there as
+        here. ``restore_host_answers`` puts them back."""
+        key = id(perms)
+        with self._ask_lock:
+            return {k[1]: bool(v) for k, v in self._answers.items()
+                    if k[0] == key and k[2] == "domain"}
+
+    def restore_host_answers(self, perms, answers) -> None:
+        """Answers ``host_answers`` returned earlier, for ``perms``."""
+        key = id(perms)
+        with self._ask_lock:
+            for host, ok in dict(answers or {}).items():
+                if isinstance(host, str) and host:
+                    self._answers[(key, host.lower(), "domain")] = bool(ok)
 
     def _refuse(self, conn: socket.socket, code: int, reason: str) -> None:
         body = (reason + "\n").encode("utf-8", "replace")
@@ -780,6 +1028,7 @@ class EgressProxy:
             if not ok:
                 self._refuse(conn, 407, "proxy token missing or wrong")
                 return
+            peer = _peer_pid(conn) if perms is not None else 0
             meter = None
             if method.upper() == "CONNECT":
                 host, _, port_s = target.rpartition(":")
@@ -789,7 +1038,7 @@ class EgressProxy:
                 except ValueError:
                     self._refuse(conn, 400, "CONNECT target needs host:port")
                     return
-                why = self.settle(host, port, perms=perms)
+                why = self.settle(host, port, perms=perms, peer_pid=peer)
                 if why:
                     self._refuse(conn, 403, why)
                     return
@@ -804,13 +1053,15 @@ class EgressProxy:
                     # is named for uploads.
                     meter = (lambda sent, _h=host, _p=port, _perms=perms:
                              self.settle(_h, _p, method="CONNECT",
-                                         body_bytes=sent, perms=_perms) is None)
-                upstream = self._open(conn, host, port, perms)
+                                         body_bytes=sent, perms=_perms,
+                                         peer_pid=peer) is None)
+                upstream = self._open(conn, host, port, perms, peer)
                 if upstream is None:
                     return
                 conn.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
                 if rest:
                     upstream.sendall(rest)
+                    note_sent(perms, host, len(rest), "proxy")
             else:
                 url = urlsplit(target)
                 if url.scheme != "http" or not url.hostname:
@@ -825,7 +1076,9 @@ class EgressProxy:
                     except ValueError:
                         size = self.upload_ask_bytes + 1
                 why = self.settle(url.hostname, port, method=method,
-                                  body_bytes=size, perms=perms)
+                                  body_bytes=size, perms=perms, peer_pid=peer)
+                if not why and not _own_server(perms, url.hostname, port, peer):
+                    why = self._payload_refusal(target, url.hostname, perms)
                 if why:
                     self._refuse(conn, 403, why)
                     # Read and drop the body the client is still sending, so
@@ -838,7 +1091,7 @@ class EgressProxy:
                     except OSError:
                         pass
                     return
-                upstream = self._open(conn, url.hostname, port, perms)
+                upstream = self._open(conn, url.hostname, port, perms, peer)
                 if upstream is None:
                     return
                 path = url.path or "/"
@@ -849,8 +1102,13 @@ class EgressProxy:
                         not in ("proxy-authorization", "proxy-connection", "connection")]
                 request = "\r\n".join([f"{method} {path} {version}", *kept,
                                        "Connection: close"]) + "\r\n\r\n"
-                upstream.sendall(request.encode("latin-1") + rest)
-            self._relay(conn, upstream, meter, self.upload_ask_bytes)
+                first = request.encode("latin-1") + rest
+                upstream.sendall(first)
+                note_sent(perms, url.hostname, len(first), "proxy")
+                host = url.hostname
+            self._relay(conn, upstream, meter, self.upload_ask_bytes,
+                        on_sent=lambda n, _h=host, _p=perms: note_sent(
+                            _p, _h, n, "proxy"))
         except OSError:
             pass
         finally:
@@ -861,14 +1119,13 @@ class EgressProxy:
                     except OSError:
                         pass
 
-    def _open(self, conn, host: str, port: int, perms=None):
+    def _open(self, conn, host: str, port: int, perms=None, peer_pid: int = 0):
         try:
-            if (perms is not None and _is_loopback(host)
-                    and port in _own_ports(perms)):
+            if _own_server(perms, host, port, peer_pid):
                 # The session's own server (decide): the loopback itself,
                 # never a name that resolves elsewhere.
-                addr = "::1" if str(host).strip("[]") == "::1" else "127.0.0.1"
-                return socket.create_connection((addr, port), timeout=30.0)
+                return socket.create_connection((_loopback_addr(host), port),
+                                                timeout=30.0)
             return self._connector(host, port, 30.0)
         except OSError as exc:
             reason = str(exc)
@@ -878,10 +1135,47 @@ class EgressProxy:
                 self._refuse(conn, 502, f"could not reach {host}:{port}: {exc}")
             return None
 
+    def _payload_refusal(self, url: str, host: str, perms) -> Optional[str]:
+        """For a plain-HTTP request to a host the decision let through: the
+        refusal when its URL carries data (``web_tools.url_payload_reason``)
+        and nobody can be asked, None otherwise. Where someone can be
+        asked, asked once per host and session; a host named for uploads
+        (``upload_allowed``) is not looked at."""
+        try:
+            from .web_tools import url_payload_reason
+            why = url_payload_reason(url)
+        except Exception:
+            why = None
+        if not why or self.upload_allowed(host):
+            return None
+        key = (id(perms), str(host).lower(), "payload")
+        with self._ask_lock:
+            answered = self._answers.get(key)
+        if answered is None and self._can_ask(perms):
+            preview = (f"A program started by the bash tool wants to send "
+                       f"{url[:300]} through DELFIN's egress proxy: {why}.")
+            try:
+                answered = bool(perms.confirm_callback(
+                    "web_fetch", {"url": url, "source": "bash child process"},
+                    preview))
+            except Exception:
+                answered = False
+            with self._ask_lock:
+                self._answers[key] = answered
+        if answered:
+            return None
+        _note_event("egress_payload_refused", f"{host}: {why}", True)
+        return (f"blocked by DELFIN's egress proxy: the request to {host} was "
+                f"not sent because {why}, and nobody can be asked. A lookup "
+                "carries words, not encoded data; do not retry it or send "
+                "the same data another way.")
+
     @staticmethod
-    def _relay(a: socket.socket, b: socket.socket, meter=None, limit: int = 0) -> None:
+    def _relay(a: socket.socket, b: socket.socket, meter=None, limit: int = 0,
+               on_sent=None) -> None:
         """Copy both ways. ``meter(sent)`` is consulted once when the bytes
-        from ``a`` (the command) pass ``limit``; False ends the tunnel."""
+        from ``a`` (the command) pass ``limit``; False ends the tunnel.
+        ``on_sent(n)`` is told every chunk ``a`` sends that is passed on."""
         a.settimeout(None)
         b.settimeout(None)
         socks = [a, b]
@@ -908,6 +1202,8 @@ class EgressProxy:
                     other.sendall(chunk)
                 except OSError:
                     return
+                if s is a and on_sent is not None:
+                    on_sent(len(chunk))
 
 
 def _note_event(kind: str, detail: str, blocked: bool) -> None:
@@ -920,6 +1216,44 @@ def _note_event(kind: str, detail: str, blocked: bool) -> None:
 
 _PROXY: Optional[EgressProxy] = None
 _LOCK = threading.Lock()
+
+
+class _External:
+    """The proxy of another, longer-lived process, as the cage sees it.
+
+    A short-lived process that only builds a command's cage (the CLI
+    backend's gate hook, ``cli_gate``) cannot run a proxy of its own: it
+    would close when the hook exits, before the command runs. It binds the
+    socket of the DELFIN process that started the CLI instead, with the
+    token file that process issued for the session's permissions; the
+    decisions stay with that process. Only what the cage argv reads
+    (``socket_path``, ``token_file_for``) exists here."""
+
+    _closed = False
+
+    def __init__(self, socket_path: str, token_file: str) -> None:
+        self.socket_path = socket_path
+        self._token_file = token_file
+
+    def token_file_for(self, perms) -> str:
+        return self._token_file
+
+    def close(self) -> None:
+        pass
+
+
+def use_external(socket_path: str, token_file: str) -> None:
+    """Route this process's cages to another process's proxy (_External).
+
+    A live proxy of this very process is never replaced: the gate code
+    can run inside the DELFIN process that owns the proxy (tests do; any
+    in-process caller could), and swapping its own proxy for a stub left
+    every later cage binding a socket nobody served any more."""
+    global _PROXY
+    with _LOCK:
+        if (isinstance(_PROXY, EgressProxy) and not _PROXY._closed):
+            return
+        _PROXY = _External(socket_path, token_file)  # type: ignore[assignment]
 
 
 def get_proxy() -> EgressProxy:

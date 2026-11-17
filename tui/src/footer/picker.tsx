@@ -28,6 +28,9 @@ export interface Choice {
   value: string
   /** Marked as what is in force now (the current model, the posture). */
   current?: boolean
+  /** Read by the filter besides label and detail, never shown (a whole
+   *  session id, a whole folder). */
+  search?: string
 }
 
 export interface PickerState {
@@ -46,9 +49,11 @@ export interface PickerState {
 export interface Picker {
   state: PickerState
   /** Open with a title, and the choices (or a promise of them); `more`
-   *  are added when they arrive, the choices are pickable at once. */
+   *  are added when they arrive, the choices are pickable at once.
+   *  `onCancel` runs when it closes without a pick (esc, ctrl+c, another
+   *  list opened in its place). */
   open(title: string, choices: Choice[] | Promise<Choice[]>, onPick: (choice: Choice) => void,
-       more?: Promise<Choice[]>): void
+       more?: Promise<Choice[]>, onCancel?: () => void): void
   close(): void
   /** The choices that match what is typed, in their order. */
   shown(): Choice[]
@@ -76,14 +81,24 @@ export function createPicker(options: { clickPauseMs?: number; now?: () => numbe
     setStore("choices" in patch || "query" in patch || "open" in patch || "loading" in patch
       ? { ...patch, shownAt: now() } : patch)
   let pick: ((choice: Choice) => void) | null = null
+  let cancel: (() => void) | null = null
   let generation = 0
 
-  const shown = () => state.choices.filter((c) => matches(`${c.label} ${c.detail ?? ""}`, state.query))
+  const shown = () => state.choices.filter((c) => matches(`${c.label} ${c.detail ?? ""} ${c.search ?? ""}`, state.query))
+
+  /** The open list's cancel, taken (it runs at most once). */
+  const takeCancel = () => {
+    const then = cancel
+    cancel = null
+    return then
+  }
 
   const open = (title: string, choices: Choice[] | Promise<Choice[]>, onPick: (choice: Choice) => void,
-                more?: Promise<Choice[]>) => {
+                more?: Promise<Choice[]>, onCancel?: () => void) => {
+    const replaced = state.open ? takeCancel() : null
     const mine = ++generation
     pick = onPick
+    cancel = onCancel ?? null
     const first = Array.isArray(choices) ? choices : []
     setState({ open: true, title, loading: !Array.isArray(choices), error: "", choices: first, query: "",
                selected: Math.max(0, first.findIndex((c) => c.current)) })
@@ -100,17 +115,26 @@ export function createPicker(options: { clickPauseMs?: number; now?: () => numbe
     void more?.then((list) => {
       if (mine === generation) setState({ choices: [...state.choices, ...list] })
     }).catch(() => {})
+    replaced?.()
   }
 
-  const close = () => {
+  const shut = () => {
     generation++
     pick = null
     setState({ open: false, choices: [], query: "", selected: 0, error: "" })
   }
 
+  const close = () => {
+    const then = state.open ? takeCancel() : null
+    cancel = null
+    shut()
+    then?.()
+  }
+
   const choose = (chosen: Choice) => {
     const then = pick
-    close()
+    cancel = null
+    shut()
     then?.(chosen)
   }
 

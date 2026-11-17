@@ -18,8 +18,13 @@ their request for one push of this branch, now.
    says what changed and why. Changes you did not make are not yours to
    commit: list them and ask.
 4. Before pushing, run the checks a reviewer would: the tests that cover
-   the changed files, and `ruff check` when the project uses it. A failing
-   check stops the push: report it and offer the fix.
+   the changed files, and `ruff check` when the project uses it. In a
+   repository with repo-wide guard tests, run the ones matching what the
+   branch touches too -- named `tests/test_*guard*.py` plus the
+   `tests/test_every_*` and `tests/test_delfins_own_*` invariant
+   families (they are not all named "guard"; CI caught guards nobody
+   ran locally). A failing check stops the push: report it and offer
+   the fix.
 5. Push: `git push -u origin <branch>`. A rejected push (the remote moved
    on) is not forced: bring the remote in with the `merge` steps, then
    push again.

@@ -40,6 +40,7 @@ from delfin.manta.ml_tables import (
     _METAL_SET,
     _PREFERRED_CN4_GEOMETRY,
     _get_ml_bond_length,
+    _check_ml_bond_length,
     _secondary_donor_fit_weight,
     _secondary_donor_target_length,
 )
@@ -3036,7 +3037,7 @@ def _optimize_secondary_metal_module_local(
                 diff = rng.standard_normal(3)
                 dist = float(np.linalg.norm(diff))
             unit = diff / max(dist, 1e-12)
-            min_allowed = max(1.70, 0.92 * float(_get_ml_bond_length(metal_sym, atom.GetSymbol())))
+            min_allowed = max(1.70, 0.92 * float(_check_ml_bond_length(metal_sym, atom.GetSymbol())))
             if atom_idx in alpha_atoms:
                 if _is_planar_like_atom(atom):
                     min_allowed = max(min_allowed, 2.18)

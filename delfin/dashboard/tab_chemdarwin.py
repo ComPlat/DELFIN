@@ -46,11 +46,19 @@ try:
     import py3Dmol
 except ImportError:
     py3Dmol = None
+else:
+    # The </script> rule; the lazy accessor in molecule_viewer is not on
+    # this path, so a viewer built here first would embed text unescaped.
+    from .molecule_viewer import _harden_py3dmol
+    _harden_py3dmol(py3Dmol)
 
+# Whether stk is installed, found without importing it: the import alone
+# takes about two seconds and this module never calls stk, while the tab
+# is built at every dashboard start.
 try:
-    import stk  # noqa: F401
-    STK_AVAILABLE = True
-except ImportError:
+    import importlib.util as _ilu
+    STK_AVAILABLE = _ilu.find_spec('stk') is not None
+except (ImportError, ValueError):
     STK_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
@@ -1343,7 +1351,7 @@ def create_tab(ctx):
         return widgets.HBox(
             [label, drawing['buttons'][which]],
             layout=widgets.Layout(gap='10px', align_items='center',
-                                  flex_wrap='wrap', max_width='100%'))
+                                  flex_flow='row wrap', max_width='100%'))
 
     def _safe_job_name(name_raw):
         return ''.join(c for c in name_raw if c.isalnum() or c in ('_', '-'))

@@ -49,7 +49,7 @@ why it could not be closed here.
 6. **CI**: `.github/workflows/tui.yml` runs the window's and the service's
    tests, the live tmux checks and builds the binaries; it passes on the
    fork, where each binary's smoke test starts it (macOS and linux-arm64
-   included). The macOS jobs run on `macos-14` (Apple silicon) and
+   included). The macOS jobs run on `macos-15` (Apple silicon) and
    `macos-15-intel`; GitHub retires runner images now and then, so a label
    may need updating.
 7. **OpenTUI upstream**: we carry opentui PR #1665 and three startup fixes

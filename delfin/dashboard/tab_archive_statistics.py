@@ -11,4 +11,6 @@ def create_tab(ctx):
     archive_ctx = replace(ctx, calc_dir=ctx.archive_dir)
     # Preserve original calculations root so Archive can move items back there.
     archive_ctx.primary_calc_dir = ctx.calc_dir
+    # Headed by its own name, not the browser's (the tab's title).
+    archive_ctx.browser_title = 'Archive'
     return tab_calculations_browser.create_tab(archive_ctx)

@@ -127,6 +127,9 @@ def wake_prompt(done: Iterable[dict]) -> str:
             line += f" — {ev['degraded']}"
         if ev.get("url"):
             line += f" — {ev['url']}"
+        if ev.get("results"):
+            # A cluster job: its outcome and where its results came back to.
+            line += f" — {ev['results']}"
         lines.append(line)
     if not lines:
         return ""

@@ -34,31 +34,18 @@ import re
 import stat
 from pathlib import Path, PurePosixPath
 
+# The state root is owned by state_paths.py (the keeper of the state tree);
+# shared_tmp only asks it where the tree lives. Re-exported here so the
+# callers of ``shared_tmp.state_root()`` and the test suite keep resolving it
+# in this module.
+from .state_paths import state_root  # noqa: F401
+
 # The cage-side mount point this module maps.
 CAGE_TMP = "/tmp"
 
 # Session ids become directory names. Keep it conservative: letters,
 # digits, dash, underscore, dot; everything else becomes a dash.
 _SAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
-
-_DEFAULT_STATE_ROOT: Path | None = None
-
-
-def state_root() -> Path:
-    """The DELFIN state root shared temp directories live under.
-
-    ``~/.delfin`` by default, overridable via the ``DELFIN_STATE``
-    environment variable (used by tests and by callers that keep state
-    elsewhere). Resolution errors fall back to ``~/.delfin`` -- a
-    missing HOME must not turn a temp-path question into a crash.
-    """
-    env = os.environ.get("DELFIN_STATE", "").strip()
-    if env:
-        return Path(env).expanduser()
-    try:
-        return Path.home() / ".delfin"
-    except Exception:  # pragma: no cover - HOME unset
-        return Path("/.delfin")
 
 
 def _is_safe_dir(p: Path) -> bool:

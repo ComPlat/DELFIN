@@ -62,9 +62,12 @@ def test_permissions_delfin_workspace_gets_xtb_pattern():
         assert perms.is_delfin_workspace is True
         # An xtb run is a calculation, decided by calc_policy on its setup
         # and cores, not by this list (tests/test_a_checked_calculation_
-        # runs_without_a_dialog.py); its version query stays free.
+        # runs_without_a_dialog.py); its version query is admitted by the
+        # gate's information route once the bare name resolves to the
+        # installed program, not by a pattern on this list
+        # (tests/test_an_information_call_is_not_a_calculation.py).
         assert perms.matches_bash_auto_allow("xtb mol.xyz --opt") is False
-        assert perms.matches_bash_auto_allow("xtb --version") is True
+        assert perms.matches_bash_auto_allow("xtb --version") is False
         # the read-only delfin subcommands too; acting ones are asked
         # (tests/test_an_acting_delfin_command_is_asked.py)
         assert perms.matches_bash_auto_allow("delfin qm_check xtb") is True

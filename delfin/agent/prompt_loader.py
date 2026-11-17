@@ -951,11 +951,14 @@ class PromptLoader:
     _DEFAULT_COAUTHOR_EMAIL = "noreply@delfin-agent.invalid"
 
     def _commit_attribution_block(self, model: str = "") -> str:
-        """The co-author trailer the agent ends its commits with.
+        """The co-author trailer naming the agent and the model behind a
+        commit.
 
         On by default; ``agent.commit_coauthor = false`` turns it off, and
-        the user's own instructions or remembered preferences win over it --
-        the same order Claude Code keeps for its attribution line.
+        the user's own instructions or remembered preferences win over it.
+        The executor now adds the same trailer mechanically to ``git
+        commit`` the agent runs, so this line is a fallback for the paths
+        that do not go through the bash executor.
         """
         try:
             from delfin.user_settings import load_settings
@@ -1760,57 +1763,14 @@ class PromptLoader:
             return set(sticky)
         return active
 
-    # Models whose attention degrades quickly past 4 k of system prompt.
-    # Auto-trigger ``compact_prompt`` for these + any explicit
-    # ``agent.compact_prompt: true`` setting. The shape is family-
-    # prefix + (\W.*?)? + size-suffix, so names with arbitrary middles
-    # like "qwen2.5-coder:7b" still match. Conservative — only the
-    # small / weak-tier; larger MoE models (qwen3.5-397b, gpt-oss-
-    # 120b, etc.) handle the regular slim prompt fine.
-    _WEAK_MODEL_PATTERNS = (
-        r"gemma.*?(?:^|[^0-9])(?:1|2|3|4|7|9)b\b",
-        r"llama.*?(?:^|[^0-9])(?:3|7|8)b\b",
-        r"qwen.*?(?:^|[^0-9])(?:1\.5|3|7|14)b\b",
-        r"phi.*?(?:^|[^0-9])(?:1\.5|2|3|4)b\b",
-        r"phi-?\d(?![0-9])",                   # phi-1 / phi-2 / phi-3 (bare)
-        r"mistral.*?(?:^|[^0-9])(?:3|7)b\b",
-        r"deepseek.*?(?:lite|(?:^|[^0-9])(?:6|7)b\b)",
-        r"codellama.*?(?:^|[^0-9])(?:7|13)b\b",
-        r"\bsmall[lm]?\b",                      # generic "small" marker
-    )
     _COMPACT_LINE_MAX = 80   # collapse paragraphs longer than this when compact
     _COMPACT_TARGET_TOKENS = 3000
 
-    # Models at or below this parameter count (in billions) get the compact
-    # prompt + core tool surface. 14b is the weak/strong boundary (qwen-14b is
-    # weak; 32b/70b/120b/397b are strong) — matches _WEAK_MODEL_PATTERNS.
-    _WEAK_MODEL_MAX_B = 14.0
-    # An "<N>b" parameter-size token at a separator boundary (":4b", "-7b",
-    # "397b"). A size glued to a letter (MoE "…-A17b" active-param suffix) is
-    # deliberately NOT matched, so only the total parameter count is read.
-    _PARAM_SIZE_RE = re.compile(r"(?<![a-z0-9.])(\d+(?:\.\d+)?)b(?![a-z0-9])")
-
-    def _param_size_b(self, model: str):
-        """Largest parameter-size tag (in billions) in the model name, or None
-        when the name carries no explicit size. ``qwen3-vl:4b`` → 4.0,
-        ``kit.qwen3.5-397b-A17b`` → 397.0 (not 17)."""
-        sizes = [float(x) for x in self._PARAM_SIZE_RE.findall(model.lower())]
-        return max(sizes) if sizes else None
-
     def _is_weak_model(self, model: str = "") -> bool:
-        """Heuristic — does the active model need the compact prompt?
+        """One-line delegate: the heuristic lives in model_capabilities."""
+        from .model_capabilities import _is_weak
+        return _is_weak(model)
 
-        An explicit parameter-size tag is authoritative (small => weak, large
-        => strong), so any ``:Nb`` Ollama tag is classified correctly without
-        enumerating every size in the family regex (e.g. ``qwen3-vl:4b`` is now
-        caught). Names without a size fall back to the family patterns."""
-        if not model:
-            return False
-        m = model.lower()
-        size = self._param_size_b(m)
-        if size is not None:
-            return size <= self._WEAK_MODEL_MAX_B
-        return any(re.search(p, m) for p in self._WEAK_MODEL_PATTERNS)
 
     def _compact_prose(self, text: str) -> str:
         """Aggressively shrink long prose sections for weak models.
@@ -2378,9 +2338,8 @@ class PromptLoader:
             add("session_env", self.LAYER_VOLATILE,
                 f"--- Session Environment ---\n{env_block}" if env_block else "")
 
-            # Who wrote a commit, named the way Claude Code names itself:
-            # the agent and the model behind it, so a history read later
-            # says which model made which change.
+            # Who wrote a commit: the agent and the model behind it, so a
+            # history read later says which model made which change.
             add("commit_attribution", self.LAYER_VOLATILE,
                 self._commit_attribution_block(model))
 

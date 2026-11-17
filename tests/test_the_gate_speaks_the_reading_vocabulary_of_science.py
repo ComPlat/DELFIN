@@ -89,9 +89,9 @@ READING_COMMANDS = [
     "sha1sum results.csv",
     "paste a.txt b.txt",
     "column a.txt",
-    # asking a program about itself
-    "xtb --version",
-    "xtb --help",
+    # asking a program about itself (xtb, CREST, ORCA, sbatch, delfin: the
+    # gate's information route, which needs the installed program on
+    # PATH -- tests/test_an_information_call_is_not_a_calculation.py)
     "orca_2mkl --help",
     "python --version",
     "pip --version",

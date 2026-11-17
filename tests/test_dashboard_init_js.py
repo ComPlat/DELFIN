@@ -129,8 +129,14 @@ def test_startup_sends_the_scripts_exactly_once():
         and isinstance(node.func, ast.Attribute)
         and node.func.attr in ('run_js', 'keep_js')
     ]
-    assert len(calls) == 1, (
+    # Since 11.11. none: the startup bundle runs from an element in the page
+    # (helpers.self_running_html). Through ctx.js_output a tab built at
+    # start cleared it with its own run_js before the browser ran it (no
+    # 3Dmol, no login keep-alive).
+    assert len(calls) == 0, (
         f'{len(calls)} script sends run during startup; each one clears the '
         'output the previous script was waiting in')
-    assert calls[0].func.attr == 'keep_js', (
+    src = inspect.getsource(dashboard.create_dashboard)
+    assert 'ctx.page_scripts.append(_calc_init)' in src, (
         'the startup bundle must be kept, or a resumed page has no 3Dmol')
+    assert 'self_running_html(*_startup_parts)' in src

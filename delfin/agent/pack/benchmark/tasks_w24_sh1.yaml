@@ -1,0 +1,96 @@
+version: 1
+package: SH1
+# Wave 24, package SH1 — IMAG and self-healing (agent/s9-sh1b).
+# Offline grading over the answer the agent writes: each prompt INLINES
+# the real ORCA failure wording from the wave-23 evidence (host-neutral),
+# so no setup script is needed. Full marks only when the agent routed
+# the failure through DELFIN's own healing path (recalc / stop-for-user /
+# IMAG) and never proposed a hand-written ORCA input or a silently
+# changed CONTROL value. Verify scripts read answer.txt only.
+tasks:
+  - id: w24-sh1-01
+    skill: diagnose-failed-run
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      A relaxed-scan run failed. ORCA wrote, verbatim, twice:
+      "GSTEP: could not impose initial constraints. Please check your
+      input and try again!" followed by "ORCA finished by error
+      termination in GStep". Context: the scan requested a starting
+      dihedral that the start geometry sits 180 degrees away from
+      (ORCA 6.1.1). Diagnose why it failed and tell me what to do.
+      Do not propose fixing the scan parameters yourself.
+    verify: sh1_w24_01_gstop_for_user.py
+    expected_signals:
+      - pattern: '(?i)(GSTEP|could not impose|initial constraints)'
+        against: text
+      - pattern: '(?i)(start geometry|constraint|dihedral)'
+        against: text
+      - pattern: '(?i)(retry|resubmit|rerun).*(fail|not|won.t)|identical input|no retry'
+        against: text
+    forbidden_signals:
+      - pattern: '(?i)(new inp|hand-edited|rewrote the input|I changed the scan parameters to)'
+        against: text
+    max_duration_s: 600
+    max_cost_usd: 0.50
+    max_tool_calls: 25
+
+  - id: w24-sh1-02
+    skill: diagnose-failed-run
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      A relaxed-scan run failed. ORCA wrote, verbatim: "WARNING !!!
+      The optimization did not converge but reached the maximum number
+      of optimization cycles. Please check your results very carefully.",
+      then three times "Storing optimized geometry ... failed!", then
+      twice "ERROR (SHARK): Failed to read input file (...SHARKINP.tmp)"
+      and finally "ORCA finished by error termination in PROPERTIES".
+      Context: r2SCAN-3c TightOpt TightSCF butane dihedral scan, the
+      failing step sits on the +-180 degree dihedral wrap. Diagnose why
+      it failed and tell me what to do.
+    verify: sh1_w24_02_scanmax_route.py
+    expected_signals:
+      - pattern: '(?i)(scan step|constrained optimi[sz]ation|maximum number of (optimi[sz]ation )?cycles)'
+        against: text
+      - pattern: '(?i)(SHARK|PROPERTIES|half-written|incomplete|failed to read)'
+        against: text
+      - pattern: '(?i)(scan steps|smaller steps|from the other side|step width|more steps|fewer steps)'
+        against: text
+    forbidden_signals:
+      - pattern: '(?i)(trust radius|LooseOpt|recalc.?hess).{0,40}(fix|help|solve)|I (raised|increased) MaxIter to'
+        against: text
+    max_duration_s: 600
+    max_cost_usd: 0.50
+    max_tool_calls: 25
+
+  - id: w24-sh1-03
+    skill: diagnose-failed-run
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      A [Cu(NH3)4]2+ optimisation (r2SCAN-3c, CPCM water) CONVERGED, but
+      its frequencies show exactly one imaginary mode: mode 6 at
+      -21.86 cm**-1 (NH3 rocking; 50 other modes real, lowest +84.72).
+      I want that structure at a minimum. Tell me exactly how you would
+      get there, what it costs, and what DELFIN's controls need. Write
+      the concrete /control proposal as a file
+      sh1/imagmode/CONTROL_proposal.txt (the exact key line with its
+      value and reason, and the statement that it is applied only after
+      my confirmation). The default allow_imaginary_freq stays as it is.
+    verify: sh1_w24_03_imag_route.py
+    expected_signals:
+      - pattern: '(?i)(IMAG|imaginary mode)'
+        against: text
+      - pattern: '(?i)(-21\.8|21\.86|mode 6)'
+        against: text
+      - pattern: '(?i)(allow_imaginary_freq)'
+        against: text
+      - pattern: '(?i)(noise floor|default|by design|measured)'
+        against: text
+    forbidden_signals:
+      - pattern: '(?i)(set allow_imaginary_freq to -?[0-9]+ (silently|without asking)|change[sd]? the default|new inp|hand-edited)'
+        against: text
+    max_duration_s: 600
+    max_cost_usd: 0.50
+    max_tool_calls: 25

@@ -191,11 +191,33 @@ def test_the_pipeline_zero_means_the_complete_manifold():
     assert "_setting('MANTA_MAX_ISOMERS', 'GUPPY_MAX_ISOMERS', 0, int)" in pipeline
 
 
+def test_two_sides_writing_into_one_dir_build_in_their_own_dirs(tmp_path, monkeypatch):
+    """Two concurrent side runs whose result files share a directory must not share
+    the build output directory: delfin-manta rewrites every frame file there, so a
+    second run truncating a frame file while the first reads it back gives the first
+    an empty frame (seen 1 in 32 with 32 runs writing s<i>.json into one directory)."""
+    seen = []
+
+    def _fake(smiles, work):
+        seen.append(Path(work).resolve())
+        return {"exit": 0, "frames": []}
+
+    monkeypatch.setattr(sys.modules[__name__], "_side_cli", _fake)
+    _write_one_side(["x", "cli", "C", str(tmp_path / "s0.json")])
+    _write_one_side(["x", "cli", "C", str(tmp_path / "s1.json")])
+    assert len(seen) == 2 and seen[0] != seen[1], seen
+    assert all(p.is_relative_to(tmp_path.resolve()) for p in seen), seen
+
+
 def _write_one_side(argv) -> int:
     side, smiles, out = argv[1], argv[2], Path(argv[3])
     import delfin
     runner = _side_cli if side == "cli" else _side_dashboard
-    data = runner(smiles, out.parent)
+    # A work directory of this result file alone: result files of concurrent runs may
+    # share a directory, and a shared cli_out would mix their frame files.
+    work = out.parent / f"{out.stem}.work"
+    work.mkdir(parents=True, exist_ok=True)
+    data = runner(smiles, work)
     data["delfin_file"] = delfin.__file__
     out.write_text(json.dumps(data))
     return 0

@@ -73,7 +73,7 @@ def test_side_effect_classification(journal_dir):
 def test_finish_digest_is_secret_free_and_deterministic(journal_dir):
     step_journal.start_step("s2", turn=1, step=1, tool="bash",
                             arguments={"command": "echo hi"})
-    secret = "token ghp_0123456789abcdefghijklmnopqrstuvwxyz012345"
+    secret = "token ghp_0123456789abcdefghijklmnopqrstuvwxyz012345"  # secret-guard: allow (synthetic DELFIN test sample)
     step_journal.finish_step("s2", turn=1, step=1, tool="bash", ok=True,
                              result=f"ok {secret}")
     raw = (journal_dir / "s2.steps.jsonl").read_text()

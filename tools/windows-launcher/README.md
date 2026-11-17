@@ -8,8 +8,13 @@ All app text, terminal messages and instructions are in English.
 
 ## What happens when you start
 
-1. One Windows OpenSSH connection opens. Enter your password and OTP when the
-   server requests them. The app does not store credentials or bypass MFA.
+1. A short Windows OpenSSH connection checks the launcher's two server scripts
+   (`remote_bootstrap.sh`, `remote_launcher.py`) in
+   `~/.cache/delfin-launcher/<version>/` on the server. If they are missing or
+   differ, Windows `scp` copies them there as plain files (once per launcher
+   version). Then the dashboard connection opens and runs them from there.
+   Enter your password and OTP when the server requests them. The app does
+   not store credentials or bypass MFA.
 2. DELFIN and its environment are discovered automatically. A verified existing
    dashboard is reused; otherwise the app starts a new dashboard in tmux.
 3. The same SSH connection carries the browser tunnel. The browser signs in using
@@ -19,25 +24,38 @@ All app text, terminal messages and instructions are in English.
    working shell with **Ctrl+B, then N**. These are terminal views inside one
    Windows window, not two separately authenticated Windows SSH windows.
 
-There is one SSH authentication sequence for this connection. The server can
-still request multiple authentication factors, retries or jump-host logins.
+With **Remember login** (on by default) only the first connection to a server
+asks for the password: the short check, and once per launcher version the
+copy, log in with the remembered key afterwards. Without a key (first login,
+Remember login off, or a server that also requires a password/OTP for keys),
+OpenSSH asks once for the check, once for a copy when one is needed, and once
+for the dashboard connection. The server can still request multiple
+authentication factors, retries or jump-host logins.
 Closing the browser does not close SSH or stop the dashboard.
 
 ## App, dashboard terminal and browser
 
-The installer builds `DELFIN.exe` locally using the Windows .NET Framework
-compiler and the included readable `Starter.cs`. The desktop/Start menu shortcuts
-open the settings app without a PowerShell console. The settings app is an
-independent main window and stays in the taskbar with the DELFIN icon while open.
+The installer creates ordinary Windows shortcuts (`.lnk`, through the standard
+`WScript.Shell` object) that start Windows PowerShell on the installed
+`DELFIN.ps1`:
+`powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File "...\DELFIN.ps1"`.
+Nothing is compiled, downloaded or hidden. The shortcut starts PowerShell's
+console window **minimized**; it belongs to the app (closing it closes the
+app). The settings app is an independent main window with the DELFIN icon.
 
 A separate dashboard terminal appears for native OpenSSH password/OTP and
 host-key prompts and stays visible after the browser opens. This is the only
 SSH terminal; it uses the PowerShell icon and an SSH title. The DELFIN logo
-belongs to the settings app, not a second terminal. Use Ctrl+C there to
+belongs to the settings app, not a second terminal. It is a classic Windows
+console: to paste a password or OTP there, **right-click** in the window.
+Ctrl+V does not paste at OpenSSH's password prompt in this console; it sends a
+control character, and the server answers "Permission denied" for a correct
+password. The app never reads or stores the password itself. Use Ctrl+C there to
 stop the dashboard explicitly, including with Keep ON. The optional working
 terminal is still OFF by default. Keep the DELFIN app open while using the browser.
-**Show terminal** restores the current SSH window if minimized or hidden and
-reports whether Windows could show it. It operates on the active connection
+**Show terminal** brings the current SSH window to the front (Windows
+`AppActivate`) and reports whether Windows could do so; a minimized window
+flashes in the taskbar, click it there. It operates on the active connection
 even if another saved profile is selected.
 **Disconnect** ends all connections started by this app instance. Closing the
 DELFIN settings app ends all connections started by that instance, including a
@@ -52,17 +70,19 @@ your browser. Disconnect before changing the SSH destination.
 Closing a browser tab alone does not disconnect SSH. Authentication/startup
 failures remain visible. Enable the optional working terminal to keep the SSH
 window visible and switch tmux windows. Reinstall to update the shortcuts; unpin
-an old PowerShell-based taskbar shortcut and pin the new DELFIN shortcut.
+a taskbar entry of an earlier version (it pointed to `DELFIN.exe`, which this
+version removes) and pin the new DELFIN shortcut.
 
 ## Taskbar shortcut
 
 The installer creates DELFIN shortcuts with the logo on the desktop and in the
 current user's Start menu. Find **DELFIN** in Start, right-click it and select
 **Pin to taskbar** (under **More** on some Windows versions).
-The settings window supplies Windows with DELFIN.exe as its relaunch command,
-the DELFIN icon and its own window AppUserModelID, so pinning that open window
-also targets DELFIN rather than its internal PowerShell host. Remove a previously
-pinned PowerShell entry before pinning the updated DELFIN window.
+Pin the **shortcut**, not the open window: the app runs in Windows
+PowerShell, so the open window's taskbar entry is PowerShell's and groups with
+other PowerShell windows. Earlier versions gave the window an identity of its
+own through a compiled helper; this version uses no compiled code and leaves
+the grouping to Windows.
 This installer does not force a taskbar pin or change your taskbar layout.
 Updates preserve the shortcut location. Before uninstalling, right-click a pinned
 DELFIN icon and select **Unpin from taskbar**; the uninstaller removes the desktop
@@ -74,7 +94,21 @@ Two options are visible without opening Advanced settings:
 
 - **Working shell (Ctrl+B, then N)**: disabled by default for new saved
   connections. Enable it to open/reuse a tmux window named `DELFIN-work`.
+- **Remember login on this PC (SSH key)** (advanced settings, on by default):
+  the app makes one ed25519 key per Windows user
+  (`%USERPROFILE%\.ssh\delfin_launcher_ed25519`, no passphrase, protected by
+  the Windows account) and sends its public half with every connection. The
+  first connection still asks for the password; `remote_bootstrap.sh` then adds
+  the key to the server's `~/.ssh/authorized_keys` as
+  `restrict,port-forwarding,pty ...` (only the dashboard tunnel and a terminal:
+  no agent, no X11, no `~/.ssh/rc`). Later connections log in with the key.
+  A server that requires a password or OTP as well keeps asking for it. Revoke
+  a PC by deleting its `delfin-launcher-<name>` line on the server; a server
+  account with `~/.config/delfin/launcher-no-keys.conf` never adds keys.
 - **Keep session after disconnect**: disabled by default for new saved connections.
+  A server whose account has `~/.config/delfin/launcher-keep.conf` (the
+  Raspberry Pi agent box sets it) keeps every connection's dashboard, whatever
+  this checkbox says; Ctrl+C still stops it.
   When off, disconnecting stops the **new dashboard started by this connection**
   and its tmux shell windows. When on, it uses DELFIN `--keep` and keeps the server
   and opted-in dashboard kernels available for reconnecting.
@@ -110,7 +144,8 @@ passed explicitly into tmux for the dashboard and working shell.
 
 ### Windows
 
-- Windows 10/11, Windows PowerShell 5.1 and the optional **OpenSSH Client**.
+- Windows 10/11, Windows PowerShell 5.1 and the optional **OpenSSH Client**
+  (`ssh.exe` and `scp.exe` in `C:\Windows\System32\OpenSSH`).
 - Check with `Get-Command ssh.exe`. Install the client through Windows Settings
   → Optional features if it is missing.
 - A default browser, network access to the SSH server and any required VPN.
@@ -122,7 +157,11 @@ passed explicitly into tmux for the dashboard and working shell.
 
 - Current DELFIN including the `--strict-port` option and a working dashboard.
 - An SSH server allowing TCP-to-Unix-socket forwarding (OpenSSH streamlocal forwarding).
-- Bash, `base64`, and tmux for new persistent dashboards.
+- Bash, `sha256sum` (GNU coreutils), and tmux for new persistent dashboards.
+- `scp` or the SFTP subsystem enabled in the SSH server (the usual default),
+  for copying the launcher's two scripts into `~/.cache/delfin-launcher/`.
+  Each launcher version uses its own folder (about 30 kB); old folders can be
+  deleted at any time.
 - A Python environment containing DELFIN and its dashboard dependencies.
 - Any explicitly selected working directory must exist.
 
@@ -213,6 +252,47 @@ is not visible through login/PATH or the selected repository, provide its locati
 The app cannot guess arbitrary dormant installations, custom shell functions,
 module names or Conda environment names. Multiple matching repository environments
 produce an explicit error instead of a random choice. No dependencies are installed.
+
+Every probe and start runs Python without the current directory on its path:
+a plain folder named `delfin` in your home or working directory (an install
+root, a repository root) would otherwise shadow the installed package as an
+empty namespace package, and discovery reported "Not found".
+
+### Several people on one server account
+
+On a server account that several people share (for example a lab's agent
+box), the account owner can give each person a home of their own:
+
+```bash
+mkdir -p ~/.config/delfin && touch ~/.config/delfin/launcher-people.conf
+```
+
+From then on the app sends the Windows user name (lower case, `a-z0-9_-`),
+and the server uses `~/people/<name>` as that connection's home: own DELFIN
+sessions and chats, own dashboard with its own port and token, own agent
+service (`DELFIN_RUNTIME_DIR`), own agent workspace `~/people/<name>/agent_workspace` (the dashboard agent's working folder)
+and tmux sessions named `delfin-win-<name>-<port>-...`. Reconnecting from the
+same Windows user returns to that person's dashboard. Shared by link with the
+account: the installation, credentials, tools, caches, git and SSH setup.
+Without the file the name is ignored and nothing changes.
+
+DELFIN's settings come in two layers. The account's `~/.delfin_settings.json`
+holds the defaults; the launcher exports `DELFIN_SETTINGS_DEFAULTS` naming it,
+and DELFIN reads it under the person's own `~/people/<name>/.delfin_settings.json`.
+A change a person makes in the dashboard is written to their own file only,
+and only what differs from the defaults is kept there, so a later change of a
+default (for example by `pi_install.sh`) reaches everyone who did not set that
+value themselves. A person file that was a link to the account's file (the
+earlier layout) is replaced by an empty file of its own on the next connection;
+its content was the account's, so nothing is lost. A copy kept from before that
+layout (`.delfin_settings.json.before-shared-<date>`) is **not** applied again;
+take what you want from it in the dashboard's Settings tab, or merge it into
+the person's file by hand.
+
+This keeps people from getting in each other's way; it does **not** keep
+them apart. They are one Unix user: everyone can read every file of the
+account, including the credentials stored there. Keep personal secrets in
+personal accounts.
 
 ### Automatic port selection
 
@@ -329,11 +409,66 @@ Use `-WhatIf` to preview without removing anything. The download/extraction fold
 is not deleted. For an older installation without an uninstall script, install
 this updated package first; saved connections are preserved.
 
+## Antivirus
+
+The package is plain text: PowerShell, batch, Bash and Python scripts, a
+README, a PNG and an ICO. It compiles nothing, starts no hidden window, uses
+no encoded command, downloads nothing, writes no autostart entry and changes
+no security setting. Its only registry entry is the per-user
+Installed apps registration.
+
+Reputation-based engines (Norton Insight, reported as `WS.Reputation.1`,
+Microsoft SmartScreen) still warn about any file that is new, rare and
+unsigned, whatever it contains: the verdict means "few users have this file",
+not "this file does something harmful". Two things remove it:
+
+1. **A signed release.** With a code-signing certificate configured,
+   `build_package.py` adds an Authenticode signature with a timestamp to every
+   `.ps1` before it computes `SHA256SUMS.txt` and the ZIP (a signature changes
+   the file):
+
+   ```bash
+   # Linux, osslsigncode >= 2.6
+   DELFIN_SIGN_PFX=/secure/codesign.pfx DELFIN_SIGN_PASSWORD_FILE=/secure/codesign.pass \
+   DELFIN_SIGN_TIMESTAMP_URL=<RFC 3161 timestamp URL of the certificate issuer> \
+   python build_package.py
+   ```
+
+   On Windows, `DELFIN_SIGN_THUMBPRINT` (a certificate in
+   `Cert:\CurrentUser\My`) with the same `DELFIN_SIGN_TIMESTAMP_URL` signs
+   through `Set-AuthenticodeSignature`. The key and its password never belong
+   in the repository. Without these variables the build is unsigned and works
+   the same. `.cmd` files cannot carry an Authenticode signature; they are two
+   short wrappers that start the signed scripts. Check a signature on Windows
+   with `Get-AuthenticodeSignature .\DELFIN.ps1`. A signed script also
+   satisfies `RemoteSigned` without unblocking.
+2. **A false-positive report** for each release, with the ZIP and its
+   SHA-256 (`Get-FileHash` on Windows, `sha256sum` on Linux):
+   - Norton / Gen Digital: <https://submit.norton.com/> (choose a false
+     positive, attach the ZIP);
+   - Microsoft Defender and SmartScreen:
+     <https://www.microsoft.com/wdsi/filesubmission> (as software developer
+     or customer, "incorrectly detected");
+   - other vendors run comparable forms (search "<vendor> false positive
+     submission"); a scan result from a multi-engine service shows which
+     engines to contact.
+
+**Institutions** can allow the release centrally instead: the IT department
+adds the SHA-256 of the ZIP and of each extracted file (`SHA256SUMS.txt`
+lists them) or, for a signed release, the signing certificate to the
+antivirus allow list. Each new release has new digests; a certificate rule
+covers every release signed with it.
+
 ## Security and verification
 
 - OpenSSH handles passwords, OTP, keys and host verification. Credentials are
   never stored by the app. Changed host keys are not automatically accepted.
-  Agent/X11 forwarding, LocalCommand and connection multiplexing are disabled.
+  Agent/X11 forwarding, LocalCommand and connection multiplexing are disabled,
+  for the script check and copy as for the dashboard connection.
+- The server scripts are plain files in an owner-only folder named after
+  their SHA-256 digests; before every start the app checks both full digests
+  on the server and copies them again if they differ. The SSH command line
+  carries only file paths and quoted data, no encoded code.
 - Dashboard and tunnel bind to loopback only. Mandatory dashboard token
   authentication remains enabled. Metadata ownership and private permissions
   are checked before handing off the token over authenticated SSH. A per-connection remote Unix
@@ -352,8 +487,9 @@ this updated package first; saved connections are preserved.
   (bubblewrap, firejail or DELFIN fallback); the app does not certify an existing
   server/agent configuration. A working terminal has your normal server rights.
 
-`Test-Launcher.ps1` checks syntax, connection input, SSH options, port discovery,
-browser destinations, native argument quoting and the icon. The **Windows launcher**
+`Test-Launcher.ps1` checks syntax, connection input, SSH options, the server
+script check and remote command, port discovery, browser destinations, native
+argument quoting, the icon, and starts the real settings window once. The **Windows launcher**
 CI workflow runs it using Windows PowerShell 5.1. Neither replaces a real login test.
 The repository's Python tests cover environment discovery, port conflicts and reuse.
 Before release, test password/OTP, both tmux terminal views, both Keep settings, browser startup, occupied ports,

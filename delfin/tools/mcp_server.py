@@ -138,11 +138,33 @@ def h_validate_application(
     })
 
 
+#: The agent session id travels WITH EACH tools/call request (operator
+#: route, JC2 target 2): the dispatching session puts its id into the
+#: request's `_meta` under the "delfin/agent_session_id" key (MCP's
+#: reserved per-request metadata field; mcp_client.call_tool writes it,
+#: only for DELFIN's own builtin server).  It is read ONLY here — the
+#: one handler that must know whose session a run belongs to — never
+#: from the spawn environment and never from a model-supplied argument
+#: (a model-passed agent_session_id input is removed below; identity is
+#: never model-supplied).  Absent meta means "no agent session": the
+#: run still completes and the chain records with no session id.
+SESSION_ID_META_KEY = "delfin/agent_session_id"
+
+#: The MCP SDK's per-request Context class, bound by run_server() before
+#: the tools are registered (see there).  None until then.
+_McpContext: Any = None
+
+
 def h_run_application(
     name: str, inputs: Optional[Dict[str, Any]] = None, cores: int = 1,
+    agent_session_id: Optional[str] = None,
 ) -> str:
-    inputs = inputs or {}
-    res = platform.run_application(name, cores=cores, **inputs)
+    inputs = dict(inputs or {})
+    # Identity is never model-supplied: a value the model put into the
+    # tool arguments is removed — the _meta value wins.
+    inputs.pop("agent_session_id", None)
+    res = platform.run_application(
+        name, cores=cores, agent_session_id=agent_session_id, **inputs)
     return _dumps({
         "name": res.name,
         "ok": res.ok,
@@ -250,7 +272,16 @@ def run_server(argv: Optional[list[str]] = None) -> None:
     """Start the MCP server on stdio."""
     argparse.ArgumentParser(prog="delfin-tools-server").parse_args(argv)
 
-    from ..mcp_compat import load_server_class
+    from ..mcp_compat import load_context_class, load_server_class, request_meta
+
+    # The SDK injects a tool's request context into the parameter annotated
+    # with its Context class.  This module never imports mcp at the top and
+    # its annotations are strings (``from __future__ import annotations``),
+    # which the SDK resolves in this module's globals -- so the name is
+    # bound here, before any tool is registered.  mcp 2.x removed
+    # ``server.get_context()``; this injection is the route both lines share.
+    global _McpContext
+    _McpContext = load_context_class()
 
     mcp = load_server_class()(
         "delfin-tools",
@@ -351,12 +382,23 @@ def run_server(argv: Optional[list[str]] = None) -> None:
         return h_validate_application(name, inputs, geometry)
 
     @mcp.tool()
-    def run_application(name: str, inputs: dict | None = None, cores: int = 1) -> str:
+    def run_application(name: str, inputs: dict | None = None, cores: int = 1,
+                        ctx: _McpContext = None) -> str:
         """Run a named application with named inputs; returns named outputs.
 
         Note: this can be long-running (it executes real QM jobs).
         """
-        return h_run_application(name, inputs, cores)
+        # JC2 target 2: the dispatching session's id arrives in the
+        # request's `_meta` (see SESSION_ID_META_KEY).  The SDK injects the
+        # request context into `ctx` (annotated with its own Context class,
+        # see _McpContext; both SDK lines leave that parameter out of the
+        # tool's schema, so the model cannot supply identity through it).
+        # No context or no meta (plain CLI, tests, another client) means
+        # "no agent session": the chain is recorded with no id and the run
+        # still completes.
+        value = request_meta(ctx).get(SESSION_ID_META_KEY)
+        meta_id = str(value) if value else None
+        return h_run_application(name, inputs, cores, agent_session_id=meta_id)
 
     @mcp.tool()
     def validate_spec(spec: dict, inputs: dict | None = None, geometry: bool = False) -> str:
@@ -422,6 +464,8 @@ def run_server(argv: Optional[list[str]] = None) -> None:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    from delfin.hpc_guard import exit_on_login_node
+    exit_on_login_node("the DELFIN tools server", "it starts with an agent session inside a SLURM job")
     run_server(argv)
     return 0
 

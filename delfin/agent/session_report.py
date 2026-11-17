@@ -20,6 +20,7 @@ import re
 from . import tool_trace
 from dataclasses import dataclass, field
 from pathlib import Path
+from .state_paths import state_root
 
 
 @dataclass
@@ -875,7 +876,7 @@ def friction_summary(
 # --------------------------------------------------------------------------
 
 def _report_dir() -> "Path":
-    return Path.home() / ".delfin" / "session_reports"
+    return state_root() / "session_reports"
 
 
 def _own_it(path: "Path", mode: int) -> None:

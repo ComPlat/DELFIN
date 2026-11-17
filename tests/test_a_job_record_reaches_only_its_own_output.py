@@ -40,7 +40,7 @@ def _rec(jid, path, **over):
 
 def test_a_forged_record_puts_no_foreign_file_into_the_notice(ws, tmp_path):
     key = tmp_path / "id_ed25519"
-    key.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\nPROBE\n")
+    key.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\nPROBE\n")  # secret-guard: allow (synthetic DELFIN test sample)
     _forge(ws, **{"bg-read": _rec("bg-read", key)})
     events = BJ.drain_finished_events(str(ws))
     assert events and "PROBE" not in json.dumps(events)

@@ -82,6 +82,42 @@ carries no copied table) and refuses invalid requests before reading the
 ensemble. Discoverable through the shared workflow registry
 (`delfin/workflows/registry.py` auto-discovery of `contrib/`).
 
+## Agent tools (MCP)
+
+The same evaluation is exposed to the DELFIN agent as five MCP tools
+(`delfin/api.py` handlers, registered in `delfin/ops_server/server.py`):
+
+| Tool | Read-only? | Purpose |
+|---|---|---|
+| `mlp_list_backends` | yes (gate allowlist) | availability, element scope, install hint per backend |
+| `mlp_single_point` | no (side-effect gate) | SP energy/forces for an xyz string |
+| `mlp_optimize` | no | optimise an xyz; returns the geometry |
+| `mlp_rank` | no | rank a multi-structure xyz ensemble |
+| `mlp_preoptimize` | no | pre-optimise before ORCA; geometry is a starting guess |
+
+All take xyz text and answer JSON. Failures are diagnoses, not
+tracebacks: an unknown backend answers `ok=false` with the accepted
+names; a missing backend package answers `ok=false`,
+`available=false`, `reason`, `install_hint` (see
+`delfin/mlp_tools/SETUP_GUIDE.txt`). The four run tools compute, so they
+start denied by the agent's side-effect gate like every calculation
+runner; `mlp_list_backends` passes the gate as read-only.
+
+## The `mlp_preopt` CONTROL key (opt-in)
+
+`mlp_preopt = none | ani2x | aimnet2 | mace_off | ...` relaxes the start
+geometry with the chosen ML potential BEFORE the ORCA steps. The default
+`none` is the shipped behaviour — nothing runs and the generated inputs
+are byte-identical. Semantics: a screening step; the relaxed geometry is
+a starting guess for the DFT optimisation, and every final energy comes
+from DFT. A failed or non-converged MLP step never stops the run (the
+original geometry is kept, the run continues, the log says why). Use it
+for element-clean, closed-shell systems whose builder geometry is poor;
+for metals, open-shell or charged systems keep it off unless the backend
+models charge and multiplicity (only `aimnet2`). Declared in
+`CONTROL_FIELD_SPECS` (`delfin/common/control_validator.py`), notes under
+key `mlp_preopt` in `delfin/common/control_key_notes.json`.
+
 ## When to use an MLP, and when not to
 
 - Use for: pre-optimization before DFT, conformer ranking, cheap scans
@@ -91,3 +127,38 @@ ensemble. Discoverable through the shared workflow registry
   solids with molecular-scope models. A minimum is verified only by a
   Hessian with zero imaginary frequencies — never by an MLP optimization
   alone.
+
+## Backend registry (task m1)
+
+`delfin/mlp_tools/registry.py` is the uniform layer the agent and the
+workflows share. The legacy `create_calculator` surface in
+`calculators.py` is unchanged; the registry adds:
+
+- **16 registered backends**: the 8 legacy potentials (ANI-2x, AIMNet2,
+  MACE-OFF, CHGNet, M3GNet, SchNetPack, NequIP, ALIGNN) plus the current
+  molecular state of the art — MACE-MP-0, MACE-OMOL, UMA/eSEN (fairchem,
+  OMol25), Orb (OrbMol/orb-v3), SevenNet — and xtb (GFN2/GFN-FF via
+  tblite, or xtb-python) as the semi-empirical baseline, plus GPUMA as a
+  GPU-batch-optimiser entry point.
+- **Availability reporting that never guesses**: a backend whose package
+  (or weights) are missing reports `available=False` with a reason and an
+  install hint. GPUMA is wired only from the installed package's own
+  metadata; if absent it is registered unavailable with the reason.
+
+    ```python
+    from delfin.mlp_tools import describe_mlp_backends
+    from delfin.mlp_tools.registry import create_calculator, describe_backend
+
+    describe_mlp_backends()               # full list: availability, scope,
+                                          # charge support, literature keys
+    describe_backend("mace_mp")           # one entry in detail
+    calc = create_calculator("aimnet2",
+                             device="auto", charge=-1, mult=2)
+    ```
+
+- **`device="auto"`** (opt-in): cuda if `torch.cuda.is_available()`, else
+  cpu with OMP/MKL threads capped at 2. An explicit `device=` always wins;
+  the legacy default remains `device="cpu"`.
+- **Charge/spin fail-closed**: `charge`/`mult` are passed only to
+  charge-aware models (aimnet2) and refused with a clear `ValueError` for
+  all others — never silently ignored.

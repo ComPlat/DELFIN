@@ -466,11 +466,15 @@ def test_a_sleeping_session_is_renamed_without_waking_and_wakes_under_its_name(t
         a = svc.client()
         sid = svc.session(a, attach=False, name="first name")
         _wait_state(a, sid, "sleeping")
-        # Kept as an awake session keeps a name: one line, at most 80 characters.
+        # Kept as an awake session keeps a name: one line, at most TITLE_MAX
+        # (50) characters; nothing printable: the default name.
         assert a.request("session.setTitle", {"sessionId": sid, "title": " long\nname " * 20}) \
-            == {"title": " ".join(["long name"] * 20)[:80].rstrip()}
+            == {"title": " ".join(["long name"] * 20)[:protocol.TITLE_MAX].rstrip()}
+        assert a.request("session.setTitle", {"sessionId": sid, "title": " \n "}) == {"title": ""}
+        assert _listed(a, sid)["name"].endswith(sid[:8])
         assert a.request("session.setTitle", {"sessionId": sid, "title": "second name"}) == {"title": "second name"}
         assert _listed(a, sid)["state"] == "sleeping"                 # not woken for that
+        assert _listed(a, sid)["name"] == "second name"
         a.request("session.attach", {"sessionId": sid, "turns": 0}, timeout=120)
         assert _listed(a, sid)["title"] == "second name"
     finally:

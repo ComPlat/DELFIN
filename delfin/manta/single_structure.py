@@ -470,7 +470,7 @@ def smiles_to_xyz(
 
             _stk_t = threading.Thread(target=_stk_parse, daemon=True)
             _stk_t.start()
-            _stk_t.join(timeout=_EMBED_TIMEOUT)
+            _stk_t.join(timeout=None if _deterministic_mode() else _EMBED_TIMEOUT)
             if _stk_t.is_alive():
                 logger.info("stk conversion timed out after %.1fs, falling back to RDKit", _EMBED_TIMEOUT)
                 mol = None

@@ -183,6 +183,51 @@ class DashboardContext:
         else:
             self.busy_indicator.value = ''
 
+    #: Tabs that show the job queue.  While one of them is selected,
+    #: periodic job refreshes may ask the scheduler at the normal rate; on
+    #: any other tab the SLURM backend serves its last answer instead
+    #: (SlurmJobBackend.list_jobs), as VS Code and GitHub pause polling for
+    #: views that are not on screen.
+    JOB_VIEW_TITLES = ('Job Status', 'Agent Activity')
+
+    def __post_init__(self):
+        # The first context of a backend is the dashboard's own.  The Office,
+        # Home and Archive tabs make copies with ``dataclasses.replace``,
+        # which runs this again on a copy that never gets a tab bar; such a
+        # copy must not take the gate over (it would always say "visible").
+        if self.backend is not None and getattr(self.backend, 'jobs_view_visible', None) is None:
+            try:
+                self.backend.jobs_view_visible = self.jobs_view_visible
+            except Exception:
+                pass
+
+    def selected_tab_title(self):
+        """Title of the tab on screen, or None when there is no tab bar."""
+        tabs = self.tabs_widget
+        if tabs is None:
+            return None
+        index = getattr(tabs, 'selected_index', None)
+        title_of = getattr(self, 'tab_indices_title_of', None)
+        if callable(title_of):
+            try:
+                return title_of(index)
+            except Exception:
+                return None
+        for title, i in (self.tab_indices or {}).items():
+            if i == index:
+                return title
+        return None
+
+    def jobs_view_visible(self):
+        """True while a tab that shows jobs is on screen.
+
+        Before the tab bar exists (start-up, scripts, tests) the answer is
+        True, so nothing changes where there is no screen to look at.
+        """
+        if self.tabs_widget is None:
+            return True
+        return self.selected_tab_title() in self.JOB_VIEW_TITLES
+
     def select_tab(self, title):
         """Switch to a dashboard tab by title when available."""
         if not self.tabs_widget:

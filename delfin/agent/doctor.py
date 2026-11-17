@@ -251,6 +251,28 @@ def _check_python_deps(ctx: dict) -> list[dict]:
     return out
 
 
+def _check_optional_tools(ctx: dict) -> list[dict]:
+    """Optional chemistry programs, one row per install group.
+
+    The table and the presence probe are ``optional_tools`` -- the same
+    the Pi's post-install smoke step reads -- so the doctor and the deploy
+    name the same groups. Nothing is imported or run here (``find_spec``
+    and the tool resolver): importing torch alone takes seconds on a Pi.
+    ``python -m delfin.agent.optional_tools smoke`` runs the computations.
+    """
+    from . import optional_tools as ot
+    out: list[dict] = []
+    for group in ot.GROUPS:
+        status, detail = ot.availability(group)
+        if status == ot.OK:
+            out.append(_row(f"optional: {group.name}", PASS, detail))
+            continue
+        fix = (f"{group.install}  (Raspberry Pi: {ot.pi_hint(group)}; "
+               "scripts/pi/README.md)")
+        out.append(_row(f"optional: {group.name}", WARN, detail, fix))
+    return out
+
+
 def _check_test_runner(ctx: dict) -> list[dict]:
     """Can the agent run the suite in the interpreter it would use.
 
@@ -980,6 +1002,40 @@ def _check_bash_isolation(ctx: dict) -> list[dict]:
     )]
 
 
+def _check_bash_cage(ctx: dict) -> list[dict]:
+    """Whether this host can hold a shell command in the bash cage.
+
+    The freedom profiles (``workspace_profiles``) grant a workspace's
+    unattended runs bypass only where a cage exists, so the doctor says
+    which it is -- and on a host without one, what the profile ``free``
+    would be refused for. The answer is
+    ``workspace_profiles.host_cage_decision``, the same
+    ``api_client._bash_isolation_decision`` the bash executor builds its
+    argv from, not a separate probe that could drift from it.
+    """
+    from delfin.agent import workspace_profiles
+    try:
+        kind = workspace_profiles.host_cage_decision()
+    except Exception as exc:                        # noqa: BLE001
+        return [_row("bash cage", WARN, f"not verified: {exc}")]
+    if kind in ("bwrap", "landlock", "seatbelt"):
+        return [_row("bash cage", PASS,
+                     f"{kind} holds shell commands; workspaces with the "
+                     "profile \"free\" may run their scheduled runs in "
+                     "bypass inside the cage")]
+    if kind == "refuse":
+        return [_row("bash cage", WARN,
+                     f"isolation demanded and unavailable ({kind}); the "
+                     "profile \"free\" is refused here",
+                     "install bubblewrap, or run on a kernel with Landlock "
+                     "(Linux 5.13+)")]
+    return [_row("bash cage", WARN,
+                 f"no cage on this host ({kind}); the profile \"free\" is "
+                 "refused here -- scheduled runs stay in acceptEdits",
+                 "install bubblewrap, or run on a kernel with Landlock "
+                 "(Linux 5.13+)")]
+
+
 def _check_document_backends(ctx: dict) -> list[dict]:
     """Spreadsheet / PDF / Word support — one row per backend.
 
@@ -1122,6 +1178,7 @@ _CHECK_ATTRS: tuple[tuple[str, str], ...] = (
     ("credentials", "_check_credentials"),
     ("chemistry binaries", "_check_binaries"),
     ("python deps", "_check_python_deps"),
+    ("optional chemistry", "_check_optional_tools"),
     ("test runner", "_check_test_runner"),
     ("mcp servers", "_check_mcp"),
     ("scheduler daemon", "_check_scheduler"),
@@ -1134,10 +1191,30 @@ _CHECK_ATTRS: tuple[tuple[str, str], ...] = (
     ("memory store", "_check_memory_store"),
     ("disk space", "_check_disk"),
     ("bash isolation", "_check_bash_isolation"),
+    ("bash cage", "_check_bash_cage"),
     ("command network", "_check_child_network"),
     ("document backends", "_check_document_backends"),
     ("terminal window", "_check_tui"),
+    ("MLIP", "_check_mlip"),
 )
+
+
+def _check_mlip(ctx: dict) -> list[dict]:
+    """The orca-mlips set-up: env, GPU partition and backend configured,
+    and the env's ProgExt command present. From
+    ``guided_setup.mlip_readiness`` (settings + file checks; no scheduler
+    query, no process). Not configured is a PASS: MLIPs are optional."""
+    from delfin.mlp_tools.guided_setup import mlip_readiness
+
+    # ctx["settings"] is the agent's settings; runtime.* lives in DELFIN's
+    # user settings, which mlip_readiness loads when given none.
+    given = ctx.get("settings") or {}
+    state = mlip_readiness(given if "runtime" in given else None)
+    if not state["configured"] or state["ready"]:
+        return [_row("MLIP", PASS, state["detail"])]
+    return [_row("MLIP", WARN, state["detail"],
+                 "delfin mlp_setup plan, then delfin mlp_setup configure --write",
+                 command="delfin mlp_setup plan")]
 
 
 def _check_child_network(ctx: dict) -> list[dict]:

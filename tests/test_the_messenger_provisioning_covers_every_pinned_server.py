@@ -231,13 +231,23 @@ def test_installed_units_share_port_socket_and_pairing_directory(tmp_path):
     daemon = (tmp_path / 'units/simplex-chat-daemon.service').read_text()
     assert f'--chat-server-port {DEFAULT_PORT}' in daemon
     assert '--files-folder ' in daemon and '--auto-accept-files 0' in daemon
+    # Received files are decrypted in the temp folder and renamed to the
+    # files folder: both on one filesystem, never the unit's private /tmp
+    # (tmpfs; the rename failed with EXDEV and no voice message arrived).
+    files = daemon.split('--files-folder ', 1)[1].split()[0]
+    temp = daemon.split('--temp-folder ', 1)[1].split()[0]
+    assert temp.startswith(files.rstrip('/') + '/'), (files, temp)
+    # The daemon logs every received API command with its message text; the
+    # journal must never hold the person's messages.
+    assert 'LogFilterPatterns=~received command' in daemon.splitlines()
     assert f'Environment=DELFIN_MESSENGER_PORT={DEFAULT_PORT}' in gateway
     assert 'Environment=DELFIN_MESSENGER_SOCKET=/run/delfin-messenger-bridge/messenger.sock' in gateway
     assert 'Environment=DELFIN_MESSENGER_SOCKET=/run/delfin-messenger-bridge/messenger.sock' in bridge
     # The socket directory is the gateway's (setgid delfin-gw), the process
     # keeps the service user's group (test_the_messenger_units_hold_on_a_real_host).
-    assert 'RuntimeDirectoryMode=2750' in bridge
-    assert 'ExecStartPre=+/bin/chgrp delfin-gw /run/delfin-messenger-bridge' in bridge
+    assert not any(l.startswith('RuntimeDirectory') for l in bridge.splitlines())
+    assert ('ExecStartPre=+/usr/bin/install -d -m 2750 -o delfin -g delfin-gw '
+            '/run/delfin-messenger-bridge') in bridge
     assert 'DELFIN_MESSENGER_PEER_UID=' in bridge
     assert f'DELFIN_MESSENGER_DIR={tmp_path}/state/pairing' in gateway
     assert 'PrivateTmp=no' in bridge

@@ -37,9 +37,12 @@ huge and unicode answers are all handled; a 2 MB cap bounds the scan).
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from typing import Iterable, Optional
+
+from delfin.agent import claim_locator
 
 __all__ = ["Claim", "check", "check_deviations", "worst_level"]
 
@@ -173,6 +176,16 @@ def check(answer_text, evidence: Optional[Iterable] = None) -> list[Claim]:
                     f"record contains this number. Report only numbers a "
                     f"calculation produced, or mark it as an estimate."))
                 continue
+            file_verdict = _locator_verdict(ref, value, unit)
+            if file_verdict in ("mismatch", "no-source"):
+                claims.append(Claim(
+                    "error", f"claim-locator-{file_verdict}",
+                    f"Value {value:g} {unit} ({_ref_of(ref)}) is not "
+                    f"verified against the real output file (verdict "
+                    f"{file_verdict}): the number does not match the "
+                    f"run's result. Do not report it, or mark it as an "
+                    f"estimate."))
+                continue
             if not _has_method_basis(sent):
                 claims.append(Claim(
                     "error", "claim-no-method",
@@ -191,6 +204,22 @@ def check(answer_text, evidence: Optional[Iterable] = None) -> list[Claim]:
     except Exception as exc:                       # a check must never crash
         return [Claim("warn", "claims-error",
                       f"claims check failed (reported, not raised): {exc}")]
+
+
+def _locator_verdict(record, value: float, unit: str) -> Optional[str]:
+    """claim_locator verdict if the record's ``ref`` is a real calc folder
+    we can open, else ``None`` (fall back to text-only matching).
+
+    ``verify_claim`` never raises; the guard here only needs to reject a
+    ``ref`` that is not an openable folder (an url, a file path, or a
+    non-existent folder)."""
+    folder = _ref_of(record)
+    if folder in ("", "<unnamed evidence>"):
+        return None
+    folder = os.path.expanduser(folder)
+    if not os.path.isdir(folder):
+        return None
+    return claim_locator.verify_claim(value, unit, folder).verdict
 
 
 def _value_in_text(value: float, text: str) -> bool:

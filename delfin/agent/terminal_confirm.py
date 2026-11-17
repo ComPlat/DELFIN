@@ -68,6 +68,12 @@ CONFIRM = "confirm"
 ASK = "ask"
 PLAN = "plan"
 
+#: Why a question ended without an answer (``unanswered`` in its result):
+#: the run was stopped, or its one-time code was spent by wrong answers.
+#: An expiry names the seconds waited (TerminalConfirmBroker._wait).
+STOPPED = "no answer (the question was stopped)"
+EXPIRED = "no answer (the question expired)"
+
 _WRITE_TOOLS = frozenset({
     "write_file", "edit_file", "multi_edit", "apply_patch", "notebook_edit",
     "edit_sheet", "create_docx", "create_pdf", "fill_pdf_form",
@@ -235,6 +241,12 @@ class ConfirmRequest:
     @property
     def is_outside_read(self) -> bool:
         return _OUTSIDE_MARKER in self.preview
+
+    @property
+    def is_irreversible(self) -> bool:
+        """The gate's statement says it cannot be undone (irreversible)."""
+        from . import irreversible
+        return irreversible.is_irreversible(self.preview)
 
 
 def _publish_pending(req: ConfirmRequest, session_id: str,
@@ -622,6 +634,20 @@ def options_for(req: ConfirmRequest, *, suggestion: str = "") -> list[Option]:
             Option("n", "reject", "stay in plan and say why"),
         ]
 
+    if req.kind == CONFIRM and req.is_irreversible:
+        # What cannot be undone is approved one action at a time: no key
+        # here outlives this answer, and Enter is no.
+        opts = [Option("y", "yes", "this one action; it cannot be undone"),
+                Option("n", "no (Enter)",
+                       "refused, and the model is told not to retry")]
+        if req.is_shell and req.command:
+            opts.append(Option("c", "change the command",
+                               "your version runs instead, once, exactly as "
+                               "typed"))
+        opts.append(Option("a", "abort", "deny this and end the turn"))
+        opts.append(Option("?", "explain", "what each option does here"))
+        return opts
+
     opts = [Option("y", "yes", "this one action"),
             Option("n", "no", "refused, and the model is told not to retry")]
 
@@ -673,23 +699,44 @@ def render_request(req: ConfirmRequest, *, theme: rr.Theme | None = None,
     options = options if options is not None else options_for(req)
     name = rr.short_tool_name(req.tool) or req.tool or "?"
 
+    from . import irreversible as _irr
+    said, rest = _irr.split(req.preview or "")
+
     head = f"┌─ {theme.bold(name)}"
     if req.is_protected:
         head = theme.red(f"┌─ {name}  PROTECTED PATH")
+    elif said is not None and said.irreversible:
+        head = theme.red(f"┌─ {name}  CANNOT BE UNDONE")
     elif req.is_outside_read:
         head = theme.yellow(f"┌─ {name}  OUTSIDE the workspace")
 
-    lines = [head]
     # Masked before anything reaches the screen: this broker printed the
     # command whole, so a line carrying a token showed it to the terminal
     # and to the scrollback behind it. The value goes, the command stays
     # readable -- an approval you cannot read is one you cannot give.
-    try:
-        from .cli_approve import redact_preview as _redact_preview
-        _preview = _redact_preview(req.preview or "")
-    except Exception:
-        _preview = rr.strip_control(req.preview or "")
-    body = _preview.splitlines()
+    def _shown(text: str) -> str:
+        try:
+            from .cli_approve import redact_preview as _redact_preview
+            return _redact_preview(text)
+        except Exception:
+            return rr.strip_control(text)
+
+    lines = [head]
+    # What cannot be undone is said first and whole: wrapped, never cut,
+    # and above the command, so it is read before any key is pressed.
+    if said is not None:
+        import textwrap
+        room = max(20, width - 6)
+        colour = theme.red if said.irreversible else theme.yellow
+        lines.append("│  " + colour(theme.bold(said.head)))
+        for sentence in said.sentences():
+            wrapped = textwrap.wrap(_shown(sentence), room) or [""]
+            lines.append("│  " + _irr.BULLET + wrapped[0])
+            lines.extend("│    " + w for w in wrapped[1:])
+        if said.irreversible:
+            lines.append(theme.dim("│  Enter answers no."))
+        lines.append("│")
+    body = _shown(rest).splitlines()
     shown, hidden = body[:body_lines], max(0, len(body) - body_lines)
     for line in shown:
         lines.append("│  " + rr.truncate_middle(line, max(20, width - 4)))
@@ -749,6 +796,9 @@ def render_help(req: ConfirmRequest, options: list[Option]) -> str:
     if req.is_outside_read and not read_dir_for(req):
         out.append("  no 'always' here: a home, system or key directory is "
                    "approved one read at a time.")
+    if req.kind == CONFIRM and req.is_irreversible:
+        out.append("  no 'always' here: what cannot be undone is approved one "
+                   "action at a time, and Enter answers no.")
     return "\n".join(out)
 
 
@@ -879,7 +929,7 @@ class TerminalConfirmBroker:
                 kind=ASK, tool="ask_user_question",
                 payload=dict(payload or {})))
             answer = self._wait(req)
-        return answer if isinstance(answer, dict) else {"answers": []}
+        return answer if isinstance(answer, dict) else {"answers": [], "unanswered": STOPPED}
 
     def approve_plan(self, plan: str) -> dict:
         with _activity.awaiting_person(self.activity, _activity.APPROVAL):
@@ -896,7 +946,7 @@ class TerminalConfirmBroker:
         with self._lock:
             if self.aborted:
                 req.resolved = True
-                req.decision = self._refusal_for(req)
+                req.decision = self._refusal_for(req, STOPPED)
                 return req
             self._queue.append(req)
         try:
@@ -925,6 +975,7 @@ class TerminalConfirmBroker:
         import time as _time
         deadline = (_time.monotonic() + self.timeout_s) if self.timeout_s else None
         got = False
+        spent = False
         while True:
             slice_s = self.poll_s
             if deadline is not None:
@@ -946,6 +997,7 @@ class TerminalConfirmBroker:
                 self._audit_dialog(req, by="outside")
                 return req.decision
             if code_spent(req.published):
+                spent = True
                 break           # three unsigned answers: expired
             if deadline is not None and _time.monotonic() >= deadline:
                 break
@@ -953,7 +1005,10 @@ class TerminalConfirmBroker:
             if not got and not req.resolved:
                 req.expired = True
                 req.resolved = True
-                req.decision = self._refusal_for(req)
+                req.decision = self._refusal_for(
+                    req, EXPIRED if spent else
+                    f"no answer (timed out after {int(self.timeout_s or 0)} s)",
+                    timed_out=not spent)
                 self.last_timed_out = True
                 if req in self._queue:
                     self._queue.remove(req)
@@ -1013,11 +1068,18 @@ class TerminalConfirmBroker:
             pass
 
     @staticmethod
-    def _refusal_for(req: ConfirmRequest) -> Any:
+    def _refusal_for(req: ConfirmRequest, why: str = STOPPED,
+                     timed_out: bool = False) -> Any:
+        """The decision of a request that ended without an answer. A
+        question says why (``unanswered``): an empty answer list alone is
+        what a dismissal returns, and the model cannot tell them apart."""
         if req.kind == PLAN:
             return {"approved": False, "new_mode": "plan"}
         if req.kind == ASK:
-            return {"answers": []}
+            out: dict = {"answers": [], "unanswered": why}
+            if timed_out:
+                out["timed_out"] = True
+            return out
         return False
 
     # -- consumer side (the main thread, and only it) ---------------------
@@ -1072,7 +1134,7 @@ class TerminalConfirmBroker:
             pending = [r for r in self._queue if not r.resolved]
             for req in pending:
                 req.resolved = True
-                req.decision = self._refusal_for(req)
+                req.decision = self._refusal_for(req, STOPPED)
             self._queue.clear()
         for req in pending:
             try:

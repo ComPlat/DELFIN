@@ -204,7 +204,6 @@ def test_the_opt_in_is_lowered_where_nothing_isolates_a_command(
     from delfin.agent import isolation_posture as IP
     monkeypatch.setattr(IP, "isolation_status", lambda perms=None:
                         IP.IsolationStatus(False, reason="no layer here"))
-    monkeypatch.setattr(IP, "_BYPASS_CONFIRMED", False)
     settings = {"agent": dict(_AGENT, scheduler={
         "permission_mode": "bypassPermissions", "unattended": True})}
     assert _scheduled_mode(scheduler, ws, settings) == "default"

@@ -122,6 +122,54 @@ def _self_mirror_rmsd(syms: List[str], P: np.ndarray, Pm: np.ndarray) -> Optiona
         return None
 
 
+import re as _re
+
+# Suffixes that name a CONFORMER / distortion variant of one configuration, not a configuration:
+# ring/backbone conformers (-confN), re-embeddings (-reembedN), Jahn-Teller variants (-jte/-jtc).
+_CONF_SUFFIX = _re.compile(r"(?:-conf\d+|-reembed\d+|-jte|-jtc)+$")
+
+
+def _iso_root(label: str) -> str:
+    """The configuration part of a frame label (DELFIN_MIRROR_PER_ISOMER)."""
+    s = str(label)
+    if s.endswith("_mirror"):
+        s = s[: -len("_mirror")]
+    prev = None
+    while prev != s:
+        prev = s
+        s = _CONF_SUFFIX.sub("", s)
+    return s
+
+
+def _hand_swap(root: str) -> Optional[str]:
+    """The same root with the metal handedness inverted (Delta <-> Lambda), or None without one."""
+    if "Δ" not in root and "Λ" not in root:
+        return None
+    return root.translate(str.maketrans({"Δ": "Λ", "Λ": "Δ"}))
+
+
+def _proper_rmsd_same_order(xa: str, xb: str) -> Optional[float]:
+    """Heavy-atom RMSD of two frames in the SAME atom order under a proper rotation (None if not comparable)."""
+    try:
+        from delfin.manta.assemble_complex import _kabsch_rot
+        sa, Pa, _ = _parse_xyz(xa)
+        sb, Pb, _ = _parse_xyz(xb)
+    except Exception:
+        return None
+    if list(sa) != list(sb):
+        return None
+    heavy = [i for i, s in enumerate(sa) if s != "H"] or list(range(len(sa)))
+    A = np.asarray(Pa, float)[heavy]
+    B = np.asarray(Pb, float)[heavy]
+    A = A - A.mean(axis=0)
+    B = B - B.mean(axis=0)
+    try:
+        R = _kabsch_rot(A, B)
+        return float(np.sqrt(((A @ R.T - B) ** 2).sum(axis=1).mean()))
+    except Exception:
+        return None
+
+
 def mirror_frame(xyz: str) -> Optional[str]:
     """The mirror image of ONE frame, or None if there is none / it is achiral."""
     if not xyz:
@@ -304,13 +352,65 @@ def expand_results(results):
     #   mirrors) -- a silent capability loss, reverted as b424e6cd.
     #   The contract belongs where it is formulated: ONE representative PER
     #   SYSTEM.  If one is already present, this pass is done.
-    if _einer and any(str(_l).endswith("_mirror") for _x, _l in results):
+    # ===== ONE REPRESENTATIVE PER CONFIGURATION, NOT PER SYSTEM (DELFIN_MIRROR_PER_ISOMER, default OFF) =====
+    #
+    # THE DEFECT (29.10.2026, d7 losses ABOXIB / NELDEQ / YOQSUV).  "One frame with flipped handedness
+    # suffices" holds only when the system has ONE chiral configuration.  With several (diastereomeric
+    # arrangements C-N-ax-1, I-N-ax-Delta, ...) the single mirror goes to the FIRST frame of the list, and
+    # which frame is first depends on what else was built: when the legacy branch survives more often
+    # (ORIENT_CARRY_H / SCORE_H / SWING), its frames come first and take the mirror, and the mirror of the
+    # FF-free configuration -- in ABOXIB, NELDEQ and YOQSUV exactly the crystal's enantiomer -- is no
+    # longer built (lc18 -> d7: ABOXIB C-N-ax-1_mirror -> I-N-ax-Delta-conf5_mirror, NELDEQ fac-cis-1_mirror
+    # -> N3-trans-conf6_mirror, YOQSUV axial-1_mirror -> N1-P-ax-Lambda_mirror).  An ADDITION destroyed a
+    # capability (Entweder-Oder).
+    #
+    # THE FIX.  With ONE_PER_SYSTEM the pass mirrors one frame per CONFIGURATION (label without its
+    # conformer suffix -confN / -reembedN / -jte / -jtc): skipped when the configuration already has a
+    # mirror (re-entry safe), when its Delta/Lambda partner is already built, or when the mirror lies within
+    # DELFIN_MIRROR_PER_ISOMER_DUP (heavy-atom RMSD, proper rotation, same atom order; default 0.40 A = the
+    # valley between redetermination and conformer modes of 12 417 CSD refcode-family pairs) of a frame
+    # already present.  Everything else (stereo gate, quality gate, cap) unchanged.  Off -> byte-identical.
+    _per_iso = _einer and _env_int("DELFIN_MIRROR_PER_ISOMER", 0) == 1
+    _dup_thr = _env_float("DELFIN_MIRROR_PER_ISOMER_DUP", 0.40)
+    _roots_done = set()
+    _roots_present = set()
+    if _per_iso:
+        for _x, _l in results:
+            if str(_l).endswith("_mirror"):
+                _roots_done.add(_iso_root(_l))
+            else:
+                _roots_present.add(_iso_root(_l))
+    if _einer and not _per_iso and any(str(_l).endswith("_mirror") for _x, _l in results):
         _LOG.debug("mirror_enum: EIN-REPRAESENTANT -- es liegt bereits ein Spiegel "
                    "vor, dieser Aufruf haengt nichts an (Wiedereintritt)")
         return results
-    for (xyz, label) in results:
+    # ===== THE TEMPLATE IS THE BEST FRAME OF ITS CONFIGURATION (DELFIN_FRAME_REALISM_RANK, default OFF) =====
+    # A mirror is an isometry: it inherits every defect of its template.  The template was the FIRST frame
+    # of the configuration in emission order (x9 dev300 29.10.: new mirror frames hard 0.75 against 0.68 of
+    # the d7 frames).  With the realism ranking on, the frames are visited best first, so each
+    # configuration's mirror is made from its most realistic frame.  Only the visiting order changes; the
+    # mirrors are appended as before and the final ranking places them.
+    _visit = results
+    if _per_iso:
+        try:
+            from delfin.manta import frame_realism as _frr
+            if _frr.rank_enabled() and _frr.current_smiles():
+                _sc = _frr.score_frames([_x for _x, _l in results])
+                if _sc is not None and len(_sc) == len(results):
+                    _visit = [results[_i] for _i in _frr.order_by_realism(_sc)]
+        except Exception:
+            _visit = results
+    for (xyz, label) in _visit:
         if len(added) >= max_added:
             break
+        if _per_iso and not str(label).endswith("_mirror"):
+            _root = _iso_root(label)
+            if _root in _roots_done:
+                continue
+            _partner = _hand_swap(_root)
+            if _partner is not None and _partner in _roots_present:
+                _roots_done.add(_root)       # both hands built already
+                continue
         # ===== IDEMPOTENCY (18.08.2026) =========================================
         # The pass was NOT idempotent: the mirror image of a mirror image is
         # the original again, and the duplicate check ``m == xyz`` does not see
@@ -358,6 +458,19 @@ def expand_results(results):
         if m == xyz:
             n_failed += 1
             continue                      # should not happen; never append a duplicate
+        if _per_iso:
+            _dup = False
+            for _x, _l in list(results) + added:
+                _r = _proper_rmsd_same_order(m, _x)
+                if _r is not None and _r <= _dup_thr:
+                    _dup = True
+                    break
+            _roots_done.add(_iso_root(label))
+            if _dup:
+                n_already += 1
+                continue
+            added.append((m, f"{label}_mirror"))
+            continue
         added.append((m, f"{label}_mirror"))
         if _einer:
             # ONE REPRESENTATIVE.  For isomer coverage one frame with

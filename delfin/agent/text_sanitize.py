@@ -101,6 +101,60 @@ _HARMONY_TOKENS = re.compile(
 # of thought as <think>…</think> in the visible text channel. Strip the whole
 # block; also strip a dangling unterminated <think> (streaming can cut off
 # before </think>) so no reasoning leaks into the user-visible answer.
+# DeepSeek's native DSML serialization with FULL-WIDTH bars (U+FF5C), seen
+# in the wave-20 swarm logs: the model writes its whole tool-call payload
+# as literal tags like
+#
+#     <｜DSML｜tool_calls><｜DSML｜invoke name="bash">
+#     <｜DSML｜parameter name="command" string="true">git status</｜DSML｜parameter>
+#     <｜DSML｜/invoke></｜DSML｜tool_calls>
+#
+# (some deployments also carry a JSON object inside <｜DSML｜arguments>).
+# The plain ``<invoke name="...">`` variant above keeps its wave-14
+# re-request semantics; the bar form is handled HERE as a real inline
+# format: a well-formed block (a tool name plus parseable arguments) is
+# recovered by parse_leaked_tool_calls and dispatched, a malformed or
+# partial one is only stripped — never executed.
+_DSML_BAR_TAG = re.compile(r"<([/／]?)｜DSML｜\s*([^>]*?)\s*>")
+
+# JSON arguments payload, bar form and its normalised plain form.
+_DSML_BAR_ARGUMENTS = re.compile(
+    r"<｜DSML｜arguments\s*>(.*?)</｜DSML｜arguments>", re.DOTALL)
+_DSML_PLAIN_ARGUMENTS = re.compile(
+    r"<arguments\s*>(.*?)</arguments>", re.DOTALL)
+
+
+def _dsml_bar_to_plain(text: str) -> str:
+    """Rewrite full-width-bar DSML tags into the plain DSML grammar.
+
+    ``<｜DSML｜invoke name="x">`` becomes ``<invoke name="x">``,
+    ``<｜DSML｜/invoke>`` becomes ``</invoke>``, ``<｜DSML｜tool_calls>``
+    and ``<｜DSML｜/tool_calls>`` vanish (they wrap, they do not carry
+    data), and ``<｜DSML｜parameter name="k" …>v</｜DSML｜parameter>``
+    becomes the plain ``<parameter …>v</parameter>`` pair the existing
+    ``_DSML_PARAM`` regex already reads.  Pure text-to-text: anything the
+    mapping does not recognise is left alone so a malformed block is
+    never made well-formed by guesswork.
+    """
+    def _one(m: re.Match) -> str:
+        slash, inner = m.group(1), m.group(2).strip()
+        # The slash can sit before or after the bar: ``</｜DSML｜invoke>``
+        # fails the leading slash group and arrives as inner='/invoke'.
+        if not slash and inner.startswith("/"):
+            slash, inner = "/", inner.lstrip("/")
+        if slash:
+            if inner.startswith(("invoke", "parameter", "arguments")):
+                return "</" + inner.split()[0] + ">"
+            return ""            # </｜DSML｜tool_calls> and friends: drop
+        if inner.startswith("tool_calls"):
+            return ""            # wrapper tag, carries nothing
+        if inner.startswith(("invoke", "parameter", "arguments")):
+            return "<" + inner + ">"
+        return m.group(0)        # unknown bar tag: leave untouched
+
+    return _DSML_BAR_TAG.sub(_one, text)
+
+
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _THINK_DANGLING = re.compile(r"<think>.*$", re.DOTALL | re.IGNORECASE)
 
@@ -128,6 +182,11 @@ class SanitizeResult:
     leaked_tools: list[str] = field(default_factory=list)
     glitch_chars: int = 0
     think_stripped: bool = False
+    # A full-width-bar DSML tool-call block was present and removed
+    # (<｜DSML｜…>, wave-20 deepseek leak). True even when the block was
+    # malformed: the caller can then tell the user the model's tool call
+    # was dropped rather than executed.
+    dsml_bar_stripped: bool = False
     # How much text went in. Only interesting next to an empty ``text``:
     # an answer that was entirely think-blocks or tool-call markup leaves
     # nothing behind, and a caller that sees only the empty string cannot
@@ -185,10 +244,32 @@ def sanitize_agent_text(text: str) -> SanitizeResult:
             shape = None
         if shape and shape[0] not in leaked:
             leaked.append(shape[0])
+    # Full-width-bar DSML (deepseek): the recovered calls' names are
+    # reported like every other leaked-tool name, so the caller can show
+    # what the model intended to call.
+    if _DSML_BAR_TAG.search(text):
+        for call in parse_leaked_tool_calls(text):
+            if call["name"] not in leaked:
+                leaked.append(call["name"])
 
     think_stripped = bool(_THINK_BLOCK.search(text) or _THINK_DANGLING.search(text))
     cleaned = _THINK_BLOCK.sub(" ", text)
     cleaned = _THINK_DANGLING.sub(" ", cleaned)
+    # Full-width-bar DSML markup is stripped WHOLE: normalise to the plain
+    # grammar, then remove invoke blocks and parameter pairs. Only bar-form
+    # text takes this path — the plain ``<invoke name="...">`` form is a
+    # different contract (wave-14): the re-request logic in engine.py owns
+    # it, and prose quoting a plain block is a legitimate answer that must
+    # reach the user verbatim (test_u5_dsml_refire). A bar block that never
+    # became well-formed is still fully stripped here — a partial block
+    # leaves the user without a tool result, but the markup itself must
+    # never reach the visible answer.
+    _bar_was = bool(_DSML_BAR_TAG.search(cleaned))
+    if _bar_was:
+        cleaned = _dsml_bar_to_plain(cleaned)
+        cleaned = _DSML_BAR_ARGUMENTS.sub(" ", cleaned)
+        cleaned = _DSML_INVOKE.sub(" ", cleaned)
+        cleaned = _DSML_PARAM.sub(" ", cleaned)
     cleaned = _LEAKED_TOOL.sub(" ", cleaned)
     cleaned = _QWEN_TOOL_CALL.sub(" ", cleaned)
     # After the JSON form above, so a real leaked call is still recognised
@@ -213,6 +294,7 @@ def sanitize_agent_text(text: str) -> SanitizeResult:
         leaked_tools=leaked,
         glitch_chars=glitch_chars,
         think_stripped=think_stripped,
+        dsml_bar_stripped=_bar_was,
         source_chars=len(text),
     )
 
@@ -242,12 +324,46 @@ def parse_leaked_tool_calls(text: str) -> list[dict]:
     - ``<tool_call>{json}</tool_call>`` markup (qwen/gemma family on
       serving stacks whose chat template lacks a tool parser)
     - fenced ```json blocks that ARE one strict call object
+    - full-width-bar DSML blocks (<｜DSML｜invoke name=…>, deepseek):
+      normalised to the plain DSML grammar first, so only a COMPLETE block
+      with parseable arguments is recovered; anything partial is ignored
+      here and stripped by sanitize_agent_text instead.
 
     Returns ``[{"name": str, "arguments": dict}]`` for each parseable
     fragment. The caller decides whether to re-dispatch; only cleanly
     parsed dict arguments are ever returned for the strict grammars.
     """
     out: list[dict] = []
+    # Full-width-bar DSML (deepseek, wave-20): the bar tags are a pure
+    # re-spelling of the plain DSML grammar, so normalise ONCE on a local
+    # copy and let the plain-DSML path below decide. The mapping never
+    # invents structure: a truncated or unknown tag stays unrecognised.
+    # The rewrite only runs on text that actually CONTAINS bar tags — a
+    # plain ``<invoke name="...">`` leak keeps its wave-14 semantics and is
+    # NOT silently redispatched from here.
+    _bar_dsml = _dsml_bar_to_plain(text) if _DSML_BAR_TAG.search(text) else text
+    if _DSML_BAR_TAG.search(text):
+        for m in _DSML_INVOKE.finditer(_bar_dsml):
+            name = m.group(1)
+            args: dict = {}
+            _json_args = _DSML_PLAIN_ARGUMENTS.search(m.group(2))
+            if _json_args:
+                try:
+                    parsed = json.loads(_json_args.group(1))
+                except Exception:
+                    parsed = None
+                if isinstance(parsed, dict):
+                    args = parsed
+                else:
+                    continue        # broken JSON: never recovered
+            else:
+                for p in _DSML_PARAM.finditer(m.group(2)):
+                    args[p.group(1)] = p.group(2)
+            # Drop only an exact repeat (same tool, same arguments): two
+            # different calls to one tool are two calls.
+            call = {"name": name, "arguments": args}
+            if call not in out:
+                out.append(call)
     for m in _LEAKED_TOOL.finditer(text):
         name = m.group(1)
         try:

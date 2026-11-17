@@ -256,8 +256,12 @@ def pause_watch(seconds: int) -> None:
         raise
 
 
-def collect(settings=None):
+def collect(settings=None, *, with_git: bool = True):
     """One health record per open session, ready for classify.
+
+    ``with_git`` False leaves out each workspace's HEAD and changed-file
+    count: those walk every tracked file of every worktree (seconds per
+    call), which a view refreshed on a timer must not pay.
 
     Reads only: presence records (session_presence.open_sessions), pause
     flags (session_pause.is_paused), pending approvals
@@ -277,7 +281,11 @@ def collect(settings=None):
             oldest[s] = opened
     out = []
     seen_keys = set()
-    for row in ops_interface.sessions():
+    # Asked for only when it differs from the default, so a caller (or a
+    # test) that replaces sessions() with a plain function still works.
+    rows = ops_interface.sessions() if with_git else \
+        ops_interface.sessions(with_git=False)
+    for row in rows:
         key = str(row.get("name") or "")
         sid = str(row.get("session_id") or "")
         seen_keys.add(key)

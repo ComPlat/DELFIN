@@ -1149,13 +1149,26 @@ class MCPServer:
         self.tools = out
         return out
 
-    def call_tool(self, tool_name: str, arguments: dict) -> str:
+    def call_tool(self, tool_name: str, arguments: dict,
+                  agent_session_id: str = "") -> str:
         if not self.initialize():
             return json.dumps({"error": self.last_error or "init failed"})
-        resp = self._send("tools/call", {
+        params = {
             "name": tool_name,
             "arguments": arguments or {},
-        })
+        }
+        # JC2 target 2 (operator route): the agent session id travels
+        # WITH EACH tools/call request in `_meta` — MCP's reserved
+        # metadata field — never in the spawn environment and never as a
+        # model-supplied argument.  Only DELFIN's own builtin
+        # delfin-tools server receives it (no identity leaks to
+        # third-party servers); its run_application handler is the only
+        # reader.  An empty id sends no meta at all (the "no agent
+        # session" fact).
+        if agent_session_id and self.name == "delfin-tools":
+            params["_meta"] = {"delfin/agent_session_id":
+                               str(agent_session_id)}
+        resp = self._send("tools/call", params)
         if "error" in resp:
             return json.dumps({"error": resp["error"]})
         result = resp.get("result", {})
@@ -1401,7 +1414,8 @@ class MCPRegistry:
             self.last_discovery = budget.report()
         return tools
 
-    def call(self, namespaced: str, arguments: dict) -> str:
+    def call(self, namespaced: str, arguments: dict,
+             agent_session_id: str = "") -> str:
         if not namespaced.startswith(_NAMESPACE_PREFIX):
             return json.dumps({"error": f"not an MCP tool: {namespaced!r}"})
         rest = namespaced[len(_NAMESPACE_PREFIX):]
@@ -1411,7 +1425,11 @@ class MCPRegistry:
         srv = self.servers.get(server_name)
         if srv is None:
             return json.dumps({"error": f"unknown MCP server: {server_name!r}"})
-        return srv.call_tool(tool_name, arguments)
+        # JC2 target 2: the session id rides with the request (see
+        # call_tool) — per call, so two sessions sharing one process's
+        # registry each index their chains under their own id.
+        return srv.call_tool(tool_name, arguments,
+                             agent_session_id=agent_session_id)
 
     def discover_resources(self, budget: "_DiscoveryBudget | None" = None
                            ) -> list[MCPResource]:

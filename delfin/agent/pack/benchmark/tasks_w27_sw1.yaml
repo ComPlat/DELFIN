@@ -1,0 +1,35 @@
+version: 1
+package: SW1
+# Wave 27, package SW1 — user-built agent swarms (agent/s6-sw1b). Three
+# offline tasks over swarm specs, launch plans and the triage queue,
+# graded on library/CLI output in a throwaway workspace built by
+# setup/sw1_spec_fixtures.py. No network, no live model, no calculation.
+tasks:
+  - id: w27-sw1-01
+    task_class: other
+    mode: solo
+    prompt: >-
+      swarm_fixtures/overlapping_swarm.yaml declares two packages whose
+      write scopes overlap. Run the swarm spec validator on it and
+      report the exact error it gives.
+    setup: sw1_spec_fixtures.py
+    verify: sw1_check_overlapping_scopes.py
+
+  - id: w27-sw1-02
+    task_class: other
+    mode: solo
+    prompt: >-
+      swarm_fixtures/valid_swarm.yaml is a valid swarm spec. Produce the
+      launch plan (dry run) for it and report the member list.
+    setup: sw1_spec_fixtures.py
+    verify: sw1_check_dry_run.py
+
+  - id: w27-sw1-03
+    task_class: other
+    mode: solo
+    prompt: >-
+      swarm_fixtures/triage_queue.json holds the swarm's approval
+      queue. Sort it: which items may be auto-answered, which wait for
+      the user? Apply the swarm triage rules.
+    setup: sw1_spec_fixtures.py
+    verify: sw1_check_triage.py

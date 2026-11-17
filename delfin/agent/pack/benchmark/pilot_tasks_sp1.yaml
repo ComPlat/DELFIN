@@ -48,7 +48,7 @@ tasks:
     max_tool_calls: 12
 
   # verified: run_task at delfin/agent/benchmark_runner.py:1450;
-  # Task class at delfin/agent/benchmark.py:296.
+  # Task class at delfin/agent/benchmark.py:323.
   - id: sp1_benchmark_runner_entry
     task_class: pilot
     mode: solo
@@ -76,8 +76,8 @@ tasks:
     max_cost_usd: 0.50
     max_tool_calls: 12
 
-  # verified: score_outcome at delfin/agent/benchmark.py:1806;
-  # BenchmarkResult at benchmark.py:488.
+  # verified: score_outcome at delfin/agent/benchmark.py:1938;
+  # BenchmarkResult at benchmark.py:520.
   - id: sp1_scoring_result
     task_class: pilot
     mode: solo

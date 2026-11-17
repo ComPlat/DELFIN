@@ -11,10 +11,16 @@
  *   space        peek at it (and reply to it, without opening it)
  *   ctrl+x       stop it (twice); an ended one leaves the list; an item
  *                is dismissed (what waits or failed: twice)
- *   ctrl+r       rename it           ctrl+t      pin it
+ *   ctrl+r / F2  rename it           ctrl+t      pin it
  *   alt+1…9      open the n-th       esc / ←     back
  *   typing + enter                   a new session, in this window's folder
  *                                    (with an item's peek open: its answer)
+ *
+ * A login item (a cluster tool found no tunnel) is never answered: what is
+ * typed for it is a password, and an answer goes to a model. →, enter and
+ * typing on its peek open the window's masked login field for its cluster
+ * (clusters/login.tsx) over the view; once the login went through, the
+ * service closes the item.
  *
  * A row says what the session is doing in a few words, from its summary
  * (no model writes them): the question it waits on, the tool it runs, the
@@ -66,6 +72,20 @@ export interface AgentRow {
   /** Where an item is (open on another machine, its folder), at the right. */
   where?: string
   item?: AttentionItem
+  /** The marks the dashboard's session list shows beside the name, in
+   *  its words: "kept" (Keep session on: it runs on after its windows
+   *  close) and "background" (started by a swarm, a schedule or headless). */
+  marks?: string[]
+}
+
+/** A session's marks, as the dashboard's list draws them (agent_sessions
+ *  KEPT_PILL, BACKGROUND_TAG): one service, one reading. */
+export function marksOf(summary: Record<string, any>): string[] {
+  const marks: string[] = []
+  if (summary.keep !== false) marks.push("kept")
+  const where = String(summary.workspace ?? "").replace(/\\/g, "/")
+  if (summary.unattended || /\/\.delfin\/worktrees\//.test(where)) marks.push("background")
+  return marks
 }
 
 /** What a session of this service needs or does. */
@@ -80,11 +100,13 @@ function statusOf(s: SessionState): SessionStatus {
   return "done"
 }
 
-/** What a session is called: its name -- an untitled one by what it was
- *  first asked (a name that does not change with every prompt). */
+/** What a session is called: its name -- the one the service gives every
+ *  window (`name`: its title, else folder and short id); from a service
+ *  before that field, an untitled one by what it was first asked. */
 export function sessionName(s: SessionState): string {
   const summary = (s.summary ?? {}) as Record<string, any>
-  return s.title || String(summary.title || "") || String(summary.firstPrompt || summary.lastPrompt || "").split("\n")[0]
+  return s.title || String(summary.title || "") || String(summary.name || "")
+    || String(summary.firstPrompt || summary.lastPrompt || "").split("\n")[0]
     || s.id.slice(0, 8)
 }
 
@@ -128,6 +150,7 @@ export function agentRows(state: AppState, pins: ReadonlySet<string>, now: numbe
       cost: cost > 0 ? `$${cost.toFixed(2)}` : "",
       current: state.current === id,
       workspace: s.workspace || String(summary.workspace || ""),
+      marks: marksOf(summary),
       created: Number(summary.createdAt ?? 0), at,
     })
   })
@@ -146,7 +169,11 @@ export function agentRows(state: AppState, pins: ReadonlySet<string>, now: numbe
       age: "", cost: "", current: false, workspace: e.workspace, created: 0, at,
     })
   })
+  // Within a group what runs comes before what does not (asleep, ended),
+  // as in the dashboard's list.
+  const still = (r: AgentRow) => (r.status === "sleeping" || r.status === "ended" ? 1 : 0)
   rows.sort((a, b) => ORDER.indexOf(a.group) - ORDER.indexOf(b.group) || RANK[a.kind] - RANK[b.kind]
+    || still(a) - still(b)
     || (a.kind === "attention" ? a.at - b.at : b.created - a.created || b.at - a.at))
   return rows.map(({ created: _c, at: _a, ...row }) => row)
 }
@@ -195,8 +222,9 @@ export interface AgentViewDeps {
   message(row: AgentRow, text: string): void
   newSession(text: string): void
   /** → on an item: its session, a copy, the diagnosis, or a new session
-   *  about it (attention.ts). */
-  openItem(item: AttentionItem): void
+   *  about it (attention.ts); a login item's login field, with what was
+   *  `typed` for it. */
+  openItem(item: AttentionItem, typed?: string): void
   /** ctrl+x on an item: cleared, never answered; false when it was not. */
   dismiss(item: AttentionItem): Promise<boolean>
   /** Typing + enter on a peeked item that waits: its answer, for the next
@@ -339,7 +367,8 @@ export function createAgentView(deps: AgentViewDeps): AgentView {
     }
     if (km.matches("agentsOpen", key) && !typing) {
       if (row.kind === "attention") {
-        close()
+        // A login's field opens over the view: the list is there after it.
+        if (row.item!.kind !== "login") close()
         deps.openItem(row.item!)
         return true
       }
@@ -390,6 +419,14 @@ export function createAgentView(deps: AgentViewDeps): AgentView {
       deps.togglePin(row.id)
       return true
     }
+    // Typing for a peeked login item is its password: into the login
+    // field, never the prompt.
+    const peeked = state.peek ? list.find((r) => r.id === state.peek!.id) : undefined
+    if (peeked?.item?.kind === "login" && !typing && !key.ctrl && !key.meta && key.sequence
+        && !/[\x00-\x1f\x7f]/.test(key.sequence)) {
+      deps.openItem(peeked.item, key.sequence)
+      return true
+    }
     return false                        // everything else is typing
   }
 
@@ -431,6 +468,12 @@ export function createAgentView(deps: AgentViewDeps): AgentView {
   const answerItem = (row: AgentRow | undefined, body: string): boolean => {
     if (!row) {
       deps.say("that item is not in the list any more (answered or dismissed elsewhere)")
+      return false
+    }
+    if (row.item?.kind === "login" || row.item?.kind === "addCluster") {
+      // Never an answer (it would reach a model): the login field or the
+      // add form opens, and the text stays in the box.
+      deps.openItem(row.item)
       return false
     }
     if (!takesAnswer(row.item)) {
@@ -517,8 +560,10 @@ export function agentHelp(view: AgentView, km: Keymap, room = Infinity): string 
     return fitParts(["that item is gone: answered or dismissed elsewhere", "esc closes it", "↑↓ select"], room)
   }
   if (peeked?.kind === "attention") {
-    const pick = [takesAnswer(peeked.item) ? "type the answer · enter sends it" : "",
-                  `${km.label("agentsOpen")} open`, `${km.label("agentsStop")} dismiss`, "space closes", "esc back"]
+    const login = peeked.item?.kind === "login"
+    const pick = [takesAnswer(peeked.item) ? "type the answer · enter sends it" : login ? "type to log in" : "",
+                  `${km.label("agentsOpen")} ${login ? "log in" : "open"}`, `${km.label("agentsStop")} dismiss`,
+                  "space closes", "esc back"]
       .filter(Boolean)
     return fitParts(pick, room)
   }
@@ -670,7 +715,9 @@ export function AgentViewPanel(props: { view: AgentView; theme: () => Theme; wid
           // A notice is quiet: what it says in the faint colour.
           const quiet = row.kind === "attention" && markOf(row.item!) === "notice"
           const where = () => row.where ? middle(row.where, Math.max(8, Math.floor(inner() * 0.24))) : ""
-          const right = () => [where(), row.age, row.cost].filter(Boolean).join("  ")
+          // The dashboard's marks ("kept", "background"), at the right.
+          const right = () => [(row.marks ?? []).join(" · "), where(), row.age, row.cost]
+            .filter(Boolean).join("  ")
           const name = () => fit(row.name, Math.max(8, Math.floor(inner() * 0.32)))
           const stopLabel = props.keymap?.label("agentsStop") ?? "ctrl+x"
           const activity = () => renaming() ? "renaming: type the new name below"

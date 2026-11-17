@@ -19,6 +19,7 @@ from delfin.manta.ml_tables import (
     _METALLOID_MD_DONORS,
     _METAL_SET,
     _get_ml_bond_length,
+    _pin_ml_bond_length,
     _ml_bond_kind,
 )
 
@@ -185,7 +186,7 @@ def _snap_md_distances_to_ideal(
             if cur_d < 1e-8:
                 continue
             try:
-                target_d = float(_get_ml_bond_length(m_sym, d_sym, _ml_bond_kind(mol, m_idx, d_idx) if _delfin_env_int("DELFIN_FFFREE_ME_BOND_LEN", 0) else "sigma"))
+                target_d = float(_pin_ml_bond_length(m_sym, d_sym, _ml_bond_kind(mol, m_idx, d_idx) if _delfin_env_int("DELFIN_FFFREE_ME_BOND_LEN", 0) else "sigma"))
             except Exception:
                 continue
             if target_d <= 0:
@@ -278,7 +279,7 @@ def _clamp_metalloid_md_xyz(xyz_delfin: str, mol_template) -> str:
                     # flag.  The new switch silently switched an old one off.  The same
                     # class as the `metal_idx`/`mi` error in `_manual_metal_embed`:
                     # a wrong name UNDER an `except` is invisible until one counts.
-                    target_d = float(_get_ml_bond_length(m_sym, d_sym, _ml_bond_kind(mol_template, m_idx, d_idx) if _delfin_env_int("DELFIN_FFFREE_ME_BOND_LEN", 0) else "sigma"))
+                    target_d = float(_pin_ml_bond_length(m_sym, d_sym, _ml_bond_kind(mol_template, m_idx, d_idx) if _delfin_env_int("DELFIN_FFFREE_ME_BOND_LEN", 0) else "sigma"))
                 except Exception:
                     continue
                 if target_d <= 0 or abs(cur_d - target_d) / target_d < 0.05:
@@ -485,7 +486,7 @@ def _md_distance_in_tolerance(
                 (mp.x - dp.x) ** 2 + (mp.y - dp.y) ** 2 + (mp.z - dp.z) ** 2
             )
             try:
-                target_d = float(_get_ml_bond_length(m_sym, d_sym, _ml_bond_kind(mol, m_idx, d_idx) if _delfin_env_int("DELFIN_FFFREE_ME_BOND_LEN", 0) else "sigma"))
+                target_d = float(_pin_ml_bond_length(m_sym, d_sym, _ml_bond_kind(mol, m_idx, d_idx) if _delfin_env_int("DELFIN_FFFREE_ME_BOND_LEN", 0) else "sigma"))
             except Exception:
                 continue
             if target_d <= 0:

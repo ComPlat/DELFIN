@@ -25,8 +25,8 @@ import pytest
 
 from delfin.agent import credentials as cred
 
-SECRET = "sk-test-0123456789abcdefXYZ"
-OTHER = "sk-other-9876543210fedcbaQRS"
+SECRET = "sk-test-0123456789abcdefXYZ"  # secret-guard: allow (synthetic DELFIN test sample)
+OTHER = "sk-other-9876543210fedcbaQRS"  # secret-guard: allow (synthetic DELFIN test sample)
 
 
 # ---------------------------------------------------------------------------

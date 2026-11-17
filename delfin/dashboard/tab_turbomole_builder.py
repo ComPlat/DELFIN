@@ -10,7 +10,12 @@ import ipywidgets as widgets
 from IPython.display import clear_output
 
 from .input_processing import smiles_to_xyz, is_smiles
-from .molecule_viewer import coord_to_xyz, apply_molecule_view_style
+from .molecule_viewer import (
+    _harden_py3dmol, apply_molecule_view_style, coord_to_xyz)
+
+# The </script> rule; the lazy accessor in molecule_viewer is not on this
+# path, so a viewer built here first would embed text unescaped.
+_harden_py3dmol(py3Dmol)
 
 
 TM_MODULE_OPTIONS = [

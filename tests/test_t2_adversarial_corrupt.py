@@ -26,7 +26,7 @@ def state_path(tmp_path):
     return tmp_path / "task_state.json"
 
 
-_SECRET = "sk-proj-nacht-s15-adversarial-secret-value"
+_SECRET = "sk-proj-nacht-s15-adversarial-secret-value"  # secret-guard: allow (synthetic DELFIN test sample)
 
 
 # -- Finding 1: corrupt / partial on-disk state must not blow up load() ------

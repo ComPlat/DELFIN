@@ -1,3 +1,4 @@
+# SYNTHETIC test fixture written for DELFIN -- not ORCA output
                         Program Version 6.1.1  -  RELEASE   -
 
 Number of atoms                         ....    3
@@ -21,6 +22,6 @@ zero-point vibrational energy
 
 There are 0 imaginary frequencies
 
-Total Wall time : 123.45s 6.0
+Total Wall time : 123.45s
 
 ORCA TERMINATED NORMALLY

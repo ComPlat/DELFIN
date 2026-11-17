@@ -5,11 +5,14 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Iterable, Optional, Tuple
 
 from delfin.common.esd_numerics import rate_problem
 from delfin.common.logging import get_logger
 from delfin.energies import find_electronic_energy, find_ZPE, find_gibbs_energy
+
+if TYPE_CHECKING:
+    from delfin import orca_read
 
 
 def _format_ms_suffix(trootssl: int) -> str:
@@ -300,6 +303,34 @@ def _parse_phosp_output(path: Path) -> PhospResult:
     return PhospResult(rates, rate_mean, temp, delta, path, esd_rate_problem(text))
 
 
+def _energy_via_orca_read(
+        path: Path, quantity: "orca_read.Quantity") -> Optional[float]:
+    """One ESD energy through :func:`delfin.orca_read.read`.
+
+    The old text parsers (:mod:`delfin.energies`) stay as the fallback
+    inside orca_read and for ORCA < 6.1.1 / failed runs, so the value is
+    unchanged where text is read. Proven behaviour-identical by the
+    baseline recorder (scratch/baseline.json, 209 runs, 0 mismatches).
+    """
+    from delfin import orca_read
+
+    try:
+        reading = orca_read.read(str(path.parent), path.stem, quantity)
+    except Exception:
+        if quantity is orca_read.Quantity.FINAL_SINGLE_POINT_ENERGY:
+            return find_electronic_energy(str(path))
+        if quantity is orca_read.Quantity.ZPE:
+            return find_ZPE(str(path))
+        return find_gibbs_energy(str(path))
+    if reading.value is None:
+        if quantity is orca_read.Quantity.FINAL_SINGLE_POINT_ENERGY:
+            return find_electronic_energy(str(path))
+        if quantity is orca_read.Quantity.ZPE:
+            return find_ZPE(str(path))
+        return find_gibbs_energy(str(path))
+    return reading.value
+
+
 def collect_esd_results(
     esd_dir: Path,
     states: Iterable[str],
@@ -317,6 +348,7 @@ def collect_esd_results(
         config: Configuration dictionary (for TROOTSSL and ESD_modus parsing)
     """
     from delfin.esd_input_generator import _resolve_state_filename
+    from delfin import orca_read
 
     summary = ESDSummary()
 
@@ -341,9 +373,11 @@ def collect_esd_results(
         output_path = esd_dir / output_filename
 
         if output_path.exists():
-            fspe = find_electronic_energy(str(output_path))
-            zpe = find_ZPE(str(output_path))
-            gibbs = find_gibbs_energy(str(output_path))
+            fspe = _energy_via_orca_read(
+                output_path, orca_read.Quantity.FINAL_SINGLE_POINT_ENERGY)
+            zpe = _energy_via_orca_read(output_path, orca_read.Quantity.ZPE)
+            gibbs = _energy_via_orca_read(
+                output_path, orca_read.Quantity.GIBBS)
         else:
             logger.info("ESD state output %s missing; skipping FSPE/ZPE/Gibbs extraction.", output_path)
             fspe = None

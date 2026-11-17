@@ -107,7 +107,9 @@ export function Row(props: RowProps): JSX.Element {
     case "user": {
       const source = String(f.source ?? "user")
       const tint = source === "harness" ? t.muted : t.bright
-      const note = source === "queued" ? "  (queued)" : source === "steer" ? "  (into the turn)" : ""
+      // Where it came from, beside the text, never in it.
+      const via = f.via === "phone" ? "  (via phone)" : ""
+      const note = (source === "queued" ? "  (queued)" : source === "steer" ? "  (into the turn)" : "") + via
       // A "!" line the user sent ran as a command (steered, it went to the
       // model as text): "$ command" heads what it printed, the notice
       // under it.

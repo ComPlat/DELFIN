@@ -217,6 +217,153 @@ def _frag_xyz_collapsed(mol, frag_list, frag_xyz, vol_min: float = 0.40) -> bool
     return False
 
 
+# ===== THE COMPRESSED TEMPLATE IS RE-SEATED TOO (DELFIN_FFFREE_TEMPLATE_COMPRESSED_RESEAT, default OFF) =====
+#
+# THE DEFECT.  The legacy topology builder takes every ligand's internal geometry from a conformer of
+# the WHOLE complex (ETKDG with the metal in the graph).  Around the metal that embedding does not
+# satisfy its own 1-2 bounds: COPMEC's bounds say aromatic C-N 1.335-1.355 A, the built template has
+# 1.169 A (tpl_bond_bounds.py, 23.10.2026); in the trace (DELFIN_LEGCONF_TRACE) every template conformer
+# of COPMEC, GENYAC, NAMFUE, WATJEJ, TAKSIH and BAGZUH carries a ligand bond below 0.85 x rcov.  The
+# rigid-fragment placement keeps that geometry, UFF runs with the donors frozen and cannot restore it --
+# GENYAC and UYAHIM leave the topology enumerator with 22/49 and 16/36 frames below 0.88 x the
+# bond-order reference.  The ERDBEBEN re-seat (champion ISOLATED_SEAT) already re-embeds a fragment ALONE
+# when the template COLLAPSED it (flat sp3 centre); a compressed bond is the same metal-context
+# degeneracy and was not looked at.
+# THE FIX.  Under the switch a template fragment with a covalent bond below 0.88 x its bond-order-aware
+# reference (rcov sum x 1 / 0.87 / 0.78 / 0.91 for single / double / triple / aromatic) counts as
+# collapsed: a chelate fragment goes through the same isolated re-embed (accepted only when the new
+# geometry is neither collapsed nor compressed), a monodentate fragment is re-embedded alone with ETKDG.
+_COMPRESSED_FACTOR = 0.88
+_STRETCHED_FACTOR = 1.15
+
+
+def template_compressed_reseat_enabled() -> bool:
+    """THE one read site of DELFIN_FFFREE_TEMPLATE_COMPRESSED_RESEAT (default 0)."""
+    return os.environ.get("DELFIN_FFFREE_TEMPLATE_COMPRESSED_RESEAT", "0") == "1"
+
+
+def _conjugated_ring_single_bonds(mol):
+    """DELFIN_FFFREE_TEMPLATE_COMPRESSED_CONJ: indices of SINGLE bonds inside 5/6-rings whose every atom is
+    aromatic, carries a non-metal double bond, or is an N/O/S/Se with at most three non-metal neighbours and
+    no double bond (a lone pair in the pi system).  Works on unsanitised mols (own ring search)."""
+    try:
+        from rdkit.Chem import rdmolops
+        m = Chem.Mol(mol)
+        m.UpdatePropertyCache(strict=False)
+        rings = [tuple(m.GetBondBetweenAtoms(int(r[k]), int(r[(k + 1) % len(r)])).GetIdx()
+                       for k in range(len(r))) for r in Chem.GetSymmSSSR(m)]
+    except Exception:
+        return set()
+
+    def _pi(a):
+        if a.GetIsAromatic():
+            return True
+        nm = [bd for bd in a.GetBonds() if bd.GetOtherAtom(a).GetSymbol() not in _METAL_SET]
+        if any(bd.GetBondTypeAsDouble() >= 1.5 for bd in nm):
+            return True
+        return a.GetSymbol() in ("N", "O", "S", "Se") and len(nm) <= 3
+
+    out = set()
+    for br in rings:
+        if len(br) not in (5, 6):
+            continue
+        atoms = set()
+        for bi in br:
+            bd = m.GetBondWithIdx(bi)
+            atoms.update((bd.GetBeginAtomIdx(), bd.GetEndAtomIdx()))
+        if any(m.GetAtomWithIdx(k).GetSymbol() in _METAL_SET for k in atoms):
+            continue
+        if all(_pi(m.GetAtomWithIdx(k)) for k in atoms):
+            out.update(bi for bi in br if m.GetBondWithIdx(bi).GetBondType() == Chem.BondType.SINGLE)
+    return out
+
+
+def _frag_xyz_compressed(mol, frag_list, frag_xyz, factor: float = _COMPRESSED_FACTOR) -> bool:
+    """True if one covalent bond inside the fragment (``frag_xyz`` rows in ``frag_list`` order) is
+    shorter than ``factor`` x its bond-order-aware covalent reference."""
+    try:
+        import numpy as np
+        pt = Chem.GetPeriodicTable()
+        scale = {Chem.BondType.SINGLE: 1.0, Chem.BondType.DOUBLE: 0.87,
+                 Chem.BondType.TRIPLE: 0.78, Chem.BondType.AROMATIC: 0.91}
+        # DELFIN_FFFREE_TEMPLATE_COMPRESSED_CONJ (default off): a Kekule SINGLE bond inside a conjugated
+        # 5/6-ring (every ring atom aromatic, double-bonded, or an N/O/S/Se lone-pair atom) is a delocalised
+        # bond; its reference is the aromatic one.  Measured: KIVKIJ (Co tris-pyrazolylborate) -- the
+        # pyrazolate C-N(-) of the template, 1.25 A, read against the single-bond 1.47 A, flagged every
+        # template "compressed"; the isolated re-seat then replaced ALL template conformers by the same
+        # one (11 -> 4 frames, crystal isomer lost).  Real pyrazolate C-N is ~1.34 A = 0.91 x 1.47.
+        _conj_ref = os.environ.get("DELFIN_FFFREE_TEMPLATE_COMPRESSED_CONJ", "0") == "1"
+        _conj_bonds = _conjugated_ring_single_bonds(mol) if _conj_ref else None
+        # DELFIN_FFFREE_TEMPLATE_STRETCHED (default off): a bond LONGER than 1.15 x its reference counts
+        # as a distorted template too.  Measured: OPEVEN / QISKEK nitrate kappa2 4-ring -- the whole-complex
+        # ETKDG stretches the coordinated N-O single bonds to 1.89-2.14 A (real 1.27); the frame keeps
+        # them (ligspec_nitrate bad_bond_len), the isolated nitrate embeds correctly.
+        _stretch_chk = os.environ.get("DELFIN_FFFREE_TEMPLATE_STRETCHED", "0") == "1"
+        row = {a: k for k, a in enumerate(frag_list)}
+        for b in mol.GetBonds():
+            i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+            if i not in row or j not in row:
+                continue
+            a1, a2 = b.GetBeginAtom(), b.GetEndAtom()
+            if a1.GetAtomicNum() <= 1 or a2.GetAtomicNum() <= 1:
+                continue
+            if a1.GetSymbol() in _METAL_SET or a2.GetSymbol() in _METAL_SET:
+                continue
+            _bt = b.GetBondType()
+            if _conj_ref and _bt == Chem.BondType.SINGLE and _conj_bonds is not None \
+                    and b.GetIdx() in _conj_bonds:
+                _bt = Chem.BondType.AROMATIC   # DELFIN_FFFREE_TEMPLATE_COMPRESSED_CONJ
+            ref = (pt.GetRcovalent(a1.GetAtomicNum()) + pt.GetRcovalent(a2.GetAtomicNum())) \
+                * scale.get(_bt, 1.0)
+            _dd = float(np.linalg.norm(frag_xyz[row[i]] - frag_xyz[row[j]]))
+            if _dd < factor * ref:
+                return True
+            if _stretch_chk and _dd > _STRETCHED_FACTOR * ref:
+                return True    # DELFIN_FFFREE_TEMPLATE_STRETCHED
+        return False
+    except Exception:
+        return False
+
+
+def _isolated_fragment_xyz(mol, frag_list, seeds=(42, 7, 1234)):
+    """The fragment (``frag_list`` atoms of ``mol``, metal-free, hydrogens included) embedded ALONE with
+    ETKDG; the first seed whose conformer is not compressed wins.  Rows in ``frag_list`` order, or None."""
+    try:
+        import numpy as np
+        from rdkit.Chem import AllChem
+        old_to_new = {old: new for new, old in enumerate(frag_list)}
+        rw = Chem.RWMol(Chem.Mol())
+        for aidx in frag_list:
+            a = mol.GetAtomWithIdx(aidx)
+            k = rw.AddAtom(Chem.Atom(a.GetAtomicNum()))
+            rw.GetAtomWithIdx(k).SetFormalCharge(a.GetFormalCharge())
+            rw.GetAtomWithIdx(k).SetNoImplicit(True)
+        for b in mol.GetBonds():
+            i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+            if i in old_to_new and j in old_to_new:
+                rw.AddBond(old_to_new[i], old_to_new[j], b.GetBondType())
+        fm = rw.GetMol()
+        try:
+            Chem.SanitizeMol(fm)
+        except Exception:
+            fm.UpdatePropertyCache(strict=False)
+            Chem.FastFindRings(fm)
+        for s in seeds:
+            p = AllChem.ETKDGv3()
+            p.randomSeed = int(s)
+            p.useRandomCoords = True
+            p.enforceChirality = False
+            m = Chem.Mol(fm)
+            if AllChem.EmbedMolecule(m, p) < 0:
+                continue
+            X = np.array(m.GetConformer().GetPositions(), dtype=float)
+            if not _frag_xyz_compressed(mol, frag_list, X):
+                return X
+        return None
+    except Exception:
+        return None
+
+
 def _heavy_atom_rmsd_xyz(xyz_a: str, xyz_b: str) -> float:
     """Symmetry-free heavy-atom RMSD (no alignment) between two XYZ blocks.
 

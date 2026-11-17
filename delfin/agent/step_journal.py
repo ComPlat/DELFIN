@@ -520,6 +520,32 @@ def last_finished_step(session: str, *,
     return None
 
 
+_CHECK_EVIDENCE = {
+    "git_commit": "did the commit land? check git log / HEAD for the "
+                  "stated message before repeating it",
+    "git_push": "did the push go out? check the branch's remote state "
+                "or the push output",
+    "submit_calculation": "did the job submit? check DELFIN's job list / "
+                          "run log for the job id or its output",
+    "submit": "did the job submit? check the job list / run log for "
+              "the job id or its output",
+    "write_file": "is the file on disk with the intended content? "
+                   "read it back before repeating",
+    "edit_file": "is the file changed as intended? read it back before "
+                  "repeating",
+    "bash": "did the command actually run? check its output / side "
+            "effect before repeating",
+}
+
+
+def _check_evidence_for(tool: str) -> str:
+    """A concrete, verifiable check (phrased as a question) for an OPEN
+    side-effecting ``tool``: the evidence that decides whether it already
+    happened. Unknown tools get a safe generic question."""
+    return _CHECK_EVIDENCE.get(tool, "how to check: how do we know whether "
+                                       "this step actually happened?")
+
+
 def render_resume_note(session: str, *, root: "str | Path | None" = None,
                        max_open: int = 5) -> str | None:
     """The step-resume note, or None when every step finished.
@@ -560,7 +586,8 @@ def render_resume_note(session: str, *, root: "str | Path | None" = None,
             if e.get("side_effect"):
                 tail = ("This tool can change things outside itself — "
                         "step may or may not have run: CHECK BEFORE "
-                        "REPEATING it; verify the workspace state first.")
+                        "REPEATING it; verify the workspace state first. "
+                        f"{_check_evidence_for(tool)}?")
             else:
                 tail = ("step may or may not have run: check before "
                         "repeating; a re-run is allowed but verify its "

@@ -54,8 +54,11 @@ def main() -> int:
            # The snapshot has the braille dolphin, whatever this terminal draws.
            "DELFIN_TUI_LOGO": "mono",
            "PATH": f"{Path.home()}/.bun/bin:{os.environ.get('PATH', '')}"}
+    # Started with --keep: what is checked below is read from the agent
+    # service after the window has left, and a window's session ends with it
+    # unless kept (check_fullscreen_tmux checks that).
     command = (f"cd {REPO} && env {' '.join(f'{k}={v}' for k, v in env.items())} "
-               f"{PYTHON} -m delfin.agent.cli tui --fake --permission-mode default "
+               f"{PYTHON} -m delfin.agent.cli tui --fake --keep --permission-mode default "
                f"--cwd {ws}; echo TUI_EXIT=$?")
     problems: list[str] = []
     tmux = Tmux(100, 35)
@@ -127,6 +130,16 @@ def main() -> int:
             start = -1
         ends = [m.end() for m in re.finditer(r"[✓✗] \d+\.\ds · ↑\S+ ↓\S+", history)]
         shown = normalise(history[start:ends[-1]]) if start >= 0 and ends else ""
+        # A new session's first screen says how to get back to another one
+        # (main.tsx, entry.START_HINT); the render snapshot has no start
+        # screen, so the hint is checked here once and then left out.
+        hint = "/resume opens another session · delfin-agent tui --continue opens the latest one here"
+        # Words apart by any white space: a narrow window wraps the line.
+        hint_re = r"\n*[ \t]*" + r"\s+".join(re.escape(w) for w in hint.split()) + r"[ \t]*"
+        found_hints = len(re.findall(hint_re, shown))
+        if found_hints != 1:
+            problems.append(f"the start hint shows {found_hints} times, not once")
+        shown = re.sub(hint_re, "", shown, count=1)
         if shown != expected:
             import difflib
             diff = "\n".join(difflib.unified_diff(expected.split("\n"), shown.split("\n"),
@@ -149,7 +162,7 @@ def main() -> int:
         for p in problems:
             print(f"  - {p}")
         return 1
-    print("PASS: the live window shows the snapshot, ctrl+o its details and back, and the session runs on")
+    print("PASS: the live window shows the snapshot, ctrl+o its details and back, and the kept session runs on")
     return 0
 
 

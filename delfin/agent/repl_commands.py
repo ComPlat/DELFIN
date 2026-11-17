@@ -39,6 +39,7 @@ class CommandResult:
     quit: bool = False
     handled: bool = True
     clear: bool = False       # start a fresh conversation
+    title: str = ""           # the session's new title (/sync NAME)
 
 
 @dataclass(frozen=True)
@@ -139,9 +140,21 @@ def expand_at_references(text: str, workspace: Path) -> str:
 # ---------------------------------------------------------------------------
 
 def _sync(ctx, args: str) -> CommandResult:
-    from delfin.messenger.activation import configure
+    from delfin.messenger.activation import configure, parse_sync
     sid = str(ctx.session_id or getattr(ctx.engine, "session_id", "") or "")
-    return CommandResult(output=configure(sid, args, endpoint=""))
+    output = configure(sid, args, endpoint="")
+    # /sync name NAME: also the session's title, the one display name.
+    name = parse_sync(args)[1] if sid else ""
+    return CommandResult(output=output + (f" Name: {name}." if name else ""), title=name)
+
+
+def _pair(ctx, args: str) -> CommandResult:
+    """Pair the person's phone (delfin.messenger.pairing): the invitation
+    and the gateway's later answers are printed to this terminal only."""
+    from delfin.messenger import pairing
+    sid = str(ctx.session_id or getattr(ctx.engine, "session_id", "") or "")
+    return CommandResult(output=pairing.session_command(
+        args, requester="session:" + sid if sid else "", show=lambda text: print("\n" + text, flush=True)))
 
 
 def _status(ctx, _args: str) -> CommandResult:
@@ -471,6 +484,93 @@ def _rewind(ctx, _args: str) -> CommandResult:
         return CommandResult(output=f"no change report available ({exc})")
 
 
+# Branches on this checkout: the dashboard's rules, the same words the
+# messenger answers (delfin/agent/branch_commands.py formats, branch_ops
+# does). Nothing here switches the shared checkout; a deletion is only
+# /cleanup ok, through branch_cleanup.delete with its rules re-read.
+
+def _branches(ctx, args: str) -> CommandResult:
+    """``/branches [view]`` lists; ``/branches test <n|name>``,
+    ``/branches pull`` and ``/branches cleanup [ok <n|name>]`` act.
+
+    The actions live under /branches instead of top-level /test, /pull,
+    /cleanup: /cle is then unambiguous for /clear again (the tab
+    completion test pins that), and one command groups everything the
+    dashboard's branch panel does.
+    """
+    from . import branch_commands
+    word, _, rest = args.strip().partition(" ")
+    word = word.strip().lower()
+    rest = rest.strip()
+    if word in ("test", "pull", "cleanup"):
+        if word == "test":
+            handler, label = _test, "/branches test"
+        elif word == "pull":
+            handler, label = _pull, "/branches pull"
+        else:
+            handler, label = _cleanup, "/branches cleanup"
+        result = handler(ctx, rest)
+        if result.output.startswith(f"/{word} failed:"):
+            result.output = f"{label} failed:{result.output.split(':', 1)[1]}"
+        return result
+    try:
+        out = branch_commands.rows_text(ctx.workspace, word or "mine", rest)
+    except Exception as exc:
+        return CommandResult(output=f"/branches failed: {exc}")
+    return CommandResult(output=out)
+
+
+def _test(ctx, args: str) -> CommandResult:
+    from . import branch_commands
+    token = args.strip()
+    if not token:
+        return CommandResult(output=(
+            "which branch? /branches test <number|name> -- /branches lists them"))
+    try:
+        out = branch_commands.test_text(ctx.workspace, token)
+    except Exception as exc:
+        return CommandResult(output=f"/test failed: {exc}")
+    return CommandResult(output=out)
+
+
+def _pull(ctx, _args: str) -> CommandResult:
+    from . import branch_commands
+    try:
+        out = branch_commands.pull_text(ctx.workspace)
+    except Exception as exc:
+        return CommandResult(output=f"/pull failed: {exc}")
+    return CommandResult(output=out)
+
+
+def _cleanup(ctx, args: str) -> CommandResult:
+    from . import branch_commands
+    word, _, rest = args.strip().partition(" ")
+    word = word.strip().lower()
+    try:
+        if word in ("ok", "yes", "confirm", "y"):
+            out, _deleted = branch_commands.cleanup_confirm_text(
+                ctx.workspace, rest.strip())
+            return CommandResult(output=out)
+        if word:
+            # a number or name without the ok: show what it is, delete
+            # nothing (a bare name is not a confirmation)
+            ref = branch_commands.resolve(ctx.workspace, word)
+            if not ref:
+                return CommandResult(output=(
+                    f"no branch {word!r}; /branches cleanup lists what may be "
+                    "deleted, /branches cleanup ok <number> deletes it"))
+            note = branch_commands.unmerged_note(ctx.workspace, ref)
+            return CommandResult(output=(
+                f"{ref} is in the cleanup listing only when it is merged. "
+                + (note or "/branches cleanup ok " + word + " deletes it "
+                          "(merged branches only); it is re-checked at "
+                          "deletion.")))
+        out = branch_commands.cleanup_text(ctx.workspace)
+    except Exception as exc:
+        return CommandResult(output=f"cleanup failed: {exc}")
+    return CommandResult(output=out)
+
+
 def _tasks(ctx, _args: str) -> CommandResult:
     """This session's open work, on demand.
 
@@ -656,6 +756,7 @@ def _tools(ctx, args: str) -> CommandResult:
             list(getattr(ac, "_DOC_TOOLS_OPENAI", None) or []),
             ac.ToolSurfaceContext(
                 role=role,
+                has_lab=ac._lab_configured(),
                 session_allowed=frozenset(
                     getattr(perms, "session_allowed_tools", None) or ()),
                 session_denied=frozenset(
@@ -1193,8 +1294,12 @@ def _agents(ctx, _args: str) -> CommandResult:
         f"{str(p.get('description') or '')[:60]}"
         for p in presets
     ]
+    # This session's runs: the store is account-wide, and a terminal
+    # listing every session's delegates offered ids this conversation never
+    # started. A session without an id yet owns none.
     try:
-        finished = subagents.list_finished(last_n=5)
+        finished = subagents.list_finished(last_n=5,
+                                           session=_live_session(ctx))
     except Exception:
         finished = []
     if finished:
@@ -1914,6 +2019,25 @@ def _loop(ctx, args: str) -> CommandResult:
     return CommandResult(output=text, prompt=prompt)
 
 
+def _profile(ctx, args: str) -> CommandResult:
+    from . import workspace_profiles
+    words = str(args or "").strip().split()
+    usage = "usage: /profile [workspace] frei|standard"
+    word = words[-1] if words else ""
+    target = words[0] if len(words) == 2 else str(ctx.workspace)
+    if len(words) not in (1, 2) or word.lower() not in (
+            "frei", "free", "standard", "default"):
+        return CommandResult(output=usage)
+    try:
+        result = workspace_profiles.set_from_word(target, word)
+    except PermissionError as exc:
+        return CommandResult(output=f"profile refused: {exc}")
+    except ValueError as exc:
+        return CommandResult(output=f"profile: {exc}")
+    return CommandResult(output=f"profile {result['workspace']}: "
+                                f"{result['profile']} (confirmed)")
+
+
 def _schedule(ctx, args: str) -> CommandResult:
     from . import schedule_commands
     return CommandResult(output=schedule_commands.handle(
@@ -2023,6 +2147,31 @@ def _isolation(engine) -> str:
         return "unknown"
 
 
+#: True in the agent service's worker (worker.main): there ``/keep`` is the
+#: service's Keep session switch, which the supervisor applies before the
+#: line arrives here as ``/keep on`` or ``/keep off`` (the state now).
+UNDER_SERVICE = False
+
+
+def _keep(_ctx, args: str) -> CommandResult:
+    """What Keep session means for this session, in its own words."""
+    if not UNDER_SERVICE:
+        return CommandResult(output=(
+            "Keep session belongs to the agent service: this terminal "
+            "session ends when you leave it (it is saved; resume it with "
+            "--resume). Sessions in `delfin-agent tui` and the dashboard's "
+            "agent tab can be kept running."))
+    if args.strip().lower() == "off":
+        return CommandResult(output=(
+            "Keep session: off. This session ends -- saved, resumable -- "
+            "when the last window that has it open closes. /keep on keeps "
+            "it running."))
+    return CommandResult(output=(
+        "Keep session: on. This session keeps running in the agent service "
+        "after its windows close; any window can open it again. /keep off "
+        "ends it with its windows."))
+
+
 BUILTINS: dict[str, ReplCommand] = {
     c.name: c for c in [
         ReplCommand("/help", "session", "List these commands", _help, True),
@@ -2030,8 +2179,12 @@ BUILTINS: dict[str, ReplCommand] = {
                     _keys),
         ReplCommand("/editor", "session", "Write the next prompt in "
                     "$VISUAL or $EDITOR", _editor, True),
-        ReplCommand("/sync", "session", "SimpleX für diese Sitzung on|off|status", _sync, True),
+        ReplCommand("/sync", "session", "SimpleX for this session on|off|status|name NAME", _sync, True),
+        ReplCommand("/pair", "session", "Connect your phone (SimpleX): /pair, then /pair CODE",
+                    _pair, True),
         ReplCommand("/status", "session", "Model, mode, tokens, cost", _status),
+        ReplCommand("/keep", "session", "Keep session on|off: run on after "
+                    "the windows close, or end with them", _keep, True),
         ReplCommand("/cost", "session", "What this session has cost", _cost),
         ReplCommand("/usage", "session", "Token and cost detail, with the rate",
                     _usage),
@@ -2078,6 +2231,10 @@ BUILTINS: dict[str, ReplCommand] = {
                     _session, True),
         ReplCommand("/rewind", "history", "What the agent changed here",
                     _rewind),
+        ReplCommand("/branches", "git", "Branches of this checkout: "
+                    "[view] lists (mine, all, hidden, merged, remote); "
+                    "test <n|name>, pull, cleanup [ok <n>] act", _branches,
+                    True),
         ReplCommand("/tasks", "history", "This session's open work", _tasks),
         ReplCommand("/memories", "history", "Stored memories", _memories, True),
         ReplCommand("/forget", "history", "Delete one memory by name",
@@ -2127,6 +2284,10 @@ BUILTINS: dict[str, ReplCommand] = {
                     "Your schedules: list | add <when> <task> | ok | pause | "
                     "run | delete | log",
                     _schedule, True),
+        ReplCommand("/profile", "workspace",
+                    "Freedom profile of a workspace: [path] frei|standard "
+                    "(free = scheduled runs in bypass inside the cage)",
+                    _profile, True),
         ReplCommand("/auto", "workspace",
                     "Auto mode: on | off | needs — work on without input",
                     _auto, True),

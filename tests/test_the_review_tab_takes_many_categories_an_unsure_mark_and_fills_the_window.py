@@ -224,8 +224,8 @@ def test_the_viewer_height_follows_the_window_through_the_shared_mechanism(revie
     assert seen == {"width": "100%", "height": tab_review.VIEWER_HEIGHT}
     assert panel.sidebar.layout.height == tab_review.VIEWER_HEIGHT
     assert not panel.rating_box.layout.max_height       # no inner scroll bar
-    view = molecule_viewer.py3Dmol.view(width=tab_review.VIEWER_WIDTH,
-                                        height=tab_review.VIEWER_HEIGHT)
+    view = molecule_viewer.py3dmol().view(width=tab_review.VIEWER_WIDTH,
+                                          height=tab_review.VIEWER_HEIGHT)
     molecule_viewer.apply_molecule_view_style(view)
     assert f"height: {tab_review.VIEWER_HEIGHT};" in view.startjs
     assert "window.__delfinCreateViewer(" in view.startjs

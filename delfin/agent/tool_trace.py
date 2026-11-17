@@ -104,6 +104,7 @@ def record(
             "duration_ms": int(duration_ms),
             "ok": bool(ok),
             "error": str(error or "")[:300],
+            "round": int(round),
         }
         # Created 0600 by ``open_append`` rather than chmod'ed afterwards:
         # a chmod after the first write leaves the file group-readable for

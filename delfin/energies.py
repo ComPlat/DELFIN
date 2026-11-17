@@ -22,6 +22,26 @@ GIBBS_STATE_FILES = {
 }
 
 
+def _gibbs_via_orca_read(path: Path) -> Optional[float]:
+    """Gibbs energy of one output through :func:`delfin.orca_read.read`.
+
+    The old reader (:func:`find_gibbs_energy`) stays as the text fallback
+    inside orca_read and for ORCA < 6.1.1 / failed runs, so the value is
+    unchanged where text is read (proven: baseline recorder, 204 runs,
+    0 mismatches for gibbs).
+    """
+    from delfin import orca_read
+
+    try:
+        reading = orca_read.read(str(path.parent), path.stem,
+                                 orca_read.Quantity.GIBBS)
+    except Exception:
+        return find_gibbs_energy(str(path))
+    if reading.value is None:
+        return find_gibbs_energy(str(path))
+    return reading.value
+
+
 def collect_gibbs_energies_from_dir(
     working_dir: Path,
     *,
@@ -86,7 +106,7 @@ def collect_gibbs_energies_from_dir(
             energies[key] = None
             continue
 
-        value = find_gibbs_energy(str(path))
+        value = _gibbs_via_orca_read(path)
         energies[key] = value
 
         if log_progress:
@@ -292,7 +312,10 @@ def find_electronic_energy(filename: str) -> Optional[float]:
 
 
 _ELECTRONIC_PATTERNS = (
-    rf"FINAL\s+SINGLE\s+POINT\s+ENERGY\s+{FLOAT_RE}",
+    # An ExtOpt run (energy and gradient from an external program, e.g. an
+    # MLIP through orca-mlips) prints "FINAL SINGLE POINT ENERGY (From
+    # external program)   -155.1397..." -- read as the same energy.
+    rf"FINAL\s+SINGLE\s+POINT\s+ENERGY(?:\s+\(From\s+external\s+program\))?\s+{FLOAT_RE}",
     rf"Total\s+Energy\s*:\s*{FLOAT_RE}",
     rf"Electronic\s+energy{_GAP}{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
 )

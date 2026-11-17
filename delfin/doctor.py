@@ -7,7 +7,9 @@ Each check is a small function returning a :class:`CheckResult`.  The
 checks are deliberately cheap: they only locate binaries via ``PATH``
 (``shutil.which``), run ``--version`` probes, touch the scratch
 directory, and look at files/keys on disk.  They NEVER start a
-computation and NEVER open a network connection.
+computation and NEVER open a network connection; the one exception is
+``check_clusters(budget=True)`` (``delfin doctor --budget``), which runs a
+cluster's budget script over its open tunnel.
 
 Status values:
     "ok"      — the prerequisite works
@@ -29,6 +31,8 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from delfin.agent.model_capabilities import _KIT_BASE_URL
+
 __all__ = [
     "CheckResult",
     "check_orca",
@@ -42,6 +46,7 @@ __all__ = [
     "check_docs_index",
     "check_command_isolation",
     "check_no_exported_key",
+    "check_clusters",
     "run_all",
     "exit_code",
 ]
@@ -52,6 +57,9 @@ BROKEN = "broken"
 
 # Keep version probes snappy: these must never hang the doctor.
 _PROBE_TIMEOUT_S = 15
+
+# The KIT Toolbox model list endpoint, from the one constant that owns the URL.
+_KIT_MODELS_URL = _KIT_BASE_URL + "/models"
 
 
 @dataclass
@@ -147,12 +155,35 @@ def _check_qm_tool(name: str, missing_hint: str) -> CheckResult:
 
 
 def check_orca() -> CheckResult:
-    """ORCA found where DELFIN looks for it."""
-    return _check_qm_tool(
-        "orca",
-        "install ORCA or add its bin directory to PATH "
-        "(e.g. module load chem/orca), or set ORCA_BINARY",
-    )
+    """ORCA found where DELFIN looks for it: qm_runtime.find_orca_dir.
+
+    The same function the installer wires ORCA with (settings, the tool
+    resolver, unpacked orca_* directories), so the two cannot disagree.
+    The directory found is handed to the health check as ORCA_BINARY for
+    the duration of the check (unless the environment names one already),
+    so the program checked is the one found; the environment is restored.
+    With no ORCA directory found, the resolver's own verdict is reported.
+    """
+    hint = ("unpack ORCA (https://orcaforum.kofo.mpg.de) into ~/software and run "
+            "install.sh again, or pass install.sh --orca DIR|TARBALL; or set ORCA_BINARY")
+    try:
+        from delfin.qm_runtime import find_orca_dir
+        where = find_orca_dir()
+    except Exception as exc:
+        return CheckResult("orca", BROKEN, f"could not look for orca: {exc}",
+                           "report this as a DELFIN bug")
+    if not where:
+        # The resolver's own verdict: it names a dangling link or a program
+        # that will not start, which "not found" would hide.
+        return _check_qm_tool("orca", hint)
+    named = bool(os.environ.get("ORCA_BINARY"))
+    if not named:
+        os.environ["ORCA_BINARY"] = str(Path(where) / "orca")
+    try:
+        return _check_qm_tool("orca", hint)
+    finally:
+        if not named:
+            os.environ.pop("ORCA_BINARY", None)
 
 
 #: The OPI version every DELFIN installation carries (the ``orca`` extra
@@ -165,9 +196,26 @@ def check_opi() -> CheckResult:
 
     Not installed is "missing" (DELFIN still reads ORCA's text output);
     another version is "broken": it may build an input or read an output
-    differently from every other host."""
+    differently from every other host.
+
+    The hint installs OPI alone into the Python running this check, with
+    numpy and rdkit held inside both OPI's and DELFIN's bounds. Rejected:
+    `pip install "delfin-complat[orca]"`, the hint until 2026-11-13: on
+    Python 3.11 (what install.sh builds) the set has no solution -- OPI
+    wants numpy>=2.2.6, mendeleev declares numpy<2 below 3.12 -- and from
+    a source checkout it fetches DELFIN from PyPI over the editable
+    install. Measured in a Python 3.11 venv with DELFIN's pins: without
+    the numpy bound pip takes numpy 2.4.6 (DELFIN admits <2.3); with it,
+    numpy 2.2.6, rdkit 2025.9.6 and OPI install, pip names mendeleev's
+    declared numpy<2, and mendeleev's element data reads as before (the
+    Pi runs the same combination through its overrides)."""
+    import sys
     from importlib import metadata
-    hint = f'pip install "delfin-complat[orca]"  (orca-pi=={OPI_VERSION})'
+    hint = (f'{sys.executable} -m pip install "orca-pi=={OPI_VERSION}" '
+            '"numpy>=2.2.6,<2.3" "rdkit>=2025.3.2,<2026"')
+    if sys.version_info < (3, 12):
+        hint += ("  (pip then reports that mendeleev declares numpy<2 below Python "
+                 "3.12; expected: its data reads the same on numpy 2.2)")
     try:
         found = metadata.version("orca-pi")
     except metadata.PackageNotFoundError:
@@ -258,7 +306,7 @@ def check_kit_toolbox_key_live(timeout_s: float = 15.0) -> CheckResult:
             "no KIT_TOOLBOX_API_KEY to check",
             "delfin-agent credentials set KIT_TOOLBOX_API_KEY")
     request = urllib.request.Request(
-        "https://ki-toolbox.scc.kit.edu/api/v1/models",
+        _KIT_MODELS_URL,
         headers={"Authorization": f"Bearer {key}"})
     try:
         with urllib.request.urlopen(request, timeout=timeout_s) as answer:
@@ -415,10 +463,70 @@ def check_docs_index() -> CheckResult:
     return CheckResult("docs_index", OK, f"index present at {idx}")
 
 
-def run_all(scratch_dir: str | os.PathLike | None = None) -> list[CheckResult]:
+def check_clusters(*, budget: bool = False, settings: dict | None = None,
+                   ctun_config: str | os.PathLike | None = None) -> list[CheckResult]:
+    """One result per cluster in ``remote.clusters`` (delfin.remote).
+
+    "broken": DELFIN refuses the cluster until its problems are fixed (no
+    pinned host key, a first-word budget guard, a file ctun reads where an
+    agent could write it). "missing": usable, but nobody is logged in.
+    "ok": logged in. Whether it is logged in is asked of the local control
+    socket only; ``budget=True`` also runs the budget script over the open
+    tunnel and reports what is left. No cluster configured: no results.
+    """
+    from delfin.remote import clusters as _clusters
+    from delfin.remote import connection as _connection
+    from delfin.remote.errors import RemoteError, RemoteRefused
+
+    results: list[CheckResult] = []
+    for name, cluster in _clusters.load(settings=settings,
+                                        ctun_config=ctun_config).items():
+        label = f"cluster {name}"
+        if not cluster.usable:
+            results.append(CheckResult(
+                label, BROKEN, "; ".join(cluster.problems),
+                "fix this in ctun's config (`ctun config`) or in remote.clusters "
+                "of ~/.delfin_settings.json"))
+            continue
+        try:
+            conn = _connection.connect(name, settings=settings, ctun_config=ctun_config)
+            live = conn.is_live()
+        except RemoteRefused:
+            results.append(CheckResult(
+                label, OK, f"usable ({cluster.target}); the login is not checked from "
+                "inside an agent session"))
+            continue
+        except RemoteError as exc:
+            results.append(CheckResult(label, BROKEN, str(exc), ""))
+            continue
+        if not live:
+            results.append(CheckResult(
+                label, MISSING, f"usable ({cluster.target}), nobody is logged in",
+                f"ctun login -t {name}"))
+            continue
+        detail = f"logged in ({cluster.target})"
+        if budget:
+            try:
+                decision = conn.budget()
+            except RemoteError as exc:
+                results.append(CheckResult(
+                    label, BROKEN, f"{detail}; the budget probe failed: {exc}",
+                    "check the budget script in ctun's config (`ctun config --validate`)"))
+                continue
+            if decision.limit is None:
+                detail += "; no session budget set"
+            else:
+                detail += f"; budget {decision.used} of {decision.limit} {decision.unit} used"
+        results.append(CheckResult(label, OK, detail))
+    return results
+
+
+def run_all(scratch_dir: str | os.PathLike | None = None, *,
+            cluster_budget: bool = False) -> list[CheckResult]:
     """Run every check and return the results in a stable order.
 
     Never raises: a check that explodes is reported as "broken".
+    ``cluster_budget`` also probes each logged-in cluster's budget.
     """
     checks = [
         check_orca,
@@ -441,6 +549,11 @@ def run_all(scratch_dir: str | os.PathLike | None = None) -> list[CheckResult]:
                 getattr(check, "__name__", "unknown"), BROKEN,
                 f"check crashed: {exc}", "report this as a DELFIN bug",
             ))
+    try:
+        results += check_clusters(budget=cluster_budget)
+    except Exception as exc:  # defensive: the doctor must complete
+        results.append(CheckResult(
+            "clusters", BROKEN, f"check crashed: {exc}", "report this as a DELFIN bug"))
     return results
 
 

@@ -70,3 +70,36 @@ End the answer with exactly one line:
 `LOOP: progress <what changed>` · `LOOP: done` · `LOOP: blocked <why>` ·
 `LOOP: needs-human <question>`. The line can stop or pause the loop; only
 the harness's measurement counts as progress.
+
+## Waiting for long work (background jobs, watches, monitors)
+
+A long task -- a SLURM job, a CI run, a test suite, a build -- is started
+in the background and waited on by CONDITION, never by burning turns on
+repeated checks. Three patterns DELFIN supports, and the anti-pattern of
+each:
+
+1. **Start in the background.** `bash_background` returns a `job_id` at
+   once. `bash_status`/`bash_output` read it later.
+   Anti-pattern: `sleep N` inside a model turn, or starting the job
+   synchronously and waiting out the tool-call timeout.
+2. **Event wake-up.** `watch_job(job_id, description)` -- the completion
+   is injected into a later turn; end your turn and do other work.
+   Anti-pattern: polling `bash_status` in a tight loop -- identical
+   status calls inside a short window burn turns and, for SLURM, got
+   this account a warning (squeue is throttled, never per-timer).
+3. **Condition wait with a timeout.** For a condition nothing watches
+   (a log line, a file appearing), write it as a watcher schedule
+   (`when file out.xyz appears`, `wenn job 123 fertig`,
+   `when file calc.log changes every 2 min`): the agent service looks
+   LLM-free on its interval (default 60 s, at least 30 s) and starts the
+   run only when the event happens. `watch_checks` runs only reading
+   commands inside the folder.
+   Anti-pattern: a hand-rolled `while not exists(...)` loop inside a
+   script only to then also poll it from the model -- one mechanism,
+   not two.
+
+React to the event once, then clean up: `bash_kill` a job you no longer
+need, and let finished watches retire (each fires once; "changes"
+fires per change, throttled). If a background job fails half-way,
+report the reason from its output -- do not retry the same command
+silently.

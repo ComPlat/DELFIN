@@ -1,13 +1,13 @@
 #requires -Version 5.1
 [CmdletBinding()]
-param([ValidateSet('App','Dashboard','Terminal','Validate')][string]$Mode = 'App', [string]$ProfileId, [int]$LocalPort = 0, [int]$RemotePort = 0, [string]$ConnectionId, [switch]$HideLauncherConsole, [switch]$GuiSmokeTest)
+param([ValidateSet('App','Dashboard','Terminal','Validate')][string]$Mode = 'App', [string]$ProfileId, [int]$LocalPort = 0, [int]$RemotePort = 0, [string]$ConnectionId, [switch]$GuiSmokeTest)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $store = Join-Path $env:LOCALAPPDATA 'DELFIN Launcher'
 $profilesFile = Join-Path $store 'profiles.json'
 
 function Normalize-Profile($value) {
-    $defaults = [ordered]@{ Id=[guid]::NewGuid().ToString(); Name=''; Target=''; Directory=''; Executable=''; Port=0; KeepSession=$false; OpenWorkingTerminal=$false }
+    $defaults = [ordered]@{ Id=[guid]::NewGuid().ToString(); Name=''; Target=''; Directory=''; Executable=''; Port=0; KeepSession=$false; OpenWorkingTerminal=$false; RememberLogin=$true }
     foreach ($key in @($defaults.Keys)) {
         $property = $value.PSObject.Properties[$key]
         if ($null -ne $property -and $null -ne $property.Value) { $defaults[$key] = $property.Value }
@@ -42,11 +42,67 @@ function Quote-NativeArgument([string]$value) {
     $escaped = [regex]::Replace($escaped,'(\\+)$','$1$1')
     return '"' + $escaped + '"'
 }
-function Get-RemoteCommand($p, [string]$role, [string]$tunnelPath = '') {
-    $bootstrap = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $PSScriptRoot 'remote_bootstrap.sh')))
-    $payload = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $PSScriptRoot 'remote_launcher.py')))
-    $script = 'eval "$(printf %s ' + $bootstrap + ' | base64 -d)"'
-    return 'bash -ilc ' + (Shell-Quote $script) + ' delfin ' + [int]$p.Port + ' ' + (Shell-Quote $p.Directory) + ' ' + (Shell-Quote $p.Executable) + ' ' + (Shell-Quote $payload) + ' ' + (Shell-Quote $role) + ' ' + (Shell-Quote $tunnelPath) + ' ' + $(if ($p.KeepSession) { '1' } else { '0' }) + ' ' + $(if ($p.OpenWorkingTerminal) { '1' } else { '0' })
+function Get-PersonName {
+    # Who sits at this Windows account. A server that runs several people on one
+    # account (remote_bootstrap.sh, ~/.config/delfin/launcher-people.conf) gives
+    # each a home of their own; every other server ignores it.
+    $name = [regex]::Replace(([string]$env:USERNAME).ToLowerInvariant(), '[^a-z0-9_-]', '-').Trim('-')
+    if ($name.Length -gt 32) { $name = $name.Substring(0, 32).TrimEnd('-') }
+    return $name
+}
+function Get-LoginKey {
+    # Remember login: one ed25519 key per Windows user, without a passphrase,
+    # protected by the Windows account. remote_bootstrap.sh adds its public
+    # half to the server on the first (password) login. $null when OpenSSH's
+    # ssh-keygen is missing or the key cannot be made: the login stays as is.
+    $folder = Join-Path $env:USERPROFILE '.ssh'
+    $key = Join-Path $folder 'delfin_launcher_ed25519'
+    if (-not (Test-Path -LiteralPath $key)) {
+        $keygen = Join-Path $env:SystemRoot 'System32\OpenSSH\ssh-keygen.exe'
+        if (-not (Test-Path -LiteralPath $keygen)) { return $null }
+        [void][IO.Directory]::CreateDirectory($folder)
+        $info = New-Object Diagnostics.ProcessStartInfo
+        $info.FileName = $keygen
+        $info.Arguments = (@('-q','-t','ed25519','-N','','-C',('delfin-launcher-' + (Get-PersonName)),'-f',$key) | ForEach-Object { Quote-NativeArgument $_ }) -join ' '
+        $info.UseShellExecute = $false
+        $made = [Diagnostics.Process]::Start($info)
+        $made.WaitForExit()
+        if ($made.ExitCode -ne 0) { return $null }
+    }
+    $public = $key + '.pub'
+    if (-not (Test-Path -LiteralPath $public)) { return $null }
+    $line = (Get-Content -LiteralPath $public -Raw).Trim()
+    if ($line -notmatch '^ssh-ed25519 [A-Za-z0-9+/]+={0,2}( [A-Za-z0-9@._-]{1,64})?$') { return $null }
+    return [pscustomobject]@{ Key=$key; Public=$line }
+}
+function Get-ScriptVersion {
+    # The server half (remote_bootstrap.sh, remote_launcher.py) is copied as
+    # plain files into ~/.cache/delfin-launcher/<version>/ on the server and
+    # run from there. <version> is the first 16 hex digits of each file's
+    # SHA-256, so a changed script gets a folder of its own; the full digests
+    # are checked on the server before each start.
+    $digests = @{}
+    foreach ($name in @('remote_bootstrap.sh','remote_launcher.py')) {
+        $digests[$name] = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $PSScriptRoot $name)).Hash.ToLowerInvariant()
+    }
+    $folder = '.cache/delfin-launcher/' + $digests['remote_bootstrap.sh'].Substring(0,16) + $digests['remote_launcher.py'].Substring(0,16)
+    return [pscustomobject]@{ Folder=$folder; Bootstrap=$digests['remote_bootstrap.sh']; Launcher=$digests['remote_launcher.py'] }
+}
+function Get-ScriptCheckCommand($version) {
+    # Exit 0: both files are present with these digests. Exit 10: missing or
+    # different (the folder now exists, owner-only). Exit 11: no folder.
+    # $1 is the folder below HOME, $2 and $3 the digests (hex only).
+    $checkScript = 'umask 077 && cd && mkdir -p $1 && cd $1 || exit 11; printf ''%s  %s\n'' $2 remote_bootstrap.sh $3 remote_launcher.py | sha256sum -c --status 2>/dev/null || exit 10'
+    if ($version.Folder -notmatch '^\.cache/delfin-launcher/[a-f0-9]{32}$' -or $version.Bootstrap -notmatch '^[a-f0-9]{64}$' -or $version.Launcher -notmatch '^[a-f0-9]{64}$') { throw 'Invalid launcher script version.' }
+    return 'bash -c ' + (Shell-Quote $checkScript) + ' delfin ' + $version.Folder + ' ' + $version.Bootstrap + ' ' + $version.Launcher
+}
+function Get-RemoteCommand($p, [string]$role, [string]$tunnelPath = '', [string]$publicKey = '', $version) {
+    # The login shell sources the copied bootstrap; its positional parameters
+    # are the arguments after 'delfin'. Only file paths and data travel.
+    if ($version.Folder -notmatch '^\.cache/delfin-launcher/[a-f0-9]{32}$') { throw 'Invalid launcher script version.' }
+    $bootstrap = '. ~/' + $version.Folder + '/remote_bootstrap.sh'
+    $launcher = '~/' + $version.Folder + '/remote_launcher.py'
+    return 'bash -ilc ' + (Shell-Quote $bootstrap) + ' delfin ' + [int]$p.Port + ' ' + (Shell-Quote $p.Directory) + ' ' + (Shell-Quote $p.Executable) + ' ' + (Shell-Quote $launcher) + ' ' + (Shell-Quote $role) + ' ' + (Shell-Quote $tunnelPath) + ' ' + $(if ($p.KeepSession) { '1' } else { '0' }) + ' ' + $(if ($p.OpenWorkingTerminal) { '1' } else { '0' }) + ' ' + (Shell-Quote (Get-PersonName)) + ' ' + (Shell-Quote $publicKey)
 }
 function Get-FreeLocalPort([int]$preferred) {
     $candidates = if ($preferred -eq 0) { @(0) } else { @($preferred..([Math]::Min(65535,$preferred+100))) + @(0) }
@@ -62,7 +118,10 @@ function Get-SSHOptions([string]$kind, [int]$local = 0, [int]$remote = 0, [strin
     $hasTunnel = $kind -eq 'Terminal' -and $local -ge 1024 -and $local -le 65535 -and $remote -ge 1024 -and $remote -le 65535
     $privateTunnel = $kind -eq 'Dashboard' -and $local -ge 1024 -and $local -le 65535 -and $tunnelPath -match '^/tmp/delfin-win-tunnel-[a-f0-9-]{36}/dashboard.sock$'
     $forwardingPolicy = if ($hasTunnel -or $privateTunnel) { 'ClearAllForwardings=no' } else { 'ClearAllForwardings=yes' }
-    $options = @('-tt','-o','StrictHostKeyChecking=ask','-o','ForwardAgent=no','-o','ForwardX11=no','-o',$forwardingPolicy,'-o','PermitLocalCommand=no','-o','ServerAliveInterval=30','-o','ServerAliveCountMax=3','-o','ControlMaster=no','-o','ControlPath=none')
+    $options = @('-o','StrictHostKeyChecking=ask','-o','ForwardAgent=no','-o','ForwardX11=no','-o',$forwardingPolicy,'-o','PermitLocalCommand=no','-o','ServerAliveInterval=30','-o','ServerAliveCountMax=3','-o','ControlMaster=no','-o','ControlPath=none')
+    # ssh sessions get a terminal (-tt); the short check runs without one (-T);
+    # scp ('Copy') takes neither.
+    if ($kind -eq 'Dashboard' -or $kind -eq 'Terminal') { $options = @('-tt') + $options } elseif ($kind -eq 'Check') { $options = @('-T') + $options }
     if ($hasTunnel) {
         $options += @('-o','GatewayPorts=no','-o','ExitOnForwardFailure=yes','-L',"127.0.0.1:${local}:127.0.0.1:${remote}")
     }
@@ -79,67 +138,61 @@ function Get-BrowserUrl([string]$encoded, [int]$port) {
     }
     return $url
 }
-function Start-Window([string]$kind, [string]$id, [int]$local = 0, [int]$remote = 0, [string]$connection = '') {
+function Start-Window([string]$kind, [string]$id, [string]$title, [string]$connection = '') {
+    # The dashboard connection runs in a console window of its own: a plain
+    # Windows PowerShell started on this script, where OpenSSH asks for the
+    # password and OTP.
     if ($PSCommandPath.Contains('"')) { throw 'Invalid installation path.' }
+    if ($kind -ne 'Dashboard') { throw 'Only the dashboard connection is started from the app.' }
     if (-not $connection) { $connection = [guid]::NewGuid().ToString() }
-    $starter = Join-Path $PSScriptRoot 'DELFIN.exe'
-    if ($kind -ne 'Dashboard' -or -not (Test-Path -LiteralPath $starter)) { throw 'Reinstall DELFIN using Install.cmd to enable the browser-only starter.' }
-    $worker = Start-Process -FilePath $starter -ArgumentList @('--dashboard-worker',$id,$connection) -PassThru
-    [void]$script:ownedConnections.Add([pscustomobject]@{ Profile=$id; Connection=$connection; Worker=$worker })
+    $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $arguments = (@('-NoProfile','-ExecutionPolicy','RemoteSigned','-File',$PSCommandPath,'-Mode','Dashboard','-ProfileId',$id,'-ConnectionId',$connection) | ForEach-Object { Quote-NativeArgument $_ }) -join ' '
+    $worker = Start-Process -FilePath $powershell -ArgumentList $arguments -WorkingDirectory $PSScriptRoot -PassThru
+    [void]$script:ownedConnections.Add([pscustomobject]@{ Profile=$id; Connection=$connection; Worker=$worker; Title=$title })
+}
+function Invoke-OpenSSH([string]$program, [string[]]$arguments) {
+    # One OpenSSH client run in this console (password and host-key prompts
+    # included); a Disconnect from the app ends it. Returns the exit code.
+    $info = New-Object Diagnostics.ProcessStartInfo
+    $info.FileName = $program
+    $info.Arguments = ($arguments | ForEach-Object { Quote-NativeArgument $_ }) -join ' '
+    $info.WorkingDirectory = $PSScriptRoot
+    $info.UseShellExecute = $false
+    $script:sshProcess = [Diagnostics.Process]::Start($info)
+    try {
+        while (-not $script:sshProcess.WaitForExit(100)) { Update-WorkerControls }
+        if ($script:disconnectRequested) { throw 'Disconnected.' }
+        return $script:sshProcess.ExitCode
+    } finally { $script:sshProcess.Dispose(); $script:sshProcess = $null }
+}
+function Sync-ServerScripts([string]$target, [string[]]$identity) {
+    # A short SSH call checks the server's copy; only a missing or different
+    # copy is sent, with Windows OpenSSH's scp, as two plain files.
+    $version = Get-ScriptVersion
+    $ssh = Join-Path $env:SystemRoot 'System32\OpenSSH\ssh.exe'
+    $scp = Join-Path $env:SystemRoot 'System32\OpenSSH\scp.exe'
+    Write-Host 'Checking the DELFIN launcher scripts on the server...'
+    $code = Invoke-OpenSSH $ssh (@(Get-SSHOptions 'Check') + $identity + @($target, (Get-ScriptCheckCommand $version)))
+    if ($code -eq 0) { return $version }
+    if ($code -ne 10) { throw "Could not check the launcher scripts on the server (exit code $code)." }
+    if (-not (Test-Path -LiteralPath $scp)) { throw 'Windows OpenSSH scp.exe is missing. See README.' }
+    Write-Host 'Copying the DELFIN launcher scripts to the server (once per launcher version).'
+    Write-Host 'Without a remembered login, OpenSSH asks for the password and OTP again for this copy.'
+    $code = Invoke-OpenSSH $scp (@('-q') + @(Get-SSHOptions 'Copy') + $identity + @('remote_bootstrap.sh','remote_launcher.py',($target + ':' + $version.Folder + '/')))
+    if ($code -ne 0) { throw "Could not copy the launcher scripts to the server (exit code $code)." }
+    return $version
 }
 
 if ($Mode -eq 'Validate') { return }
 
-# Only the installed GUI shortcut opts in; never hide an interactive SSH worker
-# or a user's existing PowerShell window when they run this script manually.
-if ($Mode -eq 'App' -and $HideLauncherConsole) {
-    Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public static class DelfinLauncherWindow {
-    [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
-    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr window, int command);
-    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
-    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
-}
-'@
-    $launcherConsole = [DelfinLauncherWindow]::GetConsoleWindow()
-    if ($launcherConsole -ne [IntPtr]::Zero) {
-        [void][DelfinLauncherWindow]::ShowWindow($launcherConsole, 0)
-    }
-}
-
 if ($Mode -ne 'App') {
+    # tmux draws with ANSI control sequences; Windows PowerShell 5.1 and
+    # Windows Terminal render them in their console.
     $env:TERM = 'xterm-256color'
-    # tmux sends ANSI terminal control sequences; enable Windows VT rendering.
-    Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public static class DelfinConsole {
-    [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
-    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr window, int command);
-    [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
-    [DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int handle);
-    [DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr handle, out uint mode);
-    [DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr handle, uint mode);
-}
-'@
-    $consoleHandle = [DelfinConsole]::GetStdHandle(-11)
-    [uint32]$consoleMode = 0
-    if ([DelfinConsole]::GetConsoleMode($consoleHandle,[ref]$consoleMode)) {
-        [void][DelfinConsole]::SetConsoleMode($consoleHandle,($consoleMode -bor 4))
-    }
     function Update-WorkerControls {
         if ($stopFile -and (Test-Path -LiteralPath $stopFile)) {
             $script:disconnectRequested = $true
-            if ($null -ne $sshProcess -and -not $sshProcess.HasExited) { $sshProcess.Kill() }
-        }
-        if ($showFile -and (Test-Path -LiteralPath $showFile)) {
-            [void][DelfinConsole]::ShowWindow($loginWindow,9)
-            [void][DelfinConsole]::SetForegroundWindow($loginWindow)
-            $result = if ($loginWindow -ne [IntPtr]::Zero -and [DelfinConsole]::IsWindowVisible($loginWindow)) { 'Terminal restored.' } else { 'Windows could not restore this terminal window.' }
-            [IO.File]::WriteAllText((Join-Path $store ('connection-' + $connection + '.show-status')),$result)
-            Remove-Item -LiteralPath $showFile -Force
+            if ($null -ne $script:sshProcess -and -not $script:sshProcess.HasExited) { $script:sshProcess.Kill() }
         }
     }
     $sshProcess = $null
@@ -147,16 +200,8 @@ public static class DelfinConsole {
     $readyFile = $null
     $stopFile = $null
     $browserReadyFile = $null
-    $showFile = $null
     $disconnectRequested = $false
     $remoteClosed = $false
-    $loginWindow = [DelfinConsole]::GetConsoleWindow()
-    Add-Type -AssemblyName System.Drawing
-    $terminalIcon = [Drawing.Icon]::ExtractAssociatedIcon("$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe")
-    if ($loginWindow -ne [IntPtr]::Zero -and $terminalIcon) {
-        [void][DelfinConsole]::SendMessage($loginWindow,0x80,[IntPtr]::Zero,$terminalIcon.Handle)
-        [void][DelfinConsole]::SendMessage($loginWindow,0x80,[IntPtr]1,$terminalIcon.Handle)
-    }
     try {
         $matchingProfiles = @(Read-Profiles | Where-Object { $_.Id -eq $ProfileId })
         if ($matchingProfiles.Count -ne 1) { throw 'Connection not found.' }
@@ -165,33 +210,42 @@ public static class DelfinConsole {
         $ssh = Join-Path $env:SystemRoot 'System32\OpenSSH\ssh.exe'
         if (-not (Test-Path $ssh)) { throw 'Windows OpenSSH Client is missing. See README.' }
         $Host.UI.RawUI.WindowTitle = "SSH $Mode - $($p.Name)"
+        if ($ConnectionId -and ($ConnectionId -notmatch '^[a-f0-9-]{36}$' -or ($Mode -eq 'Terminal' -and ($LocalPort -lt 1024 -or $RemotePort -lt 1024)))) { throw 'Invalid tunnel request.' }
+        $connection = if ($ConnectionId) { $ConnectionId } else { [guid]::NewGuid().ToString() }
+        $readyFile = Join-Path $store ('connection-' + $connection + '.json')
+        $stopFile = Join-Path $store ('connection-' + $connection + '.stop')
         $tunnelPath = ''
         if ($Mode -eq 'Dashboard') {
             $LocalPort = Get-FreeLocalPort ([int]$p.Port)
             $tunnelPath = '/tmp/delfin-win-tunnel-' + [guid]::NewGuid().ToString() + '/dashboard.sock'
         }
         $options = @(Get-SSHOptions $Mode $LocalPort $RemotePort $tunnelPath)
-        if ($ConnectionId) {
-            if ($ConnectionId -notmatch '^[a-f0-9-]{36}$' -or ($Mode -eq 'Terminal' -and ($LocalPort -lt 1024 -or $RemotePort -lt 1024))) { throw 'Invalid tunnel request.' }
-            $readyFile = Join-Path $store ('connection-' + $ConnectionId + '.json')
-        }
+        $loginKey = $null
+        if ($p.RememberLogin) { try { $loginKey = Get-LoginKey } catch { $loginKey = $null } }
+        $publicKey = ''
+        $identity = @()
+        if ($loginKey) { $options += @('-i',$loginKey.Key); $identity = @('-i',$loginKey.Key); $publicKey = $loginKey.Public }
         if ($Mode -eq 'Terminal') {
             Write-Host 'Working terminal. Password and OTP prompts are handled exclusively by OpenSSH.'
-            $terminalCommand = Get-RemoteCommand $p 'terminal'
+            Write-Host 'To paste a password here: right-click in this window. Ctrl+V does not paste into this console; it sends a control character, and the server sees a wrong password.'
+            $version = Sync-ServerScripts ([string]$p.Target) $identity
+            $terminalCommand = Get-RemoteCommand $p 'terminal' '' $publicKey $version
             $terminalInfo = New-Object Diagnostics.ProcessStartInfo
             $terminalInfo.FileName = $ssh
             $terminalArgs = @($options) + @([string]$p.Target,$terminalCommand)
             $terminalInfo.Arguments = ($terminalArgs | ForEach-Object { Quote-NativeArgument $_ }) -join ' '
             $terminalInfo.UseShellExecute = $false
             $sshProcess = [Diagnostics.Process]::Start($terminalInfo)
-            if ($readyFile) { [string]$sshProcess.Id | Set-Content -LiteralPath $readyFile -Encoding ASCII }
+            [string]$sshProcess.Id | Set-Content -LiteralPath $readyFile -Encoding ASCII
             $sshProcess.WaitForExit()
             Write-Host "SSH ended (exit code $($sshProcess.ExitCode))."
         } else {
-            $port = [int]$p.Port
-            $remote = Get-RemoteCommand $p 'dashboard' $tunnelPath
             Write-Host 'Dashboard terminal: enter your password and OTP directly in OpenSSH.'
+            Write-Host 'To paste a password here: right-click in this window. Ctrl+V does not paste into this console; it sends a control character, and the server sees a wrong password.'
             Write-Host 'On first login, compare the host fingerprint with the official server fingerprint.'
+            if ($loginKey) { Write-Host 'Remember login ON: after this login the server knows this PC; the next connection needs no password (where the server allows keys).' }
+            $version = Sync-ServerScripts ([string]$p.Target) $identity
+            $remote = Get-RemoteCommand $p 'dashboard' $tunnelPath $publicKey $version
             Write-Host 'The browser signs in automatically.'
             if ($p.KeepSession) {
                 Write-Host 'Keep session ON: close this SSH window or detach with Ctrl+B, then D. Reconnect: start the app again.'
@@ -209,12 +263,8 @@ public static class DelfinConsole {
             $info.RedirectStandardOutput = $true
             $info.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
             $sshProcess = [Diagnostics.Process]::Start($info)
-            $connection = if ($ConnectionId) { $ConnectionId } else { [guid]::NewGuid().ToString() }
-            $readyFile = Join-Path $store ('connection-' + $connection + '.json')
             [string]$sshProcess.Id | Set-Content -LiteralPath $readyFile -Encoding ASCII
-            $stopFile = Join-Path $store ('connection-' + $connection + '.stop')
             $browserReadyFile = Join-Path $store ('connection-' + $connection + '.browser-ready')
-            $showFile = Join-Path $store ('connection-' + $connection + '.show')
             $opened = $false
             while ($true) {
                 Update-WorkerControls
@@ -288,7 +338,6 @@ public static class DelfinConsole {
         }
 
     } catch {
-        [void][DelfinConsole]::ShowWindow($loginWindow,5)
         Write-Host $_.Exception.Message -ForegroundColor Red
         if ($ConnectionId -and -not $disconnectRequested) { [void](Read-Host 'Press Enter to close') }
     }
@@ -298,23 +347,16 @@ public static class DelfinConsole {
         if ($null -ne $sshProcess) {
             if (-not $sshProcess.HasExited) { $sshProcess.Kill(); $sshProcess.WaitForExit() }
             if ($sshProcess.ExitCode -ne 0 -and -not $disconnectRequested -and -not $remoteClosed -and $ConnectionId) {
-                [void][DelfinConsole]::ShowWindow($loginWindow,5)
                 [void](Read-Host 'SSH ended. Press Enter to close')
             }
             $sshProcess.Dispose()
         }
-        if ($terminalIcon) { $terminalIcon.Dispose() }
-        if ($showFile) {
-            $ack = [IO.Path]::ChangeExtension($showFile,'show-status')
-            if (Test-Path -LiteralPath $ack) { Remove-Item -LiteralPath $ack -Force }
-        }
-        foreach ($file in @($stopFile,$browserReadyFile,$showFile)) {
+        foreach ($file in @($stopFile,$browserReadyFile)) {
             if ($file -and (Test-Path -LiteralPath $file)) { Remove-Item -LiteralPath $file -Force }
         }
     }
     return
 }
-
 $script:ownedConnections = New-Object Collections.ArrayList
 function Disconnect-Owned([string]$profile = '') {
     foreach ($item in $script:ownedConnections) {
@@ -325,221 +367,239 @@ function Disconnect-Owned([string]$profile = '') {
 }
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
-Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public static class DelfinAppWindow {
-    [DllImport("shell32.dll", CharSet=CharSet.Unicode)] public static extern int SetCurrentProcessExplicitAppUserModelID(string id);
-    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
-    [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr window, uint command);
-    [DllImport("user32.dll", EntryPoint="GetWindowLongW")] public static extern int GetWindowLong(IntPtr window, int index);
-}
-'@
-[void][DelfinAppWindow]::SetCurrentProcessExplicitAppUserModelID('ComPlat.DELFIN.Launcher')
 if ($GuiSmokeTest) {
     $store = Join-Path $PSScriptRoot 'smoke-state'
     $profilesFile = Join-Path $store 'profiles.json'
 }
-[Windows.Forms.Application]::EnableVisualStyles()
-$form = New-Object Windows.Forms.Form
-$form.Text = 'DELFIN - SSH Dashboard'
-$form.ShowInTaskbar = $true
-$form.ShowIcon = $true
-$form.ClientSize = New-Object Drawing.Size(590,480)
-$form.BackColor = [Drawing.Color]::White
-$form.Font = New-Object Drawing.Font('Segoe UI',9)
-$form.StartPosition = 'CenterScreen'
-$form.FormBorderStyle = 'FixedDialog'
-$form.MaximizeBox = $false
-$logo = New-Object Windows.Forms.PictureBox
-$logo.Location = New-Object Drawing.Point(20,10)
-$logo.Size = New-Object Drawing.Size(85,85)
-$logo.SizeMode = 'Zoom'
-$logo.Image = [Drawing.Image]::FromFile((Join-Path $PSScriptRoot 'DELFIN_logo.png'))
-$form.Controls.Add($logo)
-$form.Icon = New-Object Drawing.Icon((Join-Path $PSScriptRoot 'DELFIN.ico'))
-Add-Type -Path (Join-Path $PSScriptRoot 'Taskbar.cs')
-$form.add_HandleCreated({ [DelfinTaskbar]::Configure($form.Handle,(Join-Path $PSScriptRoot 'DELFIN.exe'),(Join-Path $PSScriptRoot 'DELFIN.ico')) })
-$heading = New-Object Windows.Forms.Label
-$heading.Text = 'DELFIN'
-$heading.Font = New-Object Drawing.Font('Segoe UI',22,[Drawing.FontStyle]::Bold)
-$heading.ForeColor = [Drawing.Color]::FromArgb(0,80,110)
-$heading.Location = New-Object Drawing.Point(125,15)
-$heading.Size = New-Object Drawing.Size(400,42)
-$form.Controls.Add($heading)
-$subtitle = New-Object Windows.Forms.Label
-$subtitle.Text = 'SSH access, dashboard and working terminal'
-$subtitle.Location = New-Object Drawing.Point(128,65)
-$subtitle.Size = New-Object Drawing.Size(420,25)
-$form.Controls.Add($subtitle)
-$combo = New-Object Windows.Forms.ComboBox
-$combo.Location = New-Object Drawing.Point(180,120)
-$combo.Size = New-Object Drawing.Size(385,25)
-$combo.DropDownStyle = 'DropDownList'
-$form.Controls.Add($combo)
-$fields = @{}
-$labels = @('SSH server / user@host','Working directory (optional)','DELFIN location (optional)','Starting port (0=Auto)')
-$keys = @('Target','Directory','Executable','Port')
-$advancedControls = @()
-for ($i=0; $i -lt $keys.Count; $i++) {
-    $label = New-Object Windows.Forms.Label
-    $label.Text = $labels[$i]
-    $row = if ($i -eq 0) { 160 } else { 285 + $i*40 }
-    $label.Location = New-Object Drawing.Point(15,$row)
-    $label.Size = New-Object Drawing.Size(165,25)
-    $form.Controls.Add($label)
-    $text = New-Object Windows.Forms.TextBox
-    $text.Location = New-Object Drawing.Point(180,$row)
-    $text.Size = New-Object Drawing.Size(385,25)
-    $fields[$keys[$i]] = $text
-    $form.Controls.Add($text)
-    if ($i -gt 0) { $advancedControls += @($label,$text) }
-}
-$fields.Port.Text = '0'
-try { $script:profiles = @(Read-Profiles) } catch { [void][Windows.Forms.MessageBox]::Show('Could not load connections: ' + $_.Exception.Message,'DELFIN'); return }
-$workingToggle = New-Object Windows.Forms.CheckBox
-$workingToggle.Text = 'Working shell (Ctrl+B, then N)'
-$workingToggle.Checked = $false
-$workingToggle.Location = New-Object Drawing.Point(180,205)
-$workingToggle.Size = New-Object Drawing.Size(380,25)
-$form.Controls.Add($workingToggle)
-$keepToggle = New-Object Windows.Forms.CheckBox
-$keepToggle.Text = 'Keep session after disconnect'
-$keepToggle.Location = New-Object Drawing.Point(180,245)
-$keepToggle.Size = New-Object Drawing.Size(380,25)
-$form.Controls.Add($keepToggle)
-$advanced = New-Object Windows.Forms.CheckBox
-$advanced.Text = 'Advanced settings'
-$advanced.Location = New-Object Drawing.Point(180,285)
-$advanced.Size = New-Object Drawing.Size(360,25)
-$form.Controls.Add($advanced)
-$script:selectedId = $null
-foreach ($p in $script:profiles) { [void]$combo.Items.Add($p.Name) }
-$combo.add_SelectedIndexChanged({
-    if ($combo.SelectedIndex -ge 0) {
-        $p = $script:profiles[$combo.SelectedIndex]
-        $script:selectedId = $p.Id
-        foreach ($key in $keys) { $fields[$key].Text = [string]$p.$key }
-        $workingToggle.Checked = [bool]$p.OpenWorkingTerminal
-        $keepToggle.Checked = [bool]$p.KeepSession
-        $advanced.Checked = [bool]($p.Directory -or $p.Executable -or [int]$p.Port -ne 0)
-    }
-})
-$note = New-Object Windows.Forms.Label
-$note.Text = 'Dashboard terminal stays visible. Ctrl+C stops the dashboard. Disconnect respects Keep session.'
-$note.Location = New-Object Drawing.Point(15,370)
-$note.Size = New-Object Drawing.Size(555,35)
-$form.Controls.Add($note)
-function Save-Current {
-    $id = $script:selectedId
-    if (-not $id) { $id = [guid]::NewGuid().ToString() }
-    $p = [pscustomobject]@{ Id=$id; Name=$fields.Target.Text.Trim(); Target=$fields.Target.Text.Trim(); Directory=$fields.Directory.Text.Trim(); Executable=$fields.Executable.Text.Trim(); Port=[int]$fields.Port.Text; KeepSession=$keepToggle.Checked; OpenWorkingTerminal=$workingToggle.Checked }
-    Check-Profile $p
-    $script:profiles = @($script:profiles | Where-Object { $_.Id -ne $id }) + @($p)
-    [void][IO.Directory]::CreateDirectory($store)
-    ConvertTo-Json -InputObject @($script:profiles) | Set-Content -LiteralPath $profilesFile -Encoding UTF8
-    $script:selectedId = $id
-    $combo.Items.Clear()
-    foreach ($item in $script:profiles) { [void]$combo.Items.Add($item.Name) }
-    $combo.SelectedIndex = $script:profiles.Count - 1
-    return $id
-}
-$actionButtons = @()
-foreach ($spec in @(@('New',15),@('Save',130),@('Start / Reconnect',280))) {
-    $button = New-Object Windows.Forms.Button
-    $button.Text = $spec[0]
-    $button.Location = New-Object Drawing.Point($spec[1],420)
-    $button.Size = New-Object Drawing.Size($(if ($spec[1] -eq 280) { 285 } else { 105 }),35)
-    if ($spec[0] -eq 'New') {
-        $button.add_Click({ $script:selectedId=$null; $combo.SelectedIndex=-1; foreach ($key in $keys) { $fields[$key].Text='' }; $fields.Port.Text='0'; $advanced.Checked=$false; $workingToggle.Checked=$false; $keepToggle.Checked=$false })
-    } elseif ($spec[0] -eq 'Save') {
-        $button.add_Click({ try { [void](Save-Current) } catch { [void][Windows.Forms.MessageBox]::Show($_.Exception.Message,'DELFIN') } })
-    } else {
-        $button.add_Click({
-            try {
-                $active = @($script:ownedConnections | Where-Object { -not $_.Worker.HasExited })
-                if ($active.Count) {
-                    $script:connectionStatus.Text = 'A connection is already active. Use the dashboard browser, or Disconnect first.'
-                    return
-                }
-                $id=Save-Current
-                Start-Window 'Dashboard' $id
-            } catch { [void][Windows.Forms.MessageBox]::Show($_.Exception.Message,'DELFIN') }
-        })
-    }
-    $form.Controls.Add($button)
-    $actionButtons += $button
-}
-$connectionButtons = @()
-foreach ($label in @('Show terminal','Disconnect')) {
-    $control = New-Object Windows.Forms.Button
-    $control.Text = $label
-    $control.Size = New-Object Drawing.Size(160,30)
-    $control.Left = if ($label -eq 'Show terminal') { 15 } else { 190 }
-    if ($label -eq 'Disconnect') {
-        $control.add_Click({ Disconnect-Owned; $script:connectionStatus.Text = 'Disconnect requested...' })
-    } else {
-        $control.add_Click({
-            $active = @($script:ownedConnections | Where-Object { -not $_.Worker.HasExited })
-            if (-not $active.Count) { $script:connectionStatus.Text = 'No active SSH terminal to show.'; return }
-            foreach ($item in $active) {
-                [IO.File]::WriteAllText((Join-Path $store ('connection-' + $item.Connection + '.show')),'show')
-            }
-            $script:connectionStatus.Text = 'Terminal show request sent...'
-        })
-    }
-    $form.Controls.Add($control)
-    $connectionButtons += $control
-}
-$script:connectionStatus = New-Object Windows.Forms.Label
-$script:connectionStatus.Left = 15
-$script:connectionStatus.Size = New-Object Drawing.Size(555,30)
-$script:connectionStatus.Text = 'Not connected.'
-$form.Controls.Add($script:connectionStatus)
-$statusTimer = New-Object Windows.Forms.Timer
-$statusTimer.Interval = 500
-$statusTimer.add_Tick({
-    $active = @($script:ownedConnections | Where-Object { -not $_.Worker.HasExited })
-    if ($active.Count -eq 0) {
-        $script:connectionStatus.Text = if ($script:ownedConnections.Count) { 'Disconnected. Keep ON dashboards can remain on the server.' } else { 'Not connected.' }
-    } else {
-        $stopping = @($active | Where-Object { Test-Path -LiteralPath (Join-Path $store ('connection-' + $_.Connection + '.stop')) })
-        $ready = @($active | Where-Object { Test-Path -LiteralPath (Join-Path $store ('connection-' + $_.Connection + '.browser-ready')) })
-        if ($stopping.Count) { $script:connectionStatus.Text = 'Disconnecting SSH...' }
-        elseif ($ready.Count) { $script:connectionStatus.Text = 'Connected. Dashboard SSH terminal stays open for Ctrl+C.' }
-        else { $script:connectionStatus.Text = 'Connecting. Complete password/OTP in the SSH window.' }
-        foreach ($item in $active) {
-            $ack = Join-Path $store ('connection-' + $item.Connection + '.show-status')
-            try {
-                if ((Test-Path -LiteralPath $ack) -and ([DateTime]::UtcNow - (Get-Item -LiteralPath $ack).LastWriteTimeUtc).TotalSeconds -lt 8) {
-                    $script:connectionStatus.Text = Get-Content -LiteralPath $ack -Raw
-                }
-            } catch { } # The worker can remove the acknowledgement while disconnecting.
+# One settings app per Windows login: a second start brings the first window
+# to the front (WScript.Shell.AppActivate on its title) and ends.
+$appMutex = $null
+if (-not $GuiSmokeTest) {
+    $created = $false
+    $appMutex = [Threading.Mutex]::new($true, ('Local\DELFIN_Launcher_' + [Security.Principal.WindowsIdentity]::GetCurrent().User.Value), [ref]$created)
+    if (-not $created) {
+        $appMutex.Dispose()
+        if (-not (New-Object -ComObject WScript.Shell).AppActivate('DELFIN - SSH Dashboard')) {
+            [void][Windows.Forms.MessageBox]::Show('DELFIN is already running or starting. Use its existing settings window.','DELFIN')
         }
+        return
     }
-})
-$statusTimer.Start()
-$form.add_FormClosing({ Disconnect-Owned; $statusTimer.Stop() })
-function Show-Advanced {
-    foreach ($control in $advancedControls) { $control.Visible = $advanced.Checked }
-    $note.Location = New-Object Drawing.Point(15,$(if ($advanced.Checked) { 450 } else { 325 }))
-    foreach ($button in $actionButtons) { $button.Top = $(if ($advanced.Checked) { 500 } else { 375 }) }
-    foreach ($control in $connectionButtons) { $control.Top = $(if ($advanced.Checked) { 545 } else { 420 }) }
-    $script:connectionStatus.Top = $(if ($advanced.Checked) { 580 } else { 455 })
-    $form.ClientSize = New-Object Drawing.Size(590,$(if ($advanced.Checked) { 625 } else { 500 }))
 }
-$advanced.add_CheckedChanged({ Show-Advanced })
-Show-Advanced
-if ($combo.Items.Count -gt 0) { $combo.SelectedIndex=0 }
-if ($GuiSmokeTest) {
-    $smokeTimer = New-Object Windows.Forms.Timer
-    $smokeTimer.Interval = 500
-    $smokeTimer.add_Tick({
-        $smokeTimer.Stop()
-        $report = @{ Visible=[DelfinAppWindow]::IsWindowVisible($form.Handle); ShowInTaskbar=$form.ShowInTaskbar; Owner=[DelfinAppWindow]::GetWindow($form.Handle,4).ToInt64(); ExtendedStyle=[DelfinAppWindow]::GetWindowLong($form.Handle,-20); HasIcon=($null -ne $form.Icon); RelaunchCommand=[DelfinTaskbar]::Read($form.Handle,2); RelaunchIcon=[DelfinTaskbar]::Read($form.Handle,3); RelaunchName=[DelfinTaskbar]::Read($form.Handle,4); AppId=[DelfinTaskbar]::Read($form.Handle,5) }
-        $report | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'gui-smoke.json') -Encoding UTF8
-        $form.Close()
+# The app's console window starts minimized (the shortcut's window style);
+# an error here would close it unseen, so it is shown in a message box.
+try {
+    [Windows.Forms.Application]::EnableVisualStyles()
+    $form = New-Object Windows.Forms.Form
+    $form.Text = 'DELFIN - SSH Dashboard'
+    $form.ShowInTaskbar = $true
+    $form.ShowIcon = $true
+    $form.ClientSize = New-Object Drawing.Size(590,480)
+    $form.BackColor = [Drawing.Color]::White
+    $form.Font = New-Object Drawing.Font('Segoe UI',9)
+    $form.StartPosition = 'CenterScreen'
+    $form.FormBorderStyle = 'FixedDialog'
+    $form.MaximizeBox = $false
+    $logo = New-Object Windows.Forms.PictureBox
+    $logo.Location = New-Object Drawing.Point(20,10)
+    $logo.Size = New-Object Drawing.Size(85,85)
+    $logo.SizeMode = 'Zoom'
+    $logo.Image = [Drawing.Image]::FromFile((Join-Path $PSScriptRoot 'DELFIN_logo.png'))
+    $form.Controls.Add($logo)
+    $form.Icon = New-Object Drawing.Icon((Join-Path $PSScriptRoot 'DELFIN.ico'))
+    $heading = New-Object Windows.Forms.Label
+    $heading.Text = 'DELFIN'
+    $heading.Font = New-Object Drawing.Font('Segoe UI',22,[Drawing.FontStyle]::Bold)
+    $heading.ForeColor = [Drawing.Color]::FromArgb(0,80,110)
+    $heading.Location = New-Object Drawing.Point(125,15)
+    $heading.Size = New-Object Drawing.Size(400,42)
+    $form.Controls.Add($heading)
+    $subtitle = New-Object Windows.Forms.Label
+    $subtitle.Text = 'SSH access, dashboard and working terminal'
+    $subtitle.Location = New-Object Drawing.Point(128,65)
+    $subtitle.Size = New-Object Drawing.Size(420,25)
+    $form.Controls.Add($subtitle)
+    $combo = New-Object Windows.Forms.ComboBox
+    $combo.Location = New-Object Drawing.Point(180,120)
+    $combo.Size = New-Object Drawing.Size(385,25)
+    $combo.DropDownStyle = 'DropDownList'
+    $form.Controls.Add($combo)
+    $fields = @{}
+    $labels = @('SSH server / user@host','Working directory (optional)','DELFIN location (optional)','Starting port (0=Auto)')
+    $keys = @('Target','Directory','Executable','Port')
+    $advancedControls = @()
+    for ($i=0; $i -lt $keys.Count; $i++) {
+        $label = New-Object Windows.Forms.Label
+        $label.Text = $labels[$i]
+        $row = if ($i -eq 0) { 160 } else { 285 + $i*40 }
+        $label.Location = New-Object Drawing.Point(15,$row)
+        $label.Size = New-Object Drawing.Size(165,25)
+        $form.Controls.Add($label)
+        $text = New-Object Windows.Forms.TextBox
+        $text.Location = New-Object Drawing.Point(180,$row)
+        $text.Size = New-Object Drawing.Size(385,25)
+        $fields[$keys[$i]] = $text
+        $form.Controls.Add($text)
+        if ($i -gt 0) { $advancedControls += @($label,$text) }
+    }
+    $fields.Port.Text = '0'
+    try { $script:profiles = @(Read-Profiles) } catch { [void][Windows.Forms.MessageBox]::Show('Could not load connections: ' + $_.Exception.Message,'DELFIN'); return }
+    $workingToggle = New-Object Windows.Forms.CheckBox
+    $workingToggle.Text = 'Working shell (Ctrl+B, then N)'
+    $workingToggle.Checked = $false
+    $workingToggle.Location = New-Object Drawing.Point(180,205)
+    $workingToggle.Size = New-Object Drawing.Size(380,25)
+    $form.Controls.Add($workingToggle)
+    $keepToggle = New-Object Windows.Forms.CheckBox
+    $keepToggle.Text = 'Keep session after disconnect'
+    $keepToggle.Location = New-Object Drawing.Point(180,245)
+    $keepToggle.Size = New-Object Drawing.Size(380,25)
+    $form.Controls.Add($keepToggle)
+    $rememberToggle = New-Object Windows.Forms.CheckBox
+    $rememberToggle.Text = 'Remember login on this PC (SSH key)'
+    $rememberToggle.Checked = $true
+    $rememberToggle.Location = New-Object Drawing.Point(180,445)
+    $rememberToggle.Size = New-Object Drawing.Size(380,25)
+    $form.Controls.Add($rememberToggle)
+    $advancedControls += @($rememberToggle)
+    $advanced = New-Object Windows.Forms.CheckBox
+    $advanced.Text = 'Advanced settings'
+    $advanced.Location = New-Object Drawing.Point(180,285)
+    $advanced.Size = New-Object Drawing.Size(360,25)
+    $form.Controls.Add($advanced)
+    $script:selectedId = $null
+    foreach ($p in $script:profiles) { [void]$combo.Items.Add($p.Name) }
+    $combo.add_SelectedIndexChanged({
+        if ($combo.SelectedIndex -ge 0) {
+            $p = $script:profiles[$combo.SelectedIndex]
+            $script:selectedId = $p.Id
+            foreach ($key in $keys) { $fields[$key].Text = [string]$p.$key }
+            $workingToggle.Checked = [bool]$p.OpenWorkingTerminal
+            $keepToggle.Checked = [bool]$p.KeepSession
+            $rememberToggle.Checked = [bool]$p.RememberLogin
+            $advanced.Checked = [bool]($p.Directory -or $p.Executable -or [int]$p.Port -ne 0)
+        }
     })
-    $form.add_Shown({ $smokeTimer.Start() })
+    $note = New-Object Windows.Forms.Label
+    $note.Text = 'Dashboard terminal stays visible. Ctrl+C stops the dashboard. Disconnect respects Keep session.'
+    $note.Location = New-Object Drawing.Point(15,370)
+    $note.Size = New-Object Drawing.Size(555,35)
+    $form.Controls.Add($note)
+    function Save-Current {
+        $id = $script:selectedId
+        if (-not $id) { $id = [guid]::NewGuid().ToString() }
+        $p = [pscustomobject]@{ Id=$id; Name=$fields.Target.Text.Trim(); Target=$fields.Target.Text.Trim(); Directory=$fields.Directory.Text.Trim(); Executable=$fields.Executable.Text.Trim(); Port=[int]$fields.Port.Text; KeepSession=$keepToggle.Checked; OpenWorkingTerminal=$workingToggle.Checked; RememberLogin=$rememberToggle.Checked }
+        Check-Profile $p
+        $script:profiles = @($script:profiles | Where-Object { $_.Id -ne $id }) + @($p)
+        [void][IO.Directory]::CreateDirectory($store)
+        ConvertTo-Json -InputObject @($script:profiles) | Set-Content -LiteralPath $profilesFile -Encoding UTF8
+        $script:selectedId = $id
+        $combo.Items.Clear()
+        foreach ($item in $script:profiles) { [void]$combo.Items.Add($item.Name) }
+        $combo.SelectedIndex = $script:profiles.Count - 1
+        return $id
+    }
+    $actionButtons = @()
+    foreach ($spec in @(@('New',15),@('Save',130),@('Start / Reconnect',280))) {
+        $button = New-Object Windows.Forms.Button
+        $button.Text = $spec[0]
+        $button.Location = New-Object Drawing.Point($spec[1],420)
+        $button.Size = New-Object Drawing.Size($(if ($spec[1] -eq 280) { 285 } else { 105 }),35)
+        if ($spec[0] -eq 'New') {
+            $button.add_Click({ $script:selectedId=$null; $combo.SelectedIndex=-1; foreach ($key in $keys) { $fields[$key].Text='' }; $fields.Port.Text='0'; $advanced.Checked=$false; $workingToggle.Checked=$false; $keepToggle.Checked=$false; $rememberToggle.Checked=$true })
+        } elseif ($spec[0] -eq 'Save') {
+            $button.add_Click({ try { [void](Save-Current) } catch { [void][Windows.Forms.MessageBox]::Show($_.Exception.Message,'DELFIN') } })
+        } else {
+            $button.add_Click({
+                try {
+                    $active = @($script:ownedConnections | Where-Object { -not $_.Worker.HasExited })
+                    if ($active.Count) {
+                        $script:connectionStatus.Text = 'A connection is already active. Use the dashboard browser, or Disconnect first.'
+                        return
+                    }
+                    $id=Save-Current
+                    Start-Window 'Dashboard' $id ('SSH Dashboard - ' + $fields.Target.Text.Trim())
+                } catch { [void][Windows.Forms.MessageBox]::Show($_.Exception.Message,'DELFIN') }
+            })
+        }
+        $form.Controls.Add($button)
+        $actionButtons += $button
+    }
+    $connectionButtons = @()
+    foreach ($label in @('Show terminal','Disconnect')) {
+        $control = New-Object Windows.Forms.Button
+        $control.Text = $label
+        $control.Size = New-Object Drawing.Size(160,30)
+        $control.Left = if ($label -eq 'Show terminal') { 15 } else { 190 }
+        if ($label -eq 'Disconnect') {
+            $control.add_Click({ Disconnect-Owned; $script:connectionStatus.Text = 'Disconnect requested...' })
+        } else {
+            $control.add_Click({
+                $active = @($script:ownedConnections | Where-Object { -not $_.Worker.HasExited })
+                if (-not $active.Count) { $script:connectionStatus.Text = 'No active SSH terminal to show.'; return }
+                # WScript.Shell.AppActivate: the worker's console by process ID,
+                # else by its window title (Windows Terminal hosts it elsewhere).
+                $shell = New-Object -ComObject WScript.Shell
+                $shown = $false
+                foreach ($item in $active) {
+                    if ($shell.AppActivate($item.Worker.Id) -or $shell.AppActivate($item.Title)) { $shown = $true }
+                }
+                $script:notice = if ($shown) { 'Terminal brought to the front. If it is minimized, click it in the taskbar.' } else { 'Windows could not bring the SSH terminal to the front; find it in the taskbar.' }
+                $script:noticeUntil = [DateTime]::UtcNow.AddSeconds(8)
+            })
+        }
+        $form.Controls.Add($control)
+        $connectionButtons += $control
+    }
+    $script:connectionStatus = New-Object Windows.Forms.Label
+    $script:connectionStatus.Left = 15
+    $script:connectionStatus.Size = New-Object Drawing.Size(555,30)
+    $script:connectionStatus.Text = 'Not connected.'
+    $script:notice = ''
+    $script:noticeUntil = [DateTime]::MinValue
+    $form.Controls.Add($script:connectionStatus)
+    $statusTimer = New-Object Windows.Forms.Timer
+    $statusTimer.Interval = 500
+    $statusTimer.add_Tick({
+        $active = @($script:ownedConnections | Where-Object { -not $_.Worker.HasExited })
+        if ($active.Count -eq 0) {
+            $script:connectionStatus.Text = if ($script:ownedConnections.Count) { 'Disconnected. Keep ON dashboards can remain on the server.' } else { 'Not connected.' }
+        } else {
+            $stopping = @($active | Where-Object { Test-Path -LiteralPath (Join-Path $store ('connection-' + $_.Connection + '.stop')) })
+            $ready = @($active | Where-Object { Test-Path -LiteralPath (Join-Path $store ('connection-' + $_.Connection + '.browser-ready')) })
+            if ($stopping.Count) { $script:connectionStatus.Text = 'Disconnecting SSH...' }
+            elseif ($ready.Count) { $script:connectionStatus.Text = 'Connected. Dashboard SSH terminal stays open for Ctrl+C.' }
+            else { $script:connectionStatus.Text = 'Connecting. Complete password/OTP in the SSH window.' }
+            if ([DateTime]::UtcNow -lt $script:noticeUntil) { $script:connectionStatus.Text = $script:notice }
+        }
+    })
+    $statusTimer.Start()
+    $form.add_FormClosing({ Disconnect-Owned; $statusTimer.Stop() })
+    function Show-Advanced {
+        foreach ($control in $advancedControls) { $control.Visible = $advanced.Checked }
+        $note.Location = New-Object Drawing.Point(15,$(if ($advanced.Checked) { 490 } else { 325 }))
+        foreach ($button in $actionButtons) { $button.Top = $(if ($advanced.Checked) { 540 } else { 375 }) }
+        foreach ($control in $connectionButtons) { $control.Top = $(if ($advanced.Checked) { 585 } else { 420 }) }
+        $script:connectionStatus.Top = $(if ($advanced.Checked) { 620 } else { 455 })
+        $form.ClientSize = New-Object Drawing.Size(590,$(if ($advanced.Checked) { 665 } else { 500 }))
+    }
+    $advanced.add_CheckedChanged({ Show-Advanced })
+    Show-Advanced
+    if ($combo.Items.Count -gt 0) { $combo.SelectedIndex=0 }
+    if ($GuiSmokeTest) {
+        $smokeTimer = New-Object Windows.Forms.Timer
+        $smokeTimer.Interval = 500
+        $smokeTimer.add_Tick({
+            $smokeTimer.Stop()
+            $report = @{ Visible=$form.Visible; ShowInTaskbar=$form.ShowInTaskbar; HasOwner=($null -ne $form.Owner); TopLevel=$form.TopLevel; HasIcon=($null -ne $form.Icon); Title=$form.Text }
+            $report | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'gui-smoke.json') -Encoding UTF8
+            $form.Close()
+        })
+        $form.add_Shown({ $smokeTimer.Start() })
+    }
+    try { [Windows.Forms.Application]::Run($form) } finally { $logo.Image.Dispose(); $form.Icon.Dispose(); $form.Dispose() }
+} catch {
+    [void][Windows.Forms.MessageBox]::Show($_.Exception.Message,'DELFIN startup failed',[Windows.Forms.MessageBoxButtons]::OK,[Windows.Forms.MessageBoxIcon]::Error)
+    exit 1
+} finally {
+    if ($appMutex) { $appMutex.ReleaseMutex(); $appMutex.Dispose() }
 }
-try { [Windows.Forms.Application]::Run($form) } finally { $logo.Image.Dispose(); $form.Icon.Dispose(); $form.Dispose() }

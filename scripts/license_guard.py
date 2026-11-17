@@ -67,6 +67,36 @@ FORBIDDEN_CONTENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ---------------------------------------------------------------------------
+# Licensed QM program output (LC1): signatures of DATA produced by licensed
+# QM codes that may not ship in this public LGPL repo.
+#   ORCA EULA 2025 section 3: DATA may be shared only for ACADEMIC PURPOSES
+#   (c), to databases only non-commercially with an EULA notice (d), software
+#   using DATA must be under the EULA (e), ML on DATA only academic (g).
+#   See LICENSE_GUARD.md. Deliberately line-oriented: one signature per line
+#   so the scan stays cheap over a whole tracked tree.
+# ---------------------------------------------------------------------------
+
+# The one documented exception: a synthetic fixture declares itself on its
+# FIRST line with this marker.
+QM_SYNTHETIC_MARKER = "# SYNTHETIC test fixture written for DELFIN -- not ORCA output"
+
+QM_OUTPUT_SIGNATURES = (
+    r"^\s*\* O\s+R\s+C\s+A\s+\*$",                    # ORCA banner
+    r"ORCA\s+TERMINATED\s+NORMALLY",                   # normal-termination block
+    r"^\s*ORCA\s+terminated\s+normally",               # lowercase variant
+    r"Program\s+Version\s+6\.\d+\.\d+\s+-\s+RELEASE",  # ORCA version line
+    r"^\s*\* Host name:",                              # ORCA run header
+    r"^\s*\* Working dir\.:",                          # ORCA run header
+    r"^\|\s*\d+>",                                     # ORCA INPUT FILE echo block
+    r"THERMOCHEMISTRY\s+AT\s+\d+\.\d+K",               # ORCA thermochem block
+)
+
+QM_OUTPUT_RE = re.compile(
+    "(" + "|".join(QM_OUTPUT_SIGNATURES) + ")",
+    re.IGNORECASE,
+)
+
 # committed-file PATH patterns that must never enter the public repo.
 FORBIDDEN_PATH_RE = re.compile(
     r"("
@@ -75,8 +105,19 @@ FORBIDDEN_PATH_RE = re.compile(
     r"ccdc|CCDC_all|ccdc_ref_xyz|ccdc_exploit/|ccdc_validation\.py|"
     r"fragment_index_v|"
     r"fragment_index.*\.(json|sqlite|db)$|"
-    r"paper_data/"
+    r"paper_data/|"
+    r"\.(gbw|hess|engrad)$"          # ORCA binary/vector artifacts (EULA DATA)
     r")",
+    re.IGNORECASE,
+)
+
+
+# ORCA-generated GOAT ensembles must never be added to DELFIN. Matched by the
+# file names GOAT itself writes -- a broader "goat|orca in the path" rule
+# would also hit DELFIN's own knowledge cards (delfin/orca_knowledge/**.json).
+# Other ORCA output is caught by its content (output signature), not its name.
+ORCA_GENERATED_PATH_RE = re.compile(
+    r"\.(?:finalensemble|globalminimum)(?:\.\d+)?\.xyz$",
     re.IGNORECASE,
 )
 
@@ -88,6 +129,21 @@ SELF_EXEMPT = {
     "scripts/license_guard.py",
     "tests/test_license_guard.py",
     "LICENSE_GUARD.md",
+    # the LC1 licence inventory: a policy document that quotes the
+    # signatures it classifies — data, not QM output.
+    "tests/fixtures/lc1_synthetic/INVENTORY.md",
+    # documentation that QUOTES the signature strings (how DELFIN reads
+    # termination, what to search for) — no program output is embedded,
+    # the phrase is the name of a state, not the output itself.
+    "docs/PPKA_VALIDATION.md",
+    "docs/RETRY_LOGIC.md",
+    "docs/methodology.md",
+    # installation walkthrough quoting the version banner of the local
+    # ORCA install as a verification step — a version number, not DATA.
+    "examples/example_Job_Submission_Scripts/BwUniCluster/DELFIN_INSTALLATION_ANLEITUNG.txt",
+    # dashboard-agent corpus: transcript TEXT that mentions the phrase in
+    # prose (which file has which status); no ORCA output block is in it.
+    "tests/fixtures/choice_offer_corpus.json",
 }
 
 
@@ -99,6 +155,28 @@ def _line_allows(lines: list[str], lineno: int) -> bool:
     if 1 <= lineno <= len(lines):
         return ALLOW_COMMENT in lines[lineno - 1]
     return False
+
+
+def scan_path_text(relpath: str, text: str) -> list[tuple[int, str]]:
+    """Scan ONE file of any type for licensed QM-program output.
+
+    Returns [(lineno, message)]. Binary bytes are skipped silently (no
+    printable signature can be relied on there — the path rule covers
+    the known binary artifacts, .gbw/.hess/.engrad).
+
+    Exception: a file whose FIRST line carries QM_SYNTHETIC_MARKER
+    declares itself a hand-written synthetic fixture and is exempt as a
+    whole (such a fixture legitimately contains ORCA-format lines).
+    """
+    findings: list[tuple[int, str]] = []
+    lines = text.splitlines()
+    if lines and lines[0].strip() == QM_SYNTHETIC_MARKER:
+        return findings
+    for i, ln in enumerate(lines, 1):
+        hit = QM_OUTPUT_RE.search(ln)
+        if hit:
+            findings.append((i, f"looks like licensed QM program output ('{hit.group(0)}')"))
+    return findings
 
 
 def scan_py_source(relpath: str, text: str) -> list[tuple[int, str]]:
@@ -149,6 +227,8 @@ def check_path(relpath: str) -> str | None:
     """Return a message if the committed PATH itself is forbidden, else None."""
     if relpath in SELF_EXEMPT:
         return None
+    if ORCA_GENERATED_PATH_RE.search(relpath):
+        return f"forbidden ORCA-generated GOAT path: '{relpath}'"
     if FORBIDDEN_PATH_RE.search(relpath):
         return f"forbidden CCDC/CSD file path: '{relpath}'"
     return None
@@ -165,6 +245,17 @@ def _git(*args: str) -> str:
 def tracked_py_files() -> list[str]:
     out = _git("ls-files", "*.py")
     return [p for p in out.splitlines() if p]
+
+
+def tracked_text_files() -> list[str]:
+    """All git-tracked files EXCEPT the self-exempt ones.
+
+    Non-.py files are scanned too: ORCA/licensed-program output reaches
+    the repo as .out, .hess, .gbw, .dat, .property.json — extensions the
+    old .py-only scan never saw (LC1).
+    """
+    out = _git("ls-files")
+    return [p for p in out.splitlines() if p and p not in SELF_EXEMPT]
 
 
 def staged_files() -> list[str]:
@@ -196,14 +287,18 @@ def _report(violations: list[str]) -> int:
 
 def run_package() -> int:
     violations: list[str] = []
-    for rel in tracked_py_files():
+    for rel in tracked_text_files():
         if rel in SELF_EXEMPT:
             continue
         try:
             text = Path(rel).read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for lineno, msg in scan_py_source(rel, text):
+        if rel.endswith(".py"):
+            findings = scan_py_source(rel, text)
+        else:
+            findings = scan_path_text(rel, text)
+        for lineno, msg in findings:
             violations.append(f"{rel}:{lineno}: {msg}")
     return _report(violations)
 
@@ -215,12 +310,13 @@ def run_staged() -> int:
         if path_msg:
             violations.append(path_msg)
             continue  # don't also content-scan a file that's already path-forbidden
-        if rel.endswith(".py") and rel not in SELF_EXEMPT:
+        if rel not in SELF_EXEMPT:
             try:
                 text = staged_blob(rel)
             except Exception:
                 text = ""
-            for lineno, msg in scan_py_source(rel, text):
+            findings = scan_py_source(rel, text) if rel.endswith(".py") else scan_path_text(rel, text)
+            for lineno, msg in findings:
                 violations.append(f"{rel}:{lineno}: {msg}")
     return _report(violations)
 
@@ -232,10 +328,19 @@ def run_paths(paths: list[str]) -> int:
         path_msg = check_path(rel)
         if path_msg:
             violations.append(path_msg)
-        if p.endswith(".py") and rel not in SELF_EXEMPT and Path(p).is_file():
+        if p.endswith(".py"):
+            if rel not in SELF_EXEMPT and Path(p).is_file():
+                text = Path(p).read_text(encoding="utf-8", errors="replace")
+                findings = scan_py_source(rel, text)
+            else:
+                findings = []
+        elif rel not in SELF_EXEMPT and Path(p).is_file():
             text = Path(p).read_text(encoding="utf-8", errors="replace")
-            for lineno, msg in scan_py_source(rel, text):
-                violations.append(f"{rel}:{lineno}: {msg}")
+            findings = scan_path_text(rel, text)
+        else:
+            findings = []
+        for lineno, msg in findings:
+            violations.append(f"{rel}:{lineno}: {msg}")
     return _report(violations)
 
 

@@ -12,7 +12,14 @@ from typing import Any, Callable
 
 from . import agent_metrics as _agent_metrics
 from .api_client import StreamEvent, create_client
-from .harness_rows import HARNESS_KEY, HarnessRow, HarnessText, is_harness_row
+from .harness_rows import (
+    HARNESS_KEY,
+    HarnessRow,
+    HarnessText,
+    SteeringBlock,
+    is_harness_row,
+    typed_text,
+)
 from .prompt_loader import AVAILABLE_ON_DEMAND, PromptLoader
 
 
@@ -310,6 +317,22 @@ _KIT_CODING_PREFIX = "mcp__kit-coding__"
 # blocks (open tasks, finished jobs, budget, late answers). The pipeline roles
 # run one scripted step each and have no list of their own to keep.
 _STEERING_ROLES = ("solo_agent", "dashboard_agent", "office_agent")
+
+#: The turn-tail line of a session enabled for the messenger (/sync):
+#: without it the model did not know the user reads it on the phone. One
+#: fixed line, in the volatile tail -- never in the system prompt, whose
+#: bytes the prefix cache keeps.
+MESSENGER_LINE = (
+    "[Messenger] This session is connected to the user's phone through SimpleX: "
+    "your replies appear there too. A file you offer for download (in the "
+    "messenger outbox the messenger note names) can be fetched there.")
+#: The rest of the line: the session's outbox and the forum note (formerly
+#: appended by the bridge to every phone prompt). ~330 characters.
+MESSENGER_RULES = (
+    " Offer a file only when the user asks, as a plain file in {outbox} (no secrets, no "
+    "chat export; name it in your reply). An explicit short note to other agents: forum.txt "
+    "there, at most 1400 bytes, passed on only when the user enabled the exchange; never "
+    "answer other agents' notes on your own.")
 # Of those blocks, the ones worth re-sending when they change mid-turn. The
 # project pin never changes within a turn, and the backend notice is a
 # session-opening statement — re-sending either would cost tokens to say
@@ -763,18 +786,24 @@ class AgentEngine:
         self._claim_guard_active: bool = False
         self._claim_guard_spent: bool = False
         self._claim_guard_corrected: bool = False
-        # One-shot DSML re-request latch (U5 phase 3): a final answer that
-        # IS a leaked <invoke name=...>...</invoke> call written as text is
-        # re-requested (asked to call the tool) at most once per turn; if
-        # the correction leaks again the answer is annotated, never looped.
+        # DSML re-request budget (LK1): a final answer that IS a leaked
+        # <invoke name=...>...</invoke> call written as text is re-requested
+        # per the policy in leak_recovery.py -- a bounded number per real
+        # user turn, provided a real tool call ran since the last re-request.
+        # None until the first real user turn arms one (the re-arm block
+        # below rebuilds it fresh, so the budget never crosses turns).
+        self._dsml_policy = None
+        # Backward-compatible marker: whether this turn already issued at
+        # least one DSML re-request (kept for the session-evidence listing;
+        # the real budget is _dsml_policy, which gates the re-request).
         self._dsml_leak_spent: bool = False
         # Reentrancy guard for the DSML re-request's nested ``stream_response``
         # call (U5 phase 3): that nested call is a fresh user turn to the
         # engine, so WITHOUT this flag the fresh-turn re-arm block below would
-        # clear ``_dsml_leak_spent`` and the correction would re-request over
-        # and over (1478 stream calls on the never-loops test).  Set True only
-        # around the nested call, reset in ``finally``; while it is set, no
-        # re-arm and no second DSML check happens.
+        # rebuild the budget and the correction would re-request over and over
+        # (1478 stream calls on the never-loops test).  Set while a turn's
+        # re-request loop runs, reset in ``finally``; while it is set, no
+        # re-arm and no second outer DSML check happens.
         self._dsml_guard_active: bool = False
         # One stall guard per engine (per conversation), fed with how each
         # turn ended; `agent.stall_guard.repeats` identical dead endings in a
@@ -797,6 +826,8 @@ class AgentEngine:
         self._last_observed_files: set[str] = set()
         self._last_turn_tools: list[str] = []
         self._observed_ledger_available: bool = False
+        self._last_observed_urls: set[str] = set()
+        self._observed_urls_available: bool = False
         # Executed-command ledger (session-cumulative, capped): what this
         # session actually RAN. Evidence input for the functional-claim
         # guard — "it works now" is grounded only when the artifact was
@@ -931,6 +962,16 @@ class AgentEngine:
 
     # -- what a turn delegated ---------------------------------------------
 
+    def _budget_ledger(self):
+        """The BudgetLedger this engine delegates its budget methods to;
+        created on first use and kept on the engine."""
+        from .budget_ledger import BudgetLedger
+        led = getattr(self, "_budget_ledger_obj", None)
+        if led is None or led._engine is not self:
+            led = BudgetLedger(self)
+            self._budget_ledger_obj = led
+        return led
+
     def delegate_spend(self) -> "_agent_metrics.DelegateLedger":
         """This session's delegated spend: per turn, per session, and the
         background part that belongs to no turn.
@@ -938,11 +979,7 @@ class AgentEngine:
         Handed out as the ledger rather than as three numbers so a caller
         cannot read the per-turn bucket where it meant the session's.
         """
-        ledger = getattr(self, "_delegate_spend", None)
-        if not isinstance(ledger, _agent_metrics.DelegateLedger):
-            ledger = _agent_metrics.DelegateLedger()
-            self._delegate_spend = ledger
-        return ledger
+        return self._budget_ledger().delegate_spend()
 
     def _meter_delegate_spend(self) -> bool:
         """Route every delegated run through a counter that knows which
@@ -966,33 +1003,7 @@ class AgentEngine:
         Returns True when a meter is in place. False means this backend
         has no permissions object or no runner, i.e. it cannot delegate.
         """
-        perms = self.kit_permissions
-        if perms is None:
-            return False
-        runner = getattr(perms, "subagent_runner", None)
-        if runner is None:
-            return False
-        inner = getattr(runner, "_delegate_meter_inner", None) or runner
-
-        def _metered(*args, **kwargs):
-            # Read at ENTRY, not at return: a background delegate comes
-            # back long after the turn that started it, and the turn
-            # running by then is exactly the one it must NOT be charged
-            # to.
-            started = self._turn_id if self._turn_in_flight else 0
-            payload = inner(*args, **kwargs)
-            try:
-                self._book_delegate_spend(payload, started_turn=started)
-            except Exception:
-                pass
-            return payload
-
-        _metered._delegate_meter_inner = inner
-        try:
-            perms.subagent_runner = _metered
-        except Exception:
-            return False
-        return True
+        return self._budget_ledger()._meter_delegate_spend()
 
     def _book_delegate_spend(self, payload, *, started_turn: int) -> None:
         """Charge one finished delegate, to exactly one place.
@@ -1009,19 +1020,7 @@ class AgentEngine:
         one of the per-turn or the background bucket, so no delegate can
         be counted twice however often the numbers are read afterwards.
         """
-        ledger = self.delegate_spend()
-        one = _agent_metrics.DelegateSpend()
-        if not one.add_payload(payload,
-                               provider=str(getattr(self, "provider", "")
-                                            or "")):
-            return
-        with self._lock:
-            same_turn = bool(
-                started_turn
-                and getattr(self, "_turn_in_flight", False)
-                and getattr(self, "_turn_id", 0) == started_turn)
-            (ledger.turn if same_turn else ledger.background).merge(one)
-            ledger.session.merge(one)
+        return self._budget_ledger()._book_delegate_spend(payload, started_turn=started_turn)
 
     def set_kit_confirm_callback(self, callback) -> bool:
         """Bind/unbind the KIT-Toolbox confirmation callback at runtime.
@@ -1400,6 +1399,11 @@ class AgentEngine:
             "total_cost_usd": self.cost_usd + _dl.session.cost_usd,
             "cycle_complete": self.is_cycle_complete,
             "session_id": self.session_id,
+            # The endpoint's hourly token quota, when a quota 429 was seen
+            # (tokens): a person reads how close the key is to the reset.
+            "quota_tokens_used": getattr(self.client, "quota_tokens_used", None),
+            "quota_tokens_limit": getattr(
+                self.client, "quota_tokens_limit", None),
             # The model second opinion: switch, model, scope, last failure.
             "watcher": self._watcher_status(),
         }
@@ -1834,6 +1838,13 @@ class AgentEngine:
                 if tail:
                     tail = untrusted.wrap(f"bash_job:{stream}", tail)
                 submitted = ev.get("watched_slurm_jobs") or []
+                if submitted:
+                    from delfin.agent.api_client import (
+                        _record_submitted_jobs)
+                    _record_submitted_jobs(
+                        perms, str(ev.get("command") or ""),
+                        "".join(f"Submitted batch job {j}\n"
+                                for j in submitted))
                 events.append(
                     f"- bash job {ev.get('job_id')} [{state}, "
                     f"{ev.get('runtime_s', 0):.0f}s] "
@@ -1857,7 +1868,10 @@ class AgentEngine:
                     f"{str(ev.get('description', ''))[:80]}"
                     + (f" — signatures: {sig}" if sig else "")
                     + (f" — {degraded}" if degraded else "")
-                    + (f" — {ev['url']}" if ev.get("url") else ""))
+                    + (f" — {ev['url']}" if ev.get("url") else "")
+                    # A cluster job: what became of it and where its
+                    # results came back to (delfin.remote.watch.summary).
+                    + (f" — {ev['results']}" if ev.get("results") else ""))
         except Exception:
             pass
         try:
@@ -2843,7 +2857,8 @@ class AgentEngine:
         # change invalidates nothing before it, and the message keeps its
         # tail as a private key so every later request repeats the bytes
         # the endpoint already holds.
-        volatile = extra_blocks + ([dashboard_state] if dashboard_state else [])
+        volatile = (extra_blocks + ([dashboard_state] if dashboard_state else [])
+                    + ([self.messenger_line()] if self._on_the_phone() else []))
         _last = self.messages[-1] if self.messages else None
         _has_turn = isinstance(_last, dict) and _last.get("role") == "user"
         if volatile and not _has_turn:
@@ -2885,6 +2900,32 @@ class AgentEngine:
         return self.loader.build_system_prompt(
             **self._prompt_build_args(
                 role, memory_context, task_text, live_state, _perm_mode))
+
+    def messenger_line(self) -> str:
+        """MESSENGER_LINE with this session's rules: where a file is offered
+        (its outbox) and the forum note. Stable for the session, so the
+        tail's bytes repeat (the prefix cache); said once per turn."""
+        sid = str(getattr(self, "session_id", "") or "")
+        try:
+            from delfin.messenger.media import ROOT, session_hash
+            perms = getattr(getattr(self, "client", None), "_permissions", None)
+            ws = Path(str(getattr(perms, "workspace", "") or self.repo_dir))
+            outbox = ws / ROOT / session_hash(sid) / "outbox"
+        except Exception:
+            return MESSENGER_LINE
+        return MESSENGER_LINE + MESSENGER_RULES.format(outbox=outbox)
+
+    def _on_the_phone(self) -> bool:
+        """Whether this session is enabled for the messenger (its /sync
+        record, keyed by the session id). Never raises."""
+        sid = str(getattr(self, "session_id", "") or "")
+        if not sid:
+            return False
+        try:
+            from delfin.messenger import activation
+            return activation.enabled(sid)
+        except Exception:
+            return False
 
     def _prompt_build_args(self, role: str, memory_context: str,
                            task_text: str, live_state: str,
@@ -3150,10 +3191,12 @@ class AgentEngine:
                 and not _is_guard_feedback):
             self._claim_guard_corrected = False
             self._claim_guard_spent = False
-            # A fresh REAL user turn re-arms the DSML one-shot re-request:
-            # the latch is per TURN.  The DSML correction's nested call is
+            # A fresh REAL user turn re-arms the DSML re-request budget: the
+            # policy is per TURN.  The DSML correction's nested call is
             # not a fresh turn (see _dsml_guard_active), so while it is
-            # running this block is skipped and the latch stays spent.
+            # running this block is skipped and the budget stays spent.
+            from delfin.agent.leak_recovery import DSMLReplayPolicy
+            self._dsml_policy = DSMLReplayPolicy()
             self._dsml_leak_spent = False
             # The ambiguity ledger is per TURN: the question is whether
             # THIS answer totals a column THIS turn was told it could not
@@ -3162,6 +3205,13 @@ class AgentEngine:
             # ledger, or the retry would lose the very evidence it is being
             # judged against.
             self._ambiguous_columns_turn = []
+            # The executed-command ledger is per TURN, like every other
+            # one-shot above it: a path the turn ran is its own evidence,
+            # and a later turn's commands must not ground an earlier
+            # answer's citation. _commit_exec_command fills it on the
+            # same evidence path it already fills the session ledger
+            # from (a result that shows the command ran).
+            self._exec_commands_turn: list[str] = []
             # The figure guard needs it: a number the USER typed is
             # grounded, and flagging it would be the fastest way to teach
             # somebody to ignore the guard.
@@ -3854,6 +3904,12 @@ class AgentEngine:
                 elif event.type == "tool_result":
                     # A tool ran: the dead-turn count starts over.
                     self._stall_progress()
+                    # LK1: a REAL tool call completed counts as progress that
+                    # lets a later leaked call in this user turn be
+                    # re-requested (the policy's "real call since the last
+                    # re-request" condition).
+                    if self._dsml_policy is not None:
+                        self._dsml_policy.note_real_tool_call()
                     _activity.tool_end(event.tool_name)
                     if on_tool_result and event.tool_output:
                         on_tool_result(event.tool_name, event.tool_output)
@@ -4316,6 +4372,21 @@ class AgentEngine:
                 self._last_observed_files = set(
                     getattr(self, "_last_observed_files", None) or ())
                 self._observed_ledger_available = _restored_flag
+            # URL ledger: addresses the session's tools demonstrably
+            # returned (web_search hits / web_fetch target / read content).
+            # Mirrors the files ledger: same availability flag split.
+            _obs_urls = getattr(self.client, "_observed_urls_session", None)
+            _urls_restored = bool(
+                getattr(self, "_observed_urls_available", False))
+            self._observed_urls_available = (
+                _obs_urls is not None or _urls_restored)
+            try:
+                _u_carried = set(getattr(self, "_last_observed_urls", None) or ())
+                self._last_observed_urls = _u_carried | set(_obs_urls or ())
+            except TypeError:
+                self._last_observed_urls = set(
+                    getattr(self, "_last_observed_urls", None) or ())
+                self._observed_urls_available = _urls_restored
             self._last_turn_tools = list(_turn_tool_names)
             _turn_rows_kept = self._take_turn_rows()
             # Session-wide tool names: an open delegation request is
@@ -4560,11 +4631,14 @@ class AgentEngine:
             except Exception:
                 pass
 
-        # DSML leak re-request (U5 phase 3): a final answer that IS a leaked
-        # <invoke name=...>...</invoke> tool call written as text never ran —
-        # it is not an answer. Ask exactly once (latch _dsml_leak_spent); a
-        # corrected answer that leaks AGAIN falls through to the normal
-        # return and is annotated, never a second re-request (no loop).
+        # DSML leak re-request (U5 phase 3, LK1): a final answer that IS a
+        # leaked <invoke name=...>...</invoke> tool call written as text never
+        # ran -- it is not an answer.  Re-request it per the DSMLReplayPolicy
+        # budget: the first leak of the turn needs the answer to dominate;
+        # later ones also need a real tool call since the last re-request AND
+        # room in the per-turn budget (max_per_turn).  A corrected answer that
+        # leaks again without such progress falls through to the normal return
+        # and is annotated, never an unbounded re-request (no loop).
         if (full_response and not _empty_turn and not self._stop_requested
                 and not self._claim_guard_active and not self._dsml_guard_active):
             _dsml_name = None
@@ -4579,7 +4653,9 @@ class AgentEngine:
                     leaked_tool_call_dominates(full_response) or (None, {}))
             except Exception:
                 _dsml_name = None
-            if _dsml_name and not self._dsml_leak_spent and not self._dsml_guard_active:
+            if (_dsml_name and not self._dsml_guard_active
+                    and self._dsml_policy is not None
+                    and self._dsml_policy.allowed_for(True)):
                 # Every leak feeds the stall guard. The fingerprint is the
                 # tool, not the wording: the sentences around a leaked call
                 # differ every time, the call that never runs is the same.
@@ -4664,6 +4740,24 @@ class AgentEngine:
                 if not _announced:
                     self._stall_progress()
 
+        # Show-molecule steering: a finished answer that embeds a
+        # hand-written 3D viewer (iframe / CDN viewer script) while the turn
+        # never called show_molecule gets one short hint naming the tool --
+        # the card it renders is the working alternative, the markup is not.
+        # Best-effort: the hint never breaks the turn, the answer text is
+        # kept, never rewritten.
+        try:
+            from delfin.agent.show_molecule_guard import caveat_for
+            _hint = caveat_for(
+                full_response,
+                show_molecule_called="show_molecule" in (
+                    getattr(self, "_last_turn_tools", None) or ()),
+            )
+            if _hint:
+                full_response = full_response.rstrip() + _hint
+        except Exception:
+            pass
+
         # A turn that announced an action while plan mode refused its calls
         # says so in the ANSWER, not only in a notice that scrolls past.
         # Reports 20261005-135825 / 20261005-140408: four turns of "Let me
@@ -4681,7 +4775,79 @@ class AgentEngine:
         except Exception:
             pass
 
+        # VR1 (verify-before-report): trace number+unit claims in the finished
+        # answer to the run's real output before it is returned.  Mismatch /
+        # no-source verdicts append a short "could not be verified" caveat, and
+        # the machine-readable verification record is kept on
+        # ``self.last_claim_verification`` so the caller can show it next to
+        # the answer.  Best-effort: a verification failure never breaks the
+        # turn; a turn with no calc evidence is a no-op (no false alarms).
+        try:
+            full_response = self._append_claim_verification(full_response)
+        except Exception:
+            pass
+
         return full_response + _guard_note
+
+    def _append_claim_verification(self, response_text: str) -> str:
+        """VR1: trace number+unit claims in a finished answer to the run output.
+
+        Scans the answer for ``number+unit`` claims (:func:`delfin.agent.
+        claim_locator.locate_claims`) and verifies each against the real
+        ``*.out`` of the turn's calc folder(s) -- ``_doc_executor.
+        _calc_evidence`` (the live run ledger, Welle 10) -- via
+        :func:`delfin.agent.claim_locator.verify_claim`.  The machine-readable
+        verification record (claim -> file, line, unit, value, tolerance,
+        verdict) is kept on ``self.last_claim_verification`` so the caller can
+        show it next to the answer.  When a claim could not be verified
+        (``mismatch`` / ``no-source``), one short caveat is appended so the
+        answer says it could not be verified; ``estimate`` numbers (counts,
+        years, settings) are never flagged.
+
+        A turn whose calc evidence is empty -- a conversation with no run -- is
+        a no-op: prose numbers are not claims, so no false alarm.
+        """
+        try:
+            from .api_client import _doc_executor
+            from delfin.agent.claim_locator import locate_claims, verify_claim
+        except Exception:
+            return response_text
+        if not response_text:
+            self.last_claim_verification = []
+            return response_text
+        folders = [
+            rec.get("folder") for rec in getattr(_doc_executor, "_calc_evidence", None) or []
+            if rec.get("folder")
+        ]
+        self.last_claim_verification = []
+        if not folders:
+            return response_text
+        records: list[dict] = []
+        unverified: list[dict] = []
+        for claim in locate_claims(response_text):
+            record: dict | None = None
+            for folder in folders:
+                rec = verify_claim(claim.value, claim.unit, folder)
+                record = rec.to_dict()
+                if rec.verdict == "verified":
+                    break
+                if rec.verdict == "estimate":
+                    record = None
+                    break
+            if record is None:
+                continue
+            records.append(record)
+            if record["verdict"] not in ("verified",):
+                unverified.append(record)
+        self.last_claim_verification = records
+        if not unverified:
+            return response_text
+        caveat = "\n\n[verify] " + "; ".join(
+            f"{r['quantity']} value {r['value']} {r['unit']} could not be "
+            f"verified against the run's output ({r['verdict']})"
+            for r in unverified
+        ) + "."
+        return response_text.rstrip() + caveat
 
     def _note_session_language(self, user_message: str) -> None:
         """Set the answer language from the user's latest message that says one.
@@ -5093,6 +5259,15 @@ class AgentEngine:
             if cmd in ledger:
                 return
             ledger.append(cmd)
+            # The per-turn twin: the citation guard exempts a path
+            # THIS turn executed (a fresh real user turn clears it;
+            # see the reset beside the other one-shots).
+            try:
+                self._exec_commands_turn.append(cmd)
+            except AttributeError:
+                self._exec_commands_turn = [cmd]
+            except Exception:
+                pass
             if len(ledger) > 200:
                 del ledger[:len(ledger) - 200]
         except Exception:
@@ -5568,11 +5743,11 @@ class AgentEngine:
 
     def _scan_claim_grounding(
         self, text: str, turn_tools: list[str] | None,
-    ) -> tuple[list, list, list]:
+    ) -> tuple[list, list, list, list]:
         """Scan a finished answer for ungrounded code-location,
-        physical-quantity and stated-equation claims against this
+        physical-quantity, stated-equation and URL claims against this
         session's observed evidence. Returns (location_flags,
-        quantity_flags, arithmetic_flags); never raises."""
+        quantity_flags, arithmetic_flags, url_flags); never raises."""
         try:
             from . import verify_guard as _vg
             observed = getattr(self, "_last_observed_files", None) or set()
@@ -5584,9 +5759,48 @@ class AgentEngine:
                 evidence_tools_used=set(turn_tools or ()),
                 numbers=_vg.observed_numbers())
             arith = _vg.scan_for_wrong_arithmetic(text)
-            return loc, qty, arith
+            # A link the person wrote is no invented link: repeating it
+            # back must not cost a correction turn.
+            observed_urls = (set(getattr(self, "_last_observed_urls", None) or ())
+                             | self._urls_the_person_wrote())
+            url_ledger = bool(getattr(self, "_observed_urls_available", False))
+            urls = _vg.scan_for_ungrounded_url_claims(
+                text, observed_urls=observed_urls,
+                ledger_available=url_ledger)
+            return loc, qty, arith, urls
         except Exception:
-            return [], [], []
+            return [], [], [], []
+
+    def _urls_the_person_wrote(self) -> set[str]:
+        """Every http(s) address the person typed in this session.
+
+        Only the person's own words (api_client._classifier_user_texts):
+        the guard's own correction prompt is a user-role row that names the
+        unsupported links, and counting it would ground exactly those."""
+        from . import verify_guard as _vg
+        from .api_client import _classifier_user_texts
+        out: set[str] = set()
+        for t in _classifier_user_texts(getattr(self, "messages", None) or ()):
+            for m in _vg._URL_CLAIM_RE.finditer(t):
+                out.add(m.group(0).rstrip(".,;:)'\">}"))
+        return out
+
+    def _person_texts(self) -> list[str]:
+        """What the person actually wrote, this session.
+
+        The same source _urls_the_person_wrote uses
+        (api_client._classifier_user_texts): a path the USER named is
+        the subject of the task, often a file still to be created, and
+        is never reported as an invented citation -- neither by the
+        dashboard's own scans nor by this one. A [Verify] body is the
+        guard's own correction row, not the person's words.
+        """
+        try:
+            from .api_client import _classifier_user_texts
+            return list(_classifier_user_texts(
+                getattr(self, "messages", None) or ()))
+        except Exception:
+            return []
 
     def _enforce_claim_grounding(
         self,
@@ -5624,8 +5838,31 @@ class AgentEngine:
 
         Returns the (possibly extended) answer text."""
         from . import verify_guard as _vg
-        loc, qty, arith = self._scan_claim_grounding(
+        loc, qty, arith, url = self._scan_claim_grounding(
             response_text, getattr(self, "_last_turn_tools", None))
+        # A cited path that does not exist is the same defect as an
+        # ungrounded code location, and the dashboard used to own this
+        # scan while the terminal never saw it. The decision lives in
+        # code_citation_guard now: the engine fires its ONE correction
+        # turn for a bare nonexistent path too, so every surface reruns
+        # the same way. The flags stay OUT of ``loc`` and ride in
+        # ``cites``: the location wording would send the model to read
+        # a file that cannot be read, while the nonexistent case gets
+        # code_claim_feedback. The _turn_describes_intent reset below
+        # clears it for plans, whose named files are meant not to
+        # exist yet. ``acted_on`` is the turn's executed-command ledger:
+        # a path the turn RAN is not an ungrounded citation.
+        try:
+            from . import code_citation_guard as _cguard
+            cites = _cguard.nonexistent_citations(
+                response_text, repo_root=self.repo_dir,
+                observed=getattr(self, "_last_observed_files", None),
+                named_in=" ".join(str(t) for t in
+                                   self._person_texts()),
+                acted_on=getattr(self,
+                                 "_exec_commands_turn", None) or ())
+        except Exception:
+            cites = []
         func = self._scan_functional_claims(response_text)
         # A figure over a column the reader could not read joins the caveat
         # class rather than the correction class: the number is not wrong,
@@ -5643,7 +5880,8 @@ class AgentEngine:
         # language question survives, because a plan is still an answer to
         # somebody who wrote in a particular language.
         if self._turn_describes_intent():
-            loc, qty, conflicts, func, ambiguous = [], [], [], [], []
+            loc, qty, conflicts, func, ambiguous, url = [], [], [], [], [], []
+            cites = []
         # The language the user wrote in. Measured to be necessary: with
         # the prompt rule delivered and nothing German in the prompt, the
         # backend answered an English question in German four times in
@@ -5680,7 +5918,7 @@ class AgentEngine:
             wrong_language = _vg.scan_for_language_mismatch(
                 response_text,
                 "" if _asked.lstrip().startswith("[Verify]") else _asked)
-        if (not loc and not qty and not arith
+        if (not loc and not cites and not qty and not arith and not url
                 and not conflicts and not wrong_language):
             return self._append_answer_caveats(
                 response_text, functional=func, ambiguous=ambiguous,
@@ -5689,11 +5927,21 @@ class AgentEngine:
             # The single correction for this user turn is spent (e.g. a
             # nested continuation re-entered here) — annotate, never loop.
             return self._append_answer_caveats(
-                response_text + _vg.grounding_caveat(loc, qty, arith)
+                response_text + _vg.grounding_caveat(
+                    list(loc) + list(cites), qty, arith,
+                    url_flags=url)
                 + _vg.conflicting_figure_caveat(conflicts)
                 + _vg.language_mismatch_caveat(wrong_language),
                 functional=func, ambiguous=ambiguous, on_token=on_token)
         parts: list[str] = []
+        if cites:
+            # The nonexistent case says the paths DO NOT EXIST; the
+            # location wording would order the model to read a file
+            # that cannot be read.
+            parts.append(_vg.code_claim_feedback(
+                [_vg.CodeClaimFlag(path=f.path, line=f.line,
+                                   kind="nonexistent") for f in cites],
+                observed=getattr(self, "_last_observed_files", None)))
         if loc:
             parts.append(_vg.location_claim_feedback(
                 loc, observed=getattr(self, "_last_observed_files", None)))
@@ -5702,6 +5950,9 @@ class AgentEngine:
         if arith:
             parts.append(_vg.arithmetic_feedback(arith)
                          .replace("[Verify] ", "", 1))
+        if url:
+            parts.append(_vg.url_claim_feedback(
+                url, observed_urls=getattr(self, "_last_observed_urls", None)))
         if conflicts:
             parts.append(_vg.conflicting_figure_feedback(conflicts)
                          .replace("[Verify] ", "", 1))
@@ -5746,7 +5997,9 @@ class AgentEngine:
             self._claim_guard_active = False
         if not correction:
             return self._append_answer_caveats(
-                response_text + _vg.grounding_caveat(loc, qty, arith)
+                response_text + _vg.grounding_caveat(
+                    list(loc) + list(cites), qty, arith,
+                    url_flags=url)
                 + _vg.conflicting_figure_caveat(conflicts)
                 + _vg.language_mismatch_caveat(wrong_language),
                 functional=func, ambiguous=ambiguous, on_token=on_token)
@@ -5757,14 +6010,27 @@ class AgentEngine:
         # them the thing they did not ask for plus the thing they did.
         # Only when language was the SOLE reason, so a grounding fix is
         # never swallowed along with it.
-        if wrong_language and not (loc or qty or conflicts):
+        if wrong_language and not (loc or qty or conflicts or url):
             combined = correction
         else:
             combined = response_text + "\n\n" + correction
         # Re-scan the correction: the recursive turn refreshed the
         # observed-files snapshot and _last_turn_tools.
-        loc2, qty2, arith2 = self._scan_claim_grounding(
+        loc2, qty2, arith2, url2 = self._scan_claim_grounding(
             correction, getattr(self, "_last_turn_tools", None))
+        # Same scan for the correction, so the verdict machinery sees a
+        # citation that is still not grounded.
+        try:
+            from . import code_citation_guard as _cguard
+            cites2 = _cguard.nonexistent_citations(
+                correction, repo_root=self.repo_dir,
+                observed=getattr(self, "_last_observed_files", None),
+                named_in=" ".join(str(t) for t in
+                                   self._person_texts()),
+                acted_on=getattr(self,
+                                 "_exec_commands_turn", None) or ())
+        except Exception:
+            cites2 = []
         # The correction may restate the functional claim — scan it too and
         # merge (order-stable, de-duplicated: the flags are frozen).
         func = list(dict.fromkeys(
@@ -5772,19 +6038,28 @@ class AgentEngine:
         ambiguous = self._scan_ambiguous_column_totals(combined)
         new_files = set(
             getattr(self, "_last_observed_files", None) or ()) - observed_before
-        if loc2 or qty2 or arith2:
+        # A link in the ORIGINAL answer stays on the page (the claim and its
+        # correction are both shown), clickable. Unless a tool has returned
+        # it since, it is named, whatever the correction says about it:
+        # the reader still sees the link, not the model's retraction of it.
+        url_left = [f for f in self._scan_claim_grounding(
+            response_text, getattr(self, "_last_turn_tools", None))[3]
+            if f not in url2]
+        if loc2 or cites2 or qty2 or arith2 or url2:
             # The retry produced its own ungrounded claims.
-            caveat = _vg.grounding_caveat(loc2, qty2, arith2)
+            caveat = _vg.grounding_caveat(
+                list(loc2) + list(cites2), qty2, arith2,
+                url_flags=url2 + url_left)
         elif not new_files:
             # It read nothing. The scanners are silent because the wording
             # changed, not because anything was checked — so the ORIGINAL
             # claims are named, exactly as unverified as before. The
             # feedback offers "restate as unverified" as a way out, and
             # taking it must not be indistinguishable from verifying.
-            caveat = _vg.grounding_caveat(loc, qty, arith)
+            caveat = _vg.grounding_caveat(loc, qty, arith, url_flags=url_left)
         else:
-            caveat = ""
-            self._claim_guard_corrected = True
+            caveat = _vg.grounding_caveat([], [], [], url_flags=url_left)
+            self._claim_guard_corrected = not url_left
         # A conflict is resolved by NAMING a number, not by acknowledging
         # the question. The field case answered its own comparison with
         # "deutet auf eine unterschiedliche Formel-Konvention hin" and
@@ -5842,72 +6117,102 @@ class AgentEngine:
         on_tool_result_meta: Callable[[str, dict], None] | None = None,
         on_wait: Callable[[str], None] | None = None,
     ) -> str:
-        """Re-request once when the whole answer is a leaked DSML tool call.
+        """Re-request a leaked DSML tool call, bounded by the per-turn policy.
 
         Deepseek-v4-flash sometimes writes a tool call as literal
         ``<invoke name=...>...</invoke>`` XML in the text channel instead of
         calling the tool, so the call never ran and the turn would end
-        standing still. The answer is not the answer — ask the model exactly
-        once to call the tool instead of typing it.
+        standing still. The answer is not the answer — ask the model to call
+        the tool instead of typing it.
 
-        One retry only: ``_dsml_leak_spent`` is set before the nested call,
-        so a corrected answer that leaks AGAIN (or a nested continuation
-        re-entering the guard) falls through to the normal return with a
-        visible caveat naming the leaked tool — never a loop.
+        The re-request budget is the DSMLReplayPolicy (leak_recovery.py): the
+        first re-request of a turn needs the answer to dominate the leak; a
+        later one also needs a REAL tool call since the last re-request AND
+        room in the per-turn budget (``agent.leak_recovery.max_per_turn``,
+        default 3).  A leak that follows real progress is re-requested again;
+        two back-to-back leaks are annotated and stopped — never a loop.
         """
-        if self._dsml_leak_spent:
-            # A nested continuation (or a re-request that leaked) is already
-            # here: annotate and never re-request a second time.
-            _caveat = (f"\n\n⚠️ the call to {tool_name} was written as "
-                       f"text again after one re-request; it did not run.\n")
-            try:
-                if on_token:
-                    on_token(_caveat)
-            except Exception:
-                pass
-            return response_text + _caveat
-
-        self._dsml_leak_spent = True
-        _feedback = (
-            f"The text you just wrote is a tool call to "
-            f"<tool>{tool_name}</tool> expressed as literal markup, so it "
-            f"never ran. Call the tool (do not type its tags). Say what it "
-            f"returned, or make your answer plain text."
-        )
+        # Keep the reentry guard set for the WHOLE turn's re-requests.  Each
+        # nested stream_response is a fresh user turn to the engine; without
+        # the guard its fresh-turn block would rebuild the policy and clear
+        # the budget, and an unbounded re-request loop (the 1478-call defect
+        # of U5) would come back.  The policy budget itself is the hard bound.
+        _answer = response_text
+        _name = tool_name
+        _guard_was = self._dsml_guard_active
         self._dsml_guard_active = True
         try:
-            try:
-                if on_token:
-                    on_token("\n\n")
-            except Exception:
-                pass
-            try:
-                correction = self.stream_response(
-                    user_message=_feedback,
-                    memory_context=memory_context,
-                    on_token=on_token,
-                    on_tool_use=on_tool_use,
-                    on_tool_result=on_tool_result,
-                    on_permission_denied=on_permission_denied,
-                    on_thinking=on_thinking,
-                    thinking_budget=thinking_budget,
-                    max_tokens=max_tokens,
-                    on_notice=on_notice,
-                    on_tool_result_meta=on_tool_result_meta,
-                    on_wait=on_wait,
+            while _name:
+                if self._dsml_policy is None \
+                        or not self._dsml_policy.allowed_for(True):
+                    # Not allowed to re-request: no real tool call since the
+                    # last re-request, or the per-turn budget is spent.  The
+                    # leak is annotated and the turn ends, exactly as today;
+                    # the notice names the bound (LK1 target 5).
+                    from delfin.agent.leak_recovery import dsml_leak_notice
+                    _caveat = dsml_leak_notice(_name, limit_reached=True)
+                    try:
+                        if on_token:
+                            on_token(_caveat)
+                    except Exception:
+                        pass
+                    return _answer + _caveat
+                self._dsml_policy.spend()
+                self._dsml_leak_spent = True
+                _feedback = (
+                    f"The text you just wrote is a tool call to "
+                    f"<tool>{_name}</tool> expressed as literal markup, so it "
+                    f"never ran. Call the tool (do not type its tags). Say "
+                    f"what it returned, or make your answer plain text."
                 )
-            except Exception:
-                correction = ""
+                try:
+                    if on_token:
+                        on_token("\n\n")
+                except Exception:
+                    pass
+                try:
+                    correction = self.stream_response(
+                        user_message=_feedback,
+                        memory_context=memory_context,
+                        on_token=on_token,
+                        on_tool_use=on_tool_use,
+                        on_tool_result=on_tool_result,
+                        on_permission_denied=on_permission_denied,
+                        on_thinking=on_thinking,
+                        thinking_budget=thinking_budget,
+                        max_tokens=max_tokens,
+                        on_notice=on_notice,
+                        on_tool_result_meta=on_tool_result_meta,
+                        on_wait=on_wait,
+                    )
+                except Exception:
+                    correction = ""
+                if not correction:
+                    return _answer + (
+                        f"\n\n⚠️ the call to {_name} was written as text and "
+                        f"the re-request produced nothing; it did not run.\n")
+                _answer = correction
+                # If the correction is itself still a leaked call, loop to
+                # consider another re-request; a real answer returns here.
+                _next_name, _next_args = (None, {})
+                try:
+                    from delfin.agent.text_sanitize import (
+                        leaked_tool_call_dominates)
+                    _next_name, _next_args = (
+                        leaked_tool_call_dominates(correction) or (None, {}))
+                except Exception:
+                    _next_name = None
+                if _next_name is None:
+                    return correction
+                _name = _next_name
+                continue
+            return response_text
         finally:
-            # The nested call is over: a REAL next user turn may re-arm and
-            # ask again.  While the flag is set no re-arm and no second
-            # DSML check ran, so one correction never spawns another.
-            self._dsml_guard_active = False
-        if not correction:
-            return response_text + (
-                f"\n\n⚠️ the call to {tool_name} was written as text and "
-                f"the re-request produced nothing; it did not run.\n")
-        return correction
+            # The re-request loop is over: a REAL next user turn may re-arm
+            # and ask again.  While the guard was set no re-arm and no second
+            # outer DSML check ran, so one turn's corrections never spawn an
+            # unbounded chain.
+            self._dsml_guard_active = _guard_was
 
     def trace_session(self) -> str:
         """Stable key for this engine's tool-call trace — the backend session
@@ -6231,11 +6536,16 @@ class AgentEngine:
 
     @staticmethod
     def _with_turn_tail(content: Any, tail: str) -> Any:
-        """``content`` with the tail appended, in the content's own shape."""
+        """``content`` with the tail appended, in the content's own shape.
+
+        The result carries where the user's part ends (harness_rows:
+        ``TypedText.typed``, a ``SteeringBlock``), with the same bytes on
+        the wire: a reader of the user's words (the tainted-turn gate)
+        takes the typed part, not "this session may use" in the tail."""
         if isinstance(content, list):
-            return list(content) + [{"type": "text", "text": tail}]
+            return list(content) + [SteeringBlock(type="text", text=tail)]
         base = "" if content is None else str(content)
-        return f"{base}\n\n{tail}" if base else tail
+        return typed_text(f"{base}\n\n{tail}" if base else tail, base)
 
     def _drop_stale_steering_tails(self) -> int:
         """Remove the tails of every message but the newest user message;
@@ -7621,19 +7931,7 @@ class AgentEngine:
         cost without this). 0 disables either dimension. An explicit
         ``self.run_budget_usd``/``self.run_budget_s`` attribute (set e.g. by
         the scheduler daemon per entry) overrides the settings values."""
-        usd = float(getattr(self, "run_budget_usd", 0.0) or 0.0)
-        secs = float(getattr(self, "run_budget_s", 0.0) or 0.0)
-        if usd <= 0 or secs <= 0:
-            try:
-                from delfin.user_settings import load_settings as _ls
-                ag = (_ls() or {}).get("agent", {}) or {}
-                if usd <= 0:
-                    usd = max(0.0, float(ag.get("run_budget_usd", 0.0) or 0.0))
-                if secs <= 0:
-                    secs = max(0.0, float(ag.get("run_budget_s", 0.0) or 0.0))
-            except Exception:
-                pass
-        return usd, secs
+        return self._budget_ledger()._run_budget()
 
     def _run_ceiling_hit(self, spent_this_turn: float = 0.0) -> str:
         """The run ceiling a RUNNING turn has reached, or "".
@@ -7648,35 +7946,7 @@ class AgentEngine:
         Consulted by the client between tool rounds (``run_ceiling``);
         the 110 % gate before a turn stays. Never raises.
         """
-        hit = ""
-        try:
-            usd, secs = self._run_budget()
-            if secs > 0:
-                import time as _t
-                started = float(getattr(self, "_run_started_at", 0.0) or 0.0)
-                if started > 0 and _t.time() - started >= secs:
-                    hit = "run_budget_s"
-            if not hit and usd > 0:
-                spent = (float(getattr(self, "cost_usd", 0.0) or 0.0)
-                         + max(0.0, float(spent_this_turn or 0.0)))
-                if spent >= usd:
-                    hit = "run_budget_usd"
-        except Exception:
-            return ""
-        if hit:
-            # Once per run (the level dedups): the turn's own notice goes
-            # to the stream, this one to whoever is not watching it.
-            try:
-                from .run_limits import resume_hint
-                self._emit_budget_attention(
-                    "ceiling", "Run stopped: budget ceiling reached",
-                    f"agent.{hit} was reached inside a turn; the turn "
-                    "stopped between two tool rounds, its work is kept and "
-                    "the session is saved. To continue: "
-                    + resume_hint(self, hit))
-            except Exception:
-                pass
-        return hit
+        return self._budget_ledger()._run_ceiling_hit(spent_this_turn)
 
     def _run_budget_turns(self) -> int:
         """Turn ceiling for this run — 0 disables it.
@@ -7687,15 +7957,7 @@ class AgentEngine:
         :meth:`_usd_budget_enforced`). Same precedence as the other two:
         an explicit attribute set per scheduler entry beats the setting.
         """
-        turns = int(getattr(self, "run_budget_turns", 0) or 0)
-        if turns <= 0:
-            try:
-                from delfin.user_settings import load_settings as _ls
-                ag = (_ls() or {}).get("agent", {}) or {}
-                turns = int(ag.get("run_budget_turns", 0) or 0)
-            except Exception:
-                turns = 0
-        return max(0, turns)
+        return self._budget_ledger()._run_budget_turns()
 
     def _turns_taken(self) -> int:
         """Turns this run has actually run, priced or not.
@@ -7705,9 +7967,7 @@ class AgentEngine:
         switches to a priced one would otherwise stop spending its
         ceiling half way through.
         """
-        return (int(getattr(self, "_measured_cost_turns", 0) or 0)
-                + int(getattr(self, "_non_billing_turns", 0) or 0)
-                + int(getattr(self, "_unpriced_turns", 0) or 0))
+        return self._budget_ledger()._turns_taken()
 
     def _client_retry_count(self) -> int | None:
         """How often the client re-issued this turn's request, if it says.
@@ -7775,22 +8035,7 @@ class AgentEngine:
         Everything else is UNKNOWN: no rate, nothing observed, and a 0.0
         in ``self.cost_usd`` that every USD gate reads as thrift.
         """
-        from . import pricing as _pricing
-        state = _pricing.resolve(
-            str(getattr(self.client, "model", "") or ""),
-            str(getattr(self, "provider", "") or ""),
-        ).state
-        if state == _pricing.NON_BILLING:
-            self._non_billing_turns += 1
-            self._last_turn_price_state = "non_billing"
-        elif (state == _pricing.PRICED
-                or float(cost_delta or 0.0) > 0
-                or getattr(self, "backend", "") == "cli"):
-            self._measured_cost_turns += 1
-            self._last_turn_price_state = "measured"
-        else:
-            self._unpriced_turns += 1
-            self._last_turn_price_state = "unknown"
+        self._budget_ledger()._note_turn_price_state(cost_delta)
 
     def _usd_budget_enforced(self) -> bool:
         """Whether the configured USD ceiling actually bounds this run.
@@ -7808,8 +8053,7 @@ class AgentEngine:
         a measurement, its ceiling holds, and calling it unmeasured would
         be a false statement in the other direction.
         """
-        usd, _secs = self._run_budget()
-        return usd > 0 and int(getattr(self, "_unpriced_turns", 0) or 0) == 0
+        return self._budget_ledger()._usd_budget_enforced()
 
     def _unmeasured_budget_block(self) -> str:
         """Say ONCE that no monetary ceiling is in force, and what is.
@@ -7820,51 +8064,7 @@ class AgentEngine:
         Turn counts and token totals are always measured, so they are what
         this offers in place of the ceiling that cannot be enforced.
         """
-        usd, secs = self._run_budget()
-        unpriced = int(getattr(self, "_unpriced_turns", 0) or 0)
-        if (usd <= 0 or unpriced == 0
-                or getattr(self, "_unmeasured_budget_notice_shown", False)):
-            return ""
-        self._unmeasured_budget_notice_shown = True
-        turn_cap = self._run_budget_turns()
-        # The prompt reaches the model and nobody else. A run budget is
-        # what makes an unattended run deployable, so the one fact that
-        # it is not in force has to reach whoever is not watching.
-        self._emit_budget_attention(
-            "unenforceable",
-            "Run budget: the USD ceiling is not in force",
-            f"{unpriced} turn(s) ran on a model with no published rate, so "
-            f"the ${usd:.2f} ceiling cannot be enforced and neither can the "
-            f"per-turn cost breaker."
-            + (f" The {turn_cap}-turn ceiling IS in force."
-               if turn_cap > 0 else
-               " Set agent.run_budget_turns or agent.run_budget_s for a "
-               "ceiling that can be."))
-        turns = (unpriced + int(getattr(self, "_measured_cost_turns", 0) or 0)
-                 + int(getattr(self, "_non_billing_turns", 0) or 0))
-        tok_in = int(self.token_usage.get("input", 0) or 0)
-        tok_out = int(self.token_usage.get("output", 0) or 0)
-        lines = [
-            "# Run budget NOT enforceable in USD (auto-injected, once)",
-            f"- {unpriced} of {turns} turn(s) so far ran on a model with no "
-            f"published rate, so their cost was never measured. The "
-            f"${usd:.2f} ceiling is not in force, and neither is the "
-            f"per-turn cost breaker.",
-            f"- Measured instead: {turns} turn(s), {tok_in:,} input + "
-            f"{tok_out:,} output tokens. Judge the size of this run by "
-            f"those, not by a dollar figure.",
-        ]
-        if turn_cap > 0:
-            lines.append(f"- The {turn_cap} turn(s) ceiling IS measured and "
-                         "still ends this run.")
-        if secs > 0:
-            lines.append(f"- The {secs:.0f}s wall-clock ceiling IS measured "
-                         "and still ends this run.")
-        if turn_cap <= 0 and secs <= 0:
-            lines.append("- For a ceiling that can be enforced, set "
-                         "agent.run_budget_turns or agent.run_budget_s, or "
-                         "pick a model id with a published rate.")
-        return "\n".join(lines)
+        return self._budget_ledger()._unmeasured_budget_block()
 
     def _run_budget_status(self) -> tuple[float, bool]:
         """(worst fraction spent, exhausted). Fraction is max over the
@@ -7873,8 +8073,7 @@ class AgentEngine:
         The USD term is a sum over measurable turns only — see
         :meth:`_usd_budget_enforced` for what it cannot see.
         """
-        frac, exhausted, _dim = self._run_budget_detail()
-        return frac, exhausted
+        return self._budget_ledger()._run_budget_status()
 
     def _run_budget_detail(self) -> tuple[float, bool, str]:
         """As :meth:`_run_budget_status`, plus the setting that is worst.
@@ -7882,25 +8081,7 @@ class AgentEngine:
         A refusal that names ``run_budget_usd`` when the wall clock or the
         turn count stopped the run sends its reader to the wrong dial.
         """
-        usd, secs = self._run_budget()
-        turns_cap = self._run_budget_turns()
-        frac, dim = 0.0, ""
-        if usd > 0:
-            share = float(self.cost_usd) / usd
-            if share > frac:
-                frac, dim = share, "agent.run_budget_usd"
-        if secs > 0:
-            import time as _t
-            started = float(getattr(self, "_run_started_at", 0.0) or 0.0)
-            if started > 0:
-                share = (_t.time() - started) / secs
-                if share > frac:
-                    frac, dim = share, "agent.run_budget_s"
-        if turns_cap > 0:
-            share = float(self._turns_taken()) / turns_cap
-            if share > frac:
-                frac, dim = share, "agent.run_budget_turns"
-        return frac, frac >= 1.0, dim
+        return self._budget_ledger()._run_budget_detail()
 
     def _emit_budget_attention(self, level: str, title: str,
                                detail: str) -> None:
@@ -7915,20 +8096,7 @@ class AgentEngine:
         doctor. Best-effort: a notice must never break the turn it
         describes.
         """
-        try:
-            if level in self._budget_attention_levels:
-                return
-            self._budget_attention_levels.add(level)
-            from delfin.agent.attention import emit_attention
-            emit_attention(
-                "budget_warning",
-                session_id=str(getattr(self, "session_id", "") or ""),
-                title=title[:200],
-                detail=detail[:400],
-                workspace=str(getattr(self, "repo_dir", "") or ""),
-            )
-        except Exception:
-            pass
+        return self._budget_ledger()._emit_budget_attention(level, title, detail)
 
     def _build_budget_block(self) -> str:
         """Per-turn budget status for the prompt: silent when unconfigured
@@ -7939,67 +8107,14 @@ class AgentEngine:
         threshold, because the threshold is exactly what an unpriced run
         can never reach: its fraction stays at 0% however long it runs.
         """
-        parts: list[str] = []
-        try:
-            parts.append(self._unmeasured_budget_block())
-        except Exception:
-            pass
-        try:
-            frac, exhausted = self._run_budget_status()
-        except Exception:
-            frac, exhausted = 0.0, False
-        if frac >= 0.8:
-            pct = min(999, int(frac * 100))
-            usd, secs = self._run_budget()
-            turn_cap = self._run_budget_turns()
-            ceiling = ", ".join(
-                [p for p in (f"${usd:.2f}" if usd > 0 else "",
-                             f"{secs:.0f}s" if secs > 0 else "",
-                             f"{turn_cap} turns" if turn_cap > 0 else "")
-                 if p])
-            if exhausted:
-                parts.append(
-                    "# Run budget EXHAUSTED\n"
-                    f"- {pct}% of this run's budget is spent. Finish your "
-                    "CURRENT sentence of work only: save state, mark task "
-                    "statuses honestly, and summarise what remains. No new "
-                    "work."
-                )
-                self._emit_budget_attention(
-                    "exhausted",
-                    "Run budget exhausted — the agent is wrapping up",
-                    f"{pct}% of the run budget ({ceiling}) is spent. The "
-                    f"agent finishes the current step and starts no new "
-                    f"work. Raise agent.run_budget_usd / run_budget_s or "
-                    f"start a new run to continue.")
-            else:
-                parts.append(
-                    "# Run budget wind-down (auto-injected)\n"
-                    f"- {pct}% of this run's budget is spent. Start wrapping "
-                    "up NOW: complete or checkpoint the current step, "
-                    "commit/save state, mark tasks, and summarise open work. "
-                    "If a follow-up run makes sense, note exactly where to "
-                    "resume. Do not start new large work items."
-                )
-                self._emit_budget_attention(
-                    "wind_down",
-                    "Run budget at 80% — the agent is winding down",
-                    f"{pct}% of the run budget ({ceiling}) is spent. The "
-                    f"agent is checkpointing and will stop soon.")
-        return "\n\n".join(p for p in parts if p)
+        return self._budget_ledger()._build_budget_block()
 
     def _cost_hard_cap(self) -> float:
         """Per-turn hard cost ceiling in USD — a runaway circuit-breaker, NOT a
         cumulative session budget. The default is deliberately very high so it
         only ever trips on a loop gone wrong, never on normal use. 0 disables
         it. Configurable via settings ``agent.cost_hard_limit_usd``."""
-        try:
-            from delfin.user_settings import load_settings as _ls
-            v = ((_ls() or {}).get("agent", {}) or {}).get(
-                "cost_hard_limit_usd", 50.0)
-            return max(0.0, float(v))
-        except Exception:
-            return 50.0
+        return self._budget_ledger()._cost_hard_cap()
 
     def _open_task_count(self) -> int:
         """Open (pending / in-progress / blocked) tasks of this session's
@@ -8019,6 +8134,19 @@ class AgentEngine:
         except Exception:
             return 0
 
+    def _session_is_watched(self) -> bool:
+        """Whether DELFIN's job watcher follows a job or batch this session
+        started (cluster_submit, watch_job). False when unknown; never raises."""
+        try:
+            from delfin.agent import job_monitor
+            perms = self.kit_permissions
+            if perms is None:
+                return False
+            return job_monitor.session_is_watched(
+                perms.workspace, str(getattr(perms, "task_session_id", "") or ""))
+        except Exception:
+            return False
+
     def _note_turn_continuation(self, answer: str) -> None:
         """Record one follow-up note when *answer* announces work that it did
         not do while tasks stay open. Never raises; the latch keeps it to one
@@ -8029,7 +8157,8 @@ class AgentEngine:
             return
         try:
             from delfin.agent.turn_continuation import should_continue
-            cont, note = should_continue(answer, self._open_task_count())
+            cont, note = should_continue(answer, self._open_task_count(),
+                                         watched=self._session_is_watched())
         except Exception:
             return
         if cont and note:
@@ -8085,6 +8214,9 @@ class AgentEngine:
         try:
             if (not answer or self.pending_turn_continuation
                     or getattr(self, "_stall_guard_stopped", "")):
+                return
+            # Something does run: DELFIN's watcher follows this session's job.
+            if self._session_is_watched():
                 return
             if callable(on_token) and _ends_announcing(answer):
                 on_token(self.NOTHING_RUNS_NOTICE)
@@ -8251,6 +8383,15 @@ class AgentEngine:
         # Kept as its own value for that reason, and exported for the same.
         _SessionField(
             "_observed_ledger_available", "observed_ledger_available",
+            "evidence", bool, bool, lambda: False),
+        # The URL ledger, same shape and same split: the links this
+        # session's tools returned. A resumed session that forgot them would
+        # flag every link it had fetched before the resume.
+        _SessionField(
+            "_last_observed_urls", "observed_urls", "evidence",
+            lambda v: sorted(v or ()), lambda v: set(v or ()), set),
+        _SessionField(
+            "_observed_urls_available", "observed_urls_available",
             "evidence", bool, bool, lambda: False),
         _SessionField(
             "_exec_commands_session", "exec_commands", "evidence",
@@ -8433,6 +8574,21 @@ class AgentEngine:
         # session" is the user's call, not ours -- asking once too often is
         # the safe side of that question.
         out["refusals"] = self._export_refusals()
+        # The system prompt as the model was given it, so a resume in a new
+        # process sends the same bytes and the endpoint's cache of the whole
+        # history stays warm; what changed since goes into the next turn's
+        # tail (_held_system_prompt). Not a declared field: a session saved
+        # before it existed has lost nothing a resume must report.
+        held = getattr(self, "_held_prompt", None)
+        if isinstance(held, dict) and held.get("prompt"):
+            # Saved through save_session's **extra (persisted verbatim).
+            out["held_system_prompt"] = dict(
+                role=str(held.get("role") or ""),
+                prompt=str(held["prompt"]),
+                sections={str(k): str(v) for k, v in
+                          (held.get("sections") or {}).items()},
+                carriers=[str(c) for c in held.get("carriers") or ()],
+            )
         return out
 
     def _export_refusals(self) -> dict:
@@ -8578,6 +8734,17 @@ class AgentEngine:
                 client._observed_files_session = files
         except Exception:
             pass
+        # Same handoff for the observed-URL ledger, so a resumed session
+        # still knows which URLs its tools actually returned.
+        try:
+            urls = set(getattr(self, "_last_observed_urls", None) or ())
+            curu = getattr(client, "_observed_urls_session", None)
+            if isinstance(curu, set):
+                curu |= urls
+            else:
+                client._observed_urls_session = urls
+        except Exception:
+            pass
 
     def restore_state(self, data: dict) -> "AgentEngine.RestoreReport":
         """Restore engine state from a saved session.
@@ -8677,6 +8844,23 @@ class AgentEngine:
 
         s_restored, s_missing, s_failed = self._load_declared_fields(
             data, section="state")
+        # The held system prompt (export_state): kept only when well formed;
+        # _held_system_prompt still rebuilds it when the role changed or a
+        # carrier of an earlier update is gone from the restored history.
+        _held = data.get("held_system_prompt")
+        try:
+            if isinstance(_held, dict) and str(_held.get("prompt") or ""):
+                self._held_prompt = {
+                    "role": str(_held.get("role") or ""),
+                    "prompt": str(_held["prompt"]),
+                    "sections": {str(k): str(v) for k, v in
+                                 dict(_held.get("sections") or {}).items()},
+                    "carriers": [str(c) for c in _held.get("carriers") or ()],
+                }
+            else:
+                self._held_prompt = None
+        except Exception:
+            self._held_prompt = None
         ev = self._restore_evidence(data)
         # The denials come back onto the permission object, not onto the
         # engine: that is where every gate reads them. The object is

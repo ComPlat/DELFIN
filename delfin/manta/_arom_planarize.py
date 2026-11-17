@@ -74,6 +74,10 @@ from delfin.manta._pi_h_projector import (
 # ``_AROMATIC_BOND_MAX`` is now only PASSED THROUGH here (nothing deleted: the name
 # remains for every reader and every external access); the decision is made
 # exclusively in ``ring_rejected_by_length``.
+from delfin.manta._ring_snap_length import (
+    ring_scale_restoring_lengths as _rs_scale,
+    ring_snap_keep_length_enabled as _keep_len_enabled,
+)
 from delfin.manta._arom_criterion import (   # noqa: F401
     _AROMATIC_BOND_MAX,
     ring_rejected_by_length,
@@ -370,6 +374,9 @@ def _flatten_system(
 
     aset = set(atoms)
     moved = False
+    _carry = carry_h_enabled()
+    _carried: Set[int] = set()
+    _pre = {a: pts[a].copy() for a in atoms} if _keep_len_enabled() else {}
     # Project every NON-frozen ring-system atom onto the plane along ``normal``.
     for idx in atoms:
         if idx in frozen:
@@ -379,6 +386,38 @@ def _flatten_system(
         if np.linalg.norm(shift) > 1e-9:
             pts[idx] = pts[idx] - shift
             moved = True
+
+    # DELFIN_FFFREE_RING_SNAP_KEEP_LENGTH (see _ring_snap_length): the projected system is scaled
+    # in its plane about its one anchor (none: centroid; two or more: no scaling) so its mean bond
+    # length is the pre-projection one; ring neighbours (H, first substituent) take the ring atom's
+    # in-plane displacement before the drag below.
+    _scale_disp = {}
+    if moved and _keep_len_enabled():
+        _rows = list(atoms)
+        _row_of = {a: k for k, a in enumerate(_rows)}
+        _bonds = [(_row_of[a], _row_of[b]) for a in _rows for b in nbrs[a]
+                  if b in _row_of and _row_of[a] < _row_of[b]]
+        _after = np.array([pts[a] for a in _rows])
+        _before = np.array([_pre[a] for a in _rows])
+        _scaled = _rs_scale(_before, _after, _bonds,
+                            _row_of[anchor_list[0]] if len(anchor_list) == 1 else None,
+                            skip=len(anchor_list) > 1)
+        for k, a in enumerate(_rows):
+            if a in frozen:
+                continue
+            d = _scaled[k] - _after[k]
+            if np.linalg.norm(d) > 1e-12:
+                pts[a] = _scaled[k]
+                _scale_disp[a] = d
+        for ring_atom, d in _scale_disp.items():
+            for j in nbrs[ring_atom]:
+                if (j in aset or _is_metal_sym(syms[j]) or j in frozen
+                        or j in all_ring_atoms):
+                    continue
+                pts[j] = pts[j] + d
+                if syms[j] != "H":
+                    for h in _riding_hydrogens(j, ring_atom, aset, nbrs, syms, frozen):
+                        pts[h] = pts[h] + d
 
     # Drag ring-attached H and first (non-ring, non-metal, non-frozen)
     # substituent heavy atoms onto the plane, rigidly with their parent.  We
@@ -401,7 +440,36 @@ def _flatten_system(
             if np.linalg.norm(shift) > 1e-9:
                 pts[j] = pts[j] - shift
                 moved = True
+                if _carry and syms[j] != "H":
+                    # the substituent's own hydrogens ride with it (same shift)
+                    for h in _riding_hydrogens(j, ring_atom, aset, nbrs, syms, frozen):
+                        if h not in _carried:
+                            pts[h] = pts[h] - shift
+                            _carried.add(h)
     return moved
+
+
+# ===== THE SUBSTITUENT'S HYDROGENS RIDE WITH IT (DELFIN_FFFREE_AROM_PLANARIZE_CARRY_H, default OFF) =====
+#
+# THE DEFECT.  ``_flatten_system`` drags the first substituent heavy atom of a ring (the methyl C
+# of a methylpyridine, the CH2 of an ethyl) onto the ring plane, but not that atom's own hydrogens.
+# Measured on the legacy post-processing census (DELFIN_LEGCONF_TRACE, COPMEC, 23.10.2026): frames
+# with an X-H above 1.20 A go 7 -> 37 of 85 in this one step; the methyl H3 umbrella stays intact
+# (H...H 1.76-1.83 A) while its carbon has moved 0.2-0.35 A away from it (C-H 1.26-1.45 A).
+# THE FIX.  The hydrogens bonded to a dragged substituent atom receive the same shift -- a rigid
+# translation of the C-H group, every C-H length and H-C-H angle unchanged.  The never-worse and
+# M-D guards read the same quantities as before.  Off -> byte-identical.
+def carry_h_enabled() -> bool:
+    """THE one read site of DELFIN_FFFREE_AROM_PLANARIZE_CARRY_H (default 0)."""
+    return os.environ.get("DELFIN_FFFREE_AROM_PLANARIZE_CARRY_H", "0") == "1"
+
+
+def _riding_hydrogens(j, ring_atom, aset, nbrs, syms, frozen):
+    """Hydrogens geometrically bonded to substituent atom ``j`` (not ring atoms, not ``frozen``,
+    not also bonded to the ring atom the substituent hangs on)."""
+    ring_nb = set(nbrs[ring_atom])
+    return [h for h in nbrs[j]
+            if syms[h] == "H" and h not in aset and h not in frozen and h not in ring_nb]
 
 
 def correct_xyz(xyz: str) -> str:
@@ -477,6 +545,8 @@ def correct_xyz(xyz: str) -> str:
             for ra in atoms:
                 for j in nbrs[ra]:
                     touched.add(j)
+                    if carry_h_enabled() or _keep_len_enabled():   # ... and the hydrogens that rode with j
+                        touched.update(h for h in nbrs[j] if syms[h] == "H")
             for i in touched:
                 work[i] = before[i]
             continue

@@ -17,9 +17,10 @@ import json
 import time
 from collections import Counter
 from pathlib import Path
+from .state_paths import state_root
 
 
-_LOG_PATH = Path.home() / ".delfin" / "failure_log.jsonl"
+_LOG_PATH = state_root() / "failure_log.jsonl"
 _MAX_LINES = 2000
 
 _RECENT_WINDOW_S = 7 * 86_400  # 7 days = considered recent

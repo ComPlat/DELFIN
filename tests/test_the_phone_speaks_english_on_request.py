@@ -1,14 +1,14 @@
-"""`pi_messenger.sh --lang=en`: the phone is told everything in English.
+"""The phone is told everything in its language, English or German.
 
-Input: DELFIN_MESSENGER_LANG=en in the gateway's environment. Before, every
-text the gateway sends was German only.
+Input: the language of the phone (DELFIN_MESSENGER_LANG). The code writes
+every phone text in English; lang.DE holds the German.
 
-Output: every literal the gateway and the pairing pass to ``lang.t`` has an
-English entry (a German text without one would stay German silently);
-templates are translated before they are filled, so what the agent or the
-phone wrote is never changed; a refusal the bridge sends as a whole string
-is translated whole. German stays the default, and both languages' words
-are understood either way.
+Output: every literal the gateway, the renderer and the pairing pass to
+``lang.t`` has a German entry (an English text without one would stay
+English silently); templates are translated before they are filled, so
+what the agent or the phone wrote is never changed; a refusal the bridge
+sends as a whole string is translated whole. Both languages' words are
+understood either way.
 """
 from __future__ import annotations
 
@@ -33,23 +33,23 @@ def _literals_passed_to_t(path: Path):
                 yield node.lineno, arg.value
 
 
-@pytest.mark.parametrize("name", ["gateway.py", "__main__.py"])
-def test_every_translated_literal_has_an_english_entry(name):
+@pytest.mark.parametrize("name", ["gateway.py", "__main__.py", "render.py"])
+def test_every_translated_literal_has_a_german_entry(name):
     missing = [(line, text[:60]) for line, text in _literals_passed_to_t(ROOT / name)
-               if text not in lang.EN]
+               if text not in lang.DE]
     assert not missing
 
 
 def test_the_constants_translated_where_used_have_entries():
-    from delfin.messenger import gateway
+    from delfin.messenger import gateway, render
     for text in (gateway.HELP, gateway.UPDATE, gateway.Rooms._CHANGE_HINT,
-                 *gateway._PLAIN.values()):
-        assert text in lang.EN, text[:60]
+                 *gateway._PLAIN.values(), *render._WHAT.values(), *render._STATE.values()):
+        assert text in lang.DE, text[:60]
 
 
-def test_english_templates_keep_their_placeholders():
+def test_german_templates_keep_their_placeholders():
     import string
-    for german, english in lang.EN.items():
+    for english, german in lang.DE.items():
         fields = lambda s: sorted(f for _, f, _, _ in string.Formatter().parse(s) if f)
         assert fields(german) == fields(english), german[:60]
 
@@ -70,7 +70,7 @@ class _Bridge:
                                   "messengerEnabled": True}]}
         if command.get("action") == "status":
             return {"ok": True, "title": "t", "state": "idle", "messengerEnabled": True}
-        return {"error": "Diese Sitzung ist nicht verfügbar. Kein anderer Agent wurde angesprochen."}
+        return {"error": "This session is not available. No other agent was addressed."}
 
 
 @pytest.fixture
@@ -90,18 +90,26 @@ def test_english_on_request(rooms, monkeypatch):
     room, daemon = rooms
     monkeypatch.setenv("DELFIN_MESSENGER_LANG", "en")
     _say(room, "/help", "1")
-    assert daemon.sent[-1][1] == lang.EN[HELP]
+    # A session chat's messages carry no name prefix (the group says it).
+    assert daemon.sent[-1][1] == HELP
     _say(room, "calculate this", "2")
     assert "This session is not available" in daemon.sent[-1][1]
     _say(room, "notify questions", "3")
     assert daemon.sent[-1][1].startswith("Automatic notifications: fragen.")
 
 
-def test_german_by_default(rooms, monkeypatch):
+def test_english_by_default(rooms, monkeypatch):
     room, daemon = rooms
     monkeypatch.delenv("DELFIN_MESSENGER_LANG", raising=False)
     _say(room, "/help", "1")
     assert daemon.sent[-1][1] == HELP
+
+
+def test_german_for_a_new_phone_on_request(rooms, monkeypatch):
+    room, daemon = rooms
+    monkeypatch.setenv("DELFIN_MESSENGER_LANG", "de")
+    _say(room, "/help", "1")
+    assert daemon.sent[-1][1] == lang.DE[HELP]
 
 
 def test_what_the_agent_wrote_is_never_translated(rooms, monkeypatch):
@@ -111,4 +119,4 @@ def test_what_the_agent_wrote_is_never_translated(rooms, monkeypatch):
             "text": "echo 'Nichts offen.'", "purpose": "Nichts offen.", "options": []}
     shown = room.pending_text([item])
     assert "echo 'Nichts offen.'" in shown
-    assert "The agent's statement (unchecked): Nichts offen." in shown
+    assert "Why, as the agent says (unchecked): Nichts offen." in shown

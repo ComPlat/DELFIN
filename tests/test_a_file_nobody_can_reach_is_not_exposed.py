@@ -30,7 +30,7 @@ import pytest
 from delfin.agent import credentials as C
 
 
-LINE = 'export OPENAI_API_KEY="sk-not-a-real-key-0123456789abcdef"\n'
+LINE = 'export OPENAI_API_KEY="sk-not-a-real-key-0123456789abcdef"\n'  # secret-guard: allow (synthetic DELFIN test sample)
 
 
 def _home_with_key(tmp_path, *, home_mode: int, file_mode: int):

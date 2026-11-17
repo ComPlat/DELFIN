@@ -25,9 +25,10 @@ import html as _html
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from ..agent.state_paths import state_root
 
 
-_DEFAULT_PATH = Path.home() / ".delfin" / "schedules.json"
+_DEFAULT_PATH = state_root() / "schedules.json"
 
 
 @dataclass(frozen=True)

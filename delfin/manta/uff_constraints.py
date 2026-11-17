@@ -30,6 +30,7 @@ from delfin.manta.ml_tables import (
     _METAL_SET,
     _PREFERRED_CN6_GEOMETRY,
     _get_ml_bond_length,
+    _pin_ml_bond_length,
 )
 from delfin.manta.pre_uff_snap import (
     _D8_SQ_ISO_METALS,
@@ -737,7 +738,7 @@ def _build_coordination_constraints_from_xyz(
                     d_sym = mol_template.GetAtomWithIdx(d_idx).GetSymbol()
                     if d_sym in _METAL_SET:
                         continue
-                    bl = float(_get_ml_bond_length(m_sym, d_sym))
+                    bl = float(_pin_ml_bond_length(m_sym, d_sym))
                     base["distances"].append((m_idx, d_idx, bl))
 
             # FREEZE metal + monodentate-donor atoms during UFF.
@@ -1330,7 +1331,7 @@ def _build_coordination_uff_constraints(
             donor_sym = mol_template.GetAtomWithIdx(donor_atom_idx).GetSymbol()
         except Exception:
             continue
-        bl = float(_get_ml_bond_length(metal_sym, donor_sym))
+        bl = float(_pin_ml_bond_length(metal_sym, donor_sym))
         key = tuple(sorted((metal_idx, donor_atom_idx)))
         if key in seen_dist:
             continue

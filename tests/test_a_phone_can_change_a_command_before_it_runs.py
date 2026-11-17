@@ -29,6 +29,13 @@ from test_messenger_scoped_approvals import code_for, scoped  # noqa: F401
 from test_the_messenger_gateway_only_serves_the_paired_phone import Bridge, Daemon
 
 
+@pytest.fixture(autouse=True)
+def _german_phone(monkeypatch):
+    """These tests read the German phone texts (lang.DE); English is the
+    default (test_the_phone_speaks_the_persons_language)."""
+    monkeypatch.setenv("DELFIN_MESSENGER_LANG", "de")
+
+
 SHELL = {"id": "c1", "sessionId": "s1", "kind": "confirm", "tool": "bash",
          "text": "$ rm -r results", "phoneApproval": True, "action": "shell",
          "options": [{"key": "y", "label": "yes"}, {"key": "n", "label": "no"},
