@@ -627,6 +627,12 @@ def test_cli_scheduler_add_bench_is_explicit_optin(capsys, monkeypatch):
                 every_seconds=kwargs["every_seconds"],
                 workspace=kwargs.get("workspace", ""))
 
+        def take_store_note(self):
+            # The CLI reports what the write had to say about cron.json
+            # itself (a damaged file moved aside); an intact store has
+            # nothing to say.
+            return ""
+
     monkeypatch.setattr(sched_mod, "Scheduler", _FakeScheduler)
     rc = agent_cli.main([
         "scheduler", "add-bench", "--model", REAL_MODEL,
