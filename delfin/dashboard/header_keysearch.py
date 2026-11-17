@@ -30,8 +30,17 @@ def _specs() -> list[dict[str, str]]:
     return sorted(entries, key=lambda e: e["name"].lower())
 
 
-def build_key_search(max_suggestions: int = 8) -> W.DOMWidget:
-    """Build the header search box with suggestion dropdown + explanation."""
+def build_key_search(
+    max_suggestions: int = 8,
+    on_open_key=None,
+) -> W.DOMWidget:
+    """Build the header search box with suggestion dropdown + explanation.
+
+    ``on_open_key(name)`` is optional: when given, picking a suggestion
+    also switches the dashboard to the Help tab pre-filtered to that key
+    (in addition to the inline card).  The dashboard passes it when the
+    Help tab is registered; without it picking just shows the card.
+    """
     entries = _specs()
     names = [e["name"] for e in entries]
 
@@ -47,12 +56,12 @@ def build_key_search(max_suggestions: int = 8) -> W.DOMWidget:
     _overlay_css = W.HTML(
         "<style>"
         ".delfin-keysearch { position: relative; }"
-        ".delfin-keysearch-dropdown { position: absolute; top: 100%; left: 0;"
+        ".delfin-keysearch-dropdown { position: absolute; top: 100%; right: 0;"
         " width: 460px; max-height: 300px; overflow-y: auto; z-index: 10000;"
         " background: var(--jp-layout-color1, #fff);"
         " border: 1px solid #ccc; border-radius: 4px; padding: 2px;"
         " box-shadow: 0 2px 8px rgba(0,0,0,.15); }"
-        ".delfin-keysearch-card { position: absolute; top: 100%; left: 0;"
+        ".delfin-keysearch-card { position: absolute; top: 100%; right: 0;"
         " width: 500px; z-index: 10001; margin-top: 4px;"
         " background: var(--jp-layout-color1, #fff);"
         " border: 1px solid #bbb; border-radius: 6px; padding: 10px 12px;"
@@ -101,6 +110,13 @@ def build_key_search(max_suggestions: int = 8) -> W.DOMWidget:
         ))
         card.layout.display = ""
         _close()
+        if on_open_key is not None:
+            # Route to the Help tab pre-filtered to this key as well; the
+            # inline card stays open so the explanation is visible either way.
+            try:
+                on_open_key(name)
+            except Exception:
+                pass
         search.value = ""
 
     def _close_card(_b=None) -> None:

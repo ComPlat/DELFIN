@@ -1191,10 +1191,29 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     # the spacer, where its changing text cannot wrap the bar (top_bar).
     # The key search box sits left of the home chip: helpful first, status
     # second. Its build is defensive -- a failure must never break startup.
+    # Picking a key routes to the Help tab: the callback is wired lazily --
+    # the Help tab builds later in this function, so the callback closes
+    # over ctx and resolves the tab's filter state at click time.
+    def _open_key_from_header(name: str) -> None:
+        """Switch to the Help tab, pre-filtered to the picked key."""
+        try:
+            state = getattr(ctx, "_help_key_state", None)
+            if state is not None:
+                state["query"] = name
+                state["rerender"]()
+            tabs = getattr(ctx, "tabs_widget", None)
+            if tabs is not None:
+                for idx in range(len(tabs.children)):
+                    if str(getattr(tabs, "titles", ("",))[idx]) == "Help":
+                        tabs.selected_index = idx
+                        break
+        except Exception:
+            pass
+
     _key_search = None
     try:
         from delfin.dashboard.header_keysearch import build_and_register
-        _key_search = build_and_register()
+        _key_search = build_and_register(on_open_key=_open_key_from_header)
     except Exception:  # pragma: no cover - widget must not break startup
         _key_search = None
     _status_items = [home_usage_label]

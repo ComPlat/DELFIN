@@ -657,6 +657,12 @@ def create_tab(ctx: Any):
     widget = W.VBox([header, W.HBox([global_search, _search_hint]), tabs])
     widget.add_class("delfin-help")
     widget.children = (css,) + widget.children
+    # Publish the key-filter state on ctx so the header key search can
+    # route a picked key here (lazy wiring in create_dashboard).
+    try:
+        ctx._help_key_state = keys_state
+    except Exception:
+        pass
     return widget, {"help_key_state": keys_state}
 
 
