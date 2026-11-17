@@ -5154,9 +5154,24 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         if not value or not value.strip():
             _refresh_key_status('nothing entered — nothing changed')
             return
+        from delfin.agent import credentials as _cred
+        # Raised AFTER a successful write, when the previous store could
+        # not be read and was moved aside: the key IS stored, so a failure
+        # here would send the person to type it again for nothing. Looked
+        # up with getattr and defaulting to () -- an empty tuple catches
+        # nothing -- so this file does not depend on which of the two
+        # changes reaches main first.
+        _moved_aside = getattr(_cred, 'CredentialStoreUnreadable', ())
         try:
-            from delfin.agent import credentials as _cred
             _cred.set_credential(name, value)
+        except _moved_aside as exc:
+            # The message names the file, never a value, which is why it
+            # can be shown.
+            _refresh_key_status(f'{name} stored')
+            key_status.value += (
+                '<div style="color:#ef6c00; font-size:12px;">'
+                + html.escape(str(exc)) + '</div>')
+            return
         except Exception as exc:
             # The message of a credential error may not carry the value;
             # only the exception's type is shown.
