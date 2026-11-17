@@ -367,6 +367,7 @@ def prune_old(
     now: float | None = None,
     on_remove: Callable[[Path], None] | None = None,
     max_paths: int = _MAX_SWEEP_PATHS,
+    dry_run: bool = False,
 ) -> int:
     """Delete files under ``root`` last modified more than N days ago.
 
@@ -382,6 +383,13 @@ def prune_old(
     directory per report and pruning only its files would leave an
     ever-growing tree of empty shells.  Returns the number of files
     removed.  Never raises.
+
+    ``dry_run`` counts and reports through ``on_remove`` without
+    unlinking anything, so a person can be shown what a prune would
+    delete before it runs. It lives here rather than in the caller
+    because the age rule is here: a caller that listed candidates itself
+    would be a second answer to the same question, free to drift from
+    the one that does the deleting.
     """
     try:
         days = float(max_age_days)
@@ -408,12 +416,15 @@ def prune_old(
                 on_remove(p)
             except Exception:
                 pass
+        if dry_run:
+            removed += 1
+            continue
         try:
             p.unlink()
             removed += 1
         except OSError:
             pass
-    if removed and glob is None:
+    if removed and glob is None and not dry_run:
         _drop_empty_subdirs(root_path)
     return removed
 
@@ -471,6 +482,20 @@ _STATE_DIR_SOURCES: tuple[tuple[str, str, str, str | None, bool], ...] = (
      "audit.log", True),
     ("delfin.agent.failure_log", "_LOG_PATH", "keep",
      "failure_log.jsonl", True),
+    # The agent service: every turn of every session appends to a
+    # <sid>.jsonl here and nothing removed them, so this grew without
+    # bound. It was in no prune table; the only limits were in memory
+    # (RecentEvents._trim, REPLAY_BUDGET_BYTES), which bound what is
+    # replayed, not what is kept.
+    ("delfin.agent.service.eventlog", "sessions_dir", "derived",
+     "*.jsonl", False),
+    # Rotated service logs only. The ACTIVE service.log is the file the
+    # running supervisor holds open as its stdout: pruning it would
+    # delete the log of a live service, which is why the glob names the
+    # rotated copies and the rotation happens where the file is opened
+    # (launcher._rotate_service_log).
+    ("delfin.agent.service.launcher", "service_log", "derived",
+     "service.log.*", True),
 )
 
 
@@ -549,12 +574,20 @@ def run_startup_maintenance(
     prune: bool = True,
     force: bool = False,
     now: float | None = None,
+    dry_run: bool = False,
+    on_remove: Callable[[Path], None] | None = None,
 ) -> dict:
     """Repair modes and apply retention across the state tree, once.
 
     Returns ``{"repaired": n, "pruned": n, "dirs": n, "ran": bool}``.
     ``ran`` is False when a previous call in this process already did the
     work — the caller can therefore be a hot path.
+
+    ``dry_run`` reports what a prune would delete and removes nothing;
+    ``on_remove`` receives each such path. Repair still runs, because
+    fixing a file mode destroys nothing. A reachable prune has to be
+    shown before it is applied: it deletes files past retention, and a
+    person asked to approve that is owed the list.
 
     Never raises: start-up maintenance that can abort start-up is worse
     than the permissions it fixes.
@@ -588,7 +621,8 @@ def run_startup_maintenance(
                     else retention_days)
             try:
                 pruned += prune_old(path, max_age_days=days, glob=glob,
-                                    now=now)
+                                    now=now, dry_run=dry_run,
+                                    on_remove=on_remove)
             except Exception:
                 pass
         # Repair AFTER the prune: no point chmod'ing a file about to go.
