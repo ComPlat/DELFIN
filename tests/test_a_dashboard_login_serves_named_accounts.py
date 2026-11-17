@@ -27,6 +27,7 @@ clock; no server is started.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -189,3 +190,105 @@ def test_the_record_names_the_account_but_never_a_secret(tmp_path):
     detail = seen[-1][-1]
     assert NAME in detail
     assert SECRET not in detail
+
+
+# -- the identity provider --------------------------------------------------------
+
+def _provider(monkeypatch, tmp_path, entries=None, token=None):
+    from delfin.dashboard import identity as identity_mod
+
+    if entries is None:
+        entries = _entries()
+    if entries == []:
+        path = tmp_path / "accounts.json"
+        path.write_text("", encoding="utf-8")
+    else:
+        path = _write_accounts(tmp_path, entries)
+    monkeypatch.setenv(accounts_mod.ACCOUNTS_ENV, str(path))
+    provider = identity_mod.DelfinIdentityProvider(token=token or "")
+    return provider
+
+
+class _Form:
+    """The part of the login handler the provider reads."""
+
+    def __init__(self, arguments):
+        self._arguments = arguments
+        self.request = type("R", (), {"remote_ip": "127.0.0.1",
+                                      "path": "/login"})()
+        self.log = logging.getLogger("test")
+
+    def get_argument(self, name, default=""):
+        return self._arguments.get(name, default)
+
+
+def test_a_form_login_as_an_account_yields_the_account(monkeypatch, tmp_path):
+    provider = _provider(monkeypatch, tmp_path)
+    user = provider.process_login_form(
+        _Form({"account": NAME, "password": SECRET}))
+    assert user is not None
+    assert user.username == f"account:{NAME}"
+    assert user.name == NAME
+
+
+def test_a_wrong_account_passphrase_is_refused(monkeypatch, tmp_path):
+    provider = _provider(monkeypatch, tmp_path)
+    user = provider.process_login_form(
+        _Form({"account": NAME, "password": OTHER_SECRET}))
+    assert user is None
+
+
+def test_an_account_refusal_is_counted_per_account(monkeypatch, tmp_path):
+    provider = _provider(monkeypatch, tmp_path)
+    seen = []
+    provider._delfin_refused = login_session.RefusedLogins(
+        window=60.0, clock=Clock(),
+        record=lambda *a, **k: seen.append(a))
+    provider.process_login_form(
+        _Form({"account": NAME, "password": OTHER_SECRET}))
+    provider.process_login_form(
+        _Form({"account": NAME, "password": OTHER_SECRET}))
+    [(kind, tool, detail)] = seen
+    assert kind == login_session.REFUSED_KIND
+    assert NAME in detail
+    assert SECRET not in detail and OTHER_SECRET not in detail
+
+
+def test_a_token_header_can_carry_an_account_passphrase(monkeypatch, tmp_path):
+    import asyncio
+
+    provider = _provider(monkeypatch, tmp_path, token="the-single-token-x")
+
+    class _Req:
+        headers = {"Authorization": f"token {SECRET}"}
+        remote_ip = "127.0.0.1"
+        path = "/api/status"
+        arguments = {"token": SECRET}
+
+        def get_argument(self, name, default=""):
+            return self.arguments.get(name, default)
+
+    class _Handler:
+        request = _Req()
+        token = SECRET
+        log = logging.getLogger("test")
+
+        def get_argument(self, name, default=""):
+            return self.request.arguments.get(name, default)
+
+    handler = _Handler()
+    user = asyncio.get_event_loop().run_until_complete(
+        provider.get_user_token(handler))
+    assert user is not None
+    assert user.username == f"account:{NAME}"
+
+
+def test_without_accounts_the_single_token_path_is_unchanged(
+        monkeypatch, tmp_path):
+    token = "the-single-token-x" * 2
+    provider = _provider(monkeypatch, tmp_path, entries=[], token=token)
+    assert not provider._accounts()
+    user = provider.process_login_form(
+        _Form({"password": token}))
+    # jupyter-server's own answer for the shared token: an anonymous user
+    assert user is not None and not user.username.startswith("account:")
