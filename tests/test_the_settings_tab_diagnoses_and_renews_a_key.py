@@ -63,15 +63,32 @@ def test_the_key_field_is_cleared_before_the_value_is_stored():
         "otherwise leave the value in the browser")
 
 
-def test_no_path_in_the_key_handling_echoes_the_value():
+def test_the_generic_error_path_names_the_type_not_the_message():
+    """An unknown exception's text may carry the value, so only its type
+    is shown. The one exception that is shown in full is the store's own
+    `CredentialStoreUnreadable`, whose message this repository builds: it
+    names the quarantined FILE and never a value, and it is raised after
+    a successful write, so reporting a failure there would send the
+    person to type the key again for nothing."""
     src = _src()
     i = src.index("def _store_key(")
-    block = src[i:i + 1200]
-    # The error path may name the exception's TYPE, never its message: a
-    # credential error's text can carry the value.
-    assert "type(exc).__name__" in block
-    assert "str(exc)" not in block, (
-        "an exception message in the key path may carry the value")
+    block = src[i:i + 2200]
+    generic = block[block.index("except Exception as exc:"):]
+    assert "type(exc).__name__" in generic
+    assert "str(exc)" not in generic, (
+        "an unknown exception's message may carry the value")
+    quarantine = block[:block.index("except Exception as exc:")]
+    assert "CredentialStoreUnreadable" in quarantine, (
+        "the one message shown in full must be that specific type")
+    assert "getattr(" in quarantine, (
+        "looked up with getattr so this file does not depend on which "
+        "change reaches main first")
+
+
+def test_the_status_refresh_is_never_handed_the_value():
+    src = _src()
+    i = src.index("def _store_key(")
+    block = src[i:i + 2200]
     assert "value" not in block.split("_refresh_key_status")[-1], (
         "the status refresh must not be handed the value")
 
