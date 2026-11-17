@@ -92,13 +92,16 @@ def test_a_second_contact_needs_the_same_invitation_and_code(state):
     assert store.persons() == [OWNER, "anna"]
 
 
-def test_an_invitation_for_an_unknown_person_is_refused(state):
+def test_an_invitation_for_a_malformed_person_is_refused(state):
     """The head's verified contact does not authorise anything for anyone
-    else: an invitation can be issued only for a real person of the
-    account, so the head's pairing never becomes a shortcut."""
+    else: an invitation is issued only for the owner or a well-formed
+    person name (people.valid); the account-existence check happens when
+    the request is collected (people.home). The head's pairing is never a
+    format-level shortcut."""
     store.save("7")
-    with pytest.raises(store.PairingRefused):
-        store.add_invitation("41", person="ghost", request="r" * 32)
+    for bad in ("Ghost", "../anna", "-x", None):
+        with pytest.raises(store.PairingRefused):
+            store.add_invitation("41", person=bad, request="r" * 32)
 
 
 def test_the_second_person_hits_the_same_limits(state):
