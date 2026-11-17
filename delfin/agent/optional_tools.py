@@ -34,6 +34,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -77,6 +78,13 @@ class Group:
     ``modules`` are imports, ``binaries`` executables, ``dist`` the
     distribution whose version is reported. ``switch`` is the Pi's
     variable, ``install`` the line for any other host.
+
+    ``pip_packages`` is the same remedy in a form a program can run:
+    the requirement strings alone. ``install`` stays prose for a person
+    and is what the reports print; deriving a command by editing that
+    text would mean parsing a sentence, and it says ``pip`` where a
+    command has to name the interpreter the agent actually runs in.
+    Empty for a group whose remedy is not a pip install.
     """
 
     name: str
@@ -86,7 +94,21 @@ class Group:
     modules: tuple[str, ...] = ()
     binaries: tuple[str, ...] = ()
     dist: str = ""
+    pip_packages: tuple[str, ...] = ()
     _code: str = field(default="", repr=False)
+
+    def install_command(self) -> str:
+        """The remedy as a command line, or "" when there is none.
+
+        ``sys.executable -m pip``, not ``pip``: the agent's interpreter is
+        frequently not the one a bare ``pip`` on PATH installs into, and
+        installing into the wrong one leaves the check failing with the
+        package apparently present.
+        """
+        if not self.pip_packages:
+            return ""
+        return (f"{sys.executable} -m pip install "
+                + " ".join(shlex.quote(q) for q in self.pip_packages))
 
 
 _PYSCF = f"""
@@ -150,16 +172,20 @@ GROUPS: tuple[Group, ...] = (
           "(no ORCA binary exists for ARM)",
           switch="DELFIN_PI_SKIP_EXTRAS",
           install='pip install "delfin-complat[orca]"',
-          modules=("opi",), dist="orca-pi", _code=_OPI),
+          modules=("opi",), dist="orca-pi",
+          pip_packages=("delfin-complat[orca]",), _code=_OPI),
     Group("pyscf", "PySCF: HF/DFT/MP2/CC on small molecules",
           switch="DELFIN_PI_PYSCF", install="pip install pyscf",
-          modules=("pyscf",), dist="pyscf", _code=_PYSCF),
+          modules=("pyscf",), dist="pyscf",
+          pip_packages=("pyscf",), _code=_PYSCF),
     Group("openmm", "OpenMM: molecular dynamics, CPU platform",
           switch="DELFIN_PI_OPENMM", install="pip install openmm",
-          modules=("openmm",), dist="openmm", _code=_OPENMM),
+          modules=("openmm",), dist="openmm",
+          pip_packages=("openmm",), _code=_OPENMM),
     Group("torch", "torch (CPU) + MACE: ML potentials",
           switch="DELFIN_PI_TORCH", install="pip install torch mace-torch",
-          modules=("torch", "mace"), dist="torch", _code=_TORCH),
+          modules=("torch", "mace"), dist="torch",
+          pip_packages=("torch", "mace-torch"), _code=_TORCH),
     Group("xtb", "xtb, CREST, tblite, dftd4 (conda-forge builds)",
           switch="DELFIN_PI_XTB", install="python -m delfin.installer --install xtb crest",
           binaries=("xtb", "crest", "tblite", "dftd4")),
