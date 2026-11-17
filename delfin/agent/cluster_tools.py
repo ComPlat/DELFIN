@@ -335,6 +335,34 @@ def _upload_listed(conn, local: Path, files: list[Path], real: str):
         os.unlink(names)
 
 
+def _io_check_findings(job_folders: list[str]) -> list:
+    """The hpc_io_check findings over each planned job's script-ish files
+    (.sh/.bash/.py/.sub, .inp and CONTROL.txt). Pure over file text: one
+    pass per file, no walk beyond the folder itself."""
+    from delfin import hpc_io_check
+    findings = []
+    for folder in job_folders:
+        base = Path(folder)
+        if not base.is_dir():
+            continue
+        for name in sorted(os.listdir(base)):
+            path = base / name
+            if not path.is_file():
+                continue
+            if path.suffix.lower() not in (".sh", ".bash", ".py", ".sub", ".inp") \
+                    and name != "CONTROL.txt":
+                continue
+            if path.stat().st_size > 512 * 1024:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for f in hpc_io_check.check(text, env=dict(os.environ)):
+                findings.append((name, f))
+    return findings
+
+
 def submit(executor, perms, *, cluster: Any, jobs: Any) -> str:
     from delfin.agent import managed_policy
     from delfin.remote import jobs as remote_jobs
@@ -366,6 +394,24 @@ def submit(executor, perms, *, cluster: Any, jobs: Any) -> str:
         return _error("batch_refused", "the batch was not submitted, and nobody was asked: "
                       + "; ".join(batch.problems))
     folders = [str(j.folder) for j in batch.jobs]
+    # IO1: check the job's scripts for Lustre metadata load BEFORE the
+    # person is asked and anything goes to the cluster. A "refuse"
+    # finding stops the submit (the model fixes the script and submits
+    # again); "warn" findings ride along in the result. No setting turns
+    # the refusal off -- same principle as hpc_guard.
+    findings = _io_check_findings(folders)
+    refused = [f"{name}:{f.line} [{f.rule}] {f.why} instead: {f.instead}"
+               for name, f in findings if f.severity == "refuse"]
+    if refused:
+        _audit(perms, "cluster_submit", "denied", command="cluster_submit",
+               reason=f"hpc_io_check refused: {'; '.join(refused)}"[:300],
+               extra={"cluster": conn.name, "folders": folders})
+        return _error("io_check_refused",
+                      "the batch was not submitted: the job script would load the "
+                      "shared Lustre file system. " + "; ".join(refused)
+                      + " Fix the script and submit again.")
+    warned = [f"{name}:{f.line} [{f.rule}] {f.why} instead: {f.instead}"
+              for name, f in findings if f.severity == "warn"]
     said = f"submit {len(batch.jobs)} job(s) to {conn.name}: " + ", ".join(
         os.path.basename(f) for f in folders)
     args = {"cluster": conn.name, "jobs": jobs}
@@ -405,8 +451,8 @@ def submit(executor, perms, *, cluster: Any, jobs: Any) -> str:
         "core_hours": batch.core_hours})
     watched = _watch_submitted(perms, conn.name, done)
     return json.dumps({"cluster": conn.name, "submitted": _submitted(perms, done),
-        "notes": batch.notes,
-        "next": (("DELFIN's job watcher follows these jobs: when one ends, its key results "
+      "notes": batch.notes + [f"hpc_io_check warn: {w}" for w in warned],
+      "next": (("DELFIN's job watcher follows these jobs: when one ends, its key results "
                   "come back to results_to and you are told in a later turn. END your turn; "
                   "do not poll with cluster_status.") if watched else
                  "cluster_status shows the jobs; cluster_read and cluster_fetch reach their "

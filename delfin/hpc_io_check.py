@@ -48,7 +48,8 @@ def _path_is_lustre_home(env: dict | None, lustres: list[str]) -> bool:
 # metadata ops). Recursive only: `find -maxdepth 1` is a directory read.
 _WALK_CMDS = ("find", "du", "ls", "rsync", "cp")
 _WALK_FLAGS = re.compile(
-    r"(?:^|\s)-{1,2}[a-zA-Z]*(?:[Rr]|recursive|no-compress)[a-zA-Z]*(?:\s|$|=)"
+    r"(?:^|\s)-{1,2}[a-zA-Z]*(?:[Rr]|recursive|archive|no-compress)[a-zA-Z]*"
+    r"(?:\s|$|=)"
     r"|(?:(?<=^)|(?<=\s))ls\s+-[a-zA-Z]*R"
 )
 _MAXDEPTH = re.compile(r"-maxdepth\s+(\d+)")
@@ -66,8 +67,50 @@ _SCRATCH_VARS = re.compile(
     r"|(^\s*%scratch\s+/[\w./-]+)", re.M | re.I)
 
 
-def _strip_words(line: str) -> str:
-    return line
+def _strip_env_prefixes(line: str) -> str:
+    """Drop leading VAR=val assignments (LC_ALL=C, X=1): they are env
+    prefixes, not the command."""
+    while True:
+        m = re.match(r"\s*[A-Za-z_][\w.]*=(?:\"[^\"]*\"|'[^']*'|\S+)\s+(.*)",
+                     line)
+        if not m:
+            return line
+        line = m.group(1)
+
+
+def _join_continuations(text: str) -> str:
+    """Join backslash line continuations so a command and its paths sit
+    on one logical line (line numbers then follow the last continued
+    line, which is where the walk fires)."""
+    out = []
+    buf = ""
+    for line in text.splitlines():
+        buf += line
+        if buf.rstrip().endswith("\\"):
+            buf = buf.rstrip()[:-1] + " "
+            continue
+        out.append(buf)
+        buf = ""
+    if buf:
+        out.append(buf)
+    return "\n".join(out)
+
+
+def _expand_env_paths(line: str, env: dict | None) -> list[str]:
+    """Absolute paths on the line, with $HOME / ${HOME} (and quoted
+    "$HOME/...") expanded from env, and /.. resolved away."""
+    env = env or {}
+    paths = re.findall(r"(\"\$HOME[^\"]*\"|/[^\s\"';&|]+)", line)
+    out = []
+    for p in paths:
+        p = p.strip("\"")
+        home = str(env.get("HOME", ""))
+        p = p.replace("${HOME}", home).replace("$HOME", home)
+        if "/.." in p:
+            from posixpath import normpath
+            p = normpath(p)
+        out.append(p)
+    return out
 
 
 def _in_loop(lines: list[str], idx: int) -> bool:
@@ -125,7 +168,8 @@ def check(script_text: str, *, env: dict | None = None,
     home_lustre = _path_is_lustre_home(env, lustres)
     if not lustres:
         return []
-    lines = script_text.splitlines()
+    text = _join_continuations(script_text)
+    lines = text.splitlines()
     inside = _loop_lines(lines)
     findings: list[Finding] = []
 
@@ -189,27 +233,29 @@ def check(script_text: str, *, env: dict | None = None,
 
     # --- Rule: recursive tree walks over Lustre -> refuse ---------------
     # du is recursive by nature; find needs -r/--recursive or -maxdepth>1;
-    # ls needs -R; rsync -a / cp -r recurse by their flags.
+    # ls needs -R; rsync -a / cp -r recurse by their flags. Leading
+    # VAR=val words are env prefixes (LC_ALL=C du ...), stripped first.
     for i, line in enumerate(lines):
-        head = re.match(r"\s*(du|find|ls|rsync|cp)\b", line)
+        cmd = _strip_env_prefixes(line)
+        head = re.match(r"\s*(du|find|ls|rsync|cp)\b", cmd)
         if not head:
             continue
         word = head.group(1)
         recursive = (
             word == "du"
-            or (word in ("rsync", "cp") and _WALK_FLAGS.search(line))
-            or (word == "ls" and re.search(r"\s-[a-zA-Z]*R", line))
+            or (word in ("rsync", "cp") and _WALK_FLAGS.search(cmd))
+            or (word == "ls" and re.search(r"\s-[a-zA-Z]*R", cmd))
             or (word == "find"
                 and not (lambda d: d and int(d.group(1)) <= 1)(
-                    _MAXDEPTH.search(line))))
+                    _MAXDEPTH.search(cmd))))
         if not recursive:
             continue
-        depth = _MAXDEPTH.search(line)
+        depth = _MAXDEPTH.search(cmd)
         if depth and int(depth.group(1)) <= 1:
             continue
-        # The largest path on the line that is on Lustre. $TMPDIR, a
-        # relative path or the job's own run directory are fine.
-        paths = re.findall(r"(?<![\w-])(/[^\s\"';&|]+)", line)
+        # Absolute paths on the line, $HOME expanded from env; $TMPDIR,
+        # a relative path or the job's own run directory are fine.
+        paths = _expand_env_paths(cmd, env)
         if not any(_is_lustre(p, lustres) for p in paths):
             continue
         findings.append(Finding(
@@ -230,6 +276,41 @@ def check(script_text: str, *, env: dict | None = None,
                 "point the scratch at the node-local $TMPDIR "
                 "(TMPDIR=$TMPDIR, XTB_TMPDIR=$TMPDIR, %scratch $TMPDIR)"))
     return findings
+
+
+def _format(findings: list[Finding], name: str) -> str:
+    if not findings:
+        return f"{name}: no Lustre metadata-load findings."
+    out = [f"{name}: {len(findings)} finding(s):"]
+    for f in findings:
+        out.append(f"  line {f.line} [{f.severity}] {f.rule}: {f.why}")
+        out.append(f"           instead: {f.instead}")
+    return "\n".join(out)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """`python -m delfin.hpc_io_check <script>`: the same check a person
+    runs by hand. Prints the findings; exit 1 when one is a refusal."""
+    import sys
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__.strip().splitlines()[0])
+        print("usage: python -m delfin.hpc_io_check <script>")
+        return 2 if not args else 0
+    name = args[0]
+    try:
+        with open(name, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError as exc:
+        print(f"cannot read {name}: {exc}", file=sys.stderr)
+        return 2
+    findings = check(text)
+    print(_format(findings, name))
+    return 1 if any(f.severity == "refuse" for f in findings) else 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
 
 
 @dataclass(frozen=True)
