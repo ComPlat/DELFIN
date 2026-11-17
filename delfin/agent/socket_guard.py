@@ -567,8 +567,11 @@ class Supervisor:
         return beneath(self.allowed)
 
     # -- plumbing -----------------------------------------------------------
-    def _send(self, notif_id: int, val: int, err: int) -> None:
-        resp = struct.pack("<QqiI", notif_id, val, err, 0)
+    def _send(self, notif_id: int, val: int, err: int, flags: int = 0) -> None:
+        # struct seccomp_notif_resp: id, val, error, flags. CONTINUE goes in
+        # flags with val and error both 0 -- in the error field it made the
+        # kernel answer the command's socket() with EINVAL (live run 17.11.).
+        resp = struct.pack("<QqiI", notif_id, val, err, flags)
         buf = ctypes.create_string_buffer(resp, 24)
         _libc.ioctl(self.listener, ctypes.c_ulong(_NOTIF_SEND), buf)
 
@@ -614,7 +617,7 @@ class Supervisor:
 
         The escape is judged where the address appears: sendto/
         sendmsg/sendmmsg with a destination go to _datagram_send."""
-        self._send(notif_id, 0, _NOTIF_FLAG_CONTINUE)
+        self._send(notif_id, 0, 0, _NOTIF_FLAG_CONTINUE)
 
     def _datagram_send(self, notif_id: int, pid: int, args: tuple) -> None:
         """sendto() with a destination address: the destination is judged
@@ -649,7 +652,7 @@ class Supervisor:
                 raise ValueError(f"address family {family}")
             if owns_udp(ip, port, self.own_listeners,
                         self.root_pid, include_root=True):
-                self._send(notif_id, 0, _NOTIF_FLAG_CONTINUE)
+                self._send(notif_id, 0, 0, _NOTIF_FLAG_CONTINUE)
                 return
             self.refused.append(f"send {ip}:{port}")
             self._send(notif_id, -1, -errno.EACCES)
