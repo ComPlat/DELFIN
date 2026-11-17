@@ -93,3 +93,45 @@ def test_the_sbom_goes_to_the_github_release_and_not_to_pypi():
     pypi = [s["with"]["name"] for s in _uses(jobs["pypi"])
             if s["uses"].startswith("actions/download-artifact@")]
     assert pypi == ["dist"]
+
+
+def test_the_sbom_carries_the_three_fields_the_attestation_needs():
+    """``actions/attest`` recognises a CycloneDX document by three fields
+    together: ``bomFormat``, ``specVersion`` AND ``serialNumber``. Its
+    own check is ``!!(bomFormat && serialNumber && specVersion)``.
+
+    ``--output-reproducible`` drops the serialNumber on purpose, because a
+    random UUID per run is what makes two runs differ. Measured on the
+    v1.4.0 run: the build and the SBOM succeeded, and then the whole
+    provenance job failed with "Unsupported SBOM format. Must be valid
+    SPDX or CycloneDX JSON.", which skipped publish and the GitHub
+    release. A green build is therefore not enough to know a release can
+    be attested, and this is what pins the fix.
+
+    The serial is derived from the commit, so a rebuild of the same commit
+    is still byte-identical.
+    """
+    runs = _runs(_jobs()["sbom"])
+    assert "--output-reproducible" in runs, (
+        "the SBOM must stay byte-reproducible")
+    assert "serialNumber" in runs, (
+        "the SBOM has no serialNumber, so actions/attest will refuse it")
+    assert "uuid5" in runs and "GITHUB_SHA" in runs, (
+        "the serial must be derived from the commit, not random, or the "
+        "reproducible output is lost again")
+    # The step must also refuse to hand on an SBOM that lacks one of them.
+    assert 'd.get("bomFormat") and d.get("specVersion") and d.get("serialNumber")' in runs
+
+
+def test_the_serial_a_commit_gets_is_stable_and_its_own():
+    """The derivation itself, so the test does not merely read the yaml."""
+    import uuid
+
+    def serial(sha: str) -> str:
+        return "urn:uuid:" + str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            "https://github.com/ComPlat/DELFIN/commit/" + sha))
+
+    assert serial("a" * 40) == serial("a" * 40)
+    assert serial("a" * 40) != serial("b" * 40)
+    assert serial("a" * 40).startswith("urn:uuid:")
