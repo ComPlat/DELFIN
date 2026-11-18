@@ -42,6 +42,23 @@ a sphere, without external libraries or requests. It stops rendering offscreen,
 in hidden tabs and when motion is paused; reduced-motion preferences are honoured.
 A static map remains visible if JavaScript or canvas is unavailable.
 
+## Agent framework guide
+
+`framework.html` is a detailed, source-linked guide to the agent runtime,
+task execution, memory, self-validation, improvement paths, experiment design
+and permission boundaries. It shares the site's visual identity through
+`styles.css` and its page-specific `framework.css`. The navigation and the
+framework introduction on the landing page link to it. All content, navigation,
+tables and expandable explanations work without JavaScript.
+
+The guide was checked against source revision
+`de880cbb9eda4085ff5d6665c6818cbba4c7d75b` on 18 November 2026. Its implementation
+links are pinned to that revision. When updating the guide, recheck the claims
+and source links together, including defaults, backend-dependent coverage,
+human adoption steps and the distinction between replay and live evaluation.
+The illustrative candidate is not a claimed benchmark result. The existing
+Pages workflow includes the new page and stylesheet automatically.
+
 ### Add videos
 
 Add an entry to `videos` in `content.js`. The section appears automatically when

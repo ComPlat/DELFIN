@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#10283f">
+  <title>Inside the agent framework — DELFIN</title>
+  <meta name="description" content="How DELFIN agents use tools, preserve context, verify their work and turn observed failures into reviewed, measured improvements.">
+  <meta property="og:title" content="Inside the agent framework — DELFIN">
+  <meta property="og:description" content="Architecture, memory, self-validation and evidence-driven improvement. A source-linked guide to the DELFIN agent.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="assets/delfin.png" type="image/png">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="framework.css">
+</head>
+<body class="framework-page">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="header">
+    <a href="index.html" class="brand" aria-label="DELFIN home"><img src="assets/delfin.png" width="38" height="38" alt=""><span>DELFIN</span></a>
+    <nav aria-label="Main navigation"><a href="index.html#science">The science</a><a href="#architecture">Architecture</a><a href="#validation">Validation</a><a href="#improvement">Improvement</a></nav>
+    <a class="nav-cta" href="index.html">Back to DELFIN <span aria-hidden="true">↗</span></a>
+  </header>
+  <main id="main">
+    <section class="framework-hero section-shell" aria-labelledby="framework-title">
+      <div>
+        <p class="eyebrow">ENGINEERING NOTES / THE DELFIN AGENT</p>
+        <h1 id="framework-title">Inside the<br><span>agent framework.</span></h1>
+        <p class="framework-lead">How a question becomes a sequence of actions, how those actions are checked, and how experience becomes a reviewed improvement.</p>
+        <div class="actions"><a class="button primary" href="#architecture">Explore the architecture <span aria-hidden="true">↓</span></a><a class="text-link" href="#improvement">Follow the improvement loop ↗</a></div>
+      </div>
+      <div class="framework-principle">
+        <p class="eyebrow">THE WORKING CYCLE</p>
+        <ol><li><span>01</span><b>Understand</b><small>Goal, context, constraints</small></li><li><span>02</span><b>Act</b><small>Tools within a permission boundary</small></li><li><span>03</span><b>Verify</b><small>Observed results and evidence</small></li><li><span>04</span><b>Improve</b><small>Measured changes, human review</small></li></ol>
+        <p>Self-improvement here means improving the harness, procedures and retained knowledge around a model. These mechanisms do not train the model’s weights.</p>
+      </div>
+    </section>
+    <div class="framework-meta section-shell"><span>A guide to the implemented mechanisms</span><a href="https://github.com/ComPlat/DELFIN/tree/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent">Source snapshot · 18 November 2026 · de880cbb9 ↗</a></div>
+    <div class="framework-layout section-shell">
+      <aside class="framework-contents">
+        <nav aria-label="On this page">
+          <p class="eyebrow">ON THIS PAGE</p>
+          <a href="#architecture">01 / Architecture</a><a href="#execution">02 / A task, end to end</a><a href="#memory">03 / Context &amp; memory</a><a href="#validation">04 / Self-validation</a><a href="#improvement">05 / Self-improvement</a><a href="#measurement">06 / Measuring a change</a><a href="#boundaries">07 / Control &amp; limits</a><a href="#sources">08 / Explore the source</a>
+        </nav>
+      </aside>
+      <div class="framework-article">
+        <section id="architecture" class="framework-section" aria-labelledby="architecture-title">
+          <p class="eyebrow">01 / THE BUILDING BLOCKS</p>
+          <h2 id="architecture-title">A model inside<br><span>a working system.</span></h2>
+          <p>The language model proposes what to do next. DELFIN supplies the surrounding <strong>harness</strong>: the conversation loop, prompts, context, tool interfaces, permissions, execution records and checks. The chemistry engines remain separate programs; their outputs supply evidence for the agent’s conclusions.</p>
+          <figure class="framework-architecture">
+            <div class="architecture-user"><b>The person</b><span>Goal · scope · decisions · approvals</span></div>
+            <div class="architecture-arrow" aria-hidden="true">↓</div>
+            <div class="architecture-row"><div><b>Session engine</b><span>Messages, task state, continuation</span></div><div><b>Context &amp; model backend</b><span>Prompts, memory, skills, model calls</span></div></div>
+            <div class="architecture-arrow" aria-hidden="true">↓ <span>proposed tool call</span></div>
+            <div class="architecture-gate"><b>Permission gate &amp; host isolation</b><span>Allow · ask · refuse, before execution</span></div>
+            <div class="architecture-arrow" aria-hidden="true">↓</div>
+            <div class="architecture-row"><div><b>Tools &amp; delegated work</b><span>Files, code, documents, chemistry, jobs</span></div><div><b>Evidence &amp; checks</b><span>Tool results, tests, output parsers, claims</span></div></div>
+            <div class="architecture-return">Results feed back into the next model round. The final answer is checked against observed work.</div>
+            <figcaption>Conceptual view of the execution path. Context assembly and feedback happen repeatedly, rather than as a single one-way pipeline.</figcaption>
+          </figure>
+          <div class="framework-pair">
+            <article><h3>One session, several entry points</h3><p>The terminal and dashboard expose agent sessions. The engine manages role prompts, history and task state; backend adapters handle model communication and tool-call loops. Anthropic, OpenAI, KIT and local OpenAI-compatible routes are represented in the client layer. Capabilities and enforcement details depend on the selected backend.</p></article>
+            <article><h3>A relevant tool surface</h3><p>Tool groups are advertised according to workspace context and configuration. Chemistry and document tools can be offered where relevant, keeping unrelated schemas out of each request. Advertising a tool and authorising its execution are separate decisions: hiding a schema does not replace the execution gate.</p></article>
+          </div>
+          <details class="framework-detail"><summary>Where subagents and swarms fit</summary><div><p>A subagent has its own message history, budget and tool surface. Presets include exploration, planning, code review and general work. Permissions derive from the parent; inherited sandbox and deny rules remain in place. The parent receives a report, and report-verification code compares supported claims with recorded actions.</p><p>Swarm coordination adds multiple sessions, workspaces, messages and status events. Its lead tools wrap the same service operations used by the CLI and dashboard. In the documented lead contract, state-changing coordination actions require the person’s confirmation. Separate contexts reduce interference; the parent still has to assess and integrate the results.</p></div></details>
+          <p class="framework-source">Read the implementation: <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent/engine.py">session engine</a>, <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent/api_client.py">backend and execution layer</a>, <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent/toolsets.py">tool groups</a>, <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent/subagents.py">subagents</a> and <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent/swarm/lead.py">swarm lead</a>.</p>
+        </section>
+
+        <section id="execution" class="framework-section" aria-labelledby="execution-title">
+          <p class="eyebrow">02 / FROM REQUEST TO EVIDENCE</p>
+          <h2 id="execution-title">What happens<br><span>during a task?</span></h2>
+          <p>A chemistry request and a code change use different tools, but share the same basic discipline: establish the goal, inspect the relevant material, execute within scope, and check the outcome.</p>
+          <ol class="framework-steps">
+            <li><h3>Establish the task and working boundary</h3><p>Identify the workspace, requested deliverable and constraints. Project instructions, session state and available tools provide the working context. A saved note is background information; it does not grant new permission.</p></li>
+            <li><h3>Read before choosing an action</h3><p>Inspect source files, documentation, calculation folders or earlier evidence. A chemistry workflow should use DELFIN’s existing tools and templates where appropriate, preserving their settings and provenance.</p></li>
+            <li><h3>Propose a bounded next step</h3><p>The model requests a tool call. Before execution, the gate evaluates the action, target paths and permission rules. A request may proceed, ask the person, or be refused. A model-generated plan does not authorise itself.</p></li>
+            <li><h3>Execute and retain what actually happened</h3><p>Tools return outputs, errors and execution status. Calculation evidence can be collected from CONTROL settings, program inputs, program outputs and submission records. These records are distinct from an agent’s narrative about the run.</p></li>
+            <li><h3>Check, then recover if needed</h3><p>For code, use checks discovered from the project. For a calculation, inspect completion and scientific warnings. A failure supplies information for the next step; repairing a job or changing a method remains subject to the active permissions and the scientific question.</p></li>
+            <li><h3>Report the result and its verification limits</h3><p>The answer should name what was produced, what was measured and what remains unresolved. Supported claim checks can flag statements that outrun the recorded evidence. Useful experience may later enter a memory or a reviewed skill proposal.</p></li>
+          </ol>
+          <p class="framework-source">Evidence paths: <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent/run_evidence.py">calculation records</a>, <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent/verify_recipe.py">project-derived verification recipes</a> and <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent/turn_verification.py">turn verification</a>.</p>
+        </section>
+
+        <section id="memory" class="framework-section" aria-labelledby="memory-title">
+          <p class="eyebrow">03 / CONTINUITY WITHOUT AN UNBOUNDED PROMPT</p>
+          <h2 id="memory-title">Remember the useful.<br><span>Retrieve the relevant.</span></h2>
+          <p>Context is finite. DELFIN separates current working state from durable facts, reusable procedures and past-session records. These carriers differ in when they are written and how they return to a model request.</p>
+          <div class="framework-table-wrap" role="region" aria-label="Memory mechanisms" tabindex="0"><table class="framework-table"><caption>Memory by function</caption><thead><tr><th scope="col">Carrier</th><th scope="col">What it holds</th><th scope="col">How it is used</th></tr></thead><tbody>
+            <tr><th scope="row">Working context</th><td>Recent messages, active task state, open facts and tool outcomes.</td><td>Used during the session. Compaction reduces older material while retaining recent rounds and important state.</td></tr>
+            <tr><th scope="row">Project instructions</th><td>Shared conventions in DELFIN.MD, DELFIN.md or AGENTS.md.</td><td>Loaded into session and subagent context, within the loader’s size limits.</td></tr>
+            <tr><th scope="row">Typed facts</th><td>Self-contained project, feedback, user or reference notes.</td><td>Relevant notes are retrieved with keyword-based BM25 ranking. A stored fact is not guaranteed to match a future query.</td></tr>
+            <tr><th scope="row">Skills</th><td>Reusable procedures: how to perform a particular kind of work.</td><td>Loaded on invocation. The passive skill listing is different from loading the full procedure.</td></tr>
+            <tr><th scope="row">Episodes &amp; session search</th><td>Compact session conclusions and an index of archived conversations.</td><td>Relevant episodes can prime a resumed project; full-text session search retrieves indexed history on demand.</td></tr>
+          </tbody></table></div>
+          <div class="framework-pair">
+            <article><h3>Scope is a second dimension</h3><p>The cross-session memory design distinguishes session, project, shipped knowledge and user scope. Its level-composition path labels the source and favours narrower context over repeated wider context. This is a recall rule, separate from the permission system.</p></article>
+            <article><h3>Compaction preserves structure</h3><p>In-turn compaction works on whole tool-call rounds, keeping call/result pairs together. It preserves the session prefix and recent rounds, and summarises older outcomes, touched files and refusals. It is a bounded representation of history, so exact late recall still needs measurement.</p></article>
+          </div>
+          <details class="framework-detail"><summary>How a lesson becomes shared knowledge</summary><div><p>Shipping a distilled lesson into the knowledge pack requires followable evidence, privacy checks, instruction checks, a valid entry template and duplicate handling. Contradictory entries are refused rather than silently replacing earlier knowledge. Shared lessons are reviewed in PRs.</p><p>Memory curation proposes merges and retirement of stale notes; retirement moves records aside. Agent-written notes are checked for instruction-channel content and recalled inside an untrusted-data boundary. A useful memory must remain evidence, rather than becoming a standing approval.</p></div></details>
+          <p class="framework-source">Design and limits: <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/docs/MEMORY_LAYERS.md">memory mechanisms</a>, <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/docs/agent_memory.md">memory scopes and shipping gates</a> and <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent/in_turn_compaction.py">in-turn compaction</a>.</p>
+        </section>
+
+        <section id="validation" class="framework-section" aria-labelledby="validation-title">
+          <p class="eyebrow">04 / SELF-VALIDATION AT DIFFERENT LEVELS</p>
+          <h2 id="validation-title">Check the work.<br><span>Then check the claim.</span></h2>
+          <p>“The command ran”, “the test passed”, “the calculation is usable” and “the answer is supported” are different conclusions. DELFIN has separate mechanisms for these questions. Their coverage depends on the tool route, available records and configuration.</p>
+          <div class="framework-checks">
+            <details class="framework-detail" open><summary><span class="framework-check-label">01 / EXECUTION</span>Did the observed work support completion?</summary><div><p>The turn-verification account reads tool calls and results: edits, program runs, tests, checks and outcomes. The live turn loop and benchmark process metrics share this event accounting. This lets supported completion and test-claim checks compare the answer with what was actually observed.</p><p>Verification recipes discover check commands from project files and CI; discovering a recipe does not run it. Evidence-freshness checks associate test results with a worktree state, so an older green run is not silently treated as verification of changed code. The freshness fingerprint is a practical state check, not a cryptographic proof of all file contents.</p><p class="framework-check-limit">A green command only establishes what that command checked. Missing execution evidence remains missing evidence.</p></div></details>
+            <details class="framework-detail"><summary><span class="framework-check-label">02 / SCIENTIFIC OUTPUT</span>Did the calculation finish in a usable state?</summary><div><p>The read-only ORCA result critic checks normal termination, SCF convergence, geometry convergence, imaginary frequencies, transition-state expectations and spin contamination. A normally terminated calculation can still carry a warning or an error relevant to the scientific interpretation.</p><p>For example, an optimised structure without a frequency calculation is not confirmed as a minimum by that optimisation alone. The critic reports the issue; it does not edit the calculation or weaken convergence to obtain a green status.</p><p class="framework-check-limit">These diagnostics detect specified failure modes. They do not establish that the chosen method, molecular model or physical assumptions answer the research question.</p></div></details>
+            <details class="framework-detail"><summary><span class="framework-check-label">03 / ANSWER</span>Can a reported result be traced to evidence?</summary><div><p>The scientific claim checker scans supported numerical values with units against evidence excerpts. It checks for missing provenance, missing level-of-theory information and omission of known result-critic warnings. Values explicitly marked as estimates are handled differently from reported calculations.</p><p>Additional verification guards address supported ORCA keyword claims against extracted manual ground truth, source-grounded code claims and other recognised inconsistencies. The engine can surface caveats or correction feedback rather than leaving an unsupported statement unqualified.</p><p class="framework-check-limit">These are structured and pattern-based checks with defined coverage. A numerically matching value alone does not prove an entire argument correct.</p></div></details>
+            <details class="framework-detail"><summary><span class="framework-check-label">04 / EVALUATION</span>Does the agent satisfy an independent task?</summary><div><p>Benchmark tasks define prompts, expected and forbidden signals, optional numerical values, acceptance checks and budgets. The runner records a trajectory; scoring is computed from recorded evidence and task criteria. Method metrics also examine evidence reading, claim checking, scope and honest reporting of verification limits.</p><p>Workflow evaluation can layer trajectory grading, run-evidence checks and answer-claim checks. The nightly path distinguishes a failed attempt from an unmeasured attempt, such as an engine that never started. An unmeasured run is excluded from quality scores and named in the report.</p><p class="framework-check-limit">A benchmark measures its task population and rubric. It is not a blanket certificate for every workflow or model.</p></div></details>
+          </div>
+          <p>The change-scoped <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent/test_honesty.py">test-honesty scanner</a> asks another question: do the submitted tests measure the new behaviour? It can flag patterns such as candidate switches not exercised by the tests in the change, or tests tied to a builder’s temporary copy. Its findings are scoped to the supplied change records.</p>
+          <p class="framework-source">Check implementations: <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent/evidence_freshness.py">evidence freshness</a>, <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent/result_critic.py">result critic</a>, <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent/result_claims.py">scientific claims</a>, <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent/verify_guard.py">verification guards</a> and <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent/benchmark.py">benchmark scoring</a>.</p>
+        </section>
+
+        <section id="improvement" class="framework-section" aria-labelledby="improvement-title">
+          <p class="eyebrow">05 / HOW EXPERIENCE CHANGES THE SYSTEM</p>
+          <h2 id="improvement-title">Observe. Propose.<br><span>Measure. Review.</span></h2>
+          <p>DELFIN implements several complementary improvement paths. An observed failure can become a test case; a demonstrated procedure can become a skill proposal; a harness change can become a controlled comparison. Each path has its own entry conditions and adoption step.</p>
+          <div class="framework-learning-grid">
+            <article><span class="framework-tag">OUTCOMES → TASKS</span><h3>Make recurring failures reproducible</h3><p>The evaluation loop groups recorded failures by task class, error type and mode. Recurring patterns generate draft benchmark tasks and a report. Maintainers fill in the expected behaviour before those drafts become an evaluation instrument.</p><p>Default outcome mining and report generation are model-free file analytics. A live benchmark is a separate, cost-bearing run; the default evaluation pass does not launch it.</p></article>
+            <article><span class="framework-tag">EVIDENCE → SKILLS</span><h3>Retain a demonstrated procedure</h3><p>Session-end learning can propose a reusable skill when a finished session has suitable evidence, such as observed tests, a verified job or a verification recipe. The proposal is checked and stored outside the active skill discovery path.</p><p>Only human acceptance activates it. Missing or failing safety checks block the proposal. Proposal generation and adoption are distinct operations.</p></article>
+            <article><span class="framework-tag">CONTRAST → HARNESS EDIT</span><h3>Improve guidance under matched conditions</h3><p>The harness-improvement round targets a weak task family and evaluates candidate guidance changes using matched tasks, seeds and model conditions. Candidate edits are restricted to allowed skill or tool-guidance text; protected paths, code and knowledge-pack edits are refused by this mechanism.</p><p>The round produces observations, candidate verdicts and evidence-backed lessons. It applies no edit automatically. Adoption is a reviewed PR with a separate holdout check: the target family should improve without another family falling.</p></article>
+          </div>
+          <div class="framework-table-wrap" role="region" aria-label="Improvement activation and cost" tabindex="0"><table class="framework-table"><caption>Activation and cost are explicit</caption><thead><tr><th scope="col">Mechanism</th><th scope="col">When it runs</th><th scope="col">What adoption requires</th></tr></thead><tbody>
+            <tr><th scope="row">Outcome analysis</th><td>The evaluation entry point is invoked or scheduled. Its enabled setting defaults on; its default analytics use no model calls.</td><td>Draft tasks need reviewed criteria. Live evaluation is a separate run.</td></tr>
+            <tr><th scope="row">Session skill learning</th><td>The session-end hook is enabled by default. Eligible, evidence-bearing sessions can trigger a model-assisted draft.</td><td>Safety checks and human acceptance before activation.</td></tr>
+            <tr><th scope="row">Harness comparison</th><td>An explicit comparison round, with stated estimated cost and a budget gate. Dry runs use recorded fixtures.</td><td>Measured contrast, separate holdout evaluation and a human-reviewed PR.</td></tr>
+          </tbody></table></div>
+          <details class="framework-detail"><summary>Bounded work loops are another mechanism</summary><div><p>A reusable loop file declares a goal, steps, trigger, check, optional metric, permitted change scope, protected measurement files and budgets. The user confirms the exact definition before it runs. An agent may propose the loop but cannot confirm it through its own tool calls.</p><p>The controller supports limits on iterations, wall time and tokens, with stop conditions such as plateau or repeated failures. Measurement files and the check itself are protected against being rewritten into a passing condition. This controls repeated work; it does not turn a configured metric into independent scientific truth.</p></div></details>
+          <p class="framework-source">Improvement paths: <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent/eval_loop.py">outcome evaluation</a>, <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent/skill_learning.py">session learning</a>, <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent/skill_proposals.py">proposal acceptance</a>, <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent/harness_loop.py">harness comparison</a> and <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent/loops.py">bounded loop definitions</a>.</p>
+        </section>
+
+        <section id="measurement" class="framework-section" aria-labelledby="measurement-title">
+          <p class="eyebrow">06 / THE MEASURE MUST STAY FIXED</p>
+          <h2 id="measurement-title">What would count<br><span>as an improvement?</span></h2>
+          <p>A plausible explanation is a hypothesis. A defensible comparison also needs a known population, a stable instrument, actual exposure to the candidate change and an honest treatment of noise. DELFIN provides experiment records and paired-comparison utilities for this discipline.</p>
+          <ol class="framework-steps framework-measure-steps">
+            <li><h3>State the expectation before measuring</h3><p>The experiment API records a hypothesis, reason chain, switch, expected effect and interpretation before accepting measurements. Its lifecycle makes pre-registration a condition of recording.</p></li>
+            <li><h3>Prove the candidate is the change being tested</h3><p>The switch-based experiment protocol requires a default-off candidate. Switch-off output must be byte-identical to baseline. A reach check requires the switch to be read and to affect exactly the declared target cases; running a no-op is not evidence for the change.</p></li>
+            <li><h3>Keep population and instrument comparable</h3><p>Instrument stamps cover declared code, judge, tools and relevant environment. Paired comparisons additionally inspect item identities, duplicates, provenance and the declared change axis. Differences outside that axis, unknown defaults or inactive switches can prevent a conclusion.</p></li>
+            <li><h3>Inspect regressions and run-to-run variation</h3><p>Use absolute counts and per-case outcomes. The experiment noise gate uses benchmark statistics and requires blocker classification. The separate paired-comparison utility uses a conservative never-worse rule: an individual regression can block it regardless of aggregate significance. These are different checks, not one universal score.</p></li>
+            <li><h3>Evaluate on held-out tasks within budget</h3><p>The nightly holdout path requires a readable external seed file and does not disclose its value in the report. Practice runs use a public seed. Its accounting checks estimated core-hour spend before starting each instance; an unavailable run is reported as unmeasured.</p></li>
+            <li><h3>Hand over the evidence for a human decision</h3><p>The experiment lifecycle proceeds from verdict to human review, recorded approval and landing. The paired comparator’s strongest result is “needs human check”, not permission to land. Broader code changes still follow their own repository review and verification process.</p></li>
+          </ol>
+          <div class="framework-example"><p class="eyebrow">ILLUSTRATIVE CANDIDATE / NOT A MEASURED RESULT</p><h3>A clearer instruction for reading an ORCA output</h3><p><b>Hypothesis:</b> a guidance change makes an agent inspect convergence before reporting an energy. Compare baseline and candidate on the same task instances and model, verify that the new guidance is reached, and inspect both scientific warnings and unrelated task families. If the candidate only changes wording, or a regression appears elsewhere, that matters to the verdict.</p><p>This page describes mechanisms and an example hypothesis. It does not claim a benchmark gain from this website change.</p></div>
+          <details class="framework-detail"><summary>Long sessions need their own evaluation</summary><div><p>The long-horizon benchmark defines tasks with planted facts, early decisions, refusals, restarts and goal-focus requirements. Metrics examine late recall, constraints still honoured, repeated work, drift, compactions, cost and time. Replay mode exercises the record and metric pipeline deterministically; operator-run live sessions evaluate actual model behaviour.</p><p>A replay passing is not a measured live-model gain. Reports need the task, model, method and source revision to make comparisons interpretable.</p></div></details>
+          <p class="framework-source">Measurement contracts: <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/docs/agent_experiments.md">experiment discipline</a>, <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent/paired_compare.py">paired comparisons</a>, <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/docs/benchmark_nightly.md">nightly holdout and budgets</a> and <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/docs/LONG_HORIZON_BENCH.md">long-horizon evaluation</a>.</p>
+        </section>
+
+        <section id="boundaries" class="framework-section" aria-labelledby="boundaries-title">
+          <p class="eyebrow">07 / CONTROL IS PART OF THE ARCHITECTURE</p>
+          <h2 id="boundaries-title">Autonomy within<br><span>an explicit boundary.</span></h2>
+          <p>Permission modes, path and command rules, protected files, host isolation and network controls act at different layers. The gate evaluates proposed actions before execution. OS-level confinement depends on the host; the documented threat model distinguishes these guarantees rather than treating a prompt instruction as a sandbox.</p>
+          <div class="framework-pair">
+            <article><h3>Protect the decision channel</h3><p>An agent cannot approve its own pending request. The permission system, confirmation routes, safety settings and shared knowledge have protected write paths. Recalled memories, fetched pages, tool results and delegate reports are treated as data with provenance, rather than as new authority.</p></article>
+            <article><h3>Keep claims proportional to coverage</h3><p>Backend routes differ in the evidence available to runtime guards. Keyword retrieval can miss relevant memories; parser and claim checks cover recognised cases; benchmarks cover their declared tasks. The model provider also receives the context supplied to it. These limits belong in the engineering model.</p></article>
+          </div>
+          <div class="framework-command"><h3>Inspect the boundary and the evaluation instrument</h3><p>From an installed DELFIN environment, these commands inspect configuration or perform deterministic checks. The command explanation does not execute the proposed command, and the optimisation check does not run a live model benchmark.</p><pre><code>delfin-agent capabilities
+delfin-agent gate explain -- python analysis.py
+python -m delfin.agent.optimize_check --strict</code></pre><p>The optimisation preflight checks task integrity, manual-backed ground truth and required role prompts. Passing it is a precondition check, not a performance measurement.</p></div>
+          <p class="framework-source">Full scope and host-specific limits: <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/docs/SECURITY_MODEL.md">security model</a>. Instrument preflight: <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent/optimize_check.py">optimisation checks</a>.</p>
+        </section>
+
+        <section id="sources" class="framework-section framework-source-index" aria-labelledby="sources-title">
+          <p class="eyebrow">08 / FOLLOW THE MECHANISMS INTO THE CODE</p>
+          <h2 id="sources-title">Built to be<br><span>looked into.</span></h2>
+          <p>The links in each chapter point to the source snapshot used for this guide. They distinguish implementation contracts from proposed outcomes; defaults and integrations can evolve with later releases.</p>
+          <div class="framework-source-grid">
+            <a href="https://github.com/ComPlat/DELFIN/tree/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent"><span>RUNTIME</span><h3>Explore the agent modules ↗</h3><p>Engine, backends, tools, memory and coordination.</p></a>
+            <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent/experiment.py"><span>EXPERIMENTS</span><h3>Inspect the adoption lifecycle ↗</h3><p>Pre-registration, evidence, verdicts and human approval.</p></a>
+            <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent/method_metric.py"><span>EVALUATION</span><h3>Read the method metrics ↗</h3><p>Evidence reading, checks, honesty, scope and task outcome.</p></a>
+            <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent/pre_pr_check.py"><span>HANDOVER</span><h3>Inspect the pre-PR check ↗</h3><p>Changed files, relevant test selection and review blockers.</p></a>
+          </div>
+          <a class="text-link" href="index.html#stack">Return to the chemistry stack <span aria-hidden="true">↗</span></a>
+        </section>
+      </div>
+    </div>
+  </main>
+  <footer class="section-shell"><div class="footer-top"><a href="index.html" class="brand"><img src="assets/delfin.png" width="34" height="34" alt=""><span>DELFIN</span></a><p>For curious minds.<br>For a living planet.</p><div><a href="index.html">DELFIN home ↗</a><a href="https://github.com/ComPlat/DELFIN">GitHub ↗</a><a href="https://github.com/ComPlat/DELFIN/blob/main/docs/USER_MANUAL.md">User manual ↗</a></div></div><div class="footer-bottom"><span>Developed at KIT.</span><span>Stay in the Animal Loop. <span aria-hidden="true">↺</span></span></div></footer>
+</body>
+</html>
