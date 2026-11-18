@@ -26762,6 +26762,14 @@ class _DocToolExecutor:
                             "fire_count": e.fire_count,
                             "prompt": e.prompt[:120],
                             "reason": e.reason,
+                            # A stopped entry read exactly like one that
+                            # was simply not due yet: the rows carried
+                            # next_fire_at and nothing about the disable.
+                            # The reason travels with the flag, because
+                            # "disabled" alone sends the reader looking
+                            # for the why in the file.
+                            "disabled": bool(e.disabled),
+                            "disabled_reason": e.disabled_reason,
                         }
                         for e in entries
                     ],
