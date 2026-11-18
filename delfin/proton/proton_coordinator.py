@@ -652,6 +652,21 @@ def _run_for_donor(args, donor_key, *, xyz_in_abs, charge, multiplicity,
                           broken_sym=str(args.get("broken_sym", "") or ""))
     plot_scan_result(os.path.join("relaxed_surface_scan", "scan.relaxscanact.dat"))
 
+    # Fragment reference: split the scan-end frame into [M-H] + donor
+    # product, write the two OPT inputs and (when their outputs exist)
+    # evaluate the reaction energy -> fragment_reference/reactions.json.
+    from delfin.proton.fragments import run_fragment_reference
+    run_fragment_reference(
+        combined_path=os.path.join(
+            "relaxed_surface_scan", "scan_end.xyz")
+        if os.path.exists(os.path.join("relaxed_surface_scan", "scan_end.xyz"))
+        else "complex_with_donor.xyz",
+        complex_n_atoms=len(complex_atoms),
+        donor_h_global=donor_h_global,
+        bookkeeping=bk,
+        keywords=scan_keywords,
+        PAL=PAL, maxcore=maxcore)
+
     build_control(args, donor_key, control_path=control_path,
                   outdir=os.getcwd())
 
