@@ -14416,6 +14416,9 @@ _PYTEST_FAILED_LINE_RE = re.compile(
     r"^(?:FAILED|ERROR)\s+([\w./\\-]+\.py)", re.MULTILINE)
 
 
+from . import test_loop_guard as _tlg  # g1: degenerate-TEST-loop guard
+
+
 def _parse_test_counts(output: str) -> tuple[int, int]:
     """(passed, failed+errors) parsed from pytest/unittest console output.
     (0, 0) when nothing matched — combine with the exit code."""
@@ -14895,6 +14898,10 @@ def _observe_test_evidence(
         evidence.append({
             "tool": "run_tests", "command": target, "exit_code": exit_code,
             "status": run_status, "passed": int(summary.get("passed", 0) or 0),
+            # g1: the canonical same-failure signature (failing
+            # node set + first message), from the already-parsed
+            # "failures" list.
+            "test_sig": _tlg.result_signature(data),
             "failed": failed, "ts": time.time(),
         })
         if failed or run_status in ("failed", "error"):
@@ -26758,6 +26765,14 @@ class _DocToolExecutor:
                             "fire_count": e.fire_count,
                             "prompt": e.prompt[:120],
                             "reason": e.reason,
+                            # A stopped entry read exactly like one that
+                            # was simply not due yet: the rows carried
+                            # next_fire_at and nothing about the disable.
+                            # The reason travels with the flag, because
+                            # "disabled" alone sends the reader looking
+                            # for the why in the file.
+                            "disabled": bool(e.disabled),
+                            "disabled_reason": e.disabled_reason,
                         }
                         for e in entries
                     ],
@@ -33382,6 +33397,10 @@ class OpenAIClient(_BaseClient):
         _last_round_signature: str = ""
         _identical_round_count = 0
         _consecutive_failure_count = 0
+        # g1: degenerate-TEST-loop state, beside the no-progress (identical
+        # tool-call) counter, which a model that edits a different character
+        # every round never trips.
+        _tlg_state: dict = {}
         # Thrash detector state (cleanup loops, same-file rewrites) — soft
         # nudges the model to change approach when it's spinning. Per turn.
         _thrash_state: dict = {}
@@ -35429,6 +35448,42 @@ class OpenAIClient(_BaseClient):
                     )
                     return
 
+                # g1: degenerate TEST loop -- a model that keeps editing and
+                # re-running a failing test. run_tests is a SUCCESSFUL call
+                # (not {"error"...}), and the edit differs every round, so
+                # the error and identical-arguments checks both miss it.
+                # Count identical failing-node-set + first-message from the
+                # evidence ledger; steer once at 3, abort at 5 with its own
+                # stop reason.
+                _tlg_act = _tlg.step(self._test_evidence, _tlg_state)
+                if _tlg_act == "steer":
+                    api_messages.append(_harness_row((
+                        "[system] The last 3 test runs produced the SAME "
+                        "failures (same failing tests, same first message "
+                        "each time). Editing and re-running them again will "
+                        "not change that. Stop editing and re-running; "
+                        "change approach, or reason about why the test "
+                        "output cannot differ."
+                    )))
+                elif _tlg_act == "abort":
+                    yield StreamEvent(type="notice", text=(
+                        "\u26a0 Aborting tool loop: the failing test(s) "
+                        "produced the identical result 5 runs in a row (same "
+                        "failing tests, same first message). Editing and "
+                        "re-running again cannot change it. Send 'continue' "
+                        "to resume.\n"
+                    ))
+                    cost = self._estimate_cost(_total_in, _total_out)
+                    yield StreamEvent(
+                        type="message_delta",
+                        input_tokens=_total_in,
+                        output_tokens=_total_out,
+                        cost_usd=cost,
+                        cached_tokens=_total_cached,
+                        stop_reason="degenerate_test_loop",
+                    )
+                    return
+
                 # Whether a call of this round never ran (its arguments
                 # were not valid JSON): the turn must not end on it.
                 _last_round_unexecuted = any(
@@ -35462,6 +35517,8 @@ class OpenAIClient(_BaseClient):
                         "exit_code": None,
                         "status": ("skipped" if _av_status.get("skipped")
                                    else ("failed" if _problems else "ok")),
+                        # g1: same-failure signature of this verify run.
+                        "test_sig": _tlg.report_text_signature(_problems or ""),
                         "passed": (0 if (_problems
                                          or _av_status.get("skipped")) else 1),
                         "failed": 1 if _problems else 0,
@@ -35541,6 +35598,9 @@ class OpenAIClient(_BaseClient):
                     self._test_evidence.append({
                         "tool": "auto_verify", "command": "",
                         "exit_code": None, "status": "gave_up",
+                        # g1: the last verify was RED -- carry its
+                        # signature.
+                        "test_sig": _tlg.report_text_signature(_last_verify_problem or ""),
                         "passed": 0, "failed": 1, "ts": time.time(),
                     })
                 except Exception:
