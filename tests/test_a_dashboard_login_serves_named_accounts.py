@@ -286,8 +286,14 @@ def test_a_token_header_can_carry_an_account_passphrase(monkeypatch, tmp_path):
             return self.request.arguments.get(name, default)
 
     handler = _Handler()
-    user = asyncio.get_event_loop().run_until_complete(
-        provider.get_user_token(handler))
+    # asyncio.run, not get_event_loop().run_until_complete: in a full
+    # suite an earlier test has called asyncio.run, which closes AND
+    # unsets the loop, and get_event_loop then raises "There is no
+    # current event loop". This test passed alone and failed shard 4 of
+    # the run that matters -- the same failure
+    # tests/test_the_server_ends_what_nobody_watches.py records for ten
+    # cases of its own.
+    user = asyncio.run(provider.get_user_token(handler))
     assert user is not None
     assert user.username == f"account:{NAME}"
 
