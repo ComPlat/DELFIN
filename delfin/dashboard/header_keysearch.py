@@ -30,19 +30,39 @@ def _specs() -> list[dict[str, str]]:
     return sorted(entries, key=lambda e: e["name"].lower())
 
 
+def _tab_entries() -> list[dict[str, str]]:
+    """One entry per dashboard tab, read from _TABS_HELP (single source)."""
+    from delfin.dashboard.tab_help import _TABS_HELP
+
+    entries = []
+    for item in _TABS_HELP:
+        name = item[0]
+        purpose = (item[1] or "").strip()
+        entries.append({
+            "name": name,
+            "purpose": purpose,
+        })
+    return entries
+
+
 def build_key_search(
     max_suggestions: int = 8,
     on_open_key=None,
+    on_open_tab=None,
 ) -> W.DOMWidget:
     """Build the header search box with suggestion dropdown + explanation.
 
-    ``on_open_key(name)`` is optional: when given, picking a suggestion
+    ``on_open_key(name)`` is optional: when given, picking a key suggestion
     also switches the dashboard to the Help tab pre-filtered to that key
-    (in addition to the inline card).  The dashboard passes it when the
-    Help tab is registered; without it picking just shows the card.
+    (in addition to the inline card).  ``on_open_tab(name)`` is the same for
+    tab-name suggestions: it switches to that tab itself, not to Help.  The
+    dashboard passes both when the Help tab is registered; without them
+    picking just shows the card.
     """
     entries = _specs()
     names = [e["name"] for e in entries]
+    tab_entries = _tab_entries()
+    tab_names = [e["name"] for e in tab_entries]
 
     search = W.Text(
         placeholder="🔍 search keys…",
@@ -119,6 +139,16 @@ def build_key_search(
                 pass
         search.value = ""
 
+    def _pick_tab(name: str) -> None:
+        """Switch to the named dashboard tab itself (not Help)."""
+        if on_open_tab is not None:
+            try:
+                on_open_tab(name)
+            except Exception:
+                pass
+        _close()
+        search.value = ""
+
     def _close_card(_b=None) -> None:
         card.layout.display = "none"
 
@@ -134,28 +164,47 @@ def build_key_search(
             if q in e["name"].lower()
             or q in e["help"].lower()
             or q in e["allowed"].lower()
-        ][:max_suggestions]
+        ]
+        # Tab-name matches come first (they route directly); a match on a
+        # key's help text or name counts like before.  Tabs are visually
+        # distinct: a 📁 prefix and a "Tab" tag.
+        tab_hits = [
+            e for e in tab_entries
+            if q in e["name"].lower()
+            or q in e["purpose"].lower()
+        ]
+        scored = (tab_hits + scored)[:max_suggestions]
         if not scored:
             dropdown.children = (
                 W.HTML("<div style='padding:4px 8px; color:#999'>no key "
-                       "matches</div>"),
+                       "or tab matches</div>"),
             )
         else:
             buttons = []
             for e in scored:
-                snippet = e["help"][:80] + ("…" if len(e["help"]) > 80 else "")
+                if e.get("purpose") is not None and e in tab_entries:
+                    is_tab = True
+                else:
+                    is_tab = False
+                if is_tab:
+                    snippet = e["purpose"][:80] + (
+                        "…" if len(e["purpose"]) > 80 else "")
+                    label = "📁 Tab: " + e["name"]
+                    def _on(b, _name=e["name"]):
+                        _pick_tab(_name)
+                else:
+                    snippet = e["help"][:80] + ("…" if len(e["help"]) > 80 else "")
+                    label = e["name"]
+                    def _on(b, _name=e["name"]):
+                        _pick(_name)
                 btn = W.Button(
-                    description=e["name"], button_style="",
+                    description=label, button_style="",
                     tooltip=snippet,
                     layout=W.Layout(
                         width="100%", border="none", text_align="left",
                         padding="2px 8px", background="none",
                     ),
                 )
-
-                def _on(b, _name=e["name"]):
-                    _pick(_name)
-
                 btn.on_click(_on)
                 buttons.append(btn)
             dropdown.children = tuple(buttons)
@@ -169,9 +218,13 @@ def build_key_search(
     return wrapper
 
 
-def build_and_register() -> W.DOMWidget | None:
+def build_and_register(
+    on_open_key=None,
+    on_open_tab=None,
+) -> W.DOMWidget | None:
     """Build the widget; returns None where specs are unavailable."""
     try:
-        return build_key_search()
+        return build_key_search(
+            on_open_key=on_open_key, on_open_tab=on_open_tab)
     except Exception:
         return None

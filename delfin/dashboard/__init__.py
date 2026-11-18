@@ -1213,7 +1213,23 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     _key_search = None
     try:
         from delfin.dashboard.header_keysearch import build_and_register
-        _key_search = build_and_register(on_open_key=_open_key_from_header)
+
+        def _open_tab_from_header(name: str) -> None:
+            """Switch to the named tab itself (title read from built tabs)."""
+            try:
+                tabs = getattr(ctx, "tabs_widget", None)
+                if tabs is None:
+                    return
+                titles = [str(t) for t in getattr(tabs, "titles", ())]
+                if name in titles:
+                    tabs.selected_index = titles.index(name)
+            except Exception:
+                pass
+
+        _key_search = build_and_register(
+            on_open_key=_open_key_from_header,
+            on_open_tab=_open_tab_from_header,
+        )
     except Exception:  # pragma: no cover - widget must not break startup
         _key_search = None
     _status_items = [home_usage_label]
