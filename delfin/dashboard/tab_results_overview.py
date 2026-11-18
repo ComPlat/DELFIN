@@ -734,7 +734,8 @@ class ResultsOverviewPanel:
                 return initial_xyz_png_bytes(
                     path, show_h=self._show_h.value, fmt="pdf")
             def _o3d_call(path):
-                return optimized_3d_png_bytes(path, fmt="pdf")
+                return optimized_3d_png_bytes(
+                    path, show_h=self._show_h.value, fmt="pdf")
             for enabled, fn in (
                     (want_3d, _xyz_call),
                     (want_o3d, _o3d_call)):

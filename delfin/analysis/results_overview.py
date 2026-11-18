@@ -273,22 +273,29 @@ _XYZ_MASS = {
 }
 
 
-def _detect_bonds(sym, cov, pts):
-    """Bond pairs (i, j) with d <= BOND_FACTOR * (cov_i + cov_j).
+def _rotate_inertia(sym, pts):
+    """Mass-weighted principal inertia rotation: largest cross-section on z.
 
-    A fixed cutoff joined everything within ~2.4 A and drew far too
-    many bonds; per-element radii keep H-H and ring gaps unbound.
+    The camera looks along z; the SMALLEST extent axis must become z so the
+    largest cross-section faces the viewer.  eigh() sorts ascending, so
+    column 0 (smallest eigenvalue) becomes z.
     """
     import numpy
-    cov = numpy.asarray(cov, dtype=float)
-    n = len(sym)
-    bonds = []
-    for i in range(n):
-        for j in range(i + 1, n):
-            d = pts[i] - pts[j]
-            if float(d @ d) <= (BOND_FACTOR * (cov[i] + cov[j])) ** 2:
-                bonds.append((i, j))
-    return bonds
+    pts = numpy.asarray(pts, dtype=float)
+    pts = pts - pts.mean(axis=0)  # geometry centre is enough for orientation
+    weights = numpy.array([_XYZ_MASS.get(s, 12.011) for s in sym])
+    inertia = (pts * weights[:, None]).T @ pts
+    _eigvals, eigvecs = numpy.linalg.eigh(inertia)
+    if numpy.linalg.det(eigvecs) < 0:  # keep a right-handed frame
+        eigvecs[:, 2] = -eigvecs[:, 2]
+    rotated = pts @ eigvecs
+    rotated = rotated[:, [1, 2, 0]]
+    # Centre on the projected bounding box, not the mean: the mean can
+    # sit off-centre after an asymmetric rotation and then the frame
+    # clips atoms on one side (user report 430-450_432).
+    rotated[:, 0] -= 0.5 * (rotated[:, 0].min() + rotated[:, 0].max())
+    rotated[:, 1] -= 0.5 * (rotated[:, 1].min() + rotated[:, 1].max())
+    return rotated
 
 
 def initial_xyz_png_bytes(calc_dir: str, size: int = 320, show_h=False,
@@ -336,40 +343,38 @@ def initial_xyz_png_bytes(calc_dir: str, size: int = 320, show_h=False,
         rotated = rotated[keep]
         bonds_vis = [(remap[i], remap[j]) for i, j in bonds
                      if i in keepset and j in keepset]
+        # The upgrade indices must follow the remap or the double-bond
+        # lines point at hidden atoms and silently disappear.
+        bond_orders = {(remap[i], remap[j]): o
+                       for (i, j), o in bond_orders.items()
+                       if i in keepset and j in keepset}
     return _render_skeleton(sym_vis, rotated, bonds_vis, size,
                             show_h=show_h, bond_orders=bond_orders,
                             fmt=fmt)
 
 
-def _rotate_inertia(sym, pts):
-    """Mass-weighted principal inertia rotation: largest cross-section on z.
-
-    The camera looks along z; the SMALLEST extent axis must become z so the
-    largest cross-section faces the viewer.  eigh() sorts ascending, so
-    column 0 (smallest eigenvalue) becomes z.
-    """
-    import numpy
-    pts = numpy.asarray(pts, dtype=float)
-    pts = pts - pts.mean(axis=0)  # geometry centre is enough for orientation
-    weights = numpy.array([_XYZ_MASS.get(s, 12.011) for s in sym])
-    inertia = (pts * weights[:, None]).T @ pts
-    _eigvals, eigvecs = numpy.linalg.eigh(inertia)
-    if numpy.linalg.det(eigvecs) < 0:  # keep a right-handed frame
-        eigvecs[:, 2] = -eigvecs[:, 2]
-    rotated = pts @ eigvecs
-    return rotated[:, [1, 2, 0]]
-
-
 def _detect_bonds(sym, cov, pts):
-    """Bond pairs (i, j) with d <= BOND_FACTOR * (cov_i + cov_j)."""
+    """Bond pairs (i, j) with d <= BOND_FACTOR * (cov_i + cov_j).
+
+    A fixed cutoff joined everything within ~2.4 A and drew far too
+    many bonds; per-element radii keep H-H and ring gaps unbound.
+    A per-pair sanity cap removes close NON-bonded contacts that pass
+    the generic factor (stacked rings, crowded metal spheres).
+    """
     import numpy
     cov = numpy.asarray(cov, dtype=float)
     n = len(sym)
+    _MAX = {("C", "C"): 1.80, ("C", "H"): 1.30, ("H", "H"): 1.05,
+            ("N", "H"): 1.30, ("O", "H"): 1.25}
     bonds = []
     for i in range(n):
         for j in range(i + 1, n):
             d = pts[i] - pts[j]
-            if float(d @ d) <= (BOND_FACTOR * (cov[i] + cov[j])) ** 2:
+            dist = float(numpy.sqrt(d @ d))
+            if dist > BOND_FACTOR * (cov[i] + cov[j]):
+                continue
+            key = tuple(sorted((sym[i], sym[j])))
+            if dist <= _MAX.get(key, 2.4):
                 bonds.append((i, j))
     return bonds
 
@@ -460,12 +465,25 @@ def _infer_bond_orders(sym, bonds):
     for i, j in bonds:
         order[i] += 1
         order[j] += 1
+    # Metal bonds are dative and do not consume organic valence: a
+    # pyridine N coordinated to Fe still has its valence 3 available,
+    # so the C=N of the ring is recognised again (same for fluorenyl).
+    _METAL = set(_XYZ_MASS) - {"H", "B", "C", "N", "O", "F", "Si",
+                               "P", "S", "Cl", "Br", "I"}
     need = {}
     for i, s in enumerate(sym):
         v = _VALENCE.get(s)
-        if v is None or s == "H":
+        if v is None or s == "H" or s in _METAL:
             continue
-        need[i] = max(0, v - order[i])
+        # H bonds DO consume valence (a CH2 carbon has none left);
+        # only metal bonds are dative and skipped.
+        used = sum(1 for i2, j2 in bonds
+                   if (i2 == i or j2 == i) and sym[i2] not in _METAL
+                   and sym[j2] not in _METAL)
+        need[i] = max(0, v - used)
+    # Aromatic/ring alternating bonds leave BOTH partners one short
+    # (pyridine C=N, benzene C=C, fluorenyl), so single-deficit pairs
+    # upgrade to double as well; higher deficits stay greedy.
     pair_done = set()
     for i, j in bonds:
         if i in need and j in need and (i, j) not in pair_done:
@@ -473,9 +491,12 @@ def _infer_bond_orders(sym, bonds):
             if k >= 3:
                 upgrades[(i, j)] = 3
                 need[i] -= 3; need[j] -= 3
-            elif k == 2:
+            elif k >= 2:
                 upgrades[(i, j)] = 2
                 need[i] -= 2; need[j] -= 2
+            elif k == 1:
+                upgrades[(i, j)] = 2
+                need[i] -= 1; need[j] -= 1
             pair_done.add((i, j))
             pair_done.add((j, i))
     return upgrades
@@ -512,7 +533,14 @@ def _render_skeleton(sym, rotated, bonds, size, show_h=False,
     heavy_bonds = [(i, j) for i, j in bonds if not (is_h[i] or is_h[j])]
     h_bonds = [(i, j) for i, j in bonds if (is_h[i] or is_h[j])]
 
+    # A double/triple bond REPLACES its base line: the parallel lines
+    # must sit visibly beside each other.  With lw 1.8 a 0.06 A offset
+    # hides entirely under the base line (bug: upgrades were computed
+    # and drawn but invisible).
+    _dbl = {tuple(sorted(p)) for p in bond_orders} if bond_orders else set()
     for i, j in heavy_bonds:
+        if tuple(sorted((i, j))) in _dbl:
+            continue
         ax.plot([rotated[i][0], rotated[j][0]],
                 [rotated[i][1], rotated[j][1]],
                 color="black", lw=1.8, solid_capstyle="round", zorder=1)
@@ -548,7 +576,7 @@ def _render_skeleton(sym, rotated, bonds, size, show_h=False,
             dx, dy = x2 - x1, y2 - y1
             length = math.hypot(dx, dy) or 1.0
             nx, ny = -dy / length, dx / length
-            gap = 0.045 * length if order == 2 else 0.09 * length
+            gap = 0.10 * length if order == 2 else 0.22 * length
             style = dict(color="black", lw=1.2,
                          solid_capstyle="round", zorder=1)
             if order == 2:
@@ -640,7 +668,8 @@ def optimize_view_direction(sym, pts3d, bonds, n_samples: int = 500):
     return best[2]
 
 
-def optimized_3d_png_bytes(calc_dir: str, size: int = 320, fmt="png"):
+def optimized_3d_png_bytes(calc_dir: str, size: int = 320, show_h=False,
+                           fmt="png"):
     """Structure view with the camera direction optimized for least overlap,
 
     drawn in the style of the dashboard 3Dmol viewer: small van-der-Waals
@@ -680,6 +709,15 @@ def optimized_3d_png_bytes(calc_dir: str, size: int = 320, fmt="png"):
     # Dashboard viewer style: small spheres on thick sticks
     # (molecule_viewer.py DEFAULT_3DMOL_ATOM_SCALE=0.28,
     # DEFAULT_3DMOL_BOND_RADIUS=0.11 vs. the classic 0.8/1.4 here).
+    if not show_h:
+        is_h = numpy.array([s == "H" for s in sym])
+        keep = [i for i in range(len(sym)) if not is_h[i]]
+        keepset = set(keep)
+        remap = {old: new for new, old in enumerate(keep)}
+        sym = [sym[i] for i in keep]
+        rotated = rotated[keep]
+        bonds = [(remap[i], remap[j]) for i, j in bonds
+                 if i in keepset and j in keepset]
     return _render_ball_stick(sym, rotated, bonds, size,
                               atom_scale=0.35, bond_lw=3.2)
 
