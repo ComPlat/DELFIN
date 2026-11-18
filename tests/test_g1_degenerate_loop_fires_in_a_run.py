@@ -48,14 +48,20 @@ class _Launch:
     def __init__(self, plan_fn):
         plan_fn.state = {"n": 0}
         self._plan_fn = plan_fn
-        self.seen_system: list[str] = []
+        self.seen_rows: list[str] = []
 
     def plan(self, messages):
+        # Every row the model is handed, whatever its role. The first
+        # version of this collected role == "system" only and the
+        # assertion below could never pass: harness_rows.harness_row
+        # defaults to role "user", which is what all nine steers in the
+        # round loop use, the no-progress one included. The property
+        # under test is that the steer REACHES the model, not which role
+        # it travels under.
         for m in messages or []:
-            if m.get("role") == "system":
-                text = str(m.get("content") or "")
-                if text and text not in self.seen_system:
-                    self.seen_system.append(text)
+            text = str(m.get("content") or "")
+            if text and text not in self.seen_rows:
+                self.seen_rows.append(text)
         return self._plan_fn(messages)
 
 
@@ -192,7 +198,7 @@ def test_the_degenerate_loop_steers_then_aborts(monkeypatch, tmp_path, capsys):
     assert rc == 10
     # The steer (injected once at 3 consecutive identical failures) reached
     # the model as a system harness row.
-    assert any("SAME failures" in t for t in launch.seen_system)
+    assert any("SAME failures" in t for t in launch.seen_rows)
 
 
 def test_a_changing_failure_set_runs_on(monkeypatch, tmp_path, capsys):
@@ -202,4 +208,4 @@ def test_a_changing_failure_set_runs_on(monkeypatch, tmp_path, capsys):
                                      _plan_changing)
     assert result is not None, "no result object from the headless run"
     assert result["stop_reason"] != "degenerate_test_loop"
-    assert not any("SAME failures" in t for t in launch.seen_system)
+    assert not any("SAME failures" in t for t in launch.seen_rows)
