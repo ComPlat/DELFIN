@@ -76,7 +76,7 @@ def test_file_mask_destination_is_created_as_a_file(home):
     argv = ["bwrap", "--ro-bind", "/dev/null", str(f), "x"]
     CB.ensure_argv_bind_targets(argv)
     assert f.is_file()
-    assert stat.S_IMODE(f.stat().st_mode) == 0o700
+    assert stat.S_IMODE(f.stat().st_mode) == 0o600
 
 
 def test_command_tail_is_untouched():
@@ -141,3 +141,12 @@ def test_file_mask_destination_parents_are_created(home):
     argv = ["bwrap", "--ro-bind", "/dev/null", str(f), "x"]
     CB.ensure_argv_bind_targets(argv)
     assert f.is_file()
+
+
+def test_a_mask_target_outside_home_is_owner_only_too(tmp_path, monkeypatch):
+    """No created mask target is group- or world-readable (CodeQL
+    py/overly-permissive-file): outside HOME as well as inside it."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    target = tmp_path / "elsewhere" / "masked"
+    CB.ensure_argv_bind_targets(["bwrap", "--tmpfs", str(target), "--", "true"])
+    assert stat.S_IMODE(target.stat().st_mode) == 0o700

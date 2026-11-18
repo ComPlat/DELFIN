@@ -45,32 +45,15 @@ BIND_FLAGS = ("--tmpfs", "--ro-bind", "--bind", "--dev-bind", "--ro-bind-try",
 #: never weakens: its target is created, never degraded.
 MASK_FLAGS = ("--tmpfs",)
 
-#: First path components under HOME that are private to the owner (the
-#: home secret doors the cage masks: .ssh, .gnupg, ... -- anything a mask
-#: or door target sits under directly). A target created here gets the
-#: owner-only mode.
-_MODE_0700_ROOTS = (".delfin", ".ssh", ".aws", ".gnupg", ".kube",
-                    ".docker", ".azure", ".gcp", ".config", ".screen",
-                    ".anthropic", ".openai", ".claude", ".local")
-
-
 def _owner_mode(target: str) -> int:
-    """Mode a created target gets: 0700 for a private home area (under
-    ~/.delfin, a secret door of its own like ~/.ssh, or a path directly
-    under HOME -- a door target _process_cage_options masks), else 0755."""
-    try:
-        home = str(Path.home().resolve())
-    except OSError:
-        home = ""
-    t = str(Path(target).resolve()) if os.path.isabs(target) else target
-    if home and t.startswith(home.rstrip("/") + "/"):
-        rel = t[len(home.rstrip("/")) + 1:]
-        first = rel.split("/")[0]
-        if first in _MODE_0700_ROOTS:
-            return 0o700
-        if "/" not in rel:
-            return 0o700  # a leaf directly under HOME is a private door
-    return 0o755
+    """Mode a created mask target gets: always 0700. A mask target exists only
+    so bwrap can mount over it; nobody but the owner has a reason to open
+    it, inside HOME or not (CodeQL py/overly-permissive-file on 0755)."""
+    return 0o700
+
+
+#: Mode of a created file-mask destination (``--ro-bind /dev/null <file>``).
+_FILE_MODE = 0o600
 
 
 def _mkdir_parents(target: str, mode: int) -> bool:
@@ -163,7 +146,7 @@ def _ensure_file(path: str) -> bool:
             return True
         p.parent.mkdir(parents=True, exist_ok=True)
         p.touch(exist_ok=True)
-        os.chmod(p, _owner_mode(str(p.parent)))
+        os.chmod(p, _FILE_MODE)
         return True
     except OSError:
         return False
