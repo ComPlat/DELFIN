@@ -24,6 +24,7 @@ bwrap; skipped where bwrap does not work (nested cage)."""
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -143,7 +144,43 @@ def _mask_args_for(argv: list, target: str) -> list:
     return hits
 
 
+class TestR3ParallelPytestBasetempDeletion:
+    """R3 root-cause repro (operator's candidate): pytest's basetemp
+    retention deletes old pytest-N directories while a parallel pytest
+    session still runs there. A test HOME under tmp_path of a still-
+    running session vanishes mid-run -> ~/.delfin/approval_codes gone
+    between argv build and exec -> the wave-31 EROFS failure."""
+
+    @requires_a_working_sandbox
+    def test_deletion_of_a_running_sessions_home(self, tmp_path,
+                                                 monkeypatch):
+        """Simulate the retention deletion: another 'session' deletes the
+        pytest-N parent of the running test's tmp_path HOME while this
+        test is between build and exec. Expected WITHOUT any fix: the
+        caged command dies with the measured bwrap EROFS refusal."""
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        _cage_decision(monkeypatch)
+        argv = _argv(ws, monkeypatch)
+        # The parallel session's deletion: the numbered basetemp dir that
+        # CONTAINS this test's tmp_path is removed from outside.
+        basetemp = tmp_path.parent          # .../pytest-N
+        assert basetemp.name.startswith("pytest-"), f"got {basetemp}"
+        shutil.rmtree(basetemp)
+        run = _run(argv)
+        # Red state (no fix at the exec boundary): bwrap refuses with the
+        # measured message. With the exec-boundary ensure the run works.
+        assert run.returncode == 0, (
+            "R3 REPRODUCED: the parallel-pytest deletion of an in-use "
+            f"basetemp kills the cage:\nstdout: {run.stdout}\n"
+            f"stderr: {run.stderr}")
+
+
+
 def _deep_rmtree(path: Path) -> None:
     """Test-only removal of a directory the test itself created."""
-    import shutil
     shutil.rmtree(path)
+
