@@ -190,31 +190,28 @@ class TestR3ParallelPytestBasetempDeletion:
 
     @requires_a_working_sandbox
     def test_deletion_of_a_running_sessions_home(self, tmp_path,
-                                                 monkeypatch):
+                                                 monkeypatch,
+                                                 tmp_path_factory):
         """Simulate the retention deletion: another 'session' deletes the
         pytest-N parent of the running test's tmp_path HOME while this
         test is between build and exec. Expected WITHOUT any fix: the
-        caged command dies with the measured bwrap EROFS refusal."""
-        home = tmp_path / "home"
-        home.mkdir()
+        caged command dies with the measured bwrap EROFS refusal.
+
+        The deletion is destructive, so it NEVER touches the real
+        basetemp (operator rerun 5: rmtree of the running session's
+        pytest-N killed 1399 unrelated tests in a combined run). A
+        stand-in pytest-N tree is built under this test's own tmp_path
+        and deleted instead."""
+        standin = tmp_path / "pytest-of-x" / "pytest-7"
+        home = standin / "t0" / "test_home0" / "home"
+        home.mkdir(parents=True)
         monkeypatch.setenv("HOME", str(home))
         ws = tmp_path / "ws"
         ws.mkdir()
         _cage_decision(monkeypatch)
         argv = _argv(ws, monkeypatch)
-        # The parallel session's deletion: the numbered basetemp dir that
-        # CONTAINS this test's tmp_path is removed from outside. Do not
-        # assume tmp_path.parent is it (the repo's pytest setup can nest
-        # tmp_path one level deeper, e.g. .../pytest-N/t0): walk up to the
-        # nearest ancestor named pytest-N instead.
-        basetemp = tmp_path
-        while not basetemp.name.startswith("pytest-"):
-            parent = basetemp.parent
-            if parent == basetemp:
-                pytest.skip("no pytest-N basetemp ancestor found")
-            basetemp = parent
-        assert basetemp.is_dir()
-        shutil.rmtree(basetemp)
+        assert home.is_dir()
+        shutil.rmtree(standin)
         run = _run(argv)
         # The real contract (operator rerun 4): with the exec-boundary
         # ensure, the run may still FAIL -- deleting the whole basetemp
@@ -230,6 +227,17 @@ class TestR3ParallelPytestBasetempDeletion:
         assert "Can't mkdir parents" not in err, (
             "bwrap had to create a missing mask target under the "
             f"read-only bind:\nstderr: {err}")
+        # (3) the failure names the missing workspace, not the mask.
+        assert str(ws) in err, (
+            "bwrap's refusal does not name the missing workspace it was "
+            f"to chdir into:\nstderr: {err}")
+        # The real basetemp of THIS pytest run is untouched: the deletion
+        # was of the stand-in only (operator rerun 5, destructive-rmtree
+        # finding).
+        real_basetemp = tmp_path_factory.getbasetemp()
+        assert real_basetemp.is_dir(), (
+            f"the running session's real basetemp was deleted: "
+            f"{real_basetemp}")
 
 
 
