@@ -572,3 +572,11 @@ def test_initial_xyz_show_h_toggles_heteroatom_protons(tmp_path):
     without_h = ro.initial_xyz_png_bytes(str(calc), show_h=False)
     assert with_h and without_h
     assert with_h != without_h  # H atoms and their bonds dropped
+
+
+def test_formula_to_latex_subscripts_and_charges():
+    assert ro.formula_to_latex("C33H22N4NiO") == "C$_{33}$H$_{22}$N$_{4}$NiO"
+    assert (ro.formula_to_latex("C23H18N4NiO2")
+            == "C$_{23}$H$_{18}$N$_{4}$NiO$_{2}$")
+    assert (ro.formula_to_latex("[Fe(bpy)3]2+")
+            == "[Fe(bpy)$_{3}$]$^{2+}$")
