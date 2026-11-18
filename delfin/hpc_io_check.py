@@ -276,7 +276,7 @@ def check(script_text: str, *, env: dict | None = None,
         if m and is_pytest_shape:
             tail = line[m.end():]
             arg = re.search(r"(/[^\s\"']+)", tail)
-            here = re.search(r"(?:cd\s+|;\s*cd\s+)\"?(\$[\w{]+|/[^\\s\"';]+)",
+            here = re.search(r"(?:cd\s+|;\s*cd\s+)\"?(\$[\w{]+|/[^\s\"';]+)",
                              script_text)
             # A cd onto $TMPDIR (or another node-local variable) is the
             # FIX this rule asks for: the checkout there is node-local.

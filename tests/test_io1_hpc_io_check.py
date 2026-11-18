@@ -233,3 +233,18 @@ def test_walk_over_home_root_still_refused():
     findings = _check(script)
     assert any(f.rule == "tree_walk_on_lustre" for f in findings)
 
+
+def test_bad_pytest_home_case_text_is_refused():
+    # Live-run round 2, L4: the .gate/io1_cases/bad_pytest_home.sh text
+    # verbatim — cd onto a Lustre checkout, then a RELATIVE interpreter
+    # running `python -m pytest`. The pytest line carries no Lustre path
+    # itself; the Lustre-ness comes from the cd above it.
+    script = (
+        "#!/bin/bash\n"
+        "cd /pfs/data6/home/ka/ka_ibcs/ka_ew7404/software/delfin"
+        "/.delfin/worktrees/runde3-s1\n"
+        ".venv/bin/python -m pytest -q tests/\n"
+    )
+    findings = _check(script)
+    assert any(f.rule == "pytest_from_lustre_checkout" for f in findings)
+
