@@ -296,8 +296,8 @@ def initial_xyz_png_bytes(calc_dir: str, size: int = 320):
 
     The structure is rotated onto its principal inertia axes so the largest
     cross-section faces the camera (most atoms visible), then depth-sorted
-    and drawn with matplotlib (Agg): bonds first, atoms as filled circles
-    with white rims.  Returns None when no readable initial.xyz exists or
+    and drawn with matplotlib (Agg) as a skeletal wireframe (bonds as black
+    lines, atom symbols in gaps, H suppressed) in RDKit-2D style.  Returns None when no readable initial.xyz exists or
     numpy/matplotlib are unavailable.  It never runs a program.
     """
     atoms = _parse_xyz(calc_dir)
@@ -321,7 +321,7 @@ def initial_xyz_png_bytes(calc_dir: str, size: int = 320):
     cov = [_XYZ_COVALENT.get(s, _XYZ_COVALENT_DEFAULT) for s in sym]
     bonds = _detect_bonds(sym, cov, rotated)
 
-    return _render_ball_stick(sym, rotated, bonds, size)
+    return _render_skeleton(sym, rotated, bonds, size)
 
 
 def _rotate_inertia(sym, pts):
@@ -406,6 +406,61 @@ def _render_ball_stick(sym, rotated, bonds, size, atom_scale=0.8,
     plt.close(fig)
     return buf.getvalue()
 
+
+def _render_skeleton(sym, rotated, bonds, size):
+    """Wireframe of the rotated structure in RDKit-2D style (PNG bytes).
+
+    Same geometry as the ball-and-stick column (positions kept, no
+    snapping to ideal bond lengths): bonds as black lines - H-bonds thin,
+    heavy-atom bonds thick - atom symbols drawn inside gaps, H symbols
+    suppressed so it reads like a skeletal formula.
+    """
+    import numpy
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from io import BytesIO
+
+    radii = numpy.array([_XYZ_RADII.get(s, _XYZ_RADIUS_DEFAULT) for s in sym])
+    extent = max(numpy.ptp(rotated[:, 0]), numpy.ptp(rotated[:, 1]), 1.0)
+    scale = 0.58 * size / extent
+    fig = plt.figure(figsize=(size / 100, size / 100), dpi=100)
+    FigureCanvasAgg(fig)
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_axis_off()
+    half = 0.5 * size / scale
+    ax.set_xlim(-half, half)
+    ax.set_ylim(-half, half)
+    ax.set_aspect("equal")
+
+    is_h = numpy.array([s == "H" for s in sym])
+    heavy_bonds = [(i, j) for i, j in bonds if not (is_h[i] or is_h[j])]
+    h_bonds = [(i, j) for i, j in bonds if (is_h[i] or is_h[j])]
+
+    for i, j in heavy_bonds:
+        ax.plot([rotated[i][0], rotated[j][0]],
+                [rotated[i][1], rotated[j][1]],
+                color="black", lw=1.8, solid_capstyle="round", zorder=1)
+    for i, j in h_bonds:
+        ax.plot([rotated[i][0], rotated[j][0]],
+                [rotated[i][1], rotated[j][1]],
+                color="black", lw=0.8, solid_capstyle="round", zorder=1)
+
+    # Atom labels in white gaps: heavy atoms + metals, H suppressed.
+    for idx in numpy.argsort(rotated[:, 2]):
+        s = sym[idx]
+        if s == "H":
+            continue
+        x, y = rotated[idx][0], rotated[idx][1]
+        r_data = radii[idx] * scale * 0.55 / size * (2 * half)
+        ax.add_patch(mpatches.Circle(
+            (x, y), r_data, facecolor="white", edgecolor="none", zorder=2))
+        ax.text(x, y, s, ha="center", va="center", fontsize=7.5,
+                color="black", zorder=3)
+    buf = BytesIO()
+    fig.savefig(buf, format="png", dpi=100)
+    plt.close(fig)
+    return buf.getvalue()
 
 
 def optimize_view_direction(sym, pts3d, bonds, n_samples: int = 500):

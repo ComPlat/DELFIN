@@ -721,7 +721,7 @@ class ResultsOverviewPanel:
             # by side; 0.25\textwidth each for two, smaller for more.
             n_struct = (int(want_2d) + int(want_3d)
                         + int(want_o3d))
-            width = {1: 0.5, 2: 0.25, 3: 0.16}.get(n_struct, 0.12)
+            width = {1: 0.9, 2: 0.45, 3: 0.30}.get(n_struct, 0.22)
             struct_blocks = []
             if want_2d and smiles:
                 png = smiles_png_bytes(smiles)
@@ -754,7 +754,7 @@ class ResultsOverviewPanel:
                         scan_png = fh.read(8 * 1024 * 1024)
                     path = _add_image(scan_png)
                     lines.append(
-                        rf"\includegraphics[width=0.9\textwidth]{{{path}}}")
+                        rf"\includegraphics[width=0.62\textwidth]{{{path}}}")
                     lines.append(r"\par\bigskip")
                 except OSError:
                     pass
