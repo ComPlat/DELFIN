@@ -56,3 +56,20 @@ def test_no_args_exits_2_with_usage(monkeypatch, capsys):
     rc = hpc_io_check.main([])
     assert rc == 2
     assert "usage" in capsys.readouterr().out
+
+
+def test_module_entry_point_runs_as_subprocess(tmp_path):
+    # L2 (operator compute-node run): the `if __name__ == "__main__"`
+    # block sat ABOVE the Finding/MountsSource definitions, so
+    # `python -m delfin.hpc_io_check <script>` crashed with NameError
+    # before printing anything. Run the real module in a subprocess.
+    import subprocess
+    import sys
+    script = tmp_path / "job.sh"
+    script.write_text("#!/bin/bash\nsleep 1\n", encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, "-m", "delfin.hpc_io_check", str(script)],
+        capture_output=True, text=True, timeout=120,
+        env={"HOME": "/home/nolustre", "PATH": "/usr/bin:/bin"})
+    assert proc.returncode == 0, proc.stderr
+    assert "no Lustre metadata-load findings" in proc.stdout

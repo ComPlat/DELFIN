@@ -34,6 +34,11 @@ from dataclasses import dataclass
 
 __all__ = ["Finding", "MountsSource", "lustre_paths", "check", "main"]
 
+# The mounts file the production check reads by default (L1 fix: the
+# default wiring must READ this file, never treat the path as text).
+# Tests monkeypatch this constant.
+DEFAULT_MOUNTS = "/proc/mounts"
+
 
 def _is_lustre(path: str, lustres: list[str]) -> bool:
     return any(path == lp or path.startswith(lp.rstrip("/") + "/") for lp in lustres)
@@ -117,6 +122,50 @@ def _expand_env_paths(line: str, env: dict | None) -> list[str]:
     return out
 
 
+def _source_is_wide_root(path: str, env: dict | None,
+                         lustres: list[str]) -> bool:
+    """True when the copy SOURCE is HOME, a workspace root or a mount
+    point (a whole-tree walk), not one job folder (operator live-run L5:
+    the stage-in of one folder is the fix; walking HOME or a workspace
+    root is still the problem)."""
+    home = str((env or {}).get("HOME", ""))
+    wide = [home] + lustres if home else list(lustres)
+    for root in wide:
+        if not root:
+            continue
+        r = root.rstrip("/")
+        if path == r:
+            return True
+        # One path level below a wide root is still a wide root
+        # (HOME/projects, /pfs/data6/workspace) -- a JOB FOLDER sits
+        # deeper (runs/water under a workspace).
+        rest = path[len(r):].lstrip("/")
+        if rest and "/" not in rest:
+            return True
+    return False
+
+
+def _dest_is_node_local(cmd: str) -> bool:
+    """For cp/rsync: is the LAST path argument a node-local destination
+    ($TMPDIR, $TMP, /tmp, /scratch, /dev/shm, $SCRATCH)? Such a copy is
+    the stage-in the rules ask for (operator live-run L5); the walk
+    refusal is for source-side reads over Lustre."""
+    # Strip flags so the last token is a path, not "-a" or "--archive".
+    tokens = [t for t in cmd.split()
+              if not (t.startswith("-") and len(t) > 1)]
+    # Drop the command word itself.
+    tokens = tokens[1:]
+    if not tokens:
+        return False
+    dest = tokens[-1].strip("'\"")
+    if dest.startswith("$"):
+        var = re.match(r"\$\{?(\w+)\}?", dest).group(1)
+        return var.upper() in ("TMPDIR", "TMP", "SCRATCH")
+    if not dest.startswith("/"):
+        return False
+    return bool(re.match(r"^/(tmp|scratch|dev/shm)(/.*)?$", dest))
+
+
 def _in_loop(lines: list[str], idx: int) -> bool:
     """True when line ``idx`` sits inside a for/while loop body (an
     unterminated loop head above it). Shell and bash arrays: the
@@ -167,7 +216,7 @@ def check(script_text: str, *, env: dict | None = None,
     mounts source; no walk, no subprocess. The check itself costs one
     regex pass per rule over the text -- microseconds, no I/O beyond the
     one /proc/mounts read."""
-    src = mounts_path or MountsSource("/proc/mounts")
+    src = mounts_path or MountsSource(path=DEFAULT_MOUNTS)
     lustres = lustre_paths(src)
     home_lustre = _path_is_lustre_home(env, lustres)
     if not lustres:
@@ -184,6 +233,10 @@ def check(script_text: str, *, env: dict | None = None,
         m = _INTERPRETER.search(line)
         if not m:
             continue
+        # L3 fix: the match may START with the leading "/" of an
+        # absolute interpreter path (m.group(0) = "/python "); classify
+        # by the interpreter WORD, which is always last in the match.
+        interp_word = m.group(0).strip().rstrip("/").split("/")[-1].strip()
         # The interpreter's code/module path (argv after the word) or,
         # when run bare, the HOME it would read from.
         tail = line[m.end():]
@@ -191,7 +244,7 @@ def check(script_text: str, *, env: dict | None = None,
         path = arg.group(1) if arg else (str((env or {}).get("HOME", "")))
         if not _is_lustre(path, lustres) and not home_lustre:
             continue
-        if re.match(r"\s*(python|pip)", m.group(0).strip()):
+        if re.match(r"(python|pip)", interp_word):
             findings.append(Finding(
                 "lustre_interpreter_in_loop", i + 1, "warn",
                 "an interpreter or pip started once per loop item on Lustre "
@@ -201,7 +254,7 @@ def check(script_text: str, *, env: dict | None = None,
                 "unpack the Python environment once per job to the node-local "
                 "$TMPDIR (tar -x of the env into $TMPDIR; PATH=$TMPDIR/env/bin)"
                 " and run it from there"))
-        if "pytest" in m.group(0):
+        if "pytest" in interp_word:
             findings.append(Finding(
                 "pytest_from_lustre_checkout", i + 1, "refuse",
                 "pytest run from a HOME/Lustre checkout stats the whole tree "
@@ -211,9 +264,16 @@ def check(script_text: str, *, env: dict | None = None,
                 "git archive HEAD | tar -x -C $TMPDIR && cd $TMPDIR && pytest"))
 
     # --- Rule: pytest from a HOME/Lustre checkout (any line) ------------
+    # L4 fix: `python -m pytest` (any interpreter path) is the same
+    # shape as bare `pytest` -- the module runs the whole test tree.
     for i, line in enumerate(lines):
         m = _INTERPRETER.search(line)
-        if m and "pytest" in m.group(0):
+        is_pytest_shape = (
+            (m and "pytest" in m.group(0))
+            or bool(re.search(
+                r"(?:^|\s)[-\w./]*(?:python3?\b|pytest\b)[^\n]*\s-m\s+pytest\b",
+                line)))
+        if m and is_pytest_shape:
             tail = line[m.end():]
             arg = re.search(r"(/[^\s\"']+)", tail)
             here = re.search(r"(?:cd\s+|;\s*cd\s+)\"?(\$[\w{]+|/[^\\s\"';]+)",
@@ -242,8 +302,17 @@ def check(script_text: str, *, env: dict | None = None,
     for i, line in enumerate(lines):
         cmd = _strip_env_prefixes(line)
         head = re.match(r"\s*(du|find|ls|rsync|cp)\b", cmd)
+        # A single-line loop ('for i in 1 2; do du ...; done') hides the
+        # command behind the loop head; also try the post-'do' segment
+        # so the start-anchored head match does not defeat the rule.
+        seg = None
+        if not head and " do " in cmd:
+            seg = cmd.split(" do ", 1)[1]
+            head = re.match(r"\s*(du|find|ls|rsync|cp)\b", seg)
         if not head:
             continue
+        if seg is not None:
+            cmd = seg
         word = head.group(1)
         recursive = (
             word == "du"
@@ -260,6 +329,17 @@ def check(script_text: str, *, env: dict | None = None,
         # Absolute paths on the line, $HOME expanded from env; $TMPDIR,
         # a relative path or the job's own run directory are fine.
         paths = _expand_env_paths(cmd, env)
+        # L5 fix: a stage-in -- one job folder copied TO a node-local
+        # destination -- is the fix the rule asks for, not a walk. But a
+        # copy whose SOURCE is HOME, a workspace root or a mount point
+        # still walks a whole tree on Lustre and stays refused.
+        if word in ("cp", "rsync") and _dest_is_node_local(cmd):
+            # The destination ($TMPDIR/...) expands to no absolute Lustre
+            # path, so paths holds only the source side: judge the
+            # source directly. HOME, a workspace root or a mount point
+            # stays a refusal; one job folder deeper is a stage-in.
+            if not any(_source_is_wide_root(p, env, lustres) for p in paths):
+                continue
         if not any(_is_lustre(p, lustres) for p in paths):
             continue
         findings.append(Finding(
@@ -313,10 +393,6 @@ def main(argv: list[str] | None = None) -> int:
     return 1 if any(f.severity == "refuse" for f in findings) else 0
 
 
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())
-
-
 @dataclass(frozen=True)
 class Finding:
     rule: str
@@ -327,12 +403,26 @@ class Finding:
 
 
 class MountsSource:
-    """Where the mounts come from: a path (default /proc/mounts, read
-    once) or literal text (tests)."""
+    """Where the mounts come from. Two explicit forms (operator live-run
+    L1 fix): ``MountsSource(path)`` or ``MountsSource(path=...)`` reads
+    that FILE; ``MountsSource(text=...)`` takes literal mounts text
+    (tests). A bare string is a PATH, never content -- the L1 bug was
+    the path string being stored as mounts text, which disabled the
+    production check entirely."""
 
-    def __init__(self, source, path: str = "/proc/mounts"):
-        self.text = source if isinstance(source, str) else None
-        self.path = path
+    def __init__(self, source=None, *, path: str | None = None,
+                 text: str | None = None):
+        given = [x for x in (source, path, text) if x is not None]
+        if len(given) != 1:
+            raise TypeError(
+                "MountsSource takes exactly one of: a positional path, "
+                "path=..., or text=... (L1 contract)")
+        if text is not None:
+            self.text = text
+            self.path = None
+        else:
+            self.text = None
+            self.path = str(source if source is not None else path)
 
     def read(self) -> str:
         if self.text is not None:
@@ -356,5 +446,12 @@ def lustre_paths(source: MountsSource) -> list[str]:
     """The mount points of fs type ``lustre``, from one read of the
     mounts text. A fixture (tests) or ``/proc/mounts`` (default) -- never
     a hard-coded cluster name."""
-    text = source.read() if isinstance(source, MountsSource) else str(source)
+    text = source.read()
     return _LUSTRE_LINE.findall(text)
+
+
+# The CLI entry point sits at the very END of the module, below every
+# definition (operator live-run L2: above them it raised NameError on
+# python -m delfin.hpc_io_check).
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

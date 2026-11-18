@@ -23,7 +23,7 @@ ENV = {"HOME": "/pfs/home/ka_user"}
 def _check(script: str):
     return hpc_io_check.check(
         script, env=ENV,
-        mounts_path=hpc_io_check.MountsSource(LUSTRE_MOUNTS))
+        mounts_path=hpc_io_check.MountsSource(text=LUSTRE_MOUNTS))
 
 
 def _rules(findings):
@@ -148,5 +148,5 @@ def test_env_is_none_still_checks_against_mounts():
     script = "#!/bin/bash\ndu -sh /pfs/data/workspace/\n"
     findings = hpc_io_check.check(
         script, env=None,
-        mounts_path=hpc_io_check.MountsSource(LUSTRE_MOUNTS))
+        mounts_path=hpc_io_check.MountsSource(text=LUSTRE_MOUNTS))
     assert "tree_walk_on_lustre" in _rules(findings)

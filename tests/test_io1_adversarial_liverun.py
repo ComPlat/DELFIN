@@ -15,7 +15,7 @@ import pytest
 from delfin import hpc_io_check
 
 LUSTRE = "nodefs /pfs/data6 lustre rw 0 0\n"
-MOUNTS = hpc_io_check.MountsSource(LUSTRE)
+MOUNTS = hpc_io_check.MountsSource(text=LUSTRE)
 ENV = {"HOME": "/pfs/data6/home/user"}
 
 
@@ -29,8 +29,6 @@ def test_L1_default_mounts_source_reads_the_file(monkeypatch, tmp_path):
     wiring returned [] for every script)."""
     fake = tmp_path / "mounts"
     fake.write_text("nodefs /pfs/data6 lustre rw 0 0\n", encoding="utf-8")
-    monkeypatch.setattr(hpc_io_check.MountsSource, "default_path",
-                        str(fake), raising=False)
     src = hpc_io_check.MountsSource(str(fake))
     assert "nodefs" in src.read(), "path-string source must be read as a FILE"
     findings = hpc_io_check.check(
