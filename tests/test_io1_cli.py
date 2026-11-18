@@ -6,6 +6,7 @@ needed; the printed text comes back via capsys.
 from __future__ import annotations
 
 import pytest
+from conftest import child_env
 
 from delfin import hpc_io_check
 
@@ -67,9 +68,17 @@ def test_module_entry_point_runs_as_subprocess(tmp_path):
     import sys
     script = tmp_path / "job.sh"
     script.write_text("#!/bin/bash\nsleep 1\n", encoding="utf-8")
+    # child_env, not a hand-made env: a child resolves its ~/.delfin
+    # sinks against whatever HOME says, and the suite's in-memory
+    # redirects stop at the process boundary --
+    # tests/test_a_child_process_writes_into_no_real_home.py refuses a
+    # child start without it, and named this line. The fixture's HOME is
+    # a tmp_path directory, so it is as free of Lustre as the literal
+    # path this used before, and it exists.
+    env = dict(child_env(tmp_path))
+    env["PATH"] = "/usr/bin:/bin"
     proc = subprocess.run(
         [sys.executable, "-m", "delfin.hpc_io_check", str(script)],
-        capture_output=True, text=True, timeout=120,
-        env={"HOME": "/home/user", "PATH": "/usr/bin:/bin"})
+        capture_output=True, text=True, timeout=120, env=env)
     assert proc.returncode == 0, proc.stderr
     assert "no Lustre metadata-load findings" in proc.stdout

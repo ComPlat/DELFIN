@@ -3506,6 +3506,78 @@ def cmd_bug(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_state(args: argparse.Namespace) -> int:
+    """Show or apply the retention sweep over the agent's state tree.
+
+    Input: ``args.state_action`` ("usage" or "prune") and ``args.apply``.
+    Output: a report on stdout; exit 0 unless the sweep could not run.
+
+    Why this command exists: ``state_paths.run_startup_maintenance`` has
+    done the repair and the prune since it was written, but its only
+    caller is ``session_store._startup_maintenance``, once per process and
+    guarded by a module flag. Nothing a person can invoke calls it, and
+    ``cleanup_old_sessions`` has no production caller at all. A retention
+    policy nobody can run is a setting, not a policy -- and a full disk is
+    how the state files this agent depends on become unreadable in the
+    first place.
+
+    A prune DELETES files past retention, so the default is the dry run
+    and ``--apply`` is the deliberate second step. The listing comes from
+    ``prune_old(dry_run=True)``, the same code that does the deleting, so
+    what is shown cannot drift from what would go.
+    """
+    from . import state_paths as _sp
+
+    action = getattr(args, "state_action", "usage") or "usage"
+    try:
+        dirs = _sp.state_dirs()
+    except Exception as exc:
+        print(f"Cannot read the state tree: {exc}", file=sys.stderr)
+        return 1
+
+    if action == "usage":
+        print(f"State tree: {_sp.state_root()}")
+        rows = []
+        for entry in dirs:
+            total = 0
+            count = 0
+            try:
+                for q in entry.path.rglob(entry.glob or "*"):
+                    if q.is_file():
+                        total += q.stat().st_size
+                        count += 1
+            except OSError:
+                pass
+            rows.append((total, count, entry))
+        rows.sort(key=lambda r: -r[0])
+        for total, count, entry in rows:
+            kept = " (kept, never pruned)" if entry.kind == "keep" else ""
+            print(f"  {total / 1e6:9.1f} MB  {count:6d} file(s)  "
+                  f"{entry.path}{'/' + entry.glob if entry.glob else ''}"
+                  f"{kept}")
+        print(f"  {sum(r[0] for r in rows) / 1e6:9.1f} MB  total")
+        return 0
+
+    going: list = []
+    result = _sp.run_startup_maintenance(
+        force=True, dry_run=not getattr(args, "apply", False),
+        on_remove=going.append)
+    if not getattr(args, "apply", False):
+        for q in going[:40]:
+            print(f"  would delete  {q}")
+        if len(going) > 40:
+            print(f"  ... and {len(going) - 40} more")
+        print(f"{len(going)} file(s) past retention in "
+              f"{result.get('dirs', 0)} directory(ies); "
+              f"{result.get('repaired', 0)} file mode(s) repaired.")
+        print("Nothing was deleted. Run with --apply to delete them.")
+        return 0
+    print(f"Deleted {result.get('pruned', 0)} file(s) past retention; "
+          f"repaired {result.get('repaired', 0)} file mode(s) across "
+          f"{result.get('dirs', 0)} directory(ies).")
+    return 0
+
+
 def cmd_credentials(args: argparse.Namespace) -> int:
     """Manage API keys: the OS keyring or ~/.delfin/credentials.json (0600).
 
@@ -3543,6 +3615,10 @@ def cmd_credentials(args: argparse.Namespace) -> int:
         print(f"  file:    {_cred.credentials_path()}")
         print(f"  keyring: {kr}")
         print()
+        # list_credentials reports an unreadable store under the empty
+        # name. Printed as a row it is a blank line with a tag, which
+        # tells a person nothing; it is the one entry that is a sentence.
+        damaged = items.pop("", None)
         for name in sorted(items):
             info = items[name]
             src = info.get("source", "?")
@@ -3550,6 +3626,13 @@ def cmd_credentials(args: argparse.Namespace) -> int:
             extra = [s for s in info.get("stores") or [] if s != src]
             also = f"  (also in: {', '.join(extra)})" if extra else ""
             print(f"  {name:<28}  {info.get('value', ''):<14}  {tag}{also}")
+        if damaged is not None:
+            if items:
+                print()
+            print(f"  The file store cannot be read: "
+                  f"{damaged.get('detail', '')}")
+            print("  Keys stored in it are not in use. Storing a key moves "
+                  "the file aside first, so nothing in it is lost.")
         return 0
 
     if action == "migrate":
@@ -3557,6 +3640,9 @@ def cmd_credentials(args: argparse.Namespace) -> int:
         try:
             rows = _cred.migrate_to_keyring(names)
         except _cred.CredentialStoreUnavailable as exc:
+            print(f"Nothing moved: {exc}", file=sys.stderr)
+            return 1
+        except _cred.CredentialStoreUnreadable as exc:
             print(f"Nothing moved: {exc}", file=sys.stderr)
             return 1
         if not rows:
@@ -3580,6 +3666,12 @@ def cmd_credentials(args: argparse.Namespace) -> int:
         except _cred.CredentialStoreUnavailable as exc:
             print(f"{name} is still in the keyring: {exc}", file=sys.stderr)
             return 1
+        except _cred.CredentialStoreUnreadable as exc:
+            # Nothing was removed and the file is untouched: writing a
+            # store built from an unreadable one would drop every other
+            # name. Quarantining it is a decision for the person.
+            print(f"Nothing removed: {exc}", file=sys.stderr)
+            return 1
         if removed:
             print(f"Removed {name}.")
             return 0
@@ -3597,12 +3689,22 @@ def cmd_credentials(args: argparse.Namespace) -> int:
         if not value:
             print("No value entered, aborting.", file=sys.stderr)
             return 1
+        unreadable = ""
         try:
             ok = _cred.set_credential(name, value)
         except (_cred.CredentialStoreNotPrivate,
                 _cred.CredentialStoreUnavailable) as exc:
             print(f"Not stored: {exc}", file=sys.stderr)
             return 1
+        except _cred.CredentialStoreUnreadable as exc:
+            # The key IS stored; what was lost is the damaged store's
+            # other contents, which were moved aside rather than
+            # overwritten. Reporting this as a failed write would send the
+            # person to type the key again for no reason, so the success
+            # line below still prints and the exit code stays 0.
+            ok, unreadable = True, str(exc)
+        if unreadable:
+            print(f"WARNING: {unreadable}", file=sys.stderr)
         if ok:
             # No part of the value, not even a masked one: the first and
             # last four characters of a key stay in the terminal's
@@ -4380,7 +4482,8 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
             backend=getattr(args, "backend", "") or "",
             repeats=max(1, int(getattr(args, "repeats", 1) or 1)),
         )
-        ent = _sched.Scheduler().schedule_interval(
+        _bench_sched = _sched.Scheduler()
+        ent = _bench_sched.schedule_interval(
             every_seconds=every_s,
             prompt=prompt,
             reason=f"nightly benchmark watch ({model})",
@@ -4388,6 +4491,12 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
         )
         print(f"Scheduled bench entry {ent.id}: every {every_token}, "
               f"workspace {ent.workspace}")
+        # What the write had to say about the file itself: a cron.json that
+        # could not be read was moved aside rather than replaced, and the
+        # person is the only one who can rescue what was in it.
+        _note = _bench_sched.take_store_note()
+        if _note:
+            print(f"WARNING: {_note}", file=sys.stderr)
         print("Cost estimate: ~$8 per run for the 48-task KIT-Qwen suite "
               "at repeats=1 (repeats multiply cost; the suspect recheck "
               "adds up to $3 more on suspect days).")
@@ -4399,6 +4508,33 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
         print(f"Remove anytime: delete entry {ent.id} via the dashboard "
               "scheduler tools, or edit ~/.delfin/cron.json.")
         return 0
+
+    if action == "enable":
+        # The way back from a disabled entry without editing cron.json by
+        # hand. Exit code: 0 when the entry is enabled AND when it already
+        # was (the repair is idempotent, so it can be repeated or
+        # scripted), 1 for a refusal -- an emergency stop's disable, a
+        # workspace that is gone, an id that is not there -- so a caller
+        # can tell "nothing to do" from "this did not happen".
+        from .scheduler import Scheduler
+
+        entry_id = (getattr(args, "entry_id", "") or "").strip()
+        if not entry_id:
+            print("ERROR: an entry id is required; `delfin-agent scheduler "
+                  "status` lists them.", file=sys.stderr)
+            return 2
+        sched = Scheduler()
+        changed, message = sched.enable(entry_id)
+        # "Nothing to do" is read off the entry, not off the message text:
+        # a mechanism keyed on wording stops working when the wording is
+        # improved.
+        enabled_now = any(e.id == entry_id and not e.disabled
+                          for e in sched.list_entries())
+        if changed or enabled_now:
+            print(message)
+            return 0
+        print(f"ERROR: {message}", file=sys.stderr)
+        return 1
 
     if action == "stop":
         st = _sd.daemon_status()
@@ -4421,10 +4557,16 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
     st = _sd.daemon_status()
     state = f"running (PID {st['pid']})" if st["running"] else "not running"
     print(f"Scheduler daemon: {state}")
-    entries = sorted(Scheduler().list_entries(), key=lambda e: e.next_fire_at)
+    sched = Scheduler()
+    entries = sorted(sched.list_entries(), key=lambda e: e.next_fire_at)
     if not entries:
-        print("No scheduled entries (~/.delfin/cron.json is empty).")
-        return 0
+        # A damaged file is not an empty schedule: the two lead a person to
+        # opposite actions (schedule something / rescue what is in the
+        # file), so they are not reported the same way.
+        problem = sched.store_problem()
+        print(problem if problem
+              else "No scheduled entries (~/.delfin/cron.json is empty).")
+        return 1 if problem else 0
     print(f"{len(entries)} entries ({st['disabled']} disabled):")
     now = _time.time()
     for e in entries:
@@ -4439,6 +4581,17 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
         every = f", every {e.every_seconds}s" if e.kind == "interval" else ""
         ws = f" @ {e.workspace}" if e.workspace else ""
         print(f"  {e.id}  [{e.kind}{every}]  {due}{ws}  — {prompt}")
+        if e.disabled:
+            # The route back, printed beside the entry that needs it: a
+            # disabled entry used to be shown with no way to act on it but
+            # editing cron.json.
+            from .scheduler import disabled_by_emergency_stop
+            if disabled_by_emergency_stop(e.disabled_reason):
+                print("      an emergency stop disabled it; schedule the "
+                      "work again yourself to bring it back")
+            else:
+                print(f"      enable again: delfin-agent scheduler enable "
+                      f"{e.id}")
     return 0
 
 
@@ -5626,6 +5779,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     cred.set_defaults(func=cmd_credentials, cred_action="list")
 
+    # state
+    st = sub.add_parser(
+        "state",
+        help=("Show what the agent's state tree holds, and apply the "
+              "retention sweep that until now only ran at session start"),
+    )
+    st_sub = st.add_subparsers(dest="state_action", required=False)
+    st_sub.add_parser(
+        "usage", help="Size and file count per state directory, largest first"
+    ).set_defaults(state_action="usage")
+    st_prune = st_sub.add_parser(
+        "prune",
+        help=("List files past retention (default) and delete them with "
+              "--apply"))
+    st_prune.add_argument(
+        "--apply", action="store_true",
+        help="Actually delete; without it nothing is removed")
+    st.set_defaults(func=cmd_state, state_action="usage", apply=False)
+
     # session
     sess = sub.add_parser("session", help="Session inspection")
     sess_sub = sess.add_subparsers(dest="session_action", required=True)
@@ -5886,6 +6058,15 @@ def build_parser() -> argparse.ArgumentParser:
     sched_stop = sched_sub.add_parser(
         "stop", help="Stop the daemon (SIGTERM; finishes the current turn)")
     sched_stop.set_defaults(scheduler_action="stop")
+
+    sched_enable = sched_sub.add_parser(
+        "enable",
+        help=("Re-enable an entry that was disabled by failures or by a "
+              "missing workspace (ids: `scheduler status`). Refuses an "
+              "entry an emergency stop disabled"))
+    sched_enable.add_argument("entry_id",
+                              help="Entry id as `scheduler status` shows it")
+    sched_enable.set_defaults(scheduler_action="enable")
 
     sched_bench = sched_sub.add_parser(
         "add-bench",
