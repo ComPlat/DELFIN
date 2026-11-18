@@ -183,8 +183,19 @@ def compact(
     *,
     keep_last_rounds: int = 2,
     turn_rows_base: int = 0,
+    session_id: str = "",
+    workspace=None,
 ) -> tuple[list[dict], dict | None]:
-    """Compact old rounds of one turn; see the module docstring."""
+    """Compact old rounds of one turn; see the module docstring.
+
+    ``session_id`` / ``workspace`` (cap1/g2): the carry-forward block is
+    built through ``working_state.build_working_state_block``, whose
+    task-state lines, open-task list, change-journal files and last
+    finished step ALL need the session and the workspace. The caller
+    that has them passes them; without them the block stays blind
+    exactly as before (the backward-compatible default), which is why
+    both are keyword arguments with defaults rather than required.
+    """
     messages = list(messages or [])
     start = max(0, int(turn_rows_base or 0))
     rounds = _rounds(messages, start)
@@ -258,7 +269,8 @@ def compact(
         # A prior block is read as a machine turn ("[Working state"),
         # oldest first, so the extractors' newest-first rules hold.
         state_block = build_working_state_block(
-            old_states + replaced, session_id="")
+            old_states + replaced, session_id=str(session_id or ""),
+            workspace=workspace)
     except Exception:
         state_block = ""
     head = [f"{_SUMMARY_HEADER}"]

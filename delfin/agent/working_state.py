@@ -323,15 +323,25 @@ def _step_state_lines(session_id: str) -> list[str]:
 
 
 def _task_state_lines(workspace: Path | None) -> list[str]:
-    """The persistent task-state store written next to the session, if a
-    TaskState was saved there. Newest fields first; each entry clipped and
-    the section capped. Never raises (best-effort, like every reader
-    here)."""
+    """The persistent task-state store for this workspace, if one was
+    saved. Newest fields first; each entry clipped and the section capped.
+    Never raises (best-effort, like every reader here).
+
+    The path comes from ``task_state.task_state_path``, which both this
+    reader and the writer use, so the two cannot disagree about where the
+    file is. It lives under the per-workspace state root and NOT in the
+    workspace: this reader looked for ``<workspace>/task_state.json``
+    while nothing wrote it, and the first writer made the consequence
+    visible -- a state file appearing in the person's checkout.
+    """
     if workspace is None:
         return []
     try:
         from . import task_state as _ts
-        st = _ts.open(Path(workspace) / _ts.DEFAULT_FILENAME)
+        _path = _ts.task_state_path(workspace)
+        if _path is None:
+            return []
+        st = _ts.open(_path)
         st.load()
         if st.task or st.person_instruction:
             st.render()  # exercise render once so the block mirrors it
