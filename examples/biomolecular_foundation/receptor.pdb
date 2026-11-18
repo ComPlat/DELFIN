@@ -1,0 +1,7 @@
+HEADER    SYNTHETIC INPUT OUTPUT DEMONSTRATION
+ATOM      1  N   MET A   1      11.104  13.207  -2.004  1.00 25.40           N
+ATOM      2  CA  MET A   1      12.005  12.345  -1.101  1.00 18.70           C
+ATOM      3  O   MET A   1      12.700  12.100  -2.050  1.00 22.10           O
+ATOM      4  N   ALA A   2      13.120  11.550  -0.410  1.00 31.00           N
+ATOM      5  CA  ALA A   2      13.995  10.720   0.330  1.00 24.60           C
+END

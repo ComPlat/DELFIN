@@ -3795,6 +3795,64 @@ _AGENT_PAGE_JS = """
             e.stopPropagation();
         }, {capture: true, passive: true});
 
+        function applyBioStyle(viewer, bio, state) {
+            var colors = ['#628fbf', '#7fa88e', '#be9b68', '#9b85b8'];
+            viewer.setStyle({}, {});
+            viewer.removeAllShapes();
+            bio.chains.forEach(function(chain, index) {
+                if (state.chain !== '__all__' && state.chain !== chain) return;
+                viewer.setStyle({chain: chain}, {cartoon: {color: colors[index % colors.length]}});
+                viewer.addStyle({chain: chain, hetflag: true}, {stick: {radius: 0.18}});
+            });
+            var site = bio.binding_site;
+            if (site && site.kind === 'binding_box') {
+                viewer.addBox({center: {x: site.center[0], y: site.center[1], z: site.center[2]},
+                    dimensions: {w: site.size[0], h: site.size[1], d: site.size[2]},
+                    color: '#bb781e', wireframe: true, opacity: 0.7});
+            } else if (site && bio.binding_site_serials && bio.binding_site_serials.length) {
+                var selected = {serial: bio.binding_site_serials};
+                if (state.chain !== '__all__') selected.chain = state.chain;
+                viewer.addStyle(selected, {stick: {radius: 0.23, color: '#bb781e'}});
+            }
+            if (bio.water_residue_names.length) {
+                viewer.setStyle({resn: bio.water_residue_names}, {});
+                if (state.waters) {
+                    var waters = {resn: bio.water_residue_names};
+                    if (state.chain !== '__all__') waters.chain = state.chain;
+                    viewer.setStyle(waters, {sphere: {scale: 0.25, color: '#9bbfe0'}});
+                }
+            }
+        }
+
+        function wireBio(card, viewer, root) {
+            var bio = card.__delfinMol3DBio;
+            if (!bio) return;
+            root = root || card;
+            var chain = root.querySelector('.delfin-bio-chain');
+            var waters = root.querySelector('.delfin-bio-waters');
+            var state = card.__delfinMol3DBioState || {chain: '__all__', waters: false};
+            card.__delfinMol3DBioState = state;
+            if (chain) chain.value = state.chain;
+            if (waters) waters.checked = state.waters;
+            function update() {
+                if (chain) state.chain = chain.value;
+                if (waters) state.waters = waters.checked;
+                applyBioStyle(viewer, bio, state);
+                viewer.render();
+                if (card.__delfinViewer && card.__delfinViewer !== viewer) {
+                    applyBioStyle(card.__delfinViewer, bio, state);
+                    card.__delfinViewer.render();
+                    var originalChain = card.querySelector('.delfin-bio-chain');
+                    var originalWaters = card.querySelector('.delfin-bio-waters');
+                    if (originalChain) originalChain.value = state.chain;
+                    if (originalWaters) originalWaters.checked = state.waters;
+                }
+            }
+            if (chain) chain.onchange = update;
+            if (waters) waters.onchange = update;
+            applyBioStyle(viewer, bio, state);
+        }
+
         function build(card, stage) {
             var data = card.getAttribute('data-mol3d') || '';
             var fmt = card.getAttribute('data-mol3d-fmt') || 'xyz';
@@ -3828,6 +3886,8 @@ _AGENT_PAGE_JS = """
                 }
             }
             var viewer = $3Dmol.createViewer(stage, {backgroundColor: 'white'});
+            var bioText = card.getAttribute('data-mol3d-bio');
+            if (bioText) card.__delfinMol3DBio = JSON.parse(bioText);
             if (fmt === 'cube') {
                 viewer.addModel(data, 'cube');
                 viewer.setStyle({}, {stick: {radius: 0.12}, sphere: {scale: 0.22}});
@@ -3867,6 +3927,8 @@ _AGENT_PAGE_JS = """
             if (st) { try { card.__delfinMol3DStyle = JSON.parse(st); } catch (e) {} }
             card.removeAttribute('data-mol3d');
             card.__delfinViewer = viewer;
+            wireBio(card, viewer);
+            if (card.__delfinMol3DBio) viewer.render();
             wireFullscreen(card, viewer, frames, iso);
             return true;
         }
@@ -3977,6 +4039,11 @@ _AGENT_PAGE_JS = """
                 } else {
                     v2.addModel(txt, f2 || 'xyz');
                 }
+                if (card.__delfinMol3DBio) {
+                    var bioControls = card.querySelector('.delfin-bio-controls');
+                    if (bioControls) bar.appendChild(bioControls.cloneNode(true));
+                    wireBio(card, v2, bar);
+                }
                 v2.zoomTo();
                 v2.render();
             };
@@ -4018,7 +4085,10 @@ _AGENT_PAGE_JS = """
         }
         function keyOf(stage, card) {
             var d = card.getAttribute('data-mol3d') || '';
-            return (stage.id || '') + '|' + d.length + '|' + hashOf(d);
+            var configuration = (card.getAttribute('data-mol3d-bio') || '') + '|'
+                + (card.getAttribute('data-mol3d-fmt') || '') + '|'
+                + (card.getAttribute('data-mol3d-style') || '');
+            return (stage.id || '') + '|' + d.length + '|' + hashOf(d) + '|' + hashOf(configuration);
         }
         function release(kept) {
             var cv = kept.stage.querySelector('canvas');
@@ -4061,11 +4131,14 @@ _AGENT_PAGE_JS = """
                 card.__delfinMol3DData = kept.data;
                 card.__delfinMol3DTitle = kept.title;
                 card.__delfinMol3DStyle = kept.style;
+                card.__delfinMol3DBio = kept.bio;
+                card.__delfinMol3DBioState = kept.bioState;
                 card.__delfinViewerData = kept.data;
                 if (kept.frames > 1) {
                     wireTrajectory(card, kept.stage, kept.viewer, kept.frames);
                 }
                 wireFullscreen(card, kept.viewer, kept.frames, kept.iso);
+                wireBio(card, kept.viewer);
                 try { kept.viewer.resize(); kept.viewer.render(); } catch (e) {}
                 kept.gone = 0;
                 kept3d.splice(i, 1);
@@ -4114,6 +4187,8 @@ _AGENT_PAGE_JS = """
                             data: card.__delfinMol3DData || card.__delfinViewerData,
                             title: card.__delfinMol3DTitle,
                             style: card.__delfinMol3DStyle,
+                            bio: card.__delfinMol3DBio,
+                            bioState: card.__delfinMol3DBioState,
                             frames: parseInt(card.getAttribute('data-mol3d-frames') || '1', 10),
                             iso: parseFloat(card.getAttribute('data-mol3d-iso') || '0.02'),
                             gone: 0
@@ -5461,7 +5536,7 @@ def _xyz_frame_count(text: str) -> int:
 
 
 def _mol3d_card_html(path, name_html: str,
-                     isovalue: float | None = None) -> str | None:
+                     isovalue: float | None = None, bio=None) -> str | None:
     """An interactive 3D card for a structure, trajectory or orbital.
 
     Input: a path and its escaped display name. Output: HTML for the
@@ -5497,7 +5572,7 @@ def _mol3d_card_html(path, name_html: str,
     except Exception:
         pass                       # settings unreadable: draw it anyway
 
-    payload = _mol3d_payload(path, isovalue)
+    payload = _mol3d_payload(path, isovalue, bio=bio)
     if payload is None:
         return None
 
@@ -5524,7 +5599,10 @@ def _mol3d_card_html(path, name_html: str,
     # frame buttons are only emitted for trajectories; the JS already
     # guards on their absence, so a single structure keeps the card minimal.
     nav = ('<div class="delfin-mol3d-nav" '
-           'style="display:flex;align-items:center;gap:6px;padding:6px 0 0 0;">')
+           'style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:6px 0 0 0;">')
+    if payload.get("bio"):
+        from delfin.dashboard.bio_viewer import controls_html
+        nav += controls_html(payload["bio"])
     if is_traj:
         nav += (
             '<button type="button" class="delfin-mol3d-play" '
@@ -5555,8 +5633,14 @@ def _mol3d_card_html(path, name_html: str,
         'margin-left:auto;">&#9732; Fullscreen</button>'
         '</div>'
     )
+    import json
+    bio_attribute = (
+        'data-mol3d-bio="' + _html.escape(json.dumps(payload["bio"]), quote=True) + '" '
+        if payload.get("bio") else ""
+    )
     return (
         f'<div class="delfin-artifact delfin-chat-mol3d" '
+        f'{bio_attribute}'
         f'data-mol3d-fmt="{payload["fmt"]}" '
         f'data-mol3d-frames="{payload["frames"]}" '
         f'data-mol3d-iso="{payload["iso"]:g}" '
@@ -5593,7 +5677,7 @@ def _mol3d_iso(isovalue) -> float:
     return 0.02
 
 
-def _mol3d_payload(path, isovalue: float | None = None) -> dict | None:
+def _mol3d_payload(path, isovalue: float | None = None, bio=None) -> dict | None:
     """What a 3D card would show for this file, or None for no card.
 
     Input: a path, and the cube isosurface magnitude (None or not a
@@ -5614,7 +5698,8 @@ def _mol3d_payload(path, isovalue: float | None = None) -> dict | None:
     p = Path(path)
     suffix = p.suffix.lower()
     fmt = {".xyz": "xyz", ".trj": "xyz", ".traj": "xyz",
-           ".cube": "cube", ".pdb": "pdb"}.get(suffix)
+           ".cube": "cube", ".pdb": "pdb", ".ent": "pdb", ".pdb1": "pdb",
+           ".cif": "cif", ".mmcif": "cif", ".pdbx": "cif"}.get(suffix)
     if fmt is None:
         return None
     try:
@@ -5642,8 +5727,22 @@ def _mol3d_payload(path, isovalue: float | None = None) -> dict | None:
     iso = _mol3d_iso(isovalue)
     if fmt == "cube":
         label = f"volumetric data · two isosurfaces at ±{iso:g}"
-    return {"fmt": fmt, "text": text, "frames": frames, "label": label,
-            "iso": iso}
+    payload = {"fmt": fmt, "text": text, "frames": frames, "label": label, "iso": iso}
+    if fmt in ("pdb", "cif"):
+        from delfin.dashboard import chat_viewer
+        try:
+            facts = chat_viewer._bio_facts(
+                p, None, binding_site=(bio or {}).get("binding_site"),
+            )
+        except (ValueError, OSError):
+            return None
+        payload["bio"] = facts
+        payload["label"] = (
+            f"{len(facts['chains'])} chains · {facts['n_polymer_residues']} residues · "
+            f"{facts['n_waters']} waters · "
+            + (", ".join(facts["hetero_components"]) or "no hetero groups")
+        )
+    return payload
 
 
 def _tool_param_html(parsed: dict, tool_input: str) -> str:
@@ -5694,7 +5793,7 @@ def _show_molecule_card_html(tool_output) -> str | None:
         if card is not None:
             return card
     card = _mol3d_card_html(Path(payload["path"]), name_html,
-                            isovalue=payload.get("isovalue"))
+                            isovalue=payload.get("isovalue"), bio=payload.get("bio"))
     if card is not None:
         return card
     return (

@@ -15,38 +15,36 @@ with incompatible inputs and unverifiable outputs.
 | `biostructure_summary` | Composition and source-reported missing residues and links, with a JSON artifact | An inventory of the file, not a structure-quality certificate. |
 | `ligand_prepare` | RDKit-based coordinates, hydrogens and Gasteiger charges; explicit fragment policy and seed | Protonation is taken as supplied; there is no pH-dependent microstate or tautomer enumeration. |
 | `pose_rmsd` | Symmetry-aware heavy-atom RMSD in the existing coordinate frame; failed poses retained in the report | It evaluates supplied poses; it does not run docking or estimate an affinity. |
-| `structure_confidence` | Per-residue confidence and optional PAE input, with a JSON artifact | File interpretation and confidence provenance still need the checks below. |
+| `structure_confidence` | Named mmCIF pLDDT, opt-in B-factor interpretation, model/residue mapping and optional PAE | PAE dimensions are checked; sequence correspondence cannot be established from the matrix alone. |
 | `structure_prediction_engine` | FASTA parsing, engine detection on a supplied PATH and described commands | Detection only. No predictor is executed, installed or downloaded. |
-| Chat card payload | Python-derived chain, hetero-component and water facts, plus an optional binding-site descriptor | This is the decision/data layer; the specialised browser view is not yet complete. |
+| Protein chat view | PDB/mmCIF cartoons, chain selection, hetero sticks, water toggle, binding boxes and residue highlights; fullscreen state | HTML and JavaScript control tests pass; real browser/WebGL verification remains outstanding. |
+| Offline example | Real pipeline discovery and wiring for summary, ligand preparation and pose RMSD; input hashes and reports | Synthetic fixtures demonstrate data flow, not scientific docking performance. |
 
 The shared validator accepts a consumed port when the caller supplies its wired
 input parameter explicitly. The runner also reports declared products missing
 from a successful result. That report does not make the step fail automatically;
 callers must not mistake it for proof that every declared artifact exists.
 
-## Work to finish before claiming the foundation is complete
+## Interpretation and validation boundaries
 
-1. **Connect the protein view end to end.** `chat_viewer` attaches `bio` facts,
-   but `_show_molecule_card_html` currently calls the generic 3D renderer without
-   passing them on. `_mol3d_payload` recognises PDB but not mmCIF. Wire cartoon
-   styling, chain selection, hetero components, water visibility and binding-site
-   display into the rendering path. Test the final card and browser behaviour,
-   not only the JSON payload.
-2. **Make confidence provenance explicit.** Equal per-residue B-factors within
-   0–100 do not by themselves identify pLDDT. Preserve the producer and metric
-   identity, offer an explicit interpretation where needed, and distinguish
-   unavailable confidence from an experimental origin. A missing metric does
-   not establish how a structure was obtained. Check PAE dimensions against the
-   selected model and keep model, chain and residue mapping in the report.
-3. **Validate descriptors at the boundary.** Reject non-finite coordinates,
-   sizes, scores and confidence values; check declared units and preserve residue
-   identity across models and alternate locations. Maintain path checks for
-   complex components and plain report filenames on direct and runner routes.
-4. **Add a small recorded end-to-end example.** A receptor, bound reference
-   ligand and pose set should pass through summary, preparation and pose
-   evaluation via ordinary discovery and pipeline wiring. Pin inputs, expected
-   artifacts and provenance. An offline recorded run and an operator-run live
-   calculation are separate pieces of evidence.
+Equal B-factors do not identify pLDDT. Callers must explicitly set
+`b_factor_is_plddt=True` for that interpretation; the default is unavailable
+unless a named mmCIF metric exists. Missing confidence does not identify an
+experimental origin. mmCIF metrics retain model, author chain/residue and
+insertion-code identity; ambiguous mappings are refused. Reports record the
+interpretation and coordinate residue order. PAE values must be finite and
+nonnegative and match the selected model's polymer-residue count, but a matrix
+without sequence metadata cannot prove sequence correspondence.
+
+Binding boxes reject non-finite coordinates and sizes and unsupported units.
+Complex-component path checks and plain report filenames remain enforced.
+The runnable example in `examples/biomolecular_foundation` records input hashes,
+actual artifacts and expected RMSDs of 0, 1 and 3 angstrom. Its incomplete
+synthetic receptor and arbitrary scores are not scientific validation data.
+
+Before calling the complete workflow validated, exercise the protein controls
+in a real browser, record producer provenance from real engines, and run a
+scientifically meaningful reference calculation through the adapters below.
 
 ## Next adapters to add, in order
 
@@ -86,6 +84,13 @@ energy. An optional later path can extract a documented pocket or cluster for
 QM/QM-MM work, preserving atom mapping, capping choices, charge and multiplicity.
 
 ## Integration check on 18 November 2026
+
+The subsequent viewer/confidence/example update passes **261 focused Python
+tests**. `node tests/bio_viewer_runtime.cjs` executes the actual viewer helpers
+with mocks and checks styles, water/chain controls, binding sites, fullscreen
+state and cache invalidation. These are not browser/WebGL integration tests.
+The example also completes through its command-line entry point; this sandbox
+refuses the optional global chain-index write, while local reports are produced.
 
 The draft was merged locally with main at
 `03a02d048f674a972d6c2e2551908eb5ece24b6c`, without conflicts. Revalidation

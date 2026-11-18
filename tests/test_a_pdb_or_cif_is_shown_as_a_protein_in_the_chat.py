@@ -116,6 +116,62 @@ def _result(path) -> str:
     return chat_viewer.render_molecule_tool_result(str(path))
 
 
+def _rendered_attributes(card):
+    from html.parser import HTMLParser
+
+    class CardParser(HTMLParser):
+        attributes = None
+
+        def handle_starttag(self, tag, attrs):
+            attributes = dict(attrs)
+            if "delfin-chat-mol3d" in attributes.get("class", "").split():
+                self.attributes = attributes
+
+    parser = CardParser()
+    parser.feed(card)
+    assert parser.attributes is not None
+    return parser.attributes
+
+
+@pytest.mark.parametrize("fixture_name, expected_format", [
+    ("protein_pdb", "pdb"), ("protein_cif", "cif"),
+])
+def test_the_rendered_card_receives_the_bio_facts(request, fixture_name, expected_format):
+    from delfin.dashboard import tab_agent
+
+    path = request.getfixturevalue(fixture_name)
+    card = tab_agent._show_molecule_card_html(_result(path))
+    assert card is not None
+    attributes = _rendered_attributes(card)
+    assert attributes["data-mol3d-fmt"] == expected_format
+    assert json.loads(attributes["data-mol3d-bio"])["chains"] == ["A", "B"]
+    assert "delfin-bio-chain" in card
+    assert "delfin-bio-waters" in card
+    assert "residues" in card
+
+
+def test_the_final_card_receives_the_binding_site(protein_pdb):
+    from delfin.dashboard import tab_agent
+
+    box = BindingBox(center=(5, 1, 1), size=(10, 10, 10))
+    result = chat_viewer.render_molecule_tool_result(
+        str(protein_pdb), binding_site=box,
+    )
+    card = tab_agent._show_molecule_card_html(result)
+    bio = json.loads(_rendered_attributes(card)["data-mol3d-bio"])
+    assert bio["binding_site"] == box.to_dict()
+
+
+def test_an_xyz_card_does_not_get_protein_controls(tmp_path):
+    from delfin.dashboard import tab_agent
+
+    path = tmp_path / "water.xyz"
+    path.write_text("3\nwater\nO 0 0 0\nH 1 0 0\nH 0 1 0\n")
+    card = tab_agent._show_molecule_card_html(_result(path))
+    assert "delfin-bio-chain" not in card
+    assert "data-mol3d-bio" not in _rendered_attributes(card)
+
+
 def _payload(path) -> dict:
     out = chat_viewer.card_payload(_result(path))
     assert out is not None, "no card payload at all"

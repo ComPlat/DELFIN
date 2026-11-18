@@ -104,7 +104,7 @@ def _isovalue(value) -> "float | None":
     return abs(float(value))
 
 
-def _bio_facts(path, workspace_root) -> dict:
+def _bio_facts(path, workspace_root, binding_site=None) -> dict:
     """What Python decides a protein card shows: chains, hetero, waters.
 
     Read with :mod:`delfin.tools.bio` (no browser parsing, no
@@ -125,7 +125,7 @@ def _bio_facts(path, workspace_root) -> dict:
         residue.name
         for chain in structure.first_model.chains
         for residue in chain.waters})
-    return {
+    facts = {
         "chains": list(comp.chain_ids),
         "n_polymer_residues": comp.n_polymer_residues,
         "hetero_components": {name: n for name, n in comp.hetero_components},
@@ -135,6 +135,18 @@ def _bio_facts(path, workspace_root) -> dict:
         # blanks exactly those and nothing else.
         "water_residue_names": water_names,
     }
+    if binding_site is not None:
+        site = _binding_site(binding_site)
+        facts["binding_site"] = site
+        if site["kind"] == "residue_selection":
+            selected = {(item["chain_id"], item["seq_id"], item["insertion_code"])
+                        for item in site["residues"]}
+            facts["binding_site_serials"] = [
+                atom.serial for residue in structure.first_model.residues
+                if (residue.chain_id, residue.seq_id, residue.insertion_code) in selected
+                for atom in residue.primary_atoms
+            ]
+    return facts
 
 
 def _binding_site(site) -> dict:

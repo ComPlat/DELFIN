@@ -1,44 +1,10 @@
-"""Confidence of a predicted model, as a building block.
+"""Report explicitly identified confidence for a selected structure model.
 
-Input: a PDB or mmCIF file (``structure_file``, the ``macromolecule`` port)
-and optionally the confidence JSON the AlphaFold Database publishes beside a
-model (``pae_file``).  Output: a :class:`~delfin.tools._types.StepResult`
-whose ``data`` holds what the file says about its own certainty and whose
-``json_report`` artifact holds the same as a file.
-
-Reported, and why each piece:
-
-* ``mean_plddt`` and ``mean_plddt_per_chain`` — the per-residue pLDDT the
-  file carries, averaged overall and per chain.  A chain average is what a
-  builder looks at first: one floppy loop does not make a model unusable, a
-  whole chain at 40 does.
-* ``ranges_below_70`` and ``ranges_below_50`` — the runs of consecutive
-  residues under each band, as chain/start/end/length.  A range is
-  actionable (delete it, model a ligand elsewhere); 200 single-residue flags
-  are not.  The bands are AlphaFold's own: 70 confident, 50 low, below that
-  very low.
-* ``has_confidence`` / ``plddt_source`` / ``statement`` — an experimental
-  structure carries no confidence, and this block says so plainly, in a
-  statement a report can quote, instead of zeros that read as "the model is
-  0% sure".
-* ``has_pae`` / ``pae_max`` / ``pae_n_residues`` — the predicted-aligned-
-  error matrix when a ``pae_file`` is given, read with its documented keys
-  (``predicted_aligned_error``, ``max_predicted_aligned_error``; Váradi et
-  al., Nucleic Acids Research 52:D1, 2024, doi:10.1093/nar/gkad1011).
-
-Semantics: the pLDDT is read from the file itself — the mmCIF
-``ma_qa_metric_local`` category where the file names the metric, else the
-B-factor column where a prediction wrote the same per-residue value on every
-atom.  B-factors that differ between the atoms of a residue, or sit outside
-0-100, or are identical across the whole file are *no confidence*, never
-numbers: a crystallographic B-factor read as a pLDDT would be a plausible
-wrong answer about how sure a model is.
-
-The block runs no external program (``requires_binaries`` and
-``requires_python`` are empty) and reads through :mod:`delfin.tools.bio`.
-
-Failures are kinds, not prose: a missing file is ``MISSING_INPUT``, an
-unreadable structure is ``PARSE``, an unreadable PAE file is ``PARSE``.
+Named mmCIF pLDDT is read automatically. B-factor interpretation requires
+``b_factor_is_plddt=True``. Missing confidence does not identify the origin of
+a structure. Optional PAE input must match the selected polymer residue count;
+the report records coordinate-file residue order without claiming a verified
+sequence alignment. No prediction or external calculation is started.
 """
 
 from __future__ import annotations
@@ -73,6 +39,7 @@ def _ranges(values, threshold: float) -> List[Dict[str, Any]]:
             and current["chain_id"] == residue.chain_id
             and residue.seq_id == current["end_seq_id"] + 1
             and not residue.insertion_code
+            and not current.get("end_insertion_code")
         )
         if same_run:
             current["end_seq_id"] = residue.seq_id
@@ -82,6 +49,9 @@ def _ranges(values, threshold: float) -> List[Dict[str, Any]]:
                        "start_seq_id": residue.seq_id,
                        "end_seq_id": residue.seq_id,
                        "n_residues": 1}
+            if residue.insertion_code:
+                current["start_insertion_code"] = residue.insertion_code
+                current["end_insertion_code"] = residue.insertion_code
             ranges.append(current)
     return ranges
 
@@ -89,8 +59,8 @@ def _ranges(values, threshold: float) -> List[Dict[str, Any]]:
 def _statement(values, source: str) -> str:
     """A sentence a report can quote about what the file says."""
     if not values:
-        return ("The file carries no per-residue confidence: this reads as an "
-                "experimental structure, not a predicted model.")
+        return ("The file carries no per-residue confidence with an explicit metric "
+                "interpretation; its experimental or predicted origin is not established.")
     scored = [v for _, v in values]
     mean = sum(scored) / len(scored)
     below50 = sum(1 for v in scored if v < PLDDT_VERY_LOW)
@@ -108,10 +78,9 @@ class StructureConfidenceAdapter(StepAdapter):
     name = "structure_confidence"
     description = (
         "Confidence of a predicted model, read from the file itself: per-"
-        "residue pLDDT (mmCIF ma_qa_metric_local or PDB B-factor), mean per "
+        "residue pLDDT (named mmCIF metric or explicitly interpreted B-factor), mean per "
         "chain, residue ranges below 70 and 50, and the AlphaFold PAE JSON "
-        "when given.  An experimental structure is reported as carrying no "
-        "confidence"
+        "when given. Missing confidence does not establish the structure's origin"
     )
     category = "structure"
     produces_geometry = False
@@ -124,11 +93,17 @@ class StructureConfidenceAdapter(StepAdapter):
         ParamSpec("pae_file", "path",
                   description="Optional PAE JSON (predicted_aligned_error / "
                               "max_predicted_aligned_error) beside the model"),
+        ParamSpec("b_factor_is_plddt", "bool", default=False,
+                  description="Explicitly interpret per-residue B-factors as pLDDT"),
+        ParamSpec("model", "int", description="Model number; defaults to the first model"),
         ParamSpec("report_name", "str", default="structure_confidence.json",
                   description="File name of the JSON report written into "
                               "work_dir"),
     )
     data_keys = (
+        DataKeySpec("model_id", "int", description="Selected structure model"),
+        DataKeySpec("confidence_interpretation", "str"),
+        DataKeySpec("pae_residue_order", "list", description="Coordinate-file order, not verified sequence alignment"),
         DataKeySpec("has_confidence", "bool",
                     description="Whether the file carries per-residue "
                                 "confidence"),
@@ -162,6 +137,11 @@ class StructureConfidenceAdapter(StepAdapter):
                 "'structure_file' parameter is required (a PDB or mmCIF file)"
             )
         report_file_name(kwargs.get("report_name"), default="structure_confidence.json")
+        if not isinstance(kwargs.get("b_factor_is_plddt", False), bool):
+            raise ValueError("b_factor_is_plddt must be a boolean")
+        model_id = kwargs.get("model")
+        if model_id is not None and (isinstance(model_id, bool) or int(model_id) != float(model_id)):
+            raise ValueError("model must be an integer")
 
     def execute(
         self,
@@ -174,6 +154,7 @@ class StructureConfidenceAdapter(StepAdapter):
         kwargs.pop("_prev_artifacts", None)
         start = time.monotonic()
         try:
+            self.validate_params(**kwargs)
             report_name = report_file_name(
                 kwargs.get("report_name"), default="structure_confidence.json",
             )
@@ -206,11 +187,21 @@ class StructureConfidenceAdapter(StepAdapter):
                 error=str(exc), error_kind=ErrorKind.PARSE,
             )
 
-        values = structure.plddt_per_residue()
+        model_id = kwargs.get("model")
+        try:
+            model = structure.first_model if model_id is None else structure.model(int(model_id))
+            values = structure.plddt_per_residue(
+                model.model_id, b_factor_is_plddt=kwargs.get("b_factor_is_plddt", False),
+            )
+        except (ValueError, KeyError, StructureFormatError) as exc:
+            return self._make_result(
+                self.name, StepStatus.FAILED, work_dir, start,
+                error=str(exc), error_kind=ErrorKind.PARSE,
+            )
         if values:
             source = ("mmcif_ma_qa_metric_local"
                       if structure.source_format == "mmcif"
-                      and structure.qa_metric_local else "pdb_b_factor")
+                      and structure.qa_metric_local else structure.source_format + "_b_factor")
         else:
             source = "none"
 
@@ -224,6 +215,11 @@ class StructureConfidenceAdapter(StepAdapter):
         mean = sum(scored) / len(scored) if scored else None
 
         data: Dict[str, Any] = {
+            "model_id": model.model_id,
+            "confidence_interpretation": (
+                "declared_mmcif_metric" if values and structure.qa_metric_local
+                else "explicit_b_factor" if values else "unavailable"
+            ),
             "has_confidence": bool(values),
             "plddt_source": source,
             "mean_plddt": mean,
@@ -255,6 +251,17 @@ class StructureConfidenceAdapter(StepAdapter):
                     error=str(exc), error_kind=ErrorKind.PARSE,
                 )
             data["has_pae"] = True
+            residues = [residue for chain in model.chains for residue in chain.polymer_residues]
+            if pae.n_residues != len(residues):
+                return self._make_result(
+                    self.name, StepStatus.FAILED, work_dir, start,
+                    error=f"PAE has {pae.n_residues} rows for {len(residues)} selected polymer residues",
+                    error_kind=ErrorKind.UNSUITABLE_INPUT,
+                )
+            data["pae_residue_order"] = [
+                {"chain_id": residue.chain_id, "seq_id": residue.seq_id,
+                 "insertion_code": residue.insertion_code} for residue in residues
+            ]
             data["pae_max"] = pae.max_predicted_aligned_error
             data["pae_n_residues"] = pae.n_residues
 

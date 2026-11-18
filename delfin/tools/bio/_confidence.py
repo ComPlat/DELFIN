@@ -1,33 +1,10 @@
-"""Confidence of a predicted model, read from the file itself.
+"""Per-residue confidence with an explicit source interpretation.
 
-Input: the parsed structure (``plddt_per_residue`` on
-:class:`~delfin.tools.bio.MacromolecularStructure`) or the JSON file the
-AlphaFold Database publishes beside a model (``read_pae``).  Output: the
-per-residue pLDDT values the file carries, and the predicted-aligned-error
-matrix as :class:`PredictedAlignedError`.
-
-Semantics, and the decision that keeps the number honest:
-
-* **pLDDT is a per-residue value; the B-factor column is only a prediction's
-  way of storing it.**  An AlphaFold-style PDB writes the same B-factor for
-  every atom of one residue, in 0-100.  An experimental structure does not:
-  its B-factors differ between the atoms of a residue, or are zero across an
-  NMR ensemble, or sit outside the 0-100 range.  All of those are read as
-  *no confidence*, never as numbers — a crystallographic B-factor read as a
-  pLDDT would be a plausible wrong answer about how sure a model is.
-* **mmCIF carries the value where the format says confidence lives.**  The
-  ``ma_qa_metric_local`` category, rows of one ``pLDDT`` metric, is read
-  directly; it outranks the B-factor column when both are present, because
-  the file names the metric rather than borrowing a column.
-* **The PAE JSON is read with its documented keys** (``predicted_aligned_error``,
-  ``max_predicted_aligned_error``; Váradi et al., Nucleic Acids Research
-  52:D1, 2024, doi:10.1093/nar/gkad1011).  A matrix that is not square, a
-  file without the keys, or values that are not numbers are refused — half
-  of a confidence statement is worse than none.
-
-Rejected alternative: guessing a prediction from a REMARK or from the file
-name.  A depositor's label is not the file's own arithmetic, and the labels
-differ between producers.
+Named mmCIF pLDDT metrics are mapped to a model, chain, residue and insertion
+code. B-factors are interpreted as pLDDT only when the caller explicitly opts
+in. An unavailable metric establishes neither experimental nor predicted
+origin. PAE inputs are finite, nonnegative square matrices with a stated upper
+bound; the adapter separately checks their size against the chosen model.
 """
 
 from __future__ import annotations
@@ -60,10 +37,9 @@ def _plddt_from_atoms(residues) -> List[Tuple[object, float]]:
     A residue yields a value when every one of its primary-atom B-factors is
     the same number within 0.01 (a prediction writes the per-residue value on
     each atom) and inside 0-100.  The first residue that breaks the pattern
-    ends the reading for the whole structure: one residue with
-    crystallographic B-factors means the file's B-factors are not per-residue
-    confidence, and a half-read would report the unmodified part of a
-    structure as if it were a prediction.
+    ends the reading for the whole structure to avoid reporting partial
+    confidence. This check validates an explicitly requested interpretation;
+    it does not establish whether coordinates were predicted or experimental.
     """
     out: List[Tuple[object, float]] = []
     for residue in residues:
@@ -71,34 +47,41 @@ def _plddt_from_atoms(residues) -> List[Tuple[object, float]]:
         if not atoms:
             continue
         values = [atom.b_factor for atom in atoms]
-        if any(v < -0.01 or v > 100.01 for v in values):
-            return []
+        if any(not math.isfinite(value) or not 0 <= value <= 100 for value in values):
+            raise StructureFormatError("Explicit pLDDT B-factors must be finite values in 0–100")
         value = values[0]
         if any(abs(v - value) > 0.01 for v in values):
             return []
-        if value <= 0.0 and len(out) == 0 and all(v == 0.0 for v in values):
-            # An all-zero first residue is an NMR structure until another
-            # residue proves otherwise; a prediction writes real values.
-            continue
         out.append((residue, value))
     return out
 
 
-def _plddt_from_mmcif_metric(rows_by_chain, residues):
+def _plddt_from_mmcif_metric(rows_by_chain, residues, model_id, model_count):
     """``ma_qa_metric_local`` rows keyed by (chain, seq_id) -> value."""
     by_key = {}
-    for chain_id, seq_id, value in rows_by_chain:
-        by_key[(chain_id, seq_id)] = value
+    for row in rows_by_chain:
+        chain_id, seq_id, value = row[:3]
+        metric_model, insertion_code = row[3:] if len(row) == 5 else (None, "")
+        if metric_model is None and model_count != 1:
+            raise StructureFormatError("pLDDT metrics need a model id for a multi-model structure")
+        if metric_model is not None and metric_model != model_id:
+            continue
+        if not math.isfinite(value) or not 0 <= value <= 100:
+            raise StructureFormatError("pLDDT metric values must be finite numbers in 0–100")
+        key = (chain_id, seq_id, insertion_code)
+        if key in by_key:
+            raise StructureFormatError(f"Duplicate pLDDT metric for residue {key}")
+        by_key[key] = value
     out = []
     for residue in residues:
-        value = by_key.get((residue.chain_id, residue.seq_id))
+        value = by_key.get((residue.chain_id, residue.seq_id, residue.insertion_code))
         if value is None:
-            return []          # an un-scored residue: no half-read
+            raise StructureFormatError(f"No pLDDT metric for residue {residue.label} in model {model_id}")
         out.append((residue, value))
     return out
 
 
-def confidence_residues(structure, model_id=None):
+def confidence_residues(structure, model_id=None, *, b_factor_is_plddt=False):
     """The residues the structure scores, with their pLDDT, or ``()``.
 
     The mmCIF ``ma_qa_metric_local`` category is preferred where the parser
@@ -106,14 +89,16 @@ def confidence_residues(structure, model_id=None):
     route.  An empty tuple means the file carries no per-residue confidence
     that this reader can vouch for.
     """
+    if not isinstance(b_factor_is_plddt, bool):
+        raise ValueError("b_factor_is_plddt must be a boolean")
     model = structure.first_model if model_id is None else structure.model(model_id)
     residues = [r for c in model.chains for r in c.polymer_residues]
     metric = getattr(structure, "qa_metric_local", None)
     if metric:
-        values = _plddt_from_mmcif_metric(metric, residues)
-        if values:
-            return tuple(values)
-    return tuple(_plddt_from_atoms(residues))
+        return tuple(_plddt_from_mmcif_metric(metric, residues, model.model_id, len(structure.models)))
+    if b_factor_is_plddt:
+        return tuple(_plddt_from_atoms(residues))
+    return ()
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +137,8 @@ class PredictedAlignedError:
 
 def parse_pae_json(data, source_name: str = "<json>") -> PredictedAlignedError:
     """Read the PAE object with its documented keys; refuse anything else."""
+    if isinstance(data, list) and len(data) == 1:
+        data = data[0]
     if not isinstance(data, dict):
         raise StructureFormatError(
             f"{source_name}: the confidence JSON is not an object with the "
@@ -186,14 +173,18 @@ def parse_pae_json(data, source_name: str = "<json>") -> PredictedAlignedError:
                     f"{source_name}: the PAE matrix holds a value that is not "
                     f"a number ({entry!r})"
                 )
+            if not math.isfinite(entry) or entry < 0:
+                raise StructureFormatError(f"{source_name}: PAE entries must be finite and nonnegative")
             values.append(float(entry))
         parsed.append(values)
     maximum = data["max_predicted_aligned_error"]
     if isinstance(maximum, bool) or not isinstance(maximum, (int, float)) \
-            or not math.isfinite(maximum):
+            or not math.isfinite(maximum) or maximum < 0:
         raise StructureFormatError(
             f"{source_name}: 'max_predicted_aligned_error' is not a number"
         )
+    if any(value > maximum + 1e-6 for row in parsed for value in row):
+        raise StructureFormatError(f"{source_name}: PAE entry exceeds max_predicted_aligned_error")
     return PredictedAlignedError(parsed, float(maximum), source_name)
 
 

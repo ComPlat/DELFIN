@@ -149,10 +149,10 @@ def _write(tmp_path: Path, name: str, text: str) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def test_plddt_is_read_from_the_pdb_b_factor_column(tmp_path):
+def test_plddt_is_read_from_an_explicit_pdb_b_factor_interpretation(tmp_path):
     path = _write(tmp_path, "model.pdb", PREDICTED_PDB)
     structure = read_structure(path)
-    values = structure.plddt_per_residue()
+    values = structure.plddt_per_residue(b_factor_is_plddt=True)
     assert [v for _, v in values] == [90.5, 40.0, 20.0]
     assert [r.seq_id for r, _ in values] == [1, 2, 3]
 
@@ -219,7 +219,8 @@ def test_a_non_square_pae_matrix_is_refused(tmp_path):
 def _run(tmp_path: Path, structure_text: str, suffix: str,
          pae_text: str | None = None):
     path = _write(tmp_path, f"model{suffix}", structure_text)
-    kwargs = {"structure_file": str(path), "work_dir": tmp_path}
+    kwargs = {"structure_file": str(path), "work_dir": tmp_path,
+              "b_factor_is_plddt": True}
     if pae_text is not None:
         kwargs["pae_file"] = str(_write(tmp_path, "confidences.json", pae_text))
     return run_step(STEP, **kwargs)

@@ -359,15 +359,12 @@ def _modified_residues(categories) -> Dict[Tuple[str, int, str], Tuple[str, str]
     return out
 
 
-def _qa_metric_local(categories, source) -> Tuple[Tuple[str, int, float], ...]:
-    """``_ma_qa_metric_local`` rows of a pLDDT metric → (chain, seq, value).
+def _qa_metric_local(categories, source) -> tuple:
+    """Return (author chain, author seq, value, model, insertion code) rows.
 
-    The category holds per-residue quality metrics for predicted models; the
-    metric's identity lives in ``_ma_qa_metric`` (type ``pLDDT``).  Rows of
-    the first metric declared with type pLDDT are kept; a category with no
-    pLDDT metric yields nothing, which is what an experimental file looks
-    like here too.  Auth numbering is used when present, because the
-    coordinates are keyed by auth numbering (see :func:`_build_models`).
+    Resolve the named pLDDT metric and map label identities through atom_site.
+    Multiple metrics or ambiguous model mappings require explicit selection
+    and are refused. Absence of this metric does not identify file origin.
     """
     plddt_ids = set()
     for row in categories.get("_ma_qa_metric", []):
@@ -377,23 +374,51 @@ def _qa_metric_local(categories, source) -> Tuple[Tuple[str, int, float], ...]:
                 plddt_ids.add(metric_id)
     if not plddt_ids:
         return ()
-    out: List[Tuple[str, int, float]] = []
+    if len(plddt_ids) != 1:
+        raise StructureFormatError(f"{source}: multiple pLDDT metrics need an explicit selection")
+    atom_mapping = {}
+    for atom in categories.get("_atom_site", []):
+        label_chain = _item(atom, "_atom_site.label_asym_id")
+        label_seq = _item(atom, "_atom_site.label_seq_id")
+        model_id = int(_item(atom, "_atom_site.pdbx_PDB_model_num") or "1")
+        identity = (
+            _item(atom, "_atom_site.auth_asym_id", "_atom_site.label_asym_id"),
+            _item(atom, "_atom_site.auth_seq_id", "_atom_site.label_seq_id"),
+            _item(atom, "_atom_site.pdbx_PDB_ins_code"),
+        )
+        atom_mapping.setdefault((label_chain, label_seq), set()).add((model_id, *identity))
+    out = []
     for row in categories.get("_ma_qa_metric_local", []):
-        if _item(row, "_ma_qa_metric_local.ma_qa_metric_id") not in plddt_ids:
+        if _item(row, "_ma_qa_metric_local.metric_id", "_ma_qa_metric_local.ma_qa_metric_id") not in plddt_ids:
             continue
+        model_text = _item(row, "_ma_qa_metric_local.model_id")
+        try:
+            model_id = int(model_text) if model_text else None
+        except ValueError:
+            raise StructureFormatError(f"{source}: invalid pLDDT model id {model_text!r}") from None
+        label_chain = _item(row, "_ma_qa_metric_local.label_asym_id")
+        label_seq = _item(row, "_ma_qa_metric_local.label_seq_id")
+        identities = {identity for identity in atom_mapping.get((label_chain, label_seq), ())
+                      if model_id is None or identity[0] == model_id}
+        if len(identities) > 1:
+            raise StructureFormatError(f"{source}: ambiguous pLDDT residue/model mapping")
         seq_text = _item(row, "_ma_qa_metric_local.auth_seq_id",
                          "_ma_qa_metric_local.label_seq_id")
+        chain_id = _item(row, "_ma_qa_metric_local.auth_asym_id", "_ma_qa_metric_local.label_asym_id")
+        insertion_code = ""
+        if identities:
+            coordinate_model, chain_id, seq_text, insertion_code = next(iter(identities))
+            model_id = coordinate_model
         try:
             seq_id = int(seq_text)
         except ValueError:
-            continue
-        value = _item(row, "_ma_qa_metric_local.ma_qa_metric.value")
+            raise StructureFormatError(f"{source}: invalid pLDDT residue id {seq_text!r}") from None
+        value = _item(row, "_ma_qa_metric_local.metric_value", "_ma_qa_metric_local.ma_qa_metric.value")
         try:
             value = float(value)
         except ValueError:
-            continue
-        out.append((_item(row, "_ma_qa_metric_local.auth_asym_id",
-                          "_ma_qa_metric_local.label_asym_id"), seq_id, value))
+            raise StructureFormatError(f"{source}: invalid pLDDT metric value {value!r}") from None
+        out.append((chain_id, seq_id, value, model_id, insertion_code))
     return tuple(out)
 
 

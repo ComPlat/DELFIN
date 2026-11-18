@@ -24,6 +24,7 @@ above).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
@@ -36,6 +37,8 @@ def _as_point(value: Sequence[float], what: str) -> _Point:
     values = tuple(float(v) for v in value)
     if len(values) != 3:
         raise ValueError(f"{what} needs three numbers, got {len(values)}")
+    if not all(math.isfinite(coordinate) for coordinate in values):
+        raise ValueError(f"{what} needs finite coordinates")
     return values  # type: ignore[return-value]
 
 
@@ -74,10 +77,10 @@ class BindingBox:
         meant.  A flat set of points (a planar ligand, a single atom) still
         yields a usable box because the padding alone is positive.
         """
-        values = [tuple(float(c) for c in p) for p in points]
+        values = [_as_point(point, "box point") for point in points]
         if not values:
             raise ValueError("a binding box needs at least one point")
-        if padding <= 0.0:
+        if not math.isfinite(padding) or padding <= 0.0:
             raise ValueError(f"padding must be a positive distance, got {padding}")
         mins = [min(v[i] for v in values) for i in range(3)]
         maxs = [max(v[i] for v in values) for i in range(3)]
@@ -104,6 +107,8 @@ class BindingBox:
 
     @classmethod
     def from_dict(cls, data: Dict[str, object]) -> "BindingBox":
+        if data.get("unit", "angstrom") != "angstrom":
+            raise ValueError("binding box unit must be angstrom")
         if data.get("kind") not in (None, "binding_box"):
             raise ValueError(f"not a binding box: kind={data.get('kind')!r}")
         return cls(center=data["center"], size=data["size"])  # type: ignore[arg-type]
@@ -192,7 +197,7 @@ def residues_around(
     by default because a selection reports what is in the sphere; a caller
     that treats them as solvent says so with ``include_waters=False``.
     """
-    if radius <= 0.0:
+    if not math.isfinite(radius) or radius <= 0.0:
         raise ValueError(f"radius must be a positive distance, got {radius}")
     cx, cy, cz = _as_point(point, "point")
     limit = radius * radius
