@@ -75,6 +75,26 @@ def main() -> int:
         ok = False
     else:
         print(f"tabs: {_TABS_HELP and len(_TABS_HELP)} entries, none thin")
+
+    # Rich structure: every tab needs widgets or flow content.
+    no_structure = [n for n, _p, w, f, _i in _TABS_HELP
+                    if not (w.strip() or f.strip())]
+    if no_structure:
+        print("FAIL tab entries without widgets/flow structure:",
+              no_structure[:5])
+        ok = False
+    else:
+        print("tabs: all entries carry widgets/flow structure")
+
+    # Searchability: every tab name must be in the header-search tab list.
+    from delfin.dashboard.header_keysearch import _tab_entries
+    tab_names = {e["name"] for e in _tab_entries()}
+    unsearchable = [n for n, *_r in _TABS_HELP if n not in tab_names]
+    if unsearchable:
+        print("FAIL tabs not searchable in the header:", unsearchable[:5])
+        ok = False
+    else:
+        print("tabs: all searchable in the header search")
     return 0 if ok else 1
 
 

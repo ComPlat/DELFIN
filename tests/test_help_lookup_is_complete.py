@@ -63,6 +63,25 @@ def test_every_dashboard_tab_has_a_tabs_help_entry():
         assert len(d.strip()) >= 25, "a tab entry is too thin"
 
 
+def test_every_dashboard_tab_entry_is_rich():
+    """Every tab entry carries widgets/flow structure, not just a one-liner."""
+    from delfin.dashboard.tab_help import _TABS_HELP
+
+    for t, _d, widgets, flow, _interactions in _TABS_HELP:
+        assert widgets.strip() or flow.strip(), (
+            f"tab '{t}' has no widget/flow structure in its guide entry")
+
+
+def test_every_tab_is_findable_in_header_search():
+    """Each tab name from _TABS_HELP appears in the header-search tab list."""
+    from delfin.dashboard.tab_help import _TABS_HELP
+    from delfin.dashboard.header_keysearch import _tab_entries
+
+    tab_names = {e["name"] for e in _tab_entries()}
+    for t, *_rest in _TABS_HELP:
+        assert t in tab_names, f"tab '{t}' is not searchable in the header"
+
+
 def test_lookup_reports_no_entry_for_something_that_is_not_there():
     r = lookup("definitely_not_a_key_or_tab_xyz")
     assert not r["found"] and r["entries"] == []
