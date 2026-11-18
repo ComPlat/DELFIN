@@ -213,13 +213,9 @@ class TestR3ParallelPytestBasetempDeletion:
         assert home.is_dir()
         shutil.rmtree(standin)
         run = _run(argv)
-        # The real contract (operator rerun 4): with the exec-boundary
-        # ensure, the run may still FAIL -- deleting the whole basetemp
-        # removes the command's workspace, and bwrap refusing to chdir
-        # into a missing workspace is CORRECT and must stay. What the
-        # fix guarantees is that the failure is never the measured
-        # EROFS/mask-target refusal: no "Read-only file system" and no
-        # "Can't mkdir parents" on the tmpfs mask.
+        # The workspace lies outside the deleted stand-in, so with the
+        # exec-boundary ensure the command runs; without it bwrap dies
+        # with the measured EROFS refusal on the vanished mask target.
         err = run.stderr or ""
         assert "Read-only file system" not in err, (
             "the measured EROFS mask refusal returned (the exec-boundary "
@@ -227,10 +223,7 @@ class TestR3ParallelPytestBasetempDeletion:
         assert "Can't mkdir parents" not in err, (
             "bwrap had to create a missing mask target under the "
             f"read-only bind:\nstderr: {err}")
-        # (3) the failure names the missing workspace, not the mask.
-        assert str(ws) in err, (
-            "bwrap's refusal does not name the missing workspace it was "
-            f"to chdir into:\nstderr: {err}")
+        assert run.returncode == 0, f"stderr: {err}"
         # The real basetemp of THIS pytest run is untouched: the deletion
         # was of the stand-in only (operator rerun 5, destructive-rmtree
         # finding).
