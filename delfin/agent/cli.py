@@ -728,12 +728,17 @@ def _continue_announced(engine, prompt_sent: str, out: dict[str, Any], *,
     """
     allowed = _resolve_announce_continuations()
     try:
+        from . import turn_outcome as _TO
         from .api_client import _announces_an_action
     except Exception:
         return out
     if allowed <= 0 or not isinstance(out, dict) or out.get("error"):
         return out
-    if str(out.get("stop_reason") or "done") != "done":
+    # A turn that ended on its own terms, which now includes ending with
+    # the task ledger open ("incomplete"): comparing against "done" alone
+    # would have switched this continuation off for exactly the turns that
+    # most need it, the moment that reason stopped being reported as done.
+    if not _TO.ended_by_itself(str(out.get("stop_reason") or "done")):
         return out
     if not _announces_an_action(str(out.get("text") or "")):
         return out
@@ -761,7 +766,9 @@ def _continue_announced(engine, prompt_sent: str, out: dict[str, Any], *,
         out = _run_once(engine, _ANNOUNCE_CONT_PROMPT,
                         max_tokens=max_tokens, emit=emit)
         tools_after = bool(getattr(engine, "_tools_after_last_text", False))
-        if out.get("error") or str(out.get("stop_reason") or "done") != "done":
+        from . import turn_outcome as _TO
+        if out.get("error") or not _TO.ended_by_itself(
+                str(out.get("stop_reason") or "done")):
             break
         if not _announces_an_action(str(out.get("text") or "")):
             # A real answer -- with or without tool calls -- ends it.
@@ -3536,6 +3543,10 @@ def cmd_credentials(args: argparse.Namespace) -> int:
         print(f"  file:    {_cred.credentials_path()}")
         print(f"  keyring: {kr}")
         print()
+        # list_credentials reports an unreadable store under the empty
+        # name. Printed as a row it is a blank line with a tag, which
+        # tells a person nothing; it is the one entry that is a sentence.
+        damaged = items.pop("", None)
         for name in sorted(items):
             info = items[name]
             src = info.get("source", "?")
@@ -3543,6 +3554,13 @@ def cmd_credentials(args: argparse.Namespace) -> int:
             extra = [s for s in info.get("stores") or [] if s != src]
             also = f"  (also in: {', '.join(extra)})" if extra else ""
             print(f"  {name:<28}  {info.get('value', ''):<14}  {tag}{also}")
+        if damaged is not None:
+            if items:
+                print()
+            print(f"  The file store cannot be read: "
+                  f"{damaged.get('detail', '')}")
+            print("  Keys stored in it are not in use. Storing a key moves "
+                  "the file aside first, so nothing in it is lost.")
         return 0
 
     if action == "migrate":
@@ -3550,6 +3568,9 @@ def cmd_credentials(args: argparse.Namespace) -> int:
         try:
             rows = _cred.migrate_to_keyring(names)
         except _cred.CredentialStoreUnavailable as exc:
+            print(f"Nothing moved: {exc}", file=sys.stderr)
+            return 1
+        except _cred.CredentialStoreUnreadable as exc:
             print(f"Nothing moved: {exc}", file=sys.stderr)
             return 1
         if not rows:
@@ -3573,6 +3594,12 @@ def cmd_credentials(args: argparse.Namespace) -> int:
         except _cred.CredentialStoreUnavailable as exc:
             print(f"{name} is still in the keyring: {exc}", file=sys.stderr)
             return 1
+        except _cred.CredentialStoreUnreadable as exc:
+            # Nothing was removed and the file is untouched: writing a
+            # store built from an unreadable one would drop every other
+            # name. Quarantining it is a decision for the person.
+            print(f"Nothing removed: {exc}", file=sys.stderr)
+            return 1
         if removed:
             print(f"Removed {name}.")
             return 0
@@ -3590,12 +3617,22 @@ def cmd_credentials(args: argparse.Namespace) -> int:
         if not value:
             print("No value entered, aborting.", file=sys.stderr)
             return 1
+        unreadable = ""
         try:
             ok = _cred.set_credential(name, value)
         except (_cred.CredentialStoreNotPrivate,
                 _cred.CredentialStoreUnavailable) as exc:
             print(f"Not stored: {exc}", file=sys.stderr)
             return 1
+        except _cred.CredentialStoreUnreadable as exc:
+            # The key IS stored; what was lost is the damaged store's
+            # other contents, which were moved aside rather than
+            # overwritten. Reporting this as a failed write would send the
+            # person to type the key again for no reason, so the success
+            # line below still prints and the exit code stays 0.
+            ok, unreadable = True, str(exc)
+        if unreadable:
+            print(f"WARNING: {unreadable}", file=sys.stderr)
         if ok:
             # No part of the value, not even a masked one: the first and
             # last four characters of a key stay in the terminal's
@@ -4373,7 +4410,8 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
             backend=getattr(args, "backend", "") or "",
             repeats=max(1, int(getattr(args, "repeats", 1) or 1)),
         )
-        ent = _sched.Scheduler().schedule_interval(
+        _bench_sched = _sched.Scheduler()
+        ent = _bench_sched.schedule_interval(
             every_seconds=every_s,
             prompt=prompt,
             reason=f"nightly benchmark watch ({model})",
@@ -4381,6 +4419,12 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
         )
         print(f"Scheduled bench entry {ent.id}: every {every_token}, "
               f"workspace {ent.workspace}")
+        # What the write had to say about the file itself: a cron.json that
+        # could not be read was moved aside rather than replaced, and the
+        # person is the only one who can rescue what was in it.
+        _note = _bench_sched.take_store_note()
+        if _note:
+            print(f"WARNING: {_note}", file=sys.stderr)
         print("Cost estimate: ~$8 per run for the 48-task KIT-Qwen suite "
               "at repeats=1 (repeats multiply cost; the suspect recheck "
               "adds up to $3 more on suspect days).")
@@ -4392,6 +4436,33 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
         print(f"Remove anytime: delete entry {ent.id} via the dashboard "
               "scheduler tools, or edit ~/.delfin/cron.json.")
         return 0
+
+    if action == "enable":
+        # The way back from a disabled entry without editing cron.json by
+        # hand. Exit code: 0 when the entry is enabled AND when it already
+        # was (the repair is idempotent, so it can be repeated or
+        # scripted), 1 for a refusal -- an emergency stop's disable, a
+        # workspace that is gone, an id that is not there -- so a caller
+        # can tell "nothing to do" from "this did not happen".
+        from .scheduler import Scheduler
+
+        entry_id = (getattr(args, "entry_id", "") or "").strip()
+        if not entry_id:
+            print("ERROR: an entry id is required; `delfin-agent scheduler "
+                  "status` lists them.", file=sys.stderr)
+            return 2
+        sched = Scheduler()
+        changed, message = sched.enable(entry_id)
+        # "Nothing to do" is read off the entry, not off the message text:
+        # a mechanism keyed on wording stops working when the wording is
+        # improved.
+        enabled_now = any(e.id == entry_id and not e.disabled
+                          for e in sched.list_entries())
+        if changed or enabled_now:
+            print(message)
+            return 0
+        print(f"ERROR: {message}", file=sys.stderr)
+        return 1
 
     if action == "stop":
         st = _sd.daemon_status()
@@ -4414,10 +4485,16 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
     st = _sd.daemon_status()
     state = f"running (PID {st['pid']})" if st["running"] else "not running"
     print(f"Scheduler daemon: {state}")
-    entries = sorted(Scheduler().list_entries(), key=lambda e: e.next_fire_at)
+    sched = Scheduler()
+    entries = sorted(sched.list_entries(), key=lambda e: e.next_fire_at)
     if not entries:
-        print("No scheduled entries (~/.delfin/cron.json is empty).")
-        return 0
+        # A damaged file is not an empty schedule: the two lead a person to
+        # opposite actions (schedule something / rescue what is in the
+        # file), so they are not reported the same way.
+        problem = sched.store_problem()
+        print(problem if problem
+              else "No scheduled entries (~/.delfin/cron.json is empty).")
+        return 1 if problem else 0
     print(f"{len(entries)} entries ({st['disabled']} disabled):")
     now = _time.time()
     for e in entries:
@@ -4432,6 +4509,17 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
         every = f", every {e.every_seconds}s" if e.kind == "interval" else ""
         ws = f" @ {e.workspace}" if e.workspace else ""
         print(f"  {e.id}  [{e.kind}{every}]  {due}{ws}  — {prompt}")
+        if e.disabled:
+            # The route back, printed beside the entry that needs it: a
+            # disabled entry used to be shown with no way to act on it but
+            # editing cron.json.
+            from .scheduler import disabled_by_emergency_stop
+            if disabled_by_emergency_stop(e.disabled_reason):
+                print("      an emergency stop disabled it; schedule the "
+                      "work again yourself to bring it back")
+            else:
+                print(f"      enable again: delfin-agent scheduler enable "
+                      f"{e.id}")
     return 0
 
 
@@ -5879,6 +5967,15 @@ def build_parser() -> argparse.ArgumentParser:
     sched_stop = sched_sub.add_parser(
         "stop", help="Stop the daemon (SIGTERM; finishes the current turn)")
     sched_stop.set_defaults(scheduler_action="stop")
+
+    sched_enable = sched_sub.add_parser(
+        "enable",
+        help=("Re-enable an entry that was disabled by failures or by a "
+              "missing workspace (ids: `scheduler status`). Refuses an "
+              "entry an emergency stop disabled"))
+    sched_enable.add_argument("entry_id",
+                              help="Entry id as `scheduler status` shows it")
+    sched_enable.set_defaults(scheduler_action="enable")
 
     sched_bench = sched_sub.add_parser(
         "add-bench",
