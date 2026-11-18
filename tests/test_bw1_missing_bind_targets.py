@@ -203,9 +203,17 @@ class TestR3ParallelPytestBasetempDeletion:
         _cage_decision(monkeypatch)
         argv = _argv(ws, monkeypatch)
         # The parallel session's deletion: the numbered basetemp dir that
-        # CONTAINS this test's tmp_path is removed from outside.
-        basetemp = tmp_path.parent          # .../pytest-N
-        assert basetemp.name.startswith("pytest-"), f"got {basetemp}"
+        # CONTAINS this test's tmp_path is removed from outside. Do not
+        # assume tmp_path.parent is it (the repo's pytest setup can nest
+        # tmp_path one level deeper, e.g. .../pytest-N/t0): walk up to the
+        # nearest ancestor named pytest-N instead.
+        basetemp = tmp_path
+        while not basetemp.name.startswith("pytest-"):
+            parent = basetemp.parent
+            if parent == basetemp:
+                pytest.skip("no pytest-N basetemp ancestor found")
+            basetemp = parent
+        assert basetemp.is_dir()
         shutil.rmtree(basetemp)
         run = _run(argv)
         # Red state (no fix at the exec boundary): bwrap refuses with the
