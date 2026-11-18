@@ -269,7 +269,16 @@ def _check_optional_tools(ctx: dict) -> list[dict]:
             continue
         fix = (f"{group.install}  (Raspberry Pi: {ot.pi_hint(group)}; "
                "scripts/pi/README.md)")
-        out.append(_row(f"optional: {group.name}", WARN, detail, fix))
+        # Declared, not only described: repair.plan turns a row into a
+        # fixable step ONLY from command= or setting=, so these four read
+        # as unfixable while their remedy is a single pip install. The
+        # command names this interpreter, which the prose cannot
+        # (group.install says "pip"). xtb is left prose-only on purpose:
+        # its remedy is the tool installer, which the dashboard already
+        # offers its own button for, and two routes to one install is how
+        # the two drift apart.
+        out.append(_row(f"optional: {group.name}", WARN, detail, fix,
+                        command=group.install_command()))
     return out
 
 
