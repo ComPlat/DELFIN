@@ -401,7 +401,6 @@ delfin-app = "delfin.cli_app:main"
 delfin-agent = "delfin.agent.cli:main"
 delfin-docs-server = "delfin.doc_server.__main__:main"
 delfin-ops-server = "delfin.ops_server.__main__:main"
-delfin-hpc-check = "delfin.hpc_io_check:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

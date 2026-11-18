@@ -28,7 +28,7 @@ mgmt@o2ib:fs /pfs lustre rw,lazystatfs 0 0
 
 
 def _check(script: str, *, lustre: bool = True):
-    env = {"HOME": "/pfs/home/ka_user"} if lustre else {"HOME": "/home/ka_user"}
+    env = {"HOME": "/pfs/home/user"} if lustre else {"HOME": "/home/user"}
     return hpc_io_check.check(script, env=env,
                               mounts_path=hpc_io_check.MountsSource(
                                   text=LUSTRE_MOUNTS if lustre
@@ -46,8 +46,8 @@ def test_unreadable_mounts_file_does_not_silently_disable_the_check():
     # lustre_paths() -> [] and check() exits early — the check disables
     # itself exactly when /proc/mounts is unreadable. A default mounts
     # file that cannot be read must be a hard failure, not a silent no-op.
-    script = "#!/bin/bash\ncd /pfs/home/ka_user/delfin\npytest -q tests/\n"
-    env = {"HOME": "/pfs/home/ka_user"}
+    script = "#!/bin/bash\ncd /pfs/home/user/delfin\npytest -q tests/\n"
+    env = {"HOME": "/pfs/home/user"}
     src = hpc_io_check.MountsSource(path="/nonexistent")
     with pytest.raises(RuntimeError):
         hpc_io_check.check(script, env=env, mounts_path=src)
@@ -133,7 +133,7 @@ def test_scratch_on_lustre_warns():
 
 # --- Rule: pytest straight from a HOME/Lustre checkout -> refuse --------
 
-PYTEST = "#!/bin/bash\ncd /pfs/home/ka_user/delfin\npytest -q tests/\n"
+PYTEST = "#!/bin/bash\ncd /pfs/home/user/delfin\npytest -q tests/\n"
 
 
 def test_pytest_from_home_checkout_refuses():
@@ -208,7 +208,7 @@ def test_absolute_path_interpreter_in_loop_is_flagged():
 
 def test_python_dash_m_pytest_from_home_is_refused():
     # L4: the 16.11. shape — `python -m pytest` from a HOME checkout.
-    script = ("cd /pfs/home/ka_user/delfin\n"
+    script = ("cd /pfs/home/user/delfin\n"
               ".venv/bin/python -m pytest -q tests/\n")
     findings = _check(script)
     assert any(f.rule == "pytest_from_lustre_checkout" for f in findings)
@@ -229,7 +229,7 @@ def test_stage_in_rsync_to_tmpdir_is_not_a_tree_walk():
 def test_walk_over_home_root_still_refused():
     # L5 guard direction: walks over HOME/workspace/mount roots stay
     # refused even though $TMPDIR destinations are now allowed.
-    script = "cp -r /pfs/home/ka_user/projects $TMPDIR/projects\n"
+    script = "cp -r /pfs/home/user/projects $TMPDIR/projects\n"
     findings = _check(script)
     assert any(f.rule == "tree_walk_on_lustre" for f in findings)
 
@@ -241,8 +241,8 @@ def test_bad_pytest_home_case_text_is_refused():
     # itself; the Lustre-ness comes from the cd above it.
     script = (
         "#!/bin/bash\n"
-        "cd /pfs/data6/home/ka/ka_ibcs/ka_ew7404/software/delfin"
-        "/.delfin/worktrees/runde3-s1\n"
+        "cd /pfs/data6/home/xy/xy_group/xy_user/software/delfin"
+        "/.delfin/worktrees/wt-1\n"
         ".venv/bin/python -m pytest -q tests/\n"
     )
     findings = _check(script)

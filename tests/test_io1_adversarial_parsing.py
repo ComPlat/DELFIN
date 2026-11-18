@@ -17,7 +17,7 @@ from delfin import hpc_io_check
 
 
 LUSTRE_MOUNTS = "/dev/sda1 / ext4 rw 0 0\nmgmt@o2ib:fs /pfs lustre rw,lazystatfs 0 0\n"
-ENV = {"HOME": "/pfs/home/ka_user"}
+ENV = {"HOME": "/pfs/home/user"}
 
 
 def _check(script: str):
