@@ -106,23 +106,24 @@ def ensure_argv_bind_targets(argv: list[str]) -> list[str]:
 
 
 def _ensure_flag_target(argv: list[str], i: int, flag: str) -> None:
-    """Create the target(s) one mount flag names, if missing.
+    """Create ONLY mask targets, if missing.
 
-    ``--tmpfs <target>``: one operand. ``--*-bind <src> <dst>``: the
-    destination is the in-cage path -- it must exist under the new root and
-    is covered by the read-only "/" bind, so the HOST path to create is the
-    same string (the builders bind paths at themselves). ``--dev-bind`` and
-    ``--ro-bind /dev/null <file>`` follow the same rule."""
+    ``--tmpfs <target>``: create the operand (operator ruling, round 2).
+    ``--ro-bind /dev/null <file>`` (any file-type bind source): create the
+    DESTINATION as a file -- bwrap refuses a dir for a file mask.
+
+    For a plain ``--bind``/``--ro-bind``/``--dev-bind`` create NOTHING:
+    a missing SOURCE is bwrap's own diagnosable refusal, and an empty dir
+    made in its place would silently run the command against an empty
+    workspace/undo store. The builders bind paths at themselves, so a
+    created "destination" would be that same host path.
+
+    ``--*-bind-try``: bwrap skips a missing source by contract; creating
+    it would turn the skip into a bind of a fresh empty dir. Nothing is
+    created for them here either (masks have no -try form)."""
     rest = argv[i + 1:]
     if not rest:
         return
-    # A "-try" bind whose source is missing is SKIPPED by bwrap -- that is
-    # its contract. Creating such a source would turn the skip into a bind
-    # of a freshly created empty dir, so for -try flags only the
-    # DESTINATION is ensured (the skip semantics for the source are kept).
-    # DELFIN's builders also bind paths at themselves (src==dst), so for
-    # them the two operands are the same path and no content is affected.
-    try_flag = flag.endswith("-try")
     if flag == "--tmpfs":
         if os.path.isabs(rest[0]):
             _mkdir_parents(rest[0], _owner_mode(rest[0]))
@@ -133,15 +134,8 @@ def _ensure_flag_target(argv: list[str], i: int, flag: str) -> None:
         # A file-type mask (--ro-bind /dev/null <file>): the destination
         # must be a regular file too, or bwrap refuses the type mismatch.
         _ensure_file(dst)
-        if not try_flag:
-            _mkdir_parents(src, _owner_mode(src))
         return
-    targets = rest[1:] if try_flag else rest[:2]
-    for t in (a for a in targets if os.path.isabs(a)):
-        if not _mkdir_parents(t, _owner_mode(t)):
-            # Not createable (no permission, rofs): leave it to bwrap's
-            # own refusal -- never degrade the mount to a -try form.
-            continue
+    # Plain and -try binds: never create -- see the docstring.
 
 
 def _is_filelike(path: str) -> bool:

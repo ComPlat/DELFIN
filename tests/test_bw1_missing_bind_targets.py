@@ -52,6 +52,11 @@ def _cage_decision(monkeypatch):
     # Landlock off: the argv taken is the plain bwrap branch -- the shape
     # the measured failure ran under.
     monkeypatch.setattr(A, "_landlock_functional", lambda: False)
+    # Network mode "none": no egress proxy bind/token (R2, s4's finding).
+    # The proxy dir is a session-local /tmp mkdtemp that cannot exist on
+    # another node; the tests' subject (mask protection) is untouched.
+    from delfin.agent import egress_proxy as _ep
+    monkeypatch.setattr(_ep, "network_mode", lambda: "none")
 
 
 def _argv(ws, monkeypatch, caged_unasked=False):
@@ -145,11 +150,14 @@ def _mask_args_for(argv: list, target: str) -> list:
 
 
 class TestR3ParallelPytestBasetempDeletion:
-    """R3 root-cause repro (operator's candidate): pytest's basetemp
-    retention deletes old pytest-N directories while a parallel pytest
-    session still runs there. A test HOME under tmp_path of a still-
-    running session vanishes mid-run -> ~/.delfin/approval_codes gone
-    between argv build and exec -> the wave-31 EROFS failure."""
+    """R3 repro (operator's CANDIDATE cause, NOT proof of wave 31):
+    pytest's basetemp retention deletes old pytest-N directories while a
+    parallel pytest session still runs there. A test HOME under tmp_path
+    of a still-running session vanishes mid-run -> ~/.delfin/approval_codes
+    gone between argv build and exec -> the wave-31 EROFS failure shape.
+    An operator harness hit the same refusal with a private HOME that
+    nothing deleted, so a second cause may exist; the exec-boundary ensure
+    is the net that covers both."""
 
     @requires_a_working_sandbox
     def test_deletion_of_a_running_sessions_home(self, tmp_path,

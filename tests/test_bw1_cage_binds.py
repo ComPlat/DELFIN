@@ -50,22 +50,25 @@ def test_existing_target_is_not_touched(home):
     assert stat.S_IMODE(d.stat().st_mode) == 0o750
 
 
-def test_target_outside_delfin_gets_0755(tmp_path):
-    d = tmp_path / "somewhere" / "deep"
-    argv = ["bwrap", "--bind", str(d), str(d), "x"]
+def test_plain_bind_source_is_never_created(home):
+    # Operator ruling, round 2: the ensure creates ONLY mask targets.
+    # A missing plain-bind source is bwrap's own diagnosable refusal; an
+    # empty dir made in its place would silently run the command against
+    # an empty workspace/undo store.
+    src = home / "state" / "missing_workspace"
+    argv = ["bwrap", "--ro-bind", str(src), str(src), "x"]
     CB.ensure_argv_bind_targets(argv)
-    assert d.is_dir()
-    assert stat.S_IMODE(d.stat().st_mode) == 0o755
+    assert not src.exists()
 
 
-def test_try_bind_targets_are_created_too(home):
-    # -try forms are part of BIND_FLAGS: creating the target never weakens
-    # them (a created target means the bind happens instead of being
-    # skipped -- strictly tighter).
+def test_try_bind_source_is_never_created(home):
+    # Same rule for -try forms: bwrap skips a missing source by contract,
+    # and creating it would turn the skip into a bind of a fresh empty
+    # dir. Masks have no -try form, so nothing -try is created at all.
     d = home / ".delfin" / "messenger_pairing"
     argv = ["bwrap", "--ro-bind-try", str(d), str(d), "x"]
     CB.ensure_argv_bind_targets(argv)
-    assert d.is_dir()
+    assert not d.exists()
 
 
 def test_file_mask_destination_is_created_as_a_file(home):
@@ -101,12 +104,13 @@ def test_relative_operands_are_ignored():
     assert argv == before
 
 
-def test_dev_bind_target_created(home):
+def test_dev_bind_operand_is_never_created(home):
+    # --dev-bind is a plain bind (mask rule does not apply): a missing
+    # operand stays missing -- bwrap's own refusal is the correct outcome.
     d = home / "run" / "user"
     argv = ["bwrap", "--dev-bind", "/dev", str(d), "x"]
     CB.ensure_argv_bind_targets(argv)
-    assert d.is_dir()
-    assert stat.S_IMODE(d.stat().st_mode) == 0o755
+    assert not d.exists()
 
 
 def test_home_door_target_gets_0700(home):
@@ -129,22 +133,11 @@ def test_masks_have_no_try_form():
     assert CB.MASK_FLAGS == ("--tmpfs",)
 
 
-def test_try_bind_missing_source_is_not_created(home):
-    # s4 F1: bwrap's contract for a -try bind is SKIP when the source is
-    # missing. Creating that source would turn the skip into a bind of a
-    # fresh empty dir; the destination is still ensured.
-    src = home / "state" / "missing_src"
-    dst = home / "state" / "dst"
-    argv = ["bwrap", "--ro-bind-try", str(src), str(dst), "x"]
+def test_file_mask_destination_parents_are_created(home):
+    # The file-mask rule creates the DESTINATION (a file) -- its parent
+    # chain comes with it; the /dev/null source itself is of course not
+    # touched.
+    f = home / "private" / "deep" / "mask"
+    argv = ["bwrap", "--ro-bind", "/dev/null", str(f), "x"]
     CB.ensure_argv_bind_targets(argv)
-    assert not src.exists()      # the skip semantics for src are kept
-    assert dst.is_dir()          # the target side is still made to exist
-
-
-def test_plain_bind_missing_source_is_created(home):
-    # Contrast (the DELFIN form, src==dst): a plain bind with a missing
-    # source gets it created -- bwrap would refuse, not skip.
-    src = home / "state" / "missing_plain"
-    argv = ["bwrap", "--ro-bind", str(src), str(src), "x"]
-    CB.ensure_argv_bind_targets(argv)
-    assert src.is_dir()
+    assert f.is_file()
