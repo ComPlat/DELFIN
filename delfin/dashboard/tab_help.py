@@ -313,10 +313,34 @@ _TABS_HELP: tuple[tuple[str, str, str, str, str], ...] = (
      "<b>Interactions</b>: candidates can feed further steps (e.g. Swarm or Submit Job); needs RDKit/stk installed — if the import fails the tab stays hidden with its availability reason."),
         ("DELFIN Agent", "Chat with the AI agent: ask about results, methods, and let it run calculations.", "", "", ""),
     ("Agent Activity", "Live log of what the agent is doing.", "", "", ""),
-    ("Job Status", "State of submitted jobs, running and queued.", "", "", ""),
-    ("Calculations", "Browse the calc/ folder: inputs, outputs and parsed results.", "", "", ""),
-    ("Archive", "Finished and archived calculation data.", "", "", ""),
-    ("Home", "Overview page (disk usage, current branch, recent activity).", "", "", ""),
+    ("Job Status", "State of submitted jobs: running, pending and finished, with start/stop controls.",
+     "<ul>"
+     "<li><b>Select Job</b> (Dropdown, options filled from the job list, tab_job_status.py:410-411).</li>"
+     "<li><b>REFRESH</b> re-reads the job list (tab_job_status.py:419).</li>"
+     "<li><b>REBUILD QUEUE</b> rebuilds the scheduler queue after a crash or manual change (tab_job_status.py:424).</li>"
+     "<li><b>CANCEL JOB</b> cancels the selected job (danger button, tab_job_status.py:429).</li>"
+     "<li><b>Filter</b> [All, Running, Pending] — default All (tab_job_status.py:433-440).</li>"
+     "<li>Job table and start/stop info as HTML views (tab_job_status.py:405-408).</li>"
+     "</ul>",
+     "<b>Typical flow</b>: REFRESH &rarr; filter (e.g. Running) &rarr; select a job to see its state in the table &rarr; CANCEL JOB only if it is stuck; REBUILD QUEUE when the queue display and reality disagree.",
+     "<b>Interactions</b>: shows what Submit Job / Recalc / Builder tabs submitted; the job events stream feeds the Agent Activity log (job_events.py)."),
+        ("Calculations", "Browse the calc/ folder: inputs, outputs and parsed results, with file management.",
+     "<ul>"
+     "<li>Folder navigation: <b>&#11014; Up</b>, <b>&#127968; home</b>, <b>&#128260; refresh</b> (tab_calculations_browser.py:374-382); the path prefix is shown as HTML (tab_calculations_browser.py:354).</li>"
+     "<li>File operations: <b>&#128465; Delete</b>, <b>Duplicate</b>, <b>+ Folder</b>, <b>Rename</b>, <b>Move</b> — each with its own prompt/status HTML (tab_calculations_browser.py:386-522, 602-650).</li>"
+     "<li>Archive round-trip: <b>&#8594; Archive</b> and <b>&#8592; Calculations</b> move folders between calc/ and archive/ (tab_calculations_browser.py:444-452), plus an SSH <b>Transfer</b> view with running-transfer list (tab_calculations_browser.py:459, 687-701).</li>"
+     "<li>Structure viewers (3D molecule, trajectory) are built into the browser.</li>"
+     "</ul>",
+     "<b>Typical flow</b>: navigate to a run folder &rarr; open inputs/outputs or a structure in the viewer &rarr; tidy up with Rename/Duplicate/+ Folder or move finished runs to the Archive; transfers to other machines go through SSH Transfer.",
+     "<b>Interactions</b>: Calculations, Archive and Office are three builds of one shared browser module (tab_calculations_browser.py:138-150) — structure IDs are namespaced per build so a viewer opened in one tab cannot hijack another's."),
+        ("Archive", "Finished and archived calculation data, served from the archive/ folder.",
+     "<ul>"
+     "<li>Same browser widgets as Calculations — navigation, Delete/Duplicate/+ Folder/Rename/Move (tab_archive_statistics.py:8-11 builds it with calc_dir replaced by ctx.archive_dir).</li>"
+     "<li>Round-trip buttons <b>&#8594; Archive</b> / <b>&#8592; Calculations</b> move folders between the two stores (tab_calculations_browser.py:444-452).</li>"
+     "</ul>",
+     "<b>Typical flow</b>: in Calculations, select finished runs &rarr; &#8594; Archive; here browse or restore them with &#8592; Calculations when a re-run or Recalc needs them again.",
+     "<b>Interactions</b>: archive/ is read-only for the agent tools — file changes here are yours; the Office tab is the third build of the same browser."),
+        ("Home", "Overview page (disk usage, current branch, recent activity).", "", "", ""),
     ("Office", "Office-mode documents and helpers.", "", "", ""),
     ("Literature", "Literature lookup and reference storage.", "", "", ""),
     ("Remote Archive", "Remote archive storage (enable in Settings first).", "", "", ""),
