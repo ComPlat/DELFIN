@@ -102,6 +102,48 @@ def test_the_sweep_still_repairs_in_a_dry_run(tmp_path):
 
 # --- the service directories are in the tree ------------------------------
 
+def test_the_state_tree_and_the_service_agree_on_where_it_keeps_state(
+        tmp_path, monkeypatch):
+    """The layout is written twice, so it is pinned once.
+
+    state_paths resolves the service's directories itself instead of
+    importing the service layer: the table's resolver runs on the first
+    session write of a process, and naming service.eventlog would pull
+    those modules into that path -- a coupling the session store did not
+    have. The copy is the price, and this is what keeps it honest: both
+    answers must agree under every redirection either of them honours.
+    """
+    from delfin.agent.service import eventlog as el
+
+    for env, value in (
+        ("DELFIN_AGENT_SERVICE_DIR", str(tmp_path / "explicit")),
+        ("DELFIN_SCRATCH_STATE", str(tmp_path / "scratch")),
+    ):
+        monkeypatch.delenv("DELFIN_AGENT_SERVICE_DIR", raising=False)
+        monkeypatch.delenv("DELFIN_SCRATCH_STATE", raising=False)
+        monkeypatch.setenv(env, value)
+        assert SP._service_dir() == el.service_dir(), env
+        assert SP._service_sessions_dir() == el.sessions_dir(), env
+        assert SP._service_logs_dir() == launcher.service_log().parent, env
+
+    # And with neither set, both fall back to the same home.
+    monkeypatch.delenv("DELFIN_AGENT_SERVICE_DIR", raising=False)
+    monkeypatch.delenv("DELFIN_SCRATCH_STATE", raising=False)
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path / "home")
+    assert SP._service_dir() == el.service_dir()
+
+
+def test_the_sweep_does_not_import_the_service_layer(monkeypatch):
+    """The resolver runs on the first session write. It must not be the
+    thing that loads the service modules."""
+    import inspect
+
+    src = inspect.getsource(SP)
+    table = src[src.index("_STATE_DIR_SOURCES"):src.index("def state_dirs")]
+    assert "delfin.agent.service" not in table, (
+        "no table entry may name a module of the service layer")
+
+
 def test_the_per_session_event_logs_are_a_named_state_directory(
         tmp_path, monkeypatch):
     monkeypatch.setenv(eventlog.SERVICE_DIR_ENV, str(tmp_path / "svc"))

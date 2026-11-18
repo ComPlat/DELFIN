@@ -483,20 +483,57 @@ _STATE_DIR_SOURCES: tuple[tuple[str, str, str, str | None, bool], ...] = (
     ("delfin.agent.failure_log", "_LOG_PATH", "keep",
      "failure_log.jsonl", True),
     # The agent service: every turn of every session appends to a
-    # <sid>.jsonl here and nothing removed them, so this grew without
-    # bound. It was in no prune table; the only limits were in memory
-    # (RecentEvents._trim, REPLAY_BUDGET_BYTES), which bound what is
-    # replayed, not what is kept.
-    ("delfin.agent.service.eventlog", "sessions_dir", "derived",
+    # <sid>.jsonl under sessions/ and nothing removed them, so this grew
+    # without bound. It was in no prune table; the only limits were in
+    # memory (RecentEvents._trim, REPLAY_BUDGET_BYTES), which bound what
+    # is replayed, not what is kept.
+    #
+    # Resolved HERE rather than by importing the service layer. The
+    # resolver of this table runs on the first session write of a
+    # process (session_store._startup_maintenance), and naming
+    # ``service.eventlog`` would pull the service modules into that
+    # path -- a coupling the session store did not have, in the one
+    # place where a service test is also starting a service. The layout
+    # is duplicated as a consequence, and
+    # test_the_retention_sweep_is_reachable pins the two against
+    # eventlog.service_dir() so they cannot drift.
+    #
+    # Rotated service logs only: the ACTIVE service.log is the file a
+    # running supervisor holds open as its stdout, so pruning it would
+    # delete the log of a live service. The rotation happens where the
+    # file is opened (launcher._rotate_service_log).
+    ("delfin.agent.state_paths", "_service_sessions_dir", "derived",
      "*.jsonl", False),
-    # Rotated service logs only. The ACTIVE service.log is the file the
-    # running supervisor holds open as its stdout: pruning it would
-    # delete the log of a live service, which is why the glob names the
-    # rotated copies and the rotation happens where the file is opened
-    # (launcher._rotate_service_log).
-    ("delfin.agent.service.launcher", "service_log", "derived",
-     "service.log.*", True),
+    ("delfin.agent.state_paths", "_service_logs_dir", "derived",
+     "service.log.*", False),
 )
+
+
+def _service_dir() -> Path:
+    """``~/.delfin/agent_service``, by the same rules the service uses.
+
+    A copy of ``service.eventlog.service_dir`` deliberately: see the note
+    in the table above. ``DELFIN_AGENT_SERVICE_DIR`` first, then
+    ``DELFIN_SCRATCH_STATE``, then the home -- a test or a probe that
+    redirects either must redirect this too, which is the property the
+    pinning test checks.
+    """
+    override = os.environ.get("DELFIN_AGENT_SERVICE_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    scratch = os.environ.get("DELFIN_SCRATCH_STATE", "").strip()
+    home = Path(scratch).expanduser() if scratch else Path.home()
+    return home / ".delfin" / "agent_service"
+
+
+def _service_sessions_dir() -> Path:
+    """Where the per-session event logs live."""
+    return _service_dir() / "sessions"
+
+
+def _service_logs_dir() -> Path:
+    """Where the supervisor's stdout log and its rotated copies live."""
+    return _service_dir() / "logs"
 
 
 def state_dirs() -> list[StateDir]:
