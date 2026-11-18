@@ -3506,6 +3506,78 @@ def cmd_bug(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_state(args: argparse.Namespace) -> int:
+    """Show or apply the retention sweep over the agent's state tree.
+
+    Input: ``args.state_action`` ("usage" or "prune") and ``args.apply``.
+    Output: a report on stdout; exit 0 unless the sweep could not run.
+
+    Why this command exists: ``state_paths.run_startup_maintenance`` has
+    done the repair and the prune since it was written, but its only
+    caller is ``session_store._startup_maintenance``, once per process and
+    guarded by a module flag. Nothing a person can invoke calls it, and
+    ``cleanup_old_sessions`` has no production caller at all. A retention
+    policy nobody can run is a setting, not a policy -- and a full disk is
+    how the state files this agent depends on become unreadable in the
+    first place.
+
+    A prune DELETES files past retention, so the default is the dry run
+    and ``--apply`` is the deliberate second step. The listing comes from
+    ``prune_old(dry_run=True)``, the same code that does the deleting, so
+    what is shown cannot drift from what would go.
+    """
+    from . import state_paths as _sp
+
+    action = getattr(args, "state_action", "usage") or "usage"
+    try:
+        dirs = _sp.state_dirs()
+    except Exception as exc:
+        print(f"Cannot read the state tree: {exc}", file=sys.stderr)
+        return 1
+
+    if action == "usage":
+        print(f"State tree: {_sp.state_root()}")
+        rows = []
+        for entry in dirs:
+            total = 0
+            count = 0
+            try:
+                for q in entry.path.rglob(entry.glob or "*"):
+                    if q.is_file():
+                        total += q.stat().st_size
+                        count += 1
+            except OSError:
+                pass
+            rows.append((total, count, entry))
+        rows.sort(key=lambda r: -r[0])
+        for total, count, entry in rows:
+            kept = " (kept, never pruned)" if entry.kind == "keep" else ""
+            print(f"  {total / 1e6:9.1f} MB  {count:6d} file(s)  "
+                  f"{entry.path}{'/' + entry.glob if entry.glob else ''}"
+                  f"{kept}")
+        print(f"  {sum(r[0] for r in rows) / 1e6:9.1f} MB  total")
+        return 0
+
+    going: list = []
+    result = _sp.run_startup_maintenance(
+        force=True, dry_run=not getattr(args, "apply", False),
+        on_remove=going.append)
+    if not getattr(args, "apply", False):
+        for q in going[:40]:
+            print(f"  would delete  {q}")
+        if len(going) > 40:
+            print(f"  ... and {len(going) - 40} more")
+        print(f"{len(going)} file(s) past retention in "
+              f"{result.get('dirs', 0)} directory(ies); "
+              f"{result.get('repaired', 0)} file mode(s) repaired.")
+        print("Nothing was deleted. Run with --apply to delete them.")
+        return 0
+    print(f"Deleted {result.get('pruned', 0)} file(s) past retention; "
+          f"repaired {result.get('repaired', 0)} file mode(s) across "
+          f"{result.get('dirs', 0)} directory(ies).")
+    return 0
+
+
 def cmd_credentials(args: argparse.Namespace) -> int:
     """Manage API keys: the OS keyring or ~/.delfin/credentials.json (0600).
 
@@ -5706,6 +5778,25 @@ def build_parser() -> argparse.ArgumentParser:
     cred_del.add_argument("name")
 
     cred.set_defaults(func=cmd_credentials, cred_action="list")
+
+    # state
+    st = sub.add_parser(
+        "state",
+        help=("Show what the agent's state tree holds, and apply the "
+              "retention sweep that until now only ran at session start"),
+    )
+    st_sub = st.add_subparsers(dest="state_action", required=False)
+    st_sub.add_parser(
+        "usage", help="Size and file count per state directory, largest first"
+    ).set_defaults(state_action="usage")
+    st_prune = st_sub.add_parser(
+        "prune",
+        help=("List files past retention (default) and delete them with "
+              "--apply"))
+    st_prune.add_argument(
+        "--apply", action="store_true",
+        help="Actually delete; without it nothing is removed")
+    st.set_defaults(func=cmd_state, state_action="usage", apply=False)
 
     # session
     sess = sub.add_parser("session", help="Session inspection")
