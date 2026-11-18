@@ -150,8 +150,8 @@ def test_rss_shape_exergon_global_endergon_local_vs_none(tmp_path):
             (3.5, -100.0), (2.1, -100.5), (2.0, -100.2)])
     calc = make_calc(tmp_path, "403", rss=rss_ex)
     out = ro.rss_metrics(str(calc))
-    assert out["rss_direction"] == "exergon"
-    assert out["rss_shape"] == "globales Minimum"
+    assert out["rss_direction"] == "exergonic"
+    assert out["rss_shape"] == "global minimum"
     # Endergonic with E(2.1) ABOVE E(2.0) -> "lokales Minimum".
     rss_local = "\n".join(
         f"{d:.8f} {e:.8f}" for d, e in [
@@ -159,7 +159,7 @@ def test_rss_shape_exergon_global_endergon_local_vs_none(tmp_path):
     calc2 = make_calc(tmp_path, "404", rss=rss_local)
     out2 = ro.rss_metrics(str(calc2))
     assert out2["rss_direction"] == "endergon"
-    assert out2["rss_shape"] == "lokales Minimum"
+    assert out2["rss_shape"] == "local minimum"
     # Endergonic with E(2.1) BELOW E(2.0) -> no minimum.
     rss_none = "\n".join(
         f"{d:.8f} {e:.8f}" for d, e in [
@@ -167,7 +167,7 @@ def test_rss_shape_exergon_global_endergon_local_vs_none(tmp_path):
     calc3 = make_calc(tmp_path, "405", rss=rss_none)
     out3 = ro.rss_metrics(str(calc3))
     assert out3["rss_direction"] == "endergon"
-    assert out3["rss_shape"] == "kein Minimum"
+    assert out3["rss_shape"] == "no minimum"
     # Missing 2.1 A point -> no shape claim at all.
     rss_gap = "\n".join(
         f"{d:.8f} {e:.8f}" for d, e in [(3.5, -100.0), (2.0, -99.9)])

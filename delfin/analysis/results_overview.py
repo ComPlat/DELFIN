@@ -178,21 +178,42 @@ def get_smiles(calc_dir: str):
     return str(value) if value else None
 
 
-def smiles_png_bytes(smiles: str, size: int = 260):
-    """2D structure image (PNG bytes) via RDKit; None if RDKit absent
-    or the SMILES cannot be parsed."""
+def smiles_png_bytes(smiles: str, size: int = 260, fmt: str = "png"):
+    """2D structure image via RDKit (PNG or vector PDF bytes); None if
+    RDKit is absent or the SMILES cannot be parsed."""
     try:
         from rdkit import Chem
+        from rdkit.Chem import AllChem
         from rdkit.Chem.Draw import rdMolDraw2D
     except ImportError:
         return None
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return None
-    drawer = rdMolDraw2D.MolDraw2DCairo(size, size)
-    rdMolDraw2D.PrepareAndDrawMolecule(drawer, mol)
-    drawer.FinishDrawing()
-    return drawer.GetDrawingText()
+    if fmt == "png":
+        drawer = rdMolDraw2D.MolDraw2DCairo(size, size)
+        rdMolDraw2D.PrepareAndDrawMolecule(drawer, mol)
+        drawer.FinishDrawing()
+        return drawer.GetDrawingText()
+    import numpy
+    # Vector path: RDKit MolDraw2DSVG -> write temp svg -> let
+    # matplotlib render it as a vector PDF is NOT possible without a
+    # converter.  Instead re-draw from RDKit 2D coordinates with
+    # matplotlib (bonds as lines, atom labels), which emits a real
+    # vector PDF.  Double bonds come from RDKit's bond orders.
+    AllChem.Compute2DCoords(mol)
+    conf = mol.GetConformer()
+    pos = numpy.array([[conf.GetAtomPosition(i).x,
+                        conf.GetAtomPosition(i).y]
+                       for i in range(mol.GetNumAtoms())])
+    sym = [a.GetSymbol() for a in mol.GetAtoms()]
+    bonds = [(b.GetBeginAtomIdx(), b.GetEndAtomIdx(),
+              int(b.GetBondTypeAsDouble())) for b in mol.GetBonds()]
+    # bond orders list like the xyz renderer expects: (i, j) -> order
+    orders = {(i, j): o for i, j, o in bonds if o >= 2}
+    pairs = [(i, j) for i, j, _ in bonds]
+    return _render_skeleton(sym, pos, pairs, size, show_h=False,
+                            bond_orders=orders, fmt=fmt)
 
 
 # Covalent radii (Angstrom, Cordero 2008) for bond detection.
@@ -395,8 +416,16 @@ def _render_ball_stick(sym, rotated, bonds, size, atom_scale=0.8,
     from io import BytesIO
 
     radii = numpy.array([_XYZ_RADII.get(s, _XYZ_RADIUS_DEFAULT) for s in sym])
-    extent = max(numpy.ptp(rotated[:, 0]), numpy.ptp(rotated[:, 1]), 1.0)
-    scale = 0.93 * size / extent  # px per Angstrom, tight margin
+    # Headroom framing: cover outermost atoms PLUS their display radii,
+    # else carbonyl O (428) or balls (434) clip at the frame edge.
+    disp = 0.55 * radii
+    cx, cy = (0.5 * (rotated[:, 0].max() + rotated[:, 0].min()),
+              0.5 * (rotated[:, 1].max() + rotated[:, 1].min()))
+    rmax = float(disp.max())
+    scale = size / (2.0 * (max(abs(rotated[:, 0] - cx).max() + rmax,
+                               abs(rotated[:, 1] - cy).max() + rmax)))
+    rotated = rotated - numpy.array([cx, cy] + [0.0]
+                            * (rotated.shape[1] - 2))
     fig = plt.figure(figsize=(size / 100, size / 100), dpi=100)
     canvas = FigureCanvasAgg(fig)
     ax = fig.add_axes([0, 0, 1, 1])
@@ -421,7 +450,8 @@ def _render_ball_stick(sym, rotated, bonds, size, atom_scale=0.8,
             (x, y), r_data,
             facecolor=_XYZ_COLORS.get(sym[idx], _XYZ_COLOR_DEFAULT),
             edgecolor="white", linewidth=0.6,
-            zorder=2 + rotated[idx][2] / (extent + 1e-6)))
+            zorder=2 + rotated[idx][2] / (2.0 * (abs(rotated[:, 2]).max()
+                                                 + 1e-6))))
     from io import BytesIO
     buf = BytesIO()
     fig.savefig(buf, format=fmt, dpi=100)
@@ -518,8 +548,16 @@ def _render_skeleton(sym, rotated, bonds, size, show_h=False,
     from io import BytesIO
 
     radii = numpy.array([_XYZ_RADII.get(s, _XYZ_RADIUS_DEFAULT) for s in sym])
-    extent = max(numpy.ptp(rotated[:, 0]), numpy.ptp(rotated[:, 1]), 1.0)
-    scale = 0.93 * size / extent  # px per Angstrom, tight margin
+    # Headroom framing: cover outermost atoms PLUS their display radii,
+    # else carbonyl O (428) or balls (434) clip at the frame edge.
+    disp = 0.55 * radii
+    cx, cy = (0.5 * (rotated[:, 0].max() + rotated[:, 0].min()),
+              0.5 * (rotated[:, 1].max() + rotated[:, 1].min()))
+    rmax = float(disp.max())
+    scale = size / (2.0 * (max(abs(rotated[:, 0] - cx).max() + rmax,
+                               abs(rotated[:, 1] - cy).max() + rmax)))
+    rotated = rotated - numpy.array([cx, cy] + [0.0]
+                            * (rotated.shape[1] - 2))
     fig = plt.figure(figsize=(size / 100, size / 100), dpi=100)
     FigureCanvasAgg(fig)
     ax = fig.add_axes([0, 0, 1, 1])
@@ -553,7 +591,8 @@ def _render_skeleton(sym, rotated, bonds, size, show_h=False,
     # heteroatoms (+ metals) get a white gap and a symbol.  H labelled
     # only when show_h is on.
     _implicit = {"C"}
-    for idx in numpy.argsort(rotated[:, 2]):
+    zcol = rotated[:, 2] if rotated.shape[1] > 2 else numpy.zeros(len(sym))
+    for idx in numpy.argsort(zcol):
         s = sym[idx]
         if s == "H" and not show_h:
             continue
@@ -563,7 +602,7 @@ def _render_skeleton(sym, rotated, bonds, size, show_h=False,
         r_data = radii[idx] * scale * 0.55 / size * (2 * half)
         ax.add_patch(mpatches.Circle(
             (x, y), r_data, facecolor="white", edgecolor="none", zorder=2))
-        ax.text(x, y, s, ha="center", va="center", fontsize=7.5,
+        ax.text(x, y, s, ha="center", va="center", fontsize=11,
                 color="black", zorder=3)
     # Double / triple bonds: parallel offset lines per order.
     if bond_orders:
@@ -719,7 +758,7 @@ def optimized_3d_png_bytes(calc_dir: str, size: int = 320, show_h=False,
         bonds = [(remap[i], remap[j]) for i, j in bonds
                  if i in keepset and j in keepset]
     return _render_ball_stick(sym, rotated, bonds, size,
-                              atom_scale=0.35, bond_lw=3.2)
+                              atom_scale=0.55, bond_lw=3.2)
 
 
 def rss_metrics(calc_dir: str) -> Dict[str, Any]:
@@ -759,7 +798,8 @@ def rss_metrics(calc_dir: str) -> Dict[str, Any]:
 
     delta_ha = bound - ref
     result["rss_delta_kj"] = round(delta_ha * HARTREE_KJ_MOL, 2)
-    result["rss_direction"] = "exergon" if delta_ha < 0 else "endergon"
+    result["rss_direction"] = ("exergonic" if delta_ha < 0
+                          else "endergonic")
     result["rss_points"] = len(sweep)
 
     # Shape judgement around the bound point (only meaningful endergonic;
@@ -770,17 +810,18 @@ def rss_metrics(calc_dir: str) -> Dict[str, Any]:
         if e is not None:
             neighbours[d] = e
     # Shape judgement per user specification (2026-10-30):
-    # exergonic -> "globales Minimum"; endergonic -> look at E(2.1 A):
-    # higher than E(2.0 A) -> "lokales Minimum", else no minimum.
+    # exergonic -> "global minimum"; endergonic -> E(2.1 A):
+    # higher than E(2.0 A) -> "local minimum", else no minimum.
     # The old left/right neighbourhood criteria are retired.
     shape = None
-    if result.get("rss_direction") == "exergon":
-        shape = "globales Minimum"
+    if result.get("rss_direction") == "exergonic":
+        shape = "global minimum"
     elif result.get("rss_direction") == "endergon":
         e_20 = by_dist.get(round(RSS_BOUND_DISTANCE, 4))
         e_21 = by_dist.get(round(RSS_BOUND_DISTANCE + 0.1, 4))
         if e_20 is not None and e_21 is not None:
-            shape = "lokales Minimum" if e_21 > e_20 else "kein Minimum"
+            shape = ("local minimum" if e_21 > e_20
+                     else "no minimum")
     if shape:
         result["rss_shape"] = shape
     # Legacy columns kept: global minimum of the sweep (wherever it sits).

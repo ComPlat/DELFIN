@@ -549,7 +549,8 @@ class ResultsOverviewPanel:
             # Column 4: 3D view with optimized camera, viewer style.
             if want_o3d:
                 colo = chr(ord("A") + 1 + int(want_2d) + int(want_3d))
-                pngo = optimized_3d_png_bytes(row["path"])
+                pngo = optimized_3d_png_bytes(
+                    row["path"], show_h=self._show_h.value)
                 if pngo:
                     imgo = XLImage(_io.BytesIO(pngo))
                     imgo.width = imgo.height = 130
@@ -711,8 +712,12 @@ class ResultsOverviewPanel:
 
         for row in self._table["rows"]:
             formula = molecular_formula(row["path"])
-            heading = row["label"] + (
-                f" ({formula})" if formula else "")
+            heading = row["label"]
+            if formula:
+                import re
+                sub = re.sub(r"([A-Z][a-z]?)(\d+)",
+                             r"\1$_{\2}$", formula)
+                heading += f" ({sub})"
             lines.append(r"\begin{center}\textbf{"
                          + self._tex_escape(heading)
                          + r"}\end{center}")
@@ -725,7 +730,7 @@ class ResultsOverviewPanel:
             width = {1: 0.9, 2: 0.45, 3: 0.30}.get(n_struct, 0.22)
             struct_blocks = []
             if want_2d and smiles:
-                png = smiles_png_bytes(smiles)
+                png = smiles_png_bytes(smiles, fmt="pdf")
                 if png:
                     struct_blocks.append(
                         rf"\includegraphics[width={width}\textwidth]"
