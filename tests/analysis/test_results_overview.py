@@ -137,7 +137,7 @@ def test_rss_bound_vs_ref_35(tmp_path):
     out = ro.rss_metrics(str(calc))
     assert out["rss_delta_kj"] == pytest.approx(
         (-100.05 + 100.1) * ro.HARTREE_KJ_MOL, rel=1e-3)
-    assert out["rss_direction"] == "endergon"
+    assert out["rss_direction"] == "endergonic"
     # sweep minimum still reported for orientation
     assert out["rss_min_distance"] == 3.1
     assert out["rss_tight_min_distance"] == 2.1
@@ -158,7 +158,7 @@ def test_rss_shape_exergon_global_endergon_local_vs_none(tmp_path):
             (3.5, -100.0), (2.1, -99.8), (2.0, -99.9)])
     calc2 = make_calc(tmp_path, "404", rss=rss_local)
     out2 = ro.rss_metrics(str(calc2))
-    assert out2["rss_direction"] == "endergon"
+    assert out2["rss_direction"] == "endergonic"
     assert out2["rss_shape"] == "local minimum"
     # Endergonic with E(2.1) BELOW E(2.0) -> no minimum.
     rss_none = "\n".join(
@@ -166,7 +166,7 @@ def test_rss_shape_exergon_global_endergon_local_vs_none(tmp_path):
             (3.5, -100.0), (2.1, -100.1), (2.0, -99.9)])
     calc3 = make_calc(tmp_path, "405", rss=rss_none)
     out3 = ro.rss_metrics(str(calc3))
-    assert out3["rss_direction"] == "endergon"
+    assert out3["rss_direction"] == "endergonic"
     assert out3["rss_shape"] == "no minimum"
     # Missing 2.1 A point -> no shape claim at all.
     rss_gap = "\n".join(
@@ -184,7 +184,7 @@ def test_rss_endergon_when_bound_above_ref(tmp_path):
         ])
     calc = make_calc(tmp_path, "403", rss=rss)
     out = ro.rss_metrics(str(calc))
-    assert out["rss_direction"] == "endergon"
+    assert out["rss_direction"] == "endergonic"
     assert out["rss_delta_kj"] == pytest.approx(0.1 * ro.HARTREE_KJ_MOL,
                                                 rel=1e-3)
 
@@ -531,8 +531,8 @@ def test_xlsx_columns_follow_image_toggles(tmp_path, monkeypatch):
 
     fake_png = _tiny_png()
     monkeypatch.setattr(tab, "smiles_png_bytes", lambda s: fake_png)
-    monkeypatch.setattr(tab, "initial_xyz_png_bytes", lambda p: fake_png)
-    monkeypatch.setattr(tab, "optimized_3d_png_bytes", lambda p: fake_png)
+    monkeypatch.setattr(tab, "initial_xyz_png_bytes", lambda p, **kw: fake_png)
+    monkeypatch.setattr(tab, "optimized_3d_png_bytes", lambda p, **kw: fake_png)
 
     xlsx = panel._table_bytes_xlsx()
     wb = openpyxl.load_workbook(_io_mod.BytesIO(xlsx))
