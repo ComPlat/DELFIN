@@ -70,6 +70,12 @@ EXIT_CODES: dict[str, int] = {
     # still open, the ledger could not be read, or the model announced a
     # tool call and made none. Adding a key is not a schema bump.
     "incomplete": 9,
+    # The engine aborted the turn because the model kept editing and
+    # re-running a test that failed identically (same failing nodes, same
+    # first message) for several rounds. Distinct from "error" so a program
+    # reading the headless result can tell "looped on a failing test" apart
+    # from a generic failure.
+    "degenerate_test_loop": 10,
 }
 STOP_REASONS: tuple[str, ...] = tuple(EXIT_CODES)
 
@@ -139,6 +145,10 @@ _ENGINE_STOP: dict[str, str] = {
     "max_context": "error",
     "no_progress_loop": "error",
     "consecutive_identical_errors": "error",
+    # A distinct stop reason: the engine aborted because the model looped on
+    # a test that failed identically for several rounds. Its own exit code
+    # (10) tells a supervisor "looped on a failing test" from other errors.
+    "degenerate_test_loop": "degenerate_test_loop",
     # The engine stops a turn for these four and says why. Unmapped, they
     # fell through classify() to "done", so a run that stopped with its
     # task list open was indistinguishable from a finished one -- to the
