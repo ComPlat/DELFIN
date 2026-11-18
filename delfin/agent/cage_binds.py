@@ -12,7 +12,7 @@ the failure look random (measured, wave 31).
 
 Rule: before an argv is handed to bwrap, every target that a mask or bind
 names and that the session may create is made to exist, with the owner's
-mode -- 0700 for anything under ``~/.delfin``. Nothing is degraded to a
+mode -- 0700 for a directory, 0600 for a file. Nothing is degraded to a
 ``-try`` mount: a skipped ``--tmpfs-try`` mask would re-expose the very
 path the mask hides. A target the session must not create keeps its plain
 mount only when it exists; the builders already skip such targets at build
