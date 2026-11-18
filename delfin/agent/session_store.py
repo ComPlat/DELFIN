@@ -1306,6 +1306,13 @@ def save_session(
     token_usage: dict[str, int] | None = None,
     cost_usd: float = 0.0,
     title: str = "",
+    # Which person this session belongs to (people mode: one workspace,
+    # one person). A label, not a boundary: nothing enforces or trusts it
+    # yet — per-person isolation is enforced in later steps of the plan,
+    # and a reader must not mistake this field for that protection. The
+    # API key that proves the person is attached by the egress proxy and
+    # never reaches the record.
+    person: str = "",
     # Long-session extras (all optional, ignored if backend doesn't pass)
     perm_profile: str = "",
     provider: str = "",
@@ -1374,6 +1381,10 @@ def save_session(
         Accumulated cost.
     title : str
         Short description (auto-generated from first user message if empty).
+    person : str
+        The person this session belongs to; ``""`` when there is none
+        (the default, and what every pre-existing record reads back as).
+        A label, not a boundary — enforcement is a later step.
 
     Returns
     -------
@@ -1444,6 +1455,7 @@ def save_session(
         "perm_profile": perm_profile or "",
         "provider": provider or "",
         "model": model or "",
+        "person": person or "",
         # Identity of the process that wrote this record: pid, the
         # start fingerprint that keeps the number honest (a pid alone
         # names nothing, the system hands it out again), the host it
@@ -1602,6 +1614,9 @@ def list_sessions(
                 # (2026-09-18).
                 "model": data.get("model", ""),
                 "provider": data.get("provider", ""),
+                # The person this session belongs to; "" when the record
+                # predates the field. Data only: nothing filters on it.
+                "person": data.get("person", ""),
                 # Whether that process still lives, judged through the
                 # one reader of that fact (pid AND start fingerprint
                 # AND host). None means it cannot be asked here: a
