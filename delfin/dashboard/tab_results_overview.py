@@ -754,7 +754,9 @@ class ResultsOverviewPanel:
                         scan_png = fh.read(8 * 1024 * 1024)
                     path = _add_image(scan_png)
                     lines.append(
-                        rf"\includegraphics[width=0.62\textwidth]{{{path}}}")
+                        r"\begin{center}"
+                    rf"\includegraphics[width=0.62\textwidth]{{{path}}}"
+                    r"\end{center}")
                     lines.append(r"\par\bigskip")
                 except OSError:
                     pass

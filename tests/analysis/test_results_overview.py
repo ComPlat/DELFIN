@@ -555,5 +555,5 @@ def test_latex_contains_all_ticked_images_side_by_side(tmp_path):
     table = ro.build_table([str(calc)], ["rss_delta_kj"])
     panel = _latex_panel(table, opt=True)
     tex = panel._latex_bytes().decode("utf-8")
-    # Three structure images on one line: width shrinks to 0.16.
-    assert tex.count("includegraphics[width=0.16\\textwidth]") == 3
+    # Three structure images on one line: 0.30\textwidth each.
+    assert tex.count("includegraphics[width=0.3\\textwidth]") == 3
