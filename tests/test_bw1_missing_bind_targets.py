@@ -118,6 +118,27 @@ class TestCageRunsWhenMaskTargetVanishes:
             "mask re-exposes the path")
 
     @requires_a_working_sandbox
+    def test_host_side_approval_codes_stays_empty(self, ws, monkeypatch):
+        """(c) The mask is a tmpfs: a write attempt INSIDE the cage lands
+        in the mount, never on the HOST dir. Checked on the host side
+        (os.listdir), not by in-cage output -- an in-cage listing is a
+        tmpfs artifact (operator round-2 note, no defect)."""
+        _cage_decision(monkeypatch)
+        perms = A.KitToolPermissions(mode="acceptEdits", workspace=str(ws))
+        argv = A._bash_isolation_argv(
+            "python3 -c \"import os;"
+            "os.makedirs(os.path.expanduser('~/.delfin/approval_codes'),"
+            "exist_ok=True);"
+            "open(os.path.expanduser('~/.delfin/approval_codes/x'), 'w')"
+            ".write('leak')\"", str(ws), perms, mode="bwrap")
+        run = _run(argv)
+        assert run.returncode == 0, f"stderr: {run.stderr}"
+        host_dir = Path(os.environ["HOME"]) / ".delfin" / "approval_codes"
+        assert host_dir.is_dir(), "the ensure created the target"
+        assert os.listdir(host_dir) == [], (
+            f"a caged write leaked to the host: {os.listdir(host_dir)}")
+
+    @requires_a_working_sandbox
     def test_inside_the_cage_approval_codes_is_not_readable(self, ws,
                                                             monkeypatch):
         """With the fix the denial is preserved: a command inside the cage
