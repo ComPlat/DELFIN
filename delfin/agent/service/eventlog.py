@@ -51,11 +51,22 @@ def service_dir() -> Path:
     return home / ".delfin" / "agent_service"
 
 
+def sessions_dir() -> Path:
+    """Where the per-session event logs live.
+
+    Exists so the state tree can name this directory: every turn of every
+    session appends to a ``<sid>.jsonl`` in here and nothing removed them,
+    so it grew without bound. ``state_paths._STATE_DIR_SOURCES`` resolves
+    this function and applies the ordinary derived-state retention.
+    """
+    return service_dir() / "sessions"
+
+
 def log_path(session_id: str) -> Path:
     safe = "".join(c for c in str(session_id) if c.isalnum() or c in "-_")
     if not safe:
         raise ValueError(f"not a usable session id: {session_id!r}")
-    return service_dir() / "sessions" / f"{safe}.jsonl"
+    return sessions_dir() / f"{safe}.jsonl"
 
 
 def read_events(path: Path) -> list[dict]:
