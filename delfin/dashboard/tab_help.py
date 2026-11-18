@@ -371,9 +371,27 @@ _TABS_HELP: tuple[tuple[str, str, str, str, str], ...] = (
      "</ul>",
      "<b>Typical flow</b>: enable the remote archive in Settings &rarr; browse the remote tree &rarr; Download selected data or transfer it straight &#8594; Calculations.",
      "<b>Interactions</b>: endpoint configured in Settings; the local counterpart is the Archive tab."),
-        ("Tools", "Smaller utilities: atom mapping, geometry tools, etc.", "", "", ""),
-    ("Settings", "Global DELFIN configuration: clusters, backends, defaults.", "", "", ""),
-    ("Ketcher", "Draw molecules in the browser (2D editor).", "", "", ""),
+        ("Tools", "Tools &amp; platform panel: environment, tool status, installs, and run browsing.",
+     "<ul>"
+     "<li>One combined HTML view of environment, tool status, capabilities, applications, keys and recent runs (render_all_html joins six renderers, tab_tools.py:304-311).</li>"
+     "<li><b>Refresh</b> re-renders the view (tab_tools.py:323).</li>"
+     "<li><b>Install all open-source</b> installs every auto-installable open-source tool — ORCA, Turbomole and Multiwfn are never installed automatically (tooltip, tab_tools.py:324-328).</li>"
+     "<li><b>Install selected</b> installs the tools checked in the per-tool checkboxes (tab_tools.py:329-333).</li>"
+     "<li><b>Run:</b> dropdown shows recent runs with status, file list and log tail (tab_tools.py:336-340, render_run_detail_html :247).</li>"
+     "</ul>",
+     "<b>Typical flow</b>: check the platform view &rarr; install missing open-source tools (selected or all) &rarr; pick a run to inspect its files and log tail without leaving the tab.",
+     "<b>Interactions</b>: installs land where qm_runtime resolves tools; the Settings tab manages the same tool set for QM engines explicitly."),
+        ("Settings", "Global DELFIN configuration: clusters, backends, QM tool installs, secrets and defaults.",
+     "<ul>"
+     "<li><b>Show Values</b> toggle reveals/hides sensitive values (credentials) in the view (tab_settings.py:85-91, 1645).</li>"
+     "<li><b>Reload</b> re-reads the configuration; <b>Validate Setup</b> runs the runtime validation (tab_settings.py:91-99).</li>"
+     "<li>QM tool management: <b>Prepare qm_tools</b>, <b>Install qm_tools</b>, <b>Update qm_tools</b> plus per-tool install buttons xtb, crest, dftb+, xtb4stda, std2, mopac (tab_settings.py:100-123).</li>"
+     "<li>Cluster setup for bwUniCluster: <b>Setup cluster</b>, verification and full install buttons (tab_settings.py:262-272).</li>"
+     "<li>The tab reuses the same API keys/credentials as the DELFIN agent (tab_settings.py:3956, 4074).</li>"
+     "</ul>",
+     "<b>Typical flow</b>: set up the cluster once (Setup cluster &rarr; verify) &rarr; install the QM tools you need &rarr; Validate Setup &rarr; Reload. Remote Archive and backend availability elsewhere in the dashboard follow this configuration.",
+     "<b>Interactions</b>: gates the TURBOMOLE Builder (backend availability), Remote Archive (endpoint) and every submit path (backend choice resolved here, tab_settings.py:37)."),
+        ("Ketcher", "Draw molecules in the browser (2D editor).", "", "", ""),
     ("Swarm", "Metal-complex builder: PSO swarm search over candidate structures.", "", "", ""),
     ("Swarm Watch", "Live monitoring of a running Swarm search.", "", "", ""),
     ("Reactions", "Reaction graph of a calculation path.", "", "", ""),
