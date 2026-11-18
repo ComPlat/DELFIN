@@ -1607,6 +1607,20 @@ class TerminalAgent:
     def turn(self, prompt: str) -> TurnResult:
         if not self.first_task and not isinstance(prompt, HarnessText):
             self.first_task = str(prompt)
+        # Task-state capture (cap1/g2) BEFORE the working-state recap is
+        # built below: the one-shot path captures inside
+        # prepare_fresh_turn before its block, so the terminal must
+        # capture before _working_state_block() too -- otherwise the two
+        # surfaces send different fresh turns (the parity test pins
+        # them equal).
+        try:
+            if not isinstance(prompt, HarnessText):
+                from .task_state_capture import capture_from_first_message
+                capture_from_first_message(
+                    engine=self.engine, workspace=getattr(
+                        self.opts, "cwd", None), prompt=prompt)
+        except Exception:
+            pass
         # The fresh-start decision lives in run_turn (the public turn path),
         # which both the interactive and the headless route share: it judges
         # the CURRENT context, ARCHIVES the history it drops, arms the

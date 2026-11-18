@@ -99,7 +99,15 @@ def capture_from_first_message(*, engine, workspace, prompt: str) -> bool:
         if _is_harness_transport(text):
             return False
         from . import task_state as _ts
-        workspace = Path(workspace) if workspace is not None else None
+        # Only a real path is a store location. A test double's
+        # workspace (a MagicMock attribute, say) would stringify into a
+        # garbage directory in the checkout -- refuse it instead.
+        if isinstance(workspace, Path):
+            pass
+        elif isinstance(workspace, str) and workspace:
+            workspace = Path(workspace)
+        else:
+            return False
         if workspace is None:
             return False
         path = workspace / _ts.DEFAULT_FILENAME
