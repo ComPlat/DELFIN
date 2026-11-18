@@ -568,7 +568,8 @@ class ResultsOverviewPanel:
             # Column 3: 3D ball-and-stick of initial.xyz.
             if want_3d:
                 col3 = "C" if want_2d else "B"
-                png3d = initial_xyz_png_bytes(row["path"])
+                png3d = initial_xyz_png_bytes(
+                    row["path"], show_h=self._show_h.value)
                 if png3d:
                     img3d = XLImage(_io.BytesIO(png3d))
                     img3d.width = img3d.height = 130
