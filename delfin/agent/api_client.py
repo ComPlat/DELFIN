@@ -15067,7 +15067,8 @@ def _compact_between_rounds(api_messages: list, budget_chars: int,
                             turn_rows_base: int, session_id: str,
                             planning_window: int = 0,
                             system_chars: int = 0,
-                            schema_chars: int = 0) -> str:
+                            schema_chars: int = 0,
+                            workspace=None) -> str:
     """Compact older rounds of the running turn in place when the tool
     output is still over budget after the elision; returns a one-line
     notice when it did, "" otherwise. Never raises: a failed compaction
@@ -15088,7 +15089,8 @@ def _compact_between_rounds(api_messages: list, budget_chars: int,
     try:
         from . import in_turn_compaction as _itc
         new, record = _itc.compact(
-            api_messages, budget_chars, turn_rows_base=turn_rows_base)
+            api_messages, budget_chars, turn_rows_base=turn_rows_base,
+            session_id=str(session_id or ""), workspace=workspace)
     except Exception:
         return ""
     if record:
@@ -15138,7 +15140,8 @@ def _compact_between_rounds(api_messages: list, budget_chars: int,
                 non_tool = whole - tool_chars
                 tool_room = max(int(budget) - int(non_tool), 1)
                 new2, rec2 = _itc2.compact(
-                    api_messages, tool_room, turn_rows_base=turn_rows_base)
+                    api_messages, tool_room, turn_rows_base=turn_rows_base,
+                    session_id=str(session_id or ""), workspace=workspace)
                 if rec2:
                     api_messages[:] = new2
                     try:
@@ -33598,7 +33601,8 @@ class OpenAIClient(_BaseClient):
                 int(getattr(self, "_turn_rows_base", 0) or 0),
                 str(getattr(self, "session_id", "") or ""),
                 planning_window=(_planning_window_for_turn(self, _caps)),
-                schema_chars=_schema_chars)
+                schema_chars=_schema_chars,
+                workspace=getattr(self, "workspace", None))
             if _in_turn_note:
                 # The notice below reaches the user and nothing else. What is
                 # still running goes into the summary message, which the
