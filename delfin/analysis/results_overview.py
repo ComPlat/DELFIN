@@ -486,6 +486,62 @@ def molecular_formula(calc_dir: str):
     return "".join(parts)
 
 
+def formula_to_html(formula: str) -> str:
+    """Molecular formula with true sub/superscripts for the browser.
+
+    Trailing digits become <sub>2</sub>, a trailing charge like 2+ or
+    2- becomes <sup>2+</sup>: "[Fe(bpy)3]2+" -> "[Fe(bpy)<sub>3</sub>]"
+    with a <sup>2+</sup> suffix.  Formulas without indices pass through.
+    """
+    import re
+    if not formula:
+        return formula or ""
+    out = re.sub(r"(?<=[A-Za-z\)])((?:\d+)+)", r"<sub>\1</sub>", formula)
+    m = re.search(r"(\d*[+-])$", out)
+    if m and m.group(1):
+        out = out[:m.start()] + "<sup>" + m.group(1) + "</sup>"
+    return out
+
+
+def formula_to_latex(formula: str) -> str:
+    """Molecular formula in LaTeX math: digits become _{n}, a trailing
+    charge like 2+ becomes $^{2+}$."""
+    import re
+    if not formula:
+        return formula or ""
+    m = re.search(r"(\d*[+-])$", formula)
+    body, charge = formula, ""
+    if m and m.group(1):
+        body, charge = formula[:m.start()], m.group(1)
+    out = re.sub(r"(?<=[A-Za-z\)])((?:\d+)+)", r"$_{\1}$", body)
+    if charge:
+        out += "$^{" + charge + "}$"
+    return out
+
+
+def formula_to_richtext(formula: str):
+    """Molecular formula as openpyxl rich text: list of (text, vertAlign).
+
+    vertAlign 'subscript' for the index runs, None elsewhere; charges
+    become 'superscript'.  Suitable for openpyxl CellRichText.
+    """
+    import re
+    if not formula:
+        return [(formula or "", None)]
+    parts, i = [], 0
+    for m in re.finditer(r"(?<=[A-Za-z\)])((?:\d+)+)|(\d*[+-]$)", formula):
+        if m.start() > i:
+            parts.append((formula[i:m.start()], None))
+        if m.group(1):
+            parts.append((m.group(1), "subscript"))
+        else:
+            parts.append((m.group(2), "superscript"))
+        i = m.end()
+    if i < len(formula):
+        parts.append((formula[i:], None))
+    return parts or [(formula, None)]
+
+
 def _infer_bond_orders(sym, bonds):
     """Assign bond orders from valence deficits (heuristic, no charges).
 

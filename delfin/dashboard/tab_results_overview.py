@@ -26,7 +26,7 @@ except ImportError:  # pragma: no cover
     HAS_WIDGETS = False
 
 from delfin.analysis.results_overview import (
-    METRICS, build_table, format_value, get_smiles, initial_xyz_png_bytes, list_calculations, list_rss_pngs, molecular_formula, optimized_3d_png_bytes, smiles_png_bytes, sort_table)
+    METRICS, build_table, format_value, formula_to_latex, get_smiles, initial_xyz_png_bytes, list_calculations, list_rss_pngs, molecular_formula, optimized_3d_png_bytes, smiles_png_bytes, sort_table)
 
 
 def RO_CARD_H(title: str, hint: str = "") -> str:
@@ -81,6 +81,12 @@ def rows_to_markdownish(columns: List[dict], rows: List[dict],
             for col in columns
         )
         name = _html.escape(row["label"])
+        from delfin.analysis.results_overview import (
+            molecular_formula, formula_to_html)
+        formula = molecular_formula(row["path"])
+        if formula:
+            name += (" ("
+                     + formula_to_html(formula) + ")")
         body_rows.append(
             f"<tr style='background:{stripe}' "
             f"onmouseover=\"this.style.background='#e0f2fe'\" "
@@ -152,7 +158,7 @@ class ResultsOverviewPanel:
         )
         self._show_h = widgets.Checkbox(
             value=False,
-            description="Show hydrogen atoms",
+            description="H-Atome im 3D-Bild anzeigen",
             indent=False,
         )
         self._show_h.observe(self._on_png_opts_change, names="value")
@@ -227,6 +233,7 @@ class ResultsOverviewPanel:
             self._png_opts,
             self._show_2d,
             self._show_3d,
+            self._show_h,
             self._show_3d_opt,
             self._pngs,
         ])
@@ -518,7 +525,28 @@ class ResultsOverviewPanel:
                 v = row["values"].get(c["id"])
                 cells.append(v if v is not None else None)
             smiles = get_smiles(row["path"])
-            row_vals = [row["label"]]
+            # Heading cell with a rich-text formula (true sub/superscripts).
+            label_cell = row["label"]
+            try:
+                from openpyxl.cell.rich_text import (
+                    CellRichText, TextBlock)
+                from openpyxl.cell.text import InlineFont
+                from delfin.analysis.results_overview import (
+                    formula_to_richtext, molecular_formula)
+                form = molecular_formula(row["path"])
+                if form:
+                    rt = CellRichText()
+                    rt.append(row["label"])
+                    rt.append(" (")
+                    for text, va in formula_to_richtext(form):
+                        rt.append(TextBlock(
+                            InlineFont(vertAlign=va) if va else None,
+                            text))
+                    rt.append(")")
+                    label_cell = rt
+            except ImportError:
+                pass
+            row_vals = [label_cell]
             if want_2d:
                 row_vals.append(None)
             if want_3d:
@@ -714,10 +742,7 @@ class ResultsOverviewPanel:
             formula = molecular_formula(row["path"])
             heading = row["label"]
             if formula:
-                import re
-                sub = re.sub(r"([A-Z][a-z]?)(\d+)",
-                             r"\1$_{\2}$", formula)
-                heading += f" ({sub})"
+                heading += " (" + formula_to_latex(formula) + ")"
             lines.append(r"\begin{center}\textbf{"
                          + self._tex_escape(heading)
                          + r"}\end{center}")
