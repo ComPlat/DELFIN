@@ -326,7 +326,7 @@ def _rotate_inertia(sym, pts):
     return rotated
 
 
-def initial_xyz_png_bytes(calc_dir: str, size: int = 320, show_h=False,
+def initial_xyz_png_bytes(calc_dir: str, size: int = 320, show_h=True,
                          bond_orders=None, fmt="png"):
     """Skeletal formula of ``initial.xyz`` (PNG bytes), or None.
 
