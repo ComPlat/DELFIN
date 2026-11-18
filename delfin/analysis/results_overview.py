@@ -816,7 +816,7 @@ def rss_metrics(calc_dir: str) -> Dict[str, Any]:
     shape = None
     if result.get("rss_direction") == "exergonic":
         shape = "global minimum"
-    elif result.get("rss_direction") == "endergon":
+    elif result.get("rss_direction") == "endergonic":
         e_20 = by_dist.get(round(RSS_BOUND_DISTANCE, 4))
         e_21 = by_dist.get(round(RSS_BOUND_DISTANCE + 0.1, 4))
         if e_20 is not None and e_21 is not None:
