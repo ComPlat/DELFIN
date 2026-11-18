@@ -191,6 +191,13 @@ def smiles_png_bytes(smiles: str, size: int = 260, fmt: str = "png"):
     if mol is None:
         return None
     if fmt == "png":
+        # Plain RDKit drawing, the standard the calculators browser
+        # uses (tab_calculations_browser.py: Compute2DCoords + draw).
+        try:
+            from rdkit.Chem import rdDepictor
+            rdDepictor.Compute2DCoords(mol)
+        except Exception:
+            pass
         drawer = rdMolDraw2D.MolDraw2DCairo(size, size)
         rdMolDraw2D.PrepareAndDrawMolecule(drawer, mol)
         drawer.FinishDrawing()
