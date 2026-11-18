@@ -407,13 +407,61 @@ _TABS_HELP: tuple[tuple[str, str, str, str, str], ...] = (
      "</ul>",
      "<b>Typical flow</b>: set up the cluster once (Setup cluster &rarr; verify) &rarr; install the QM tools you need &rarr; Validate Setup &rarr; Reload. Remote Archive and backend availability elsewhere in the dashboard follow this configuration.",
      "<b>Interactions</b>: gates the TURBOMOLE Builder (backend availability), Remote Archive (endpoint) and every submit path (backend choice resolved here, tab_settings.py:37)."),
-        ("Ketcher", "Draw molecules in the browser (2D editor).", "", "", ""),
-    ("Swarm", "Metal-complex builder: PSO swarm search over candidate structures.", "", "", ""),
-    ("Swarm Watch", "Live monitoring of a running Swarm search.", "", "", ""),
-    ("Reactions", "Reaction graph of a calculation path.", "", "", ""),
-    ("Review", "Review and grade calculation results.", "", "", ""),
-    ("Pipelines", "Multi-step calculation pipelines.", "", "", ""),
-    ("Help", "This tab: features, CONTROL keys, dashboard Reiter.", "", "", ""),
+        ("Ketcher", "Draw and edit molecules in the browser (2D structure editor), registered tab (tab_ketcher.py:60).",
+     "<ul>"
+     "<li>The Ketcher panel (ketcher_panel.build, height 72vh, tab_ketcher.py:28): drawing canvas, file list, Open/Open drawing and Refresh files buttons.</li>"
+     "<li>Drawings opened from the Archive or Office tabs land here: the refs dict (open_drawing, refresh_files) is shared via ctx.ketcher_refs and updated in place (:40-52), so the two browser mirrors never hold an empty copy.</li>"
+     "<li>SMARTS queries are supported via ketcher_smarts.py.</li>"
+     "</ul>",
+     "<b>Typical flow</b>: draw or open a structure &rarr; save/export as coordinates &rarr; use them in Submit Job or a Builder tab.",
+     "<b>Interactions</b>: receives structures opened in Archive/Office; feeds Submit Job and the builders. Registered tab, present on every backend."),
+    ("Swarm", "Metal-complex builder: guided start of a PSO swarm search over candidate structures, plus the live board (tab_swarm.py:544). Read-only until you click.",
+     "<ul>"
+     "<li><b>Refresh</b> (tab_swarm.py:563) and <b>Stop swarm job</b> — Stop is two-step armed (:571).</li>"
+     "<li>Spec editor: <b>Load</b> (:586), <b>New from example</b> (:588), <b>Save</b> (:591), spec <b>Textarea</b> (:603); the saved path is published as ctx.swarm_spec_path and read by the board and Swarm Watch (:729).</li>"
+     "<li><b>Check</b> validates the spec (:612, check_start :404), <b>Start swarm</b> starts the job (:616, start_checked :457).</li>"
+     "<li>Board and job line refresh every SWARM_REFRESH_S while the tab is on screen (:547-548).</li>"
+     "</ul>",
+     "<b>Typical flow</b>: New from example or Load &rarr; edit the spec &rarr; Check &rarr; Start swarm &rarr; watch on the board and in Swarm Watch.",
+     "<b>Interactions</b>: needs a scheduler (throttled scheduler_client when started from here, :550-551); results are readable in Calculations; the roster is shared with Swarm Watch (:213-224)."),
+    ("Swarm Watch", "Live monitoring of a running swarm or wave, also without a roster (tab_swarm.py:947, registered at :1489-1490).",
+     "<ul>"
+     "<li><b>Refresh</b> (&#8635;, reads the sessions now, tab_swarm.py:1320).</li>"
+     "<li>Message box + <b>Send</b> (Enter sends, Shift+Enter newline, :1221, :1337-1342) to steer or annotate the running swarm.</li>"
+     "<li>Watched rows and feed render as HTML (:887, :1103); the tab borrows the Agent tab's stylesheet with delfin-swv- class namespace (:1125-1200).</li>"
+     "</ul>",
+     "<b>Typical flow</b>: start a swarm in the Swarm tab &rarr; open Swarm Watch &rarr; follow rows/feed &rarr; Send messages or stop in the Swarm tab.",
+     "<b>Interactions</b>: reads ctx.swarm_spec_path set by Swarm (:729); companion of the Swarm tab."),
+    ("Reactions", "Reaction graph of a calculation path, registered tab (tab_reaction_graph.py:1182-1194).",
+     "<ul>"
+     "<li>ReactionGraphPanel over calc_dir (default ~/calc, :1192-1193): shows the reaction network derived from the calculations in the folder.</li>"
+     "<li>Nothing is published onto ctx — the registry keeps the widget and drops the refs (:1185-1190), so no other tab can reach into it.</li>"
+     "</ul>",
+     "<b>Typical flow</b>: open the tab &rarr; pick a calculation path &rarr; inspect nodes and edges; details in reaction_graph.py / reaction_profile.py.",
+     "<b>Interactions</b>: reads the same calc/ folder as Calculations; helps interpret CO2-reduction and redox chains."),
+    ("Review", "Review and grade calculation results: structure view with categories, ratings and comments (tab_review.py:1385, registered :1393).",
+     "<ul>"
+     "<li>Grid of category toggles, each showing its key and the comment of this frame (:26-29); category keys are 1-9, 0, s1-s9 for Shift (category_key :142-143).</li>"
+     "<li>An Unsure toggle marks a frame uncertain; per-file and whole-review comments are saved with the rating (:26-29).</li>"
+     "<li>Keyboard: removes the word &quot;unsicher&quot; from a comment, H toggles H atoms, R resets the view, Esc leaves a text field (:37-38); marked atoms are ringed in the category colour (:93).</li>"
+     "</ul>",
+     "<b>Typical flow</b>: pick a calculation &rarr; rate frames by pressing category keys &rarr; comment &rarr; save; ratings are stored with the calculation.",
+     "<b>Interactions</b>: reads Calculations data; grades feed later reviews of the same path."),
+    ("Pipelines", "Live status of multi-step calculation pipelines (tab_pipeline_status.py:185, PipelineStatusWidget :50).",
+     "<ul>"
+     "<li>The widget is a pure listener: pipe.on_step(widget.on_step) pushes step events into the display (:53-58).</li>"
+     "<li>Returns (widget, refs) with refs {'pipeline_status': widget} (:191-193).</li>"
+     "</ul>",
+     "<b>Typical flow</b>: start a pipeline (via the agent or a workflow) &rarr; watch each step appear here as it runs.",
+     "<b>Interactions</b>: reflects pipeline.py runs; no controls of its own."),
+    ("Help", "This tab: feature groups, CONTROL keys, and the dashboard tab guide (tab_help.py:277-293).",
+     "<ul>"
+     "<li>Feature groups as accordion sections (titles &quot;Group — summary&quot;, :277-280).</li>"
+     "<li>The tab guide is the rich _TABS_HELP 5-tuple below (:293): purpose, widgets, typical flow, interactions per tab.</li>"
+     "<li>The CONTROL key table is searchable from the header search bar; picking a key routes here pre-filtered (delfin/dashboard/__init__.py:1194-1207).</li>"
+     "</ul>",
+     "<b>Typical flow</b>: search a key or tab name in the header &rarr; Help opens filtered &rarr; read the accordion section.",
+     "<b>Interactions</b>: target of the header-search routing; sources are CONTROL_FIELD_SPECS, ALLOWED_BY_KEY and _TABS_HELP only — no second copies."),
 )
 
 
