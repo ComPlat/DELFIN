@@ -155,6 +155,14 @@ _ENGINE_STOP: dict[str, str] = {
     # CLI's JSON, to the service supervisor and to every measurement. The
     # engine's own comment at the stop site states the intent this makes
     # true: "the supervisor sees WHY it ended and resumes it".
+    # The turn's OWN verification was still red when it ended: the engine
+    # already ran it, forced up to two fix rounds and said loudly that the
+    # final state was not re-verified -- and then ended "done" anyway, so
+    # every program reading the outcome saw success. Measured 2026-11-18
+    # across six swarm agents: five reported "done", and one of them had
+    # left its own new integration test red. A turn may end with a red
+    # check; it may not call that finished.
+    "verify_still_red": "incomplete",
     "end_turn_open_tasks": "incomplete",
     "end_turn_tasks_unknown": "incomplete",
     "promised_no_tool_call": "incomplete",

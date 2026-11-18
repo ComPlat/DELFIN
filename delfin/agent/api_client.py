@@ -35938,7 +35938,24 @@ class OpenAIClient(_BaseClient):
                 # A promise that survived the corrective budget: the turn
                 # does not end "done" -- the supervisor sees WHY it ended
                 # and resumes it (the brief's clear stop_reason).
-                if (not _tool_calls
+                if _last_verify_problem:
+                    # The last auto-verify that ran was RED and no green one
+                    # followed: _last_verify_problem is re-assigned on every
+                    # run, so a passing check clears it. The engine already
+                    # forced its fix rounds and warned that the final state
+                    # was not re-verified; what was missing is that the
+                    # OUTCOME said so. It wins over the task-list reasons
+                    # below -- both classify as "incomplete", and a red check
+                    # is the more specific fact about the work.
+                    #
+                    # A verification that was SKIPPED (no runner, a workspace
+                    # on the slow list) leaves this empty and still ends
+                    # "done": nothing is known then, which is a weaker
+                    # statement than a failure, and the existing notice says
+                    # it. Same for auto_verify off -- a switch the person
+                    # turned off must not invent an incomplete turn.
+                    _stop = "verify_still_red"
+                elif (not _tool_calls
                         and _promised_end_state.get("state", "none")
                         in ("open", "unknown")
                         and _promises_an_unmade_tool_call(
