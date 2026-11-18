@@ -311,8 +311,24 @@ _TABS_HELP: tuple[tuple[str, str, str, str, str], ...] = (
      "<ul><li><b>Job name</b> input (required, tab_chemdarwin.py:1265-1267).</li><li><b>Seed input/output</b> widgets (2D + 3D views, classes chemdarwin-seed-out, tab_chemdarwin.py:1275-1277).</li><li><b>Iterations</b> control and custom iteration jump + <b>page navigation</b> (PAGE_SIZE = 50, tab_chemdarwin.py:1250, 1311-1327).</li></ul>",
      "<b>Typical flow</b>: enter a job name &rarr; provide/import a seed structure &rarr; run ChemDarwin generation &rarr; browse the generated molecules page by page (50 per page), picking candidates to continue with.",
      "<b>Interactions</b>: candidates can feed further steps (e.g. Swarm or Submit Job); needs RDKit/stk installed — if the import fails the tab stays hidden with its availability reason."),
-        ("DELFIN Agent", "Chat with the AI agent: ask about results, methods, and let it run calculations.", "", "", ""),
-    ("Agent Activity", "Live log of what the agent is doing.", "", "", ""),
+        ("DELFIN Agent", "Chat with the AI agent: ask about results, methods, and let it run calculations.",
+     "<ul>"
+     "<li>Chat input and transcript; every model- or command-authored string is HTML-escaped before rendering (tab_agent.py:205).</li>"
+     "<li>Chips above the input shape the next message: <b>permission chip</b> (amber styling, the permission ladder with one rung per restriction — tab_agent.py:2509, :2575-2577, :2774-2779; the backend mapping is delfin.agent.permission_profile.PROFILE_TO_MODE, :2811-2814), plus attach and mode chips.</li>"
+     "<li>Slash commands: /model, /effort, /mode, /perms, /perm-cycle, /reset, /sync, /pair and more (command tables tab_agent.py:2867, :2923, :3410).</li>"
+     "<li>Model prices are read from one table at module import (tab_agent.py:17); reasoning models running above their profile effort get a visible note (:604-605).</li>"
+     "<li>Plan mode: a post-plan permission mode pops the pending plan for approval (:911).</li>"
+     "</ul>",
+     "<b>Typical flow</b>: pick permission rung &rarr; attach files/keys if needed &rarr; type the task &rarr; Send; stop long turns with the stop control; the agent reports tool use, calculations and jobs in the transcript.",
+     "<b>Interactions</b>: runs calculations via Submit Job, reads Calculations/Archive, logs everything in Agent Activity; Office mode locks the permission role to the Office folder (:2823); /perms all_free is the unrestricted rung (:2854-2857)."),
+    ("Agent Activity", "Live log of what the agent is doing: sessions, tools, costs, worktrees, schedules.",
+     "<ul>"
+     "<li>Filter dropdowns: Provider, Mode, Verdict, Class — each with an (all) option (tab_agent_activity.py:695-712).</li>"
+     "<li><b>Refresh</b> reloads the snapshot (:717-718); the live-state card always renders, even when empty (:64).</li>"
+     "<li>Cards: live state, summary, timeline, cost, MCP servers, worktrees, schedules (:689-694), plus aggregate stats (:444).</li>"
+     "</ul>",
+     "<b>Typical flow</b>: filter by verdict or class &rarr; Refresh &rarr; follow the timeline while the agent works; use it to audit which tool calls ran and what they cost.",
+     "<b>Interactions</b>: mirrors what the DELFIN Agent tab does — no controls here, read-only monitoring."),
     ("Job Status", "State of submitted jobs: running, pending and finished, with start/stop controls.",
      "<ul>"
      "<li><b>Select Job</b> (Dropdown, options filled from the job list, tab_job_status.py:410-411).</li>"
