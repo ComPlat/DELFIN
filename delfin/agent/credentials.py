@@ -43,7 +43,16 @@ Design notes:
   the file itself is then ``chmod 0600``.  Best-effort — failure to
   set permissions logs nothing but does not raise (we don't have a
   logger here and don't want to leak credential names to stderr).
-"""
+
+
+Persons. The store may be scoped to one named person with the
+optional ``person`` argument on the four public accessors; that
+person's own store lives beside the shared one as ``<stem>.<person>.json`` (its keyring index ``<stem>.<person>.keyring.json``). Reads look in the person's store first and fall
+back to the shared store; with no person the order above is unchanged.
+A missing value is refused with an empty return that names neither
+the credential nor a person. The module enforces no filesystem
+boundary between persons here -- who may read which store is the
+egress proxy and the workspace roots of later steps."""
 
 from __future__ import annotations
 
@@ -73,6 +82,17 @@ _WELL_KNOWN_KEYS: tuple[str, ...] = (
 def _resolve_path(path: Path | None) -> Path:
     return path if path is not None else _DEFAULT_PATH
 
+
+def _person_path(path: Path | None, person: str) -> Path:
+    """The file store for one named person, beside the shared store.
+
+    Lives next to ``_resolve_path(path)`` as ``<stem>.<person>.json`` so
+    its keyring index (names only) lands at ``<stem>.<person>.keyring.json``
+    via ``index_path``. Naming a person reads that person's own store;
+    naming none reads the shared one.
+    """
+    p = _resolve_path(path)
+    return p.with_name(f"{p.stem}.{person}.json")
 
 def _read_store(path: Path | None = None, *,
                 strict: bool = False) -> dict[str, str]:
@@ -601,19 +621,8 @@ def describe_store(name: str = "", *, path: Path | None = None) -> str:
     return f"{_resolve_path(path)} (0600)"
 
 
-def load_credential(name: str, *, path: Path | None = None) -> str:
-    """Return the credential value: env-var > keyring > file > ''.
-
-    The keyring is asked only for names the index records, so a host
-    without one never imports it. When it cannot answer, the file copy (if
-    any) is returned. The lookup is silent — callers MUST handle an empty
-    return without revealing the credential name in any user-visible error.
-    """
-    if not name:
-        return ""
-    env_val = os.environ.get(name, "")
-    if env_val:
-        return env_val
+def _lookup_stores(name: str, path: Path | None) -> str:
+    """Keyring-then-file lookup against one store; '' when absent."""
     if name in _index_names(path):
         try:
             value = _kr_get(name)
@@ -621,47 +630,73 @@ def load_credential(name: str, *, path: Path | None = None) -> str:
             value = ""
         if value:
             return value
-    store = _read_store(path)
-    return store.get(name, "")
+    return _read_store(path).get(name, "")
+
+
+def load_credential(name: str, *, path: Path | None = None,
+                    person: str = "") -> str:
+    """Return the value: env-var > keyring > file > ''.
+
+    With *person* set, that person's own store (its keyring index and
+    file) is consulted first, then the shared store as a fallback. With no
+    *person* the order is exactly today's: env > keyring > file > ''. The
+    keyring is asked only for names the index records, so a host without
+    one never imports it. The lookup is silent -- callers MUST handle an
+    empty return without revealing the name or the person in any
+    user-visible error.
+    """
+    if not name:
+        return ""
+    env_val = os.environ.get(name, "")
+    if env_val:
+        return env_val
+    if person:
+        value = _lookup_stores(name, _person_path(path, person))
+        if value:
+            return value
+        return _lookup_stores(name, path)
+    return _lookup_stores(name, path)
 
 
 def set_credential(
     name: str, value: str, *, path: Path | None = None,
-    store: str | None = None,
+    store: str | None = None, person: str = "",
 ) -> bool:
-    """Persist a credential.  Returns True if the store was modified.
+    """Persist a value.  Returns True if the store was modified.
 
-    *store* overrides the setting for this call ("auto", "keyring",
-    "file"). Under auto a keyring that fails the write leaves the key in
-    the file; under keyring it raises CredentialStoreUnavailable and
-    nothing is written. A file copy of the same name is left in place --
-    the keyring copy is read first; ``migrate_to_keyring`` or ``delete``
-    remove it on request. Empty ``value`` is a no-op (use
-    ``delete_credential`` to remove).
+    With *person* set the value is written to that person's own store
+    (beside the shared one); the shared store is not touched. *store*
+    overrides the setting for this call ("auto", "keyring", "file").
+    Under auto a keyring that fails the write leaves the value in the
+    file; under keyring it raises CredentialStoreUnavailable and nothing
+    is written. Empty ``value`` is a no-op (use ``delete_credential``).
     """
     if not name or not value:
         return False
+    target = _person_path(path, person) if person else _resolve_path(path)
     mode = store if store in STORE_MODES else configured_store()
     if _write_target(mode) == "keyring":
         try:
-            if name in _index_names(path) and _kr_get(name) == value:
+            if name in _index_names(target) and _kr_get(name) == value:
                 return False
             _kr_set(name, value)
-            _index_add(name, path)
+            _index_add(name, target)
             return True
         except CredentialStoreUnavailable:
             if mode == "keyring":
                 raise
-    current, moved = _read_store_for_write(path)
+    # Strict, and quarantining: the per-person routing must not undo the
+    # separation of "absent" from "unreadable". The transformation that
+    # introduced `person` was written against the base from before that
+    # fix and restored the lenient read here, which is a silent return of
+    # a measured data loss -- one write over a damaged store leaves only
+    # the key just written.
+    current, moved = _read_store_for_write(target)
     if current.get(name) == value:
         return False
     current[name] = value
-    _write_store(current, path)
+    _write_store(current, target)
     if moved is not None:
-        # The key asked for IS stored; what cannot be reported as stored is
-        # whatever the damaged file held. Raised after the write, so the
-        # person does not have to type the key a second time, and naming
-        # the file rather than its contents.
         raise CredentialStoreUnreadable(
             f"{name} was stored, but the previous store could not be read "
             f"and was moved to {_quarantine_note(moved)}. Any other "
@@ -670,30 +705,29 @@ def set_credential(
     return True
 
 
-def delete_credential(name: str, *, path: Path | None = None) -> bool:
-    """Remove a credential from every store.  Returns True if it was present.
+def delete_credential(name: str, *, path: Path | None = None,
+                      person: str = "") -> bool:
+    """Remove a value from every store.  Returns True if it was present.
 
-    Raises CredentialStoreUnavailable when the keyring holds it and cannot
-    be reached; the file copy is removed first either way.
+    With *person* set only that person's store is touched; the shared
+    store is left alone. Raises CredentialStoreUnavailable when the
+    keyring holds it and cannot be reached; the file copy is removed
+    first either way.
     """
     if not name:
         return False
+    target = _person_path(path, person) if person else _resolve_path(path)
     removed = False
-    try:
-        current = _read_store(path, strict=True)
-    except CredentialStoreUnreadable:
-        # Deleting from a store that cannot be read would mean writing a
-        # store built from nothing, which removes every OTHER name too.
-        # The file is left exactly as it is: the caller is told, and
-        # quarantining is a decision for a person, not for a delete.
-        raise
+    # Strict: a store written from an unreadable one removes every OTHER
+    # name as well, per person exactly as for the shared store.
+    current = _read_store(target, strict=True)
     if name in current:
         del current[name]
-        _write_store(current, path)
+        _write_store(current, target)
         removed = True
-    if name in _index_names(path):
+    if name in _index_names(target):
         _kr_delete(name)
-        _index_remove(name, path)
+        _index_remove(name, target)
         removed = True
     return removed
 
@@ -800,32 +834,30 @@ def mask(value: str) -> str:
 
 
 def list_credentials(
-    *, path: Path | None = None,
+    *, path: Path | None = None, person: str = "",
 ) -> dict[str, dict[str, str]]:
-    """Return name → {value: masked, source, stores}.
+    """Return name -> {value: masked, source, stores}.
 
-    ``source`` is where ``load_credential`` takes the value from: "env",
-    "keyring" or "file" (env > keyring > file); ``stores`` lists every
-    place holding it. A keyring entry that cannot be read right now is
-    shown as "(unavailable)", never as an error.
-
-    A store that cannot be read at all is NOT reported as an empty one:
-    the key ``""`` carries ``{"value": "", "source": "unreadable",
-    "detail": ...}``. A caller that only iterates names sees one extra
-    entry; a caller that shows the result to a person can then say the
-    store is damaged instead of saying nothing is stored. The two lead a
-    person to opposite actions, so they are not the same answer.
+    With *person* set the listing covers that person's own store (file
+    and keyring index) and the session env vars -- never the shared store
+    and never another person's, so a person is not told that somebody
+    else holds a value under the same name. ``source`` is where
+    ``load`` takes the value from: "env", "keyring" or "file"
+    (env > keyring > file); ``stores`` lists every place holding it. A
+    keyring entry that cannot be read right now is shown as
+    "(unavailable)", never as an error.
     """
     out: dict = {}
+    target = _person_path(path, person) if person else _resolve_path(path)
     try:
-        store = _read_store(path, strict=True)
+        store = _read_store(target, strict=True)
     except CredentialStoreUnreadable as exc:
         store = {}
         out[""] = {"value": "", "source": "unreadable", "stores": [],
                    "detail": str(exc)}
     for name, val in store.items():
         out[name] = {"value": mask(val), "source": "file", "stores": ["file"]}
-    for name in _index_names(path):
+    for name in _index_names(target):
         try:
             val = _kr_get(name)
             shown = mask(val) if val else "(missing)"
@@ -837,7 +869,6 @@ def list_credentials(
         env_val = os.environ.get(name, "")
         if not env_val:
             continue
-        # env-var wins on conflict
         prior = (out.get(name) or {}).get("stores") or []
         out[name] = {"value": mask(env_val), "source": "env",
                      "stores": ["env"] + list(prior)}

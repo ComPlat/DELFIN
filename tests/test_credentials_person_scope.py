@@ -128,7 +128,7 @@ def test_no_person_order_is_env_then_keyring_then_file_then_empty(
     # 2. keyring wins over the file.
     monkeypatch.delenv("M4_KEY", raising=False)
     cred.reset_keyring_state()
-    put_keyring(kr, "M4_KEY", "from-keyring")
+    put_keyring(kr, "M4_KEY", "from-keyring", store_path)
     put_file(store_path, "M4_KEY", "from-file")
     assert load("M4_KEY", store_path, kr, person="") == "from-keyring"
 
@@ -159,8 +159,29 @@ def clear_file(store_path):
     store_path.write_text("{}", encoding="utf-8")
 
 
-def put_keyring(kr, name, value):
+def put_keyring(kr, name, value, store_path=None):
+    """Put a value in the keyring AND register it in the index.
+
+    The index is the record of which names the keyring holds, and
+    `_lookup_stores` asks the keyring only for a name that is in it --
+    `set_credential(store="keyring")` always calls `_index_add`, so a
+    keyring entry without an index entry is a state production never
+    reaches. The first version of this helper wrote only the keyring and
+    the test then measured the file winning over the keyring, which it
+    read as a broken lookup order. Its sibling `del_keyring` maintains
+    the index already.
+    """
     kr.set_password("delfin", name, value)
+    if store_path is None:
+        return
+    from pathlib import Path as _P
+    idx = _P(store_path.with_name(store_path.stem + ".keyring.json"))
+    names = []
+    if idx.exists():
+        names = json.loads(idx.read_text(encoding="utf-8")).get("names", [])
+    if name not in names:
+        names.append(name)
+    idx.write_text(json.dumps({"names": names}), encoding="utf-8")
 
 
 def del_keyring(kr, name, store_path):
