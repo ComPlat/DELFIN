@@ -420,6 +420,7 @@ def _latex_panel(table, **toggles):
     panel._show_2d = CB(toggles.get("2d", True))
     panel._show_3d = CB(toggles.get("3d", True))
     panel._show_3d_opt = CB(toggles.get("opt", False))
+    panel._show_h = CB(toggles.get("show_h", False))
     return panel
 
 
@@ -513,6 +514,7 @@ def test_xlsx_columns_follow_image_toggles(tmp_path, monkeypatch):
     panel._show_2d = CB(True)
     panel._show_3d = CB(True)
     panel._show_3d_opt = CB(True)
+    panel._show_h = CB(True)
 
     # Real 1x1 PNG (openpyxl refuses non-image bytes).
     import struct, zlib
