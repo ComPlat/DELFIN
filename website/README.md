@@ -42,6 +42,39 @@ a sphere, without external libraries or requests. It stops rendering offscreen,
 in hidden tabs and when motion is paused; reduced-motion preferences are honoured.
 A static map remains visible if JavaScript or canvas is unavailable.
 
+## Agent framework guide
+
+`framework.html` is a detailed, source-linked guide to the agent runtime,
+task execution, memory, self-validation, improvement paths, experiment design
+and permission boundaries. It shares the site's visual identity through
+`styles.css` and its page-specific `framework.css`. The navigation and the
+framework introduction on the landing page link to it. The header navigation
+is the only page navigation: its "The agent" entry carries the page and is
+marked current there.
+
+Arrow glyphs carry one meaning each, so a reader can tell where a link
+goes before clicking it. `↗` means the link LEAVES the site: an external
+URL, or a raw file the browser opens on its own. Inside the site the
+direction of travel is shown instead -- `↓` for an anchor further down
+this page, `→` onward to another page, `←` back. Before this, `↗` sat on
+18 external and 8 internal links, so it meant nothing, and "The agent"
+read as a link that opens a new tab. A second Overview / Agent framework tab row was
+removed -- two controls that lead to the same page leave a reader guessing
+which one means the page level.
+Reading content, tables and expandable explanations work without JavaScript;
+`framework.js` enhances the architecture map, task-stage explorer and validation
+links. The memory, improvement and paired-comparison diagrams are static, with
+their conceptual status stated in their captions. No diagram represents live
+telemetry or a measured benchmark result.
+
+The guide was checked against source revision
+`de880cbb9eda4085ff5d6665c6818cbba4c7d75b` on 18 November 2026. Its implementation
+links are pinned to that revision. When updating the guide, recheck the claims
+and source links together, including defaults, backend-dependent coverage,
+human adoption steps and the distinction between replay and live evaluation.
+The illustrative candidate is not a claimed benchmark result. The existing
+Pages workflow includes the new page and stylesheet automatically.
+
 ### Add videos
 
 Add an entry to `videos` in `content.js`. The section appears automatically when

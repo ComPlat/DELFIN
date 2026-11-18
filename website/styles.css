@@ -27,6 +27,14 @@ body.motion-paused *,body.motion-paused *:before,body.motion-paused *:after{anim
 .purpose-globe canvas.ready{opacity:1}
 @keyframes earth-float{0%,100%{transform:translateY(0) rotate(-2deg)}50%{transform:translateY(-8px) rotate(2deg)}}
 @media(max-width:700px){.purpose-globe{width:132px;margin:8px 0 12px}}
+.framework-intro{padding-bottom:65px;background:white}
+.framework-teaser{padding-top:28px;border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:25px;flex-wrap:wrap}
+.framework-teaser .eyebrow{font-size:9px;color:var(--blue-dark);margin-bottom:12px}
+.framework-teaser h2{font-size:27px;font-weight:500;letter-spacing:-.6px;margin-bottom:12px}
+.framework-teaser p:not(.eyebrow){color:var(--muted);font-size:14px;max-width:650px}
+.framework-teaser .text-link{font-size:13px}
+@media(min-width:701px) and (max-width:1000px){.header nav{gap:15px;font-size:12px}.header .nav-cta{gap:14px;padding:12px 14px}}
+@media(max-width:700px){.framework-intro{padding-bottom:45px}.framework-teaser h2{font-size:24px}}
 .stack{border-top:1px solid var(--line);background:white}
 .qm{margin:0;display:grid;grid-template-columns:minmax(190px,.9fr) 44px 1.35fr 44px 1.15fr 44px 1.15fr 44px 1.3fr;grid-template-rows:auto 70px auto 78px auto auto;align-items:stretch}
 .qm-agent{grid-column:3/10;grid-row:1;display:grid;grid-template-columns:auto 1fr;gap:26px;align-items:center;padding:20px 22px;border:1.5px solid var(--qm-navy-line);border-radius:8px;background:#eef0fa}
