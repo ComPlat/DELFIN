@@ -50,7 +50,15 @@ and permission boundaries. It shares the site's visual identity through
 `styles.css` and its page-specific `framework.css`. The navigation and the
 framework introduction on the landing page link to it. The header navigation
 is the only page navigation: its "The agent" entry carries the page and is
-marked current there. A second Overview / Agent framework tab row was
+marked current there.
+
+Arrow glyphs carry one meaning each, so a reader can tell where a link
+goes before clicking it. `↗` means the link LEAVES the site: an external
+URL, or a raw file the browser opens on its own. Inside the site the
+direction of travel is shown instead -- `↓` for an anchor further down
+this page, `→` onward to another page, `←` back. Before this, `↗` sat on
+18 external and 8 internal links, so it meant nothing, and "The agent"
+read as a link that opens a new tab. A second Overview / Agent framework tab row was
 removed -- two controls that lead to the same page leave a reader guessing
 which one means the page level.
 Reading content, tables and expandable explanations work without JavaScript;
