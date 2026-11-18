@@ -158,7 +158,7 @@ class ResultsOverviewPanel:
         )
         self._show_h = widgets.Checkbox(
             value=False,
-            description="H-Atome im 3D-Bild anzeigen",
+            description="Show hydrogen atoms in 3D image",
             indent=False,
         )
         self._show_h.observe(self._on_png_opts_change, names="value")
@@ -233,8 +233,8 @@ class ResultsOverviewPanel:
             self._png_opts,
             self._show_2d,
             self._show_3d,
-            self._show_h,
             self._show_3d_opt,
+            self._show_h,
             self._pngs,
         ])
         self.widget.add_class("ro-tab-root")
@@ -740,12 +740,14 @@ class ResultsOverviewPanel:
 
         for row in self._table["rows"]:
             formula = molecular_formula(row["path"])
-            heading = row["label"]
+            # Escape ONLY the plain name: the formula already IS LaTeX
+            # (formula_to_latex); escaping it breaks the subscripts
+            # (C$_{33}$ lost its underscores).
+            head_latex = self._tex_escape(row["label"])
             if formula:
-                heading += " (" + formula_to_latex(formula) + ")"
+                head_latex += " (" + formula_to_latex(formula) + ")"
             lines.append(r"\begin{center}\textbf{"
-                         + self._tex_escape(heading)
-                         + r"}\end{center}")
+                         + head_latex + r"}\end{center}")
             lines.append(r"\par\bigskip")
             smiles = get_smiles(row["path"])
             # Collect ALL ticked structure images, then place them side
