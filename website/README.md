@@ -36,6 +36,12 @@ The second visual direction uses a dark scientific structure explorer, sans-seri
 editorial headings and restrained motion. The original blue identity, mission and
 Animal Loop remain. The DELFIN wordmark has no trailing full stop.
 
+The purpose section features a slowly rotating, gently floating Earth in the site
+palette. `assets/earth.js` projects the inline, stylised SVG world map onto
+a sphere, without external libraries or requests. It stops rendering offscreen,
+in hidden tabs and when motion is paused; reduced-motion preferences are honoured.
+A static map remains visible if JavaScript or canvas is unavailable.
+
 ### Add videos
 
 Add an entry to `videos` in `content.js`. The section appears automatically when
