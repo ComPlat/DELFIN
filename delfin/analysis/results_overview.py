@@ -291,8 +291,9 @@ def _detect_bonds(sym, cov, pts):
     return bonds
 
 
-def initial_xyz_png_bytes(calc_dir: str, size: int = 320):
-    """3D ball-and-stick view of ``initial.xyz`` (PNG bytes), or None.
+def initial_xyz_png_bytes(calc_dir: str, size: int = 320, show_h=False,
+                         bond_orders=None, fmt="png"):
+    """Skeletal formula of ``initial.xyz`` (PNG bytes), or None.
 
     The structure is rotated onto its principal inertia axes so the largest
     cross-section faces the camera (most atoms visible), then depth-sorted
@@ -320,8 +321,24 @@ def initial_xyz_png_bytes(calc_dir: str, size: int = 320):
     # Bond detection: covalent radii sum x BOND_FACTOR (Cordero 2008).
     cov = [_XYZ_COVALENT.get(s, _XYZ_COVALENT_DEFAULT) for s in sym]
     bonds = _detect_bonds(sym, cov, rotated)
+    bond_orders = bond_orders if bond_orders is not None \
+        else _infer_bond_orders(sym, bonds)
 
-    return _render_skeleton(sym, rotated, bonds, size)
+    if show_h:
+        sym_vis = sym
+        bonds_vis = bonds
+    else:
+        # Hide H: bonds TO H disappear with them (skeletal convention).
+        keep = [i for i, s in enumerate(sym) if s != "H"]
+        keepset = set(keep)
+        remap = {old_i: new_i for new_i, old_i in enumerate(keep)}
+        sym_vis = [sym[i] for i in keep]
+        rotated = rotated[keep]
+        bonds_vis = [(remap[i], remap[j]) for i, j in bonds
+                     if i in keepset and j in keepset]
+    return _render_skeleton(sym_vis, rotated, bonds_vis, size,
+                            show_h=show_h, bond_orders=bond_orders,
+                            fmt=fmt)
 
 
 def _rotate_inertia(sym, pts):
@@ -358,7 +375,7 @@ def _detect_bonds(sym, cov, pts):
 
 
 def _render_ball_stick(sym, rotated, bonds, size, atom_scale=0.8,
-                       bond_lw=1.4):
+                       bond_lw=1.4, fmt="png"):
     """Draw a depth-sorted ball-and-stick projection (PNG bytes).
 
     ``atom_scale`` scales the display radii (0.8 = classic filling),
@@ -374,7 +391,7 @@ def _render_ball_stick(sym, rotated, bonds, size, atom_scale=0.8,
 
     radii = numpy.array([_XYZ_RADII.get(s, _XYZ_RADIUS_DEFAULT) for s in sym])
     extent = max(numpy.ptp(rotated[:, 0]), numpy.ptp(rotated[:, 1]), 1.0)
-    scale = 0.58 * size / extent  # px per Angstrom, molecule fills ~116%
+    scale = 0.93 * size / extent  # px per Angstrom, tight margin
     fig = plt.figure(figsize=(size / 100, size / 100), dpi=100)
     canvas = FigureCanvasAgg(fig)
     ax = fig.add_axes([0, 0, 1, 1])
@@ -402,12 +419,70 @@ def _render_ball_stick(sym, rotated, bonds, size, atom_scale=0.8,
             zorder=2 + rotated[idx][2] / (extent + 1e-6)))
     from io import BytesIO
     buf = BytesIO()
-    fig.savefig(buf, format="png", dpi=100)
+    fig.savefig(buf, format=fmt, dpi=100)
     plt.close(fig)
     return buf.getvalue()
 
 
-def _render_skeleton(sym, rotated, bonds, size):
+def molecular_formula(calc_dir: str):
+    """Hill-ordered molecular formula of initial.xyz, e.g. C34H24N4Ni.
+
+    C first, H second, remaining elements alphabetically; None when no
+    readable initial.xyz exists.
+    """
+    import collections
+    atoms = _parse_xyz(calc_dir)
+    if not atoms:
+        return None
+    counts = collections.Counter(a[0] for a in atoms)
+    parts = []
+    for s in ("C", "H") + tuple(sorted(k for k in counts
+                                      if k not in ("C", "H"))):
+        n = counts.pop(s, 0)
+        if n:
+            parts.append(s if n == 1 else f"{s}{n}")
+    return "".join(parts)
+
+
+def _infer_bond_orders(sym, bonds):
+    """Assign bond orders from valence deficits (heuristic, no charges).
+
+    Each heavy atom gets its typical valence (C 4, N 3, O 2, S 2, ...);
+    every single bond consumes one bond from each partner.  Deficits are
+    filled greedily: two atoms each missing >=2 bonds form a double bond,
+    missing >=3 a triple bond.  Metals and H never take multiple bonds.
+    Returns {(i, j): 2|3} for the bonds upgraded.
+    """
+    import collections
+    _VALENCE = {"C": 4, "N": 3, "O": 2, "S": 2, "P": 3, "Si": 4, "B": 3}
+    order = collections.defaultdict(int)   # per-atom bonds consumed
+    upgrades = {}
+    for i, j in bonds:
+        order[i] += 1
+        order[j] += 1
+    need = {}
+    for i, s in enumerate(sym):
+        v = _VALENCE.get(s)
+        if v is None or s == "H":
+            continue
+        need[i] = max(0, v - order[i])
+    pair_done = set()
+    for i, j in bonds:
+        if i in need and j in need and (i, j) not in pair_done:
+            k = min(need[i], need[j])
+            if k >= 3:
+                upgrades[(i, j)] = 3
+                need[i] -= 3; need[j] -= 3
+            elif k == 2:
+                upgrades[(i, j)] = 2
+                need[i] -= 2; need[j] -= 2
+            pair_done.add((i, j))
+            pair_done.add((j, i))
+    return upgrades
+
+
+def _render_skeleton(sym, rotated, bonds, size, show_h=False,
+                     bond_orders=None, fmt="png"):
     """Wireframe of the rotated structure in RDKit-2D style (PNG bytes).
 
     Same geometry as the ball-and-stick column (positions kept, no
@@ -423,7 +498,7 @@ def _render_skeleton(sym, rotated, bonds, size):
 
     radii = numpy.array([_XYZ_RADII.get(s, _XYZ_RADIUS_DEFAULT) for s in sym])
     extent = max(numpy.ptp(rotated[:, 0]), numpy.ptp(rotated[:, 1]), 1.0)
-    scale = 0.58 * size / extent
+    scale = 0.93 * size / extent  # px per Angstrom, tight margin
     fig = plt.figure(figsize=(size / 100, size / 100), dpi=100)
     FigureCanvasAgg(fig)
     ax = fig.add_axes([0, 0, 1, 1])
@@ -446,10 +521,15 @@ def _render_skeleton(sym, rotated, bonds, size):
                 [rotated[i][1], rotated[j][1]],
                 color="black", lw=0.8, solid_capstyle="round", zorder=1)
 
-    # Atom labels in white gaps: heavy atoms + metals, H suppressed.
+    # Skeletal convention: C is implicit (never labelled), only
+    # heteroatoms (+ metals) get a white gap and a symbol.  H labelled
+    # only when show_h is on.
+    _implicit = {"C"}
     for idx in numpy.argsort(rotated[:, 2]):
         s = sym[idx]
-        if s == "H":
+        if s == "H" and not show_h:
+            continue
+        if s in _implicit:
             continue
         x, y = rotated[idx][0], rotated[idx][1]
         r_data = radii[idx] * scale * 0.55 / size * (2 * half)
@@ -457,8 +537,29 @@ def _render_skeleton(sym, rotated, bonds, size):
             (x, y), r_data, facecolor="white", edgecolor="none", zorder=2))
         ax.text(x, y, s, ha="center", va="center", fontsize=7.5,
                 color="black", zorder=3)
+    # Double / triple bonds: parallel offset lines per order.
+    if bond_orders:
+        import math
+        for (i, j), order in bond_orders.items():
+            if order < 2 or order > 3:
+                continue
+            x1, y1 = rotated[i][0], rotated[i][1]
+            x2, y2 = rotated[j][0], rotated[j][1]
+            dx, dy = x2 - x1, y2 - y1
+            length = math.hypot(dx, dy) or 1.0
+            nx, ny = -dy / length, dx / length
+            gap = 0.045 * length if order == 2 else 0.09 * length
+            style = dict(color="black", lw=1.2,
+                         solid_capstyle="round", zorder=1)
+            if order == 2:
+                offs = (gap / 2, -gap / 2)
+            else:
+                offs = (0.0, gap, -gap)  # middle + two outer
+            for off in offs:
+                ax.plot([x1 + nx * off, x2 + nx * off],
+                        [y1 + ny * off, y2 + ny * off], **style)
     buf = BytesIO()
-    fig.savefig(buf, format="png", dpi=100)
+    fig.savefig(buf, format=fmt, dpi=100)
     plt.close(fig)
     return buf.getvalue()
 
@@ -539,7 +640,7 @@ def optimize_view_direction(sym, pts3d, bonds, n_samples: int = 500):
     return best[2]
 
 
-def optimized_3d_png_bytes(calc_dir: str, size: int = 320):
+def optimized_3d_png_bytes(calc_dir: str, size: int = 320, fmt="png"):
     """Structure view with the camera direction optimized for least overlap,
 
     drawn in the style of the dashboard 3Dmol viewer: small van-der-Waals

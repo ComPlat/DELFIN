@@ -26,17 +26,7 @@ except ImportError:  # pragma: no cover
     HAS_WIDGETS = False
 
 from delfin.analysis.results_overview import (
-    METRICS,
-    build_table,
-    format_value,
-    get_smiles,
-    list_calculations,
-    list_rss_pngs,
-    smiles_png_bytes,
-    initial_xyz_png_bytes,
-    optimized_3d_png_bytes,
-    sort_table,
-)
+    METRICS, build_table, format_value, get_smiles, initial_xyz_png_bytes, list_calculations, list_rss_pngs, molecular_formula, optimized_3d_png_bytes, smiles_png_bytes, sort_table)
 
 
 def RO_CARD_H(title: str, hint: str = "") -> str:
@@ -160,6 +150,12 @@ class ResultsOverviewPanel:
             description="Include 3D optimized images (col 4)",
             indent=False,
         )
+        self._show_h = widgets.Checkbox(
+            value=False,
+            description="Show hydrogen atoms",
+            indent=False,
+        )
+        self._show_h.observe(self._on_png_opts_change, names="value")
         self._latex_btn = widgets.Button(description="Export LaTeX/PDF")
         # Gallery controls: relative scan only, size in percent of the
         # 640px default, images per row before wrapping.
@@ -708,13 +704,18 @@ class ResultsOverviewPanel:
         def _add_image(png: bytes) -> str:
             nonlocal n_img
             n_img += 1
-            name = f"{img_dir}/img{n_img:04d}.png"
+            ext = "pdf" if png[:5] == b"%PDF-" else "png"
+            name = f"{img_dir}/img{n_img:04d}.{ext}"
             images.append((name, png))
             return name
 
         for row in self._table["rows"]:
+            formula = molecular_formula(row["path"])
+            heading = row["label"] + (
+                f" ({formula})" if formula else "")
             lines.append(r"\begin{center}\textbf{"
-                         + self._tex_escape(row["label"]) + r"}\end{center}")
+                         + self._tex_escape(heading)
+                         + r"}\end{center}")
             lines.append(r"\par\bigskip")
             smiles = get_smiles(row["path"])
             # Collect ALL ticked structure images, then place them side
@@ -729,9 +730,14 @@ class ResultsOverviewPanel:
                     struct_blocks.append(
                         rf"\includegraphics[width={width}\textwidth]"
                         rf"{{{_add_image(png)}}}")
+            def _xyz_call(path):
+                return initial_xyz_png_bytes(
+                    path, show_h=self._show_h.value, fmt="pdf")
+            def _o3d_call(path):
+                return optimized_3d_png_bytes(path, fmt="pdf")
             for enabled, fn in (
-                    (want_3d, initial_xyz_png_bytes),
-                    (want_o3d, optimized_3d_png_bytes)):
+                    (want_3d, _xyz_call),
+                    (want_o3d, _o3d_call)):
                 if not enabled:
                     continue
                 png = fn(row["path"])
