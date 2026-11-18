@@ -32,6 +32,7 @@ import pytest
 
 from conftest import requires_a_working_sandbox
 from delfin.agent import api_client as A
+from delfin.agent import contained_run as CR
 
 
 @pytest.fixture
@@ -66,7 +67,14 @@ def _argv(ws, monkeypatch, caged_unasked=False):
 
 
 def _run(argv):
-    return subprocess.run(argv, capture_output=True, text=True, timeout=120)
+    """Run the caged argv through the REAL exec boundary
+    (contained_run.run) exactly as production does, so the exec-boundary
+    fix sits on the tests' path. subprocess.run directly would bypass
+    the fix (operator rerun finding, round 2)."""
+    out = CR.run(argv, timeout=120)
+    # contained_run.run returns a CompletedProcess-like object
+    # (returncode/stdout/stderr) -- assertable the same way.
+    return out
 
 
 @pytest.mark.skipif(not getattr(A, "_process_cage_enabled", bool)(),
