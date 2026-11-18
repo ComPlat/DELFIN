@@ -53,7 +53,7 @@ def _capture(engine, workspace, prompt: str) -> None:
 
 
 def _write_store(workspace: Path, *, task: str, criterion: str) -> None:
-    st = task_state.open(Path(workspace) / task_state.DEFAULT_FILENAME)
+    st = task_state.open(task_state.task_state_path(workspace))
     st.begin()
     st.set_person_instruction(task)
     st.set_success_criterion(criterion)
@@ -61,7 +61,7 @@ def _write_store(workspace: Path, *, task: str, criterion: str) -> None:
 
 
 def _store_task_and_criterion(workspace: Path) -> tuple[str, str]:
-    st = task_state.open(Path(workspace) / task_state.DEFAULT_FILENAME)
+    st = task_state.open(task_state.task_state_path(workspace))
     st.load()
     return st.task, st.success_criterion
 
@@ -113,7 +113,7 @@ def test_session_start_does_not_demote_a_newer_person_edit(tmp_path):
     capture must not overwrite it with the older first message."""
     engine = _CaptureEngine()
     _capture(engine, tmp_path, "first task text")
-    st = task_state.open(tmp_path / task_state.DEFAULT_FILENAME)
+    st = task_state.open(task_state.task_state_path(tmp_path))
     st.load()
     st.set_person_instruction("newer person instruction")
     st.save()
@@ -330,3 +330,63 @@ def test_in_turn_compaction_blind_without_session(tmp_path):
     assert CRITERION not in summaries[0], (
         "without a session/workspace the block must stay blind (the "
         "default), matching today's behaviour")
+
+
+def test_the_task_state_is_never_written_into_the_workspace(tmp_path,
+                                                            monkeypatch):
+    """The file the agent keeps for itself stays out of the person's
+    checkout.
+
+    CI caught this on the first writer: a repo-wide guard reported
+    `task_state.json` appearing in the checkout during the run. The
+    reader had looked for `<workspace>/task_state.json` for as long as it
+    existed, and nothing had ever written it, so the consequence was
+    latent. A state file in the repository shows up in `git status`,
+    reaches a commit by accident, and under a gitignore rule does the
+    same invisibly -- which is exactly what the guard's message says.
+    """
+    from delfin.agent import task_state as _ts
+    from delfin.agent import task_state_capture as _cap
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path / "home")
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    before = set(workspace.rglob("*"))
+
+    class _Engine:
+        session_id = "s-1"
+
+    assert _cap.capture_from_first_message(
+        engine=_Engine(), workspace=workspace,
+        prompt="Fix the failing test. Success: pytest -q is green.") is True
+
+    assert set(workspace.rglob("*")) == before, (
+        "nothing may appear in the workspace: "
+        f"{sorted(q.name for q in set(workspace.rglob('*')) - before)}")
+
+    path = _ts.task_state_path(workspace)
+    assert path is not None and path.is_file(), "it must be written SOMEWHERE"
+    assert workspace not in path.parents, (
+        f"{path} is inside the workspace")
+
+    # And the reader finds what the writer wrote, through the same helper.
+    from delfin.agent import working_state as _ws
+    lines = _ws._task_state_lines(workspace)
+    assert any("pytest -q is green" in ln for ln in lines), lines
+
+
+def test_one_helper_answers_where_the_file_is():
+    """Two copies of this answer would drift: the reader looked in one
+    place for a file the writer put in another, which is the defect
+    above."""
+    import inspect
+
+    from delfin.agent import task_state_capture as _cap
+    from delfin.agent import working_state as _ws
+
+    for mod, name in ((_cap, "the writer"), (_ws, "the reader")):
+        src = inspect.getsource(mod)
+        assert "task_state_path(" in src, f"{name} must use the helper"
+        assert "DEFAULT_FILENAME" not in src, (
+            f"{name} must not build the path itself")

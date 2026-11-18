@@ -110,7 +110,13 @@ def capture_from_first_message(*, engine, workspace, prompt: str) -> bool:
             return False
         if workspace is None:
             return False
-        path = workspace / _ts.DEFAULT_FILENAME
+        path = _ts.task_state_path(workspace)
+        if path is None:
+            return False
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return False
         st = _ts.open(path)
         try:
             st.load()
