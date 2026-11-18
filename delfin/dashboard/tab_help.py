@@ -340,11 +340,38 @@ _TABS_HELP: tuple[tuple[str, str, str, str, str], ...] = (
      "</ul>",
      "<b>Typical flow</b>: in Calculations, select finished runs &rarr; &#8594; Archive; here browse or restore them with &#8592; Calculations when a re-run or Recalc needs them again.",
      "<b>Interactions</b>: archive/ is read-only for the agent tools — file changes here are yours; the Office tab is the third build of the same browser."),
-        ("Home", "Overview page (disk usage, current branch, recent activity).", "", "", ""),
-    ("Office", "Office-mode documents and helpers.", "", "", ""),
-    ("Literature", "Literature lookup and reference storage.", "", "", ""),
-    ("Remote Archive", "Remote archive storage (enable in Settings first).", "", "", ""),
-    ("Tools", "Smaller utilities: atom mapping, geometry tools, etc.", "", "", ""),
+        ("Home", "File browser over your home directory, as a mirror of the Calculations browser.",
+     "<ul>"
+     "<li>Same browser widgets as Calculations (navigation Up/home/refresh, Delete/Duplicate/+ Folder/Rename/Move); Home builds it with calc_dir = Path.home() (tab_home.py:26-35).</li>"
+     "<li>Move targets keep the calculations root, so items can be pushed into calc/ from home (tab_home.py:28-29).</li>"
+     "<li>The scan is bounded and dotfiles are hidden (tab_home.py:31-32) — home is large, so deep unbounded scans are avoided.</li>"
+     "</ul>",
+     "<b>Typical flow</b>: browse ~ &rarr; collect structures/files you need &rarr; Move them into the calculations root &rarr; work with them in Submit Job or Calculations.",
+     "<b>Interactions</b>: third build of the shared browser (tab_calculations_browser.py:138-150), besides Calculations and Office."),
+        ("Office", "Office-mode file browser for documents and helpers, an exact Calculations-browser mirror.",
+     "<ul>"
+     "<li>Same browser widgets as Calculations; the browser heading is renamed to Office (tab_office.py:12-14).</li>"
+     "</ul>",
+     "<b>Typical flow</b>: keep Office-mode documents (templates, PDFs, spreadsheets) in a known folder and manage them here with Rename/Move/Duplicate.",
+     "<b>Interactions</b>: shares the browser module with Calculations, Archive and Home (tab_calculations_browser.py:138-150)."),
+        ("Literature", "Literature search and storage: Google-Scholar style results with DOI/PDF links.",
+     "<ul>"
+     "<li>Search runs in a background thread (delfin-lit-search, tab_literature.py:28) so the tab stays responsive.</li>"
+     "<li>Each result card shows title link, people, venue, year, citations, and DOI / PDF links when present (tab_literature.py:42-56; DOI renders as doi.org link :53-56).</li>"
+     "<li>Same browser widgets below the search: navigation, Delete/Duplicate/+ Folder/Rename/Move (tab_literature.py:234-246) for the stored references.</li>"
+     "</ul>",
+     "<b>Typical flow</b>: search a topic &rarr; open the DOI/PDF of a hit &rarr; store what matters in the Literature folder via the browser widgets.",
+     "<b>Interactions</b>: stored references back method choices in calculations; no submit path from here."),
+        ("Remote Archive", "Browse and transfer data from a remote archive server. Available only after enabling the remote archive in Settings.",
+     "<ul>"
+     "<li>Browser navigation Up / home / refresh / Open (tab_remote_archive.py:163-178).</li>"
+     "<li><b>&#8594; Calculations</b> transfer-back button (tab_remote_archive.py:214-215).</li>"
+     "<li><b>Download</b> button with status view (tab_remote_archive.py:362-367) — download jobs are created through create_download_job (tab_remote_archive.py:43).</li>"
+     "<li>3D visualisation controls exist but are disabled by default (visualize_enabled=False, tab_remote_archive.py:125); a high-res PNG download button sits on the 3D view (tab_remote_archive.py:549, 695).</li>"
+     "</ul>",
+     "<b>Typical flow</b>: enable the remote archive in Settings &rarr; browse the remote tree &rarr; Download selected data or transfer it straight &#8594; Calculations.",
+     "<b>Interactions</b>: endpoint configured in Settings; the local counterpart is the Archive tab."),
+        ("Tools", "Smaller utilities: atom mapping, geometry tools, etc.", "", "", ""),
     ("Settings", "Global DELFIN configuration: clusters, backends, defaults.", "", "", ""),
     ("Ketcher", "Draw molecules in the browser (2D editor).", "", "", ""),
     ("Swarm", "Metal-complex builder: PSO swarm search over candidate structures.", "", "", ""),
