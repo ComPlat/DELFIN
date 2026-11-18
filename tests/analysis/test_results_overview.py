@@ -559,3 +559,16 @@ def test_latex_contains_all_ticked_images_side_by_side(tmp_path):
     tex = panel._latex_bytes().decode("utf-8")
     # Three structure images on one line: 0.30\textwidth each.
     assert tex.count("includegraphics[width=0.3\\textwidth]") == 3
+
+
+def test_initial_xyz_show_h_toggles_heteroatom_protons(tmp_path):
+    pytest.importorskip("numpy")
+    pytest.importorskip("matplotlib")
+    # Water is all H - with H shown both bonds render, without none.
+    calc = tmp_path / "w403"
+    calc.mkdir()
+    (calc / "initial.xyz").write_text(_WATER_XYZ, encoding="utf-8")
+    with_h = ro.initial_xyz_png_bytes(str(calc), show_h=True)
+    without_h = ro.initial_xyz_png_bytes(str(calc), show_h=False)
+    assert with_h and without_h
+    assert with_h != without_h  # H atoms and their bonds dropped
