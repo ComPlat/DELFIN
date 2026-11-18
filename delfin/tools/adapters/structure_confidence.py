@@ -53,6 +53,7 @@ from delfin.tools._spec import DataKeySpec, ParamSpec
 from delfin.tools._types import ErrorKind, StepResult, StepStatus
 from delfin.tools.bio import PLDDT_LOW, PLDDT_VERY_LOW, read_pae, read_structure
 from delfin.tools.bio._errors import StructureFormatError
+from delfin.tools.bio._reports import report_file_name
 
 
 def _ranges(values, threshold: float) -> List[Dict[str, Any]]:
@@ -160,6 +161,7 @@ class StructureConfidenceAdapter(StepAdapter):
             raise ValueError(
                 "'structure_file' parameter is required (a PDB or mmCIF file)"
             )
+        report_file_name(kwargs.get("report_name"), default="structure_confidence.json")
 
     def execute(
         self,
@@ -171,6 +173,15 @@ class StructureConfidenceAdapter(StepAdapter):
     ) -> StepResult:
         kwargs.pop("_prev_artifacts", None)
         start = time.monotonic()
+        try:
+            report_name = report_file_name(
+                kwargs.get("report_name"), default="structure_confidence.json",
+            )
+        except ValueError as exc:
+            return self._make_result(
+                self.name, StepStatus.FAILED, work_dir, start,
+                error=str(exc), error_kind=ErrorKind.MISSING_PARAM,
+            )
 
         raw = kwargs.get("structure_file")
         if not raw:
@@ -249,7 +260,6 @@ class StructureConfidenceAdapter(StepAdapter):
 
         data["statement"] = _statement(values, source)
 
-        report_name = kwargs.get("report_name") or "structure_confidence.json"
         report_path = Path(work_dir) / report_name
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(data, indent=2, sort_keys=False),

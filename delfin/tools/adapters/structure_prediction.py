@@ -34,6 +34,7 @@ from delfin.tools._spec import DataKeySpec, ParamSpec
 from delfin.tools._types import ErrorKind, StepResult, StepStatus
 from delfin.tools.bio import parse_fasta, prediction_engines
 from delfin.tools.bio._errors import StructureFormatError
+from delfin.tools.bio._reports import report_file_name
 
 
 class StructurePredictionEngineAdapter(StepAdapter):
@@ -75,6 +76,7 @@ class StructurePredictionEngineAdapter(StepAdapter):
             raise ValueError(
                 "'sequence_file' parameter is required (a FASTA file)"
             )
+        report_file_name(kwargs.get("report_name"), default="prediction_engines.json")
 
     def execute(
         self,
@@ -86,6 +88,15 @@ class StructurePredictionEngineAdapter(StepAdapter):
     ) -> StepResult:
         kwargs.pop("_prev_artifacts", None)
         start = time.monotonic()
+        try:
+            report_name = report_file_name(
+                kwargs.get("report_name"), default="prediction_engines.json",
+            )
+        except ValueError as exc:
+            return self._make_result(
+                self.name, StepStatus.FAILED, work_dir, start,
+                error=str(exc), error_kind=ErrorKind.MISSING_PARAM,
+            )
 
         raw = kwargs.get("sequence_file")
         if not raw:
@@ -124,7 +135,6 @@ class StructurePredictionEngineAdapter(StepAdapter):
             "source_name": path.name,
         }
 
-        report_name = kwargs.get("report_name") or "prediction_engines.json"
         report_path = Path(work_dir) / report_name
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(data, indent=2, sort_keys=False),
