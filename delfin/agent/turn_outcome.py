@@ -45,6 +45,7 @@ from typing import Any, Callable, Iterable
 
 __all__ = [
     "SCHEMA_VERSION", "STOP_REASONS", "EXIT_CODES", "REASON_CODES",
+    "ENDED_BY_ITSELF", "ended_by_itself",
     "LOCAL_REASON_CODES", "APPROVABLE_REASON_CODES",
     "PERMISSION_REQUEST_KEYS", "PERMISSION_DENIED_KEYS", "TurnObserver",
     "denied", "requested", "file_changed", "classify",
@@ -65,6 +66,10 @@ EXIT_CODES: dict[str, int] = {
     "max_turns": 6,
     "budget": 7,
     "timeout": 8,
+    # The turn ended of its own accord with work left: the task ledger was
+    # still open, the ledger could not be read, or the model announced a
+    # tool call and made none. Adding a key is not a schema bump.
+    "incomplete": 9,
 }
 STOP_REASONS: tuple[str, ...] = tuple(EXIT_CODES)
 
@@ -134,7 +139,31 @@ _ENGINE_STOP: dict[str, str] = {
     "max_context": "error",
     "no_progress_loop": "error",
     "consecutive_identical_errors": "error",
+    # The engine stops a turn for these four and says why. Unmapped, they
+    # fell through classify() to "done", so a run that stopped with its
+    # task list open was indistinguishable from a finished one -- to the
+    # CLI's JSON, to the service supervisor and to every measurement. The
+    # engine's own comment at the stop site states the intent this makes
+    # true: "the supervisor sees WHY it ended and resumes it".
+    "end_turn_open_tasks": "incomplete",
+    "end_turn_tasks_unknown": "incomplete",
+    "promised_no_tool_call": "incomplete",
+    # A quota wait longer than the run's remaining budget is a ceiling.
+    "quota_wait_exceeds_budget": "budget",
 }
+
+
+#: The turn came to its own end rather than hitting a ceiling, an error or
+#: a refusal. Named because the question is asked about CONTINUING: a turn
+#: that ended with work left may be continued exactly as a finished one
+#: may, and comparing against "done" alone silently stopped that the moment
+#: "incomplete" existed.
+ENDED_BY_ITSELF: frozenset[str] = frozenset({"done", "incomplete"})
+
+
+def ended_by_itself(stop_reason: str) -> bool:
+    """Whether ``stop_reason`` is a turn that ended on its own terms."""
+    return str(stop_reason or "done") in ENDED_BY_ITSELF
 
 _LOCK = threading.Lock()
 _OBSERVERS: list["TurnObserver"] = []

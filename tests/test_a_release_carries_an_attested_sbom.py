@@ -135,3 +135,31 @@ def test_the_serial_a_commit_gets_is_stable_and_its_own():
     assert serial("a" * 40) == serial("a" * 40)
     assert serial("a" * 40) != serial("b" * 40)
     assert serial("a" * 40).startswith("urn:uuid:")
+
+
+def test_the_release_doc_does_not_send_a_reader_to_the_legacy_json_api():
+    """Where the provenance is asked for, and where it is NOT.
+
+    PyPI's legacy JSON API (``/pypi/<name>/<version>/json``) was never
+    extended for PEP 740: it has no ``provenance`` key and no
+    ``uploaded_via_trusted_publisher`` key. A reader who asks it gets
+    ``null`` for an absent field and concludes the provenance is missing.
+    That happened for 1.4.0 and cost an investigation; the provenance was
+    served the whole time, by the Simple API and the ``/integrity/``
+    endpoint. ``uploaded_via_trusted_publisher`` is in no public API at
+    all, so it can never answer whether an upload used Trusted
+    Publishing.
+
+    The runbook therefore has to name the right sources AND warn off the
+    wrong one; a doc that only names the right one leaves the trap open
+    for whoever reaches for the obvious endpoint first.
+    """
+    doc = (ROOT / "docs" / "RELEASING.md").read_text(encoding="utf-8")
+    assert "application/vnd.pypi.simple.v1+json" in doc, (
+        "the Simple API is where the per-file provenance URL lives")
+    assert "/integrity/" in doc, (
+        "the provenance document and its publisher block")
+    assert "legacy JSON API" in doc and "no `provenance` key" in doc, (
+        "the doc must say which endpoint cannot answer, and why")
+    assert "uploaded_via_trusted_publisher" in doc, (
+        "name the field that looks like an answer and is not one")

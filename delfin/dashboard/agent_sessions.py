@@ -3992,8 +3992,15 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             return
         if out["status"] == "ok":
             files = ", ".join(out.get("files") or []) or "no file changes"
+            # This runs outside any turn, so the turn-end auto-verify that
+            # follows an edit does not see these files, and the change
+            # journal has no record of them -- undo_changes cannot revert
+            # a merge. Saying so beats a notice that reads like success:
+            # the files are here, nothing ran on them.
             _say(f"Merged back to {out.get('target')}: {files}. "
-                 "Uncommitted, for review.")
+                 "Uncommitted, for review -- not checked: no tests were "
+                 "run on them and undo does not cover a merge. "
+                 f"See `git -C {out.get('target')} diff`.")
         elif out["status"] == "conflict":
             files = ", ".join(out.get("files") or []) or "the changed files"
             _say(f"Conflict, nothing overwritten: {files}. "
