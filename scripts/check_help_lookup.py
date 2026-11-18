@@ -68,7 +68,8 @@ def main() -> int:
         print("lookup: explicit miss works")
 
     from collections import Counter
-    thin = [t for _t, d in _TABS_HELP if len(d.strip()) < 25]
+    thin = [n for n, _p, w, f, i in _TABS_HELP
+            if len(_p.strip()) < 25 and not (w or f or i)]
     if thin:
         print("FAIL thin tab entries:", thin[:5])
         ok = False

@@ -36,11 +36,12 @@ def _tab_entries() -> list[dict[str, str]]:
     from delfin.dashboard.tab_help import _TABS_HELP
 
     entries = []
-    for title, description in _TABS_HELP:
+    for name, purpose, widgets, flow, interactions in _TABS_HELP:
+        rich = " ".join(x for x in (widgets, flow, interactions) if x)
         entries.append({
             "kind": "tab",
-            "name": title,
-            "help": description,
+            "name": name,
+            "help": (purpose + " " + rich).strip() if rich else purpose,
             "allowed": "",
             "default": "",
             "required": False,

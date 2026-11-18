@@ -49,7 +49,7 @@ def test_every_dashboard_tab_has_a_tabs_help_entry():
     """The fixed tabs create_dashboard always builds must all be described."""
     from delfin.dashboard.tab_help import _TABS_HELP
 
-    described = {t for t, _d in _TABS_HELP}
+    described = {t for t, *_rest in _TABS_HELP}
     # The names create_dashboard gives its fixed tabs (id -> title):
     required = {
         "Submit Job", "Recalc", "ORCA Builder", "TURBOMOLE Builder",
@@ -59,7 +59,7 @@ def test_every_dashboard_tab_has_a_tabs_help_entry():
     }
     missing = required - described
     assert not missing, f"tabs without a guide entry: {sorted(missing)}"
-    for _t, d in _TABS_HELP:
+    for _t, d, _w, _f, _i in _TABS_HELP:
         assert len(d.strip()) >= 25, "a tab entry is too thin"
 
 

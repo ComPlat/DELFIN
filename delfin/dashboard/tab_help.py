@@ -286,30 +286,34 @@ def _feature_block(on_open_key) -> tuple[W.DOMWidget, W.Accordion]:
     return W.VBox([header, accordion, W.HTML('<h3 style="margin-top:18px">Dashboard Reiter (tabs)</h3>'), tabs_section]), accordion, _feature_filter
 
 
-_TABS_HELP: tuple[tuple[str, str], ...] = (
-    ("Submit Job", "Configure and start a DELFIN calculation: structure, method, solvent, and the CONTROL.txt of the run."),
-    ("Recalc", "Resume or re-run parts of an existing calculation (step pipeline)."),
-    ("ORCA Builder", "Write and tweak ORCA inputs block by block."),
-    ("TURBOMOLE Builder", "Same for TURBOMOLE (SLURM backends only)."),
-    ("ChemDarwin", "ChemDarwin module integration (if installed)."),
-    ("DELFIN Agent", "Chat with the AI agent: ask about results, methods, and let it run calculations."),
-    ("Agent Activity", "Live log of what the agent is doing."),
-    ("Job Status", "State of submitted jobs, running and queued."),
-    ("Calculations", "Browse the calc/ folder: inputs, outputs and parsed results."),
-    ("Archive", "Finished and archived calculation data."),
-    ("Home", "Overview page (disk usage, current branch, recent activity)."),
-    ("Office", "Office-mode documents and helpers."),
-    ("Literature", "Literature lookup and reference storage."),
-    ("Remote Archive", "Remote archive storage (enable in Settings first)."),
-    ("Tools", "Smaller utilities: atom mapping, geometry tools, etc."),
-    ("Settings", "Global DELFIN configuration: clusters, backends, defaults."),
-    ("Ketcher", "Draw molecules in the browser (2D editor)."),
-    ("Swarm", "Metal-complex builder: PSO swarm search over candidate structures."),
-    ("Swarm Watch", "Live monitoring of a running Swarm search."),
-    ("Reactions", "Reaction graph of a calculation path."),
-    ("Review", "Review and grade calculation results."),
-    ("Pipelines", "Multi-step calculation pipelines."),
-    ("Help", "This tab: features, CONTROL keys, dashboard Reiter."),
+# Rich tab guide: (name, purpose, widgets, flow, interactions).
+# The four text fields are English HTML fragments ("" = nothing beyond the
+# one-liner purpose yet). Single source of truth read by the Help tab,
+# help_lookup, the header search, the check script and the completeness test.
+_TABS_HELP: tuple[tuple[str, str, str, str, str], ...] = (
+    ("Submit Job", "Configure and start a DELFIN calculation: structure, method, solvent, and the CONTROL.txt of the run.", "", "", ""),
+    ("Recalc", "Resume or re-run parts of an existing calculation (step pipeline).", "", "", ""),
+    ("ORCA Builder", "Write and tweak ORCA inputs block by block.", "", "", ""),
+    ("TURBOMOLE Builder", "Same for TURBOMOLE (SLURM backends only).", "", "", ""),
+    ("ChemDarwin", "ChemDarwin module integration (if installed).", "", "", ""),
+    ("DELFIN Agent", "Chat with the AI agent: ask about results, methods, and let it run calculations.", "", "", ""),
+    ("Agent Activity", "Live log of what the agent is doing.", "", "", ""),
+    ("Job Status", "State of submitted jobs, running and queued.", "", "", ""),
+    ("Calculations", "Browse the calc/ folder: inputs, outputs and parsed results.", "", "", ""),
+    ("Archive", "Finished and archived calculation data.", "", "", ""),
+    ("Home", "Overview page (disk usage, current branch, recent activity).", "", "", ""),
+    ("Office", "Office-mode documents and helpers.", "", "", ""),
+    ("Literature", "Literature lookup and reference storage.", "", "", ""),
+    ("Remote Archive", "Remote archive storage (enable in Settings first).", "", "", ""),
+    ("Tools", "Smaller utilities: atom mapping, geometry tools, etc.", "", "", ""),
+    ("Settings", "Global DELFIN configuration: clusters, backends, defaults.", "", "", ""),
+    ("Ketcher", "Draw molecules in the browser (2D editor).", "", "", ""),
+    ("Swarm", "Metal-complex builder: PSO swarm search over candidate structures.", "", "", ""),
+    ("Swarm Watch", "Live monitoring of a running Swarm search.", "", "", ""),
+    ("Reactions", "Reaction graph of a calculation path.", "", "", ""),
+    ("Review", "Review and grade calculation results.", "", "", ""),
+    ("Pipelines", "Multi-step calculation pipelines.", "", "", ""),
+    ("Help", "This tab: features, CONTROL keys, dashboard Reiter.", "", "", ""),
 )
 
 
@@ -319,13 +323,23 @@ def _dashboard_tabs_block() -> W.Accordion:
     from html import escape as esc
 
     children = []
-    for name, text in _TABS_HELP:
-        children.append(_W.HTML(
-            "<div style='padding:6px 10px'><b>" + esc(name)
-            + "</b> — " + esc(text) + "</div>"
-        ))
+    for name, purpose, widgets, flow, interactions in _TABS_HELP:
+        body = (
+            "<div style='padding:6px 10px'><b>" + esc(name) + "</b> — "
+            + purpose
+        )
+        if widgets or flow or interactions:
+            for heading, part in (("<h4>Fields &amp; buttons</h4>", widgets),
+                                  ("<h4>Typical flow</h4>", flow),
+                                  ("<h4>Interactions</h4>", interactions)):
+                if part:
+                    body += heading + part
+        else:
+            body += esc(purpose)
+        body += "</div>"
+        children.append(_W.HTML(body))
     acc = _W.Accordion(children=children)
-    for i, (name, _text) in enumerate(_TABS_HELP):
+    for i, (name, _p, _w, _f, _i) in enumerate(_TABS_HELP):
         acc.set_title(i, name)
     acc.selected_index = None  # all collapsed
     return acc
