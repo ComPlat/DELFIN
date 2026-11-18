@@ -70,6 +70,6 @@ def test_module_entry_point_runs_as_subprocess(tmp_path):
     proc = subprocess.run(
         [sys.executable, "-m", "delfin.hpc_io_check", str(script)],
         capture_output=True, text=True, timeout=120,
-        env={"HOME": "/home/nolustre", "PATH": "/usr/bin:/bin"})
+        env={"HOME": "/home/user", "PATH": "/usr/bin:/bin"})
     assert proc.returncode == 0, proc.stderr
     assert "no Lustre metadata-load findings" in proc.stdout
