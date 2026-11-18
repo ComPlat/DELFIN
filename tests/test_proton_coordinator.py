@@ -13,7 +13,9 @@ import pytest
 from delfin.proton.proton_coordinator import (
     CANONICAL_DONOR_DIRS,
     DONOR_TEMPLATES,
+    _run_for_donor,
     build_donor_atoms,
+    build_donor_opt_input,
     combine_complex_donor,
     detect_metal_index,
     orient_donor_toward_metal,
@@ -181,6 +183,85 @@ def test_detect_metal_index_finds_cu():
 # ---------------------------------------------------------------------------
 # ORCA input writers (content only, never executed)
 # ---------------------------------------------------------------------------
+
+# Donor pre-optimisation (sketch geometry -> OPT before scan)
+# ---------------------------------------------------------------------------
+
+def test_donor_opt_input_charge_and_multiplicity(tmp_path):
+    # H3O+ carries its own +1; all other donors are neutral ground states.
+    for donor_key, expect_charge, expect_mult in [
+        ("tfe", 0, 1), ("bih", 0, 1), ("phenol", 0, 1),
+        ("hoac", 0, 1), ("h3o", 1, 1),
+    ]:
+        inp = build_donor_opt_input(donor_key, str(tmp_path),
+                                    "OPT PBE0 def2-SVP",
+                                    charge=DONOR_TEMPLATES[donor_key]
+                                    .get("donor_charge", 0),
+                                    multiplicity=DONOR_TEMPLATES[donor_key]
+                                    .get("donor_multiplicity", 1),
+                                    PAL=4, maxcore=1000)
+        text = Path(inp).read_text()
+        assert text.startswith("! OPT PBE0 def2-SVP\n"), donor_key
+        assert f"* xyz {expect_charge} {expect_mult}" in text, donor_key
+
+
+def test_run_for_donor_reuses_preopt_xyz(tmp_path, monkeypatch, capsys):
+    # A completed donor OPT must be picked up; without it the scan runs from
+    # the sketch with a warning (not validated chemistry).
+    monkeypatch.chdir(tmp_path)
+    p = _tiny_complex_xyz(tmp_path)
+    complex_xyz = str(p)
+    donor_tpl = DONOR_TEMPLATES["tfe"]
+    donor_atoms = build_donor_atoms("tfe")
+    complex_atoms = read_xyz_robust(complex_xyz)
+    metal_idx = detect_metal_index(complex_atoms)
+
+    calls = {}
+
+    def fake_scan(*args, **kwargs):
+        from ase.io import write as ase_write
+        ase_write("scan_best.xyz", args[0])
+        calls["atoms"] = args[0]
+        return "scan_best.xyz", 0.0, -1.0
+
+    monkeypatch.setattr("delfin.proton.proton_coordinator.orientation_scan",
+                        fake_scan)
+    monkeypatch.setattr("delfin.proton.proton_coordinator.relaxed_distance_scan",
+                        lambda *a, **k: None)
+
+    args = {"xyz": "complex.xyz", "donor": "tfe", "out": "aligned.xyz",
+            "orientation_distance": 3.0, "rot_step_deg": 30,
+            "rot_range_deg": 30, "scan_end": 2.0, "scan_steps": 3,
+            "keywords": "SP PBE0 def2-SVP", "PAL": 4, "maxcore": 1000,
+            "charge": -1, "multiplicity": 2}
+
+    # Run 1: no preopt.xyz -> OPT input written, sketch used with warning
+    _run_for_donor(args, "tfe", xyz_in_abs=complex_xyz,
+                   charge=-1, multiplicity=2, PAL=4, maxcore=1000,
+                   keywords="SP PBE0 def2-SVP",
+                   orientation_distance=3.0, rot_step_deg=30,
+                   rot_range_deg=30, scan_end=2.0, scan_steps=3,
+                   control_path=str(tmp_path / "CONTROL.txt"))
+    out1 = capsys.readouterr().out
+    assert (tmp_path / "tfe_preopt.inp").exists()
+    assert "[WARN]" in out1 and "SKETCH" in out1
+
+    # Run 2: preopt.xyz present -> used without warning
+    # (write a rotated donor copy as the fake "optimised" geometry)
+    preopt = donor_atoms.copy()
+    preopt.positions[0] += [0.1, 0.0, 0.0]
+    from ase.io import write as ase_write
+    ase_write(str(tmp_path / "tfe_preopt.xyz"), preopt)
+    _run_for_donor(args, "tfe", xyz_in_abs=complex_xyz,
+                   charge=-1, multiplicity=2, PAL=4, maxcore=1000,
+                   keywords="SP PBE0 def2-SVP",
+                   orientation_distance=3.0, rot_step_deg=30,
+                   rot_range_deg=30, scan_end=2.0, scan_steps=3,
+                   control_path=str(tmp_path / "CONTROL.txt"))
+    out2 = capsys.readouterr().out
+    assert "[INFO]" in out2 and "pre-optimised" in out2
+    assert "SKETCH" not in out2   # only the unrelated plot warning may remain
+
 
 def test_write_orca_sp_input_content(tmp_path):
     atoms = _tiny_complex()

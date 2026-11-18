@@ -249,6 +249,30 @@ def build_donor_atoms(donor_key: str) -> Atoms:
     return read_xyz_text(tpl["xyz"])
 
 
+def build_donor_opt_input(donor_key: str, outdir: str, keywords: str,
+                          charge: int = 0, multiplicity: int = 1,
+                          PAL: int = 8, maxcore: int = 2000) -> str:
+    """Write a standalone OPT input for one donor (pre-optimisation).
+
+    The templates are sketch geometries; a relaxed scan started from them
+    would inherit their strain. The donor is optimised alone, in its ground
+    state, with the SAME method keywords as the later scan so the energies
+    stay comparable. Returns the input path.
+    """
+    atoms = build_donor_atoms(donor_key)
+    os.makedirs(outdir, exist_ok=True)
+    inp = os.path.join(outdir, f"{donor_key}_preopt.inp")
+    with open(inp, "w", newline="\n") as f:
+        f.write(f"! {keywords}\n")
+        f.write(f"%maxcore {maxcore}\n")
+        f.write(f"%pal nprocs {PAL} end\n")
+        f.write(f"* xyz {charge} {multiplicity}\n")
+        for sym, pos in zip(atoms.get_chemical_symbols(), atoms.positions):
+            f.write(f"{sym} {pos[0]:.6f} {pos[1]:.6f} {pos[2]:.6f}\n")
+        f.write("*\n")
+    return inp
+
+
 def read_xyz_text(text: str) -> Atoms:
     import io
     return read(io.StringIO(text), format="xyz")
@@ -557,9 +581,32 @@ def _run_for_donor(args, donor_key, *, xyz_in_abs, charge, multiplicity,
                    control_path):
     """One donor's full pipeline inside its <Donor>_coordinator folder."""
     from delfin.proton.chain_setup import bookkeeping, build_control
+    from delfin.co2.CO2_Coordinator6 import build_orca_keywords
 
     donor_tpl = DONOR_TEMPLATES[donor_key]
+
+    # Donor pre-optimisation: the template is a sketch geometry; a scan
+    # started from it would inherit its strain. A preopt result from an
+    # earlier run is reused; otherwise the OPT input is (re)written and the
+    # scan proceeds from the sketch WITH A WARNING (not validated chemistry).
+    preopt_xyz = f"{donor_key}_preopt.xyz"
+    if not os.path.exists(preopt_xyz):
+        build_donor_opt_input(
+            donor_key, outdir=".", keywords=keywords,
+            charge=int(donor_tpl.get("donor_charge", 0)),
+            multiplicity=int(donor_tpl.get("donor_multiplicity", 1)),
+            PAL=PAL, maxcore=maxcore)
+        print(f"[WARN] {donor_key}: no {preopt_xyz} found - {donor_key}_preopt.inp "
+              "written. Run ORCA on it, rename the optimised output to "
+              f"{preopt_xyz}, then rerun. Scan continues from the SKETCH "
+              "geometry (not validated chemistry).")
+    else:
+        print(f"[INFO] {donor_key}: using pre-optimised donor geometry "
+              f"{preopt_xyz}")
+
     donor_atoms = build_donor_atoms(donor_key)
+    if os.path.exists(preopt_xyz):
+        donor_atoms = read_xyz_robust(preopt_xyz)
     complex_atoms = read_xyz_robust(xyz_in_abs)
     metal_idx = detect_metal_index(complex_atoms)
 
