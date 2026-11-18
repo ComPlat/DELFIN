@@ -340,8 +340,13 @@ class MountsSource:
         try:
             with open(self.path, "r", encoding="utf-8", errors="replace") as fh:
                 return fh.read()
-        except OSError:
-            return ""
+        except OSError as exc:
+            # QS finding (IO1, nacht-s8): an unreadable mounts file used to
+            # yield "" -> no Lustre paths -> the check silently disabled
+            # itself. The check may never fail open: raise instead.
+            raise RuntimeError(
+                f"hpc_io_check: cannot read mounts file {self.path!r}: {exc}"
+            ) from exc
 
 
 _LUSTRE_LINE = re.compile(r"^\S+\s+(\S+)\s+lustre\s", re.M)

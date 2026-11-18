@@ -40,6 +40,18 @@ def _rules(findings):
 
 # --- Lustre detection: exactly one read of /proc/mounts, type lustre -----
 
+def test_unreadable_mounts_file_does_not_silently_disable_the_check():
+    # QS finding (nacht-s8, IO1): read() returning "" on OSError makes
+    # lustre_paths() -> [] and check() exits early — the check disables
+    # itself exactly when /proc/mounts is unreadable. A default mounts
+    # file that cannot be read must be a hard failure, not a silent no-op.
+    script = "#!/bin/bash\ncd /pfs/home/ka_user/delfin\npytest -q tests/\n"
+    env = {"HOME": "/pfs/home/ka_user"}
+    src = hpc_io_check.MountsSource(None, path="/nonexistent")
+    with pytest.raises(RuntimeError):
+        hpc_io_check.check(script, env=env, mounts_path=src)
+
+
 def test_lustre_detection_from_mounts_text():
     src = hpc_io_check.MountsSource(LUSTRE_MOUNTS)
     assert hpc_io_check.lustre_paths(src) == ["/pfs"]
