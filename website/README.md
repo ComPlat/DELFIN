@@ -48,8 +48,13 @@ A static map remains visible if JavaScript or canvas is unavailable.
 task execution, memory, self-validation, improvement paths, experiment design
 and permission boundaries. It shares the site's visual identity through
 `styles.css` and its page-specific `framework.css`. The navigation and the
-framework introduction on the landing page link to it. All content, navigation,
-tables and expandable explanations work without JavaScript.
+framework introduction on the landing page link to it. Both pages share the
+Overview / Agent framework page navigation, with the current page marked.
+Reading content, tables and expandable explanations work without JavaScript;
+`framework.js` enhances the architecture map, task-stage explorer and validation
+links. The memory, improvement and paired-comparison diagrams are static, with
+their conceptual status stated in their captions. No diagram represents live
+telemetry or a measured benchmark result.
 
 The guide was checked against source revision
 `de880cbb9eda4085ff5d6665c6818cbba4c7d75b` on 18 November 2026. Its implementation
