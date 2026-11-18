@@ -223,6 +223,23 @@ def smiles_png_bytes(smiles: str, size: int = 260, fmt: str = "png"):
                             bond_orders=orders, fmt=fmt)
 
 
+def smiles_svg_bytes(smiles: str, size: int = 260):
+    """2D structure as SVG (vector) via RDKit MolDraw2DSVG; None on
+    failure.  Same depiction as smiles_png_bytes (original drawing)."""
+    try:
+        from rdkit import Chem
+        from rdkit.Chem.Draw import rdMolDraw2D
+    except ImportError:
+        return None
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None
+    drawer = rdMolDraw2D.MolDraw2DSVG(size, size)
+    rdMolDraw2D.PrepareAndDrawMolecule(drawer, mol)
+    drawer.FinishDrawing()
+    return drawer.GetDrawingText().encode("utf-8")
+
+
 # Covalent radii (Angstrom, Cordero 2008) for bond detection.
 _XYZ_COVALENT = {
     "H": 0.31, "C": 0.76, "N": 0.71, "O": 0.66, "F": 0.57, "P": 1.07,
