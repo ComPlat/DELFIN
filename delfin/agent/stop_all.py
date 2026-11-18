@@ -338,8 +338,15 @@ def request(reason: str = "", *, end_here: bool = True,
 
     summary = dict(record)
     try:
+        # The opening words come from the scheduler, which reads them back
+        # in `disabled_by_emergency_stop`: `scheduler enable` refuses an
+        # entry disabled here, and a reworded reason would otherwise let it
+        # undo a stop.
+        from .scheduler import EMERGENCY_DISABLE_PREFIX
+
         summary["schedules_disabled"] = _disable_schedules(
-            f"emergency stop at {time.strftime('%Y-%m-%d %H:%M', time.localtime(at))}"
+            f"{EMERGENCY_DISABLE_PREFIX} at "
+            f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(at))}"
             f" on {record['host']}")
     except Exception as exc:
         summary["schedules_disabled"] = 0
