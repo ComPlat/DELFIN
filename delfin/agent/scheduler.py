@@ -26,12 +26,20 @@ entry; after ``_MAX_CONSECUTIVE_FAILURES`` the entry is disabled
 Every route to a disabled entry goes through ``Scheduler._disable``,
 which emits an attention event as well as persisting the reason: a
 schedule that stops without saying so cannot be told apart from one
-that is simply not due yet. The save is atomic and merges with what
-is on disk, so a second writer's entries are neither torn nor lost.
+that is simply not due yet. ``Scheduler.enable`` is the way back from
+such a disable, reachable as ``delfin-agent scheduler enable <id>``; it
+refuses an entry the emergency stop disabled, and one whose workspace
+is gone.
+
+The save is atomic and merges with what is on disk, so a second
+writer's entries are neither torn nor lost; a file that cannot be read
+at all is moved aside under a dated name rather than written over, and
+is left untouched where this process has nothing to put in its place.
 """
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import os
 import tempfile
@@ -55,6 +63,29 @@ _MAX_CONSECUTIVE_FAILURES = 3
 # laptop or a rebooted node still gets its wake-up. Recurring entries are
 # deliberately exempt — firing late IS the schedule.
 _STALE_ONCE_GRACE_S = 4 * 3600
+
+# How the emergency stop (stop_all._disable_schedules) opens the reason it
+# records on every entry it disables. Defined here and imported there, so
+# the string that is WRITTEN and the string that is READ cannot drift
+# apart: a reworded reason in stop_all would otherwise leave `enable`
+# silently undoing an emergency stop. Rejected alternative: matching on a
+# separate boolean field on the entry -- a field a build that predates it
+# drops on read, and a dropped field reads as "not an emergency stop",
+# which is the wrong way for this check to fail.
+EMERGENCY_DISABLE_PREFIX = "emergency stop"
+
+
+def disabled_by_emergency_stop(reason: str) -> bool:
+    """Whether ``reason`` is an emergency stop's, not an ordinary disable.
+
+    Input: a ``ScheduleEntry.disabled_reason``. Output: True only for the
+    reason ``stop_all`` writes. An empty reason is False -- an entry whose
+    reason was lost is repairable, and refusing every unlabelled entry
+    would leave exactly the entries a person most needs to repair with no
+    route but the file.
+    """
+    return (reason or "").strip().lower().startswith(
+        EMERGENCY_DISABLE_PREFIX)
 
 
 class DisableEntry(Exception):
@@ -136,6 +167,10 @@ class Scheduler:
                                     Callable[[str], bool]]] = []
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        # What the last _save() had to say about the file itself (a
+        # quarantine, or a refused write). Empty in the ordinary case;
+        # read with take_store_note() by whoever asked for the write.
+        self._store_note: str = ""
         self._load()
 
     # --- persistence ------------------------------------------------------
@@ -216,8 +251,82 @@ class Scheduler:
     def _load(self) -> None:
         self._entries.update(self._read_file())
 
-    def _save(self) -> None:
+    def _quarantine_unreadable(self) -> Path | None:
+        """Move an unreadable ``cron.json`` aside and return where it went.
+
+        Input: nothing (``self.path``). Output: the new path, or None when
+        there was nothing to move or the move failed.
+
+        A rename, so the bytes are never rewritten: whatever is still
+        legible in the file -- the prompts and workspaces of the entries it
+        held -- stays available to a person, and the file's mode travels
+        with it.
+
+        The name carries the date because a second corruption must not
+        overwrite the evidence of the first, and the name is RESERVED with
+        O_EXCL before the rename: ``os.replace`` overwrites its destination
+        without a word, so two corruptions inside the same second would
+        otherwise leave only the later rescue. Rejected alternative: a
+        single ``cron.json.bak`` slot, which is exactly that loss by
+        design.
+        """
+        if not self.path.exists():
+            return None
+        stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        for n in range(100):
+            suffix = f".unreadable-{stamp}" + (f"-{n}" if n else "")
+            aside = self.path.with_name(self.path.name + suffix)
+            try:
+                fd = os.open(aside, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                             0o600)
+            except FileExistsError:
+                continue
+            except OSError:
+                return None
+            os.close(fd)
+            try:
+                os.replace(self.path, aside)
+            except OSError:
+                try:
+                    aside.unlink()
+                except OSError:
+                    pass
+                return None
+            return aside
+        return None
+
+    def store_problem(self) -> str:
+        """Why the schedule file cannot be read, "" when it can.
+
+        Input: nothing. Output: a sentence for a person. Exists so a
+        reader (the CLI's ``scheduler status``) can say "the file is
+        damaged" instead of "there are no entries": the two lead a person
+        to opposite actions, so they are not the same answer.
+        """
+        if not self.path.exists():
+            return ""
+        if self._read_file_or_none() is not None:
+            return ""
+        return (f"{self.path} exists but cannot be read as a schedule. "
+                "No entry in it is running. It is left untouched; the next "
+                "write moves it aside and names where it went.")
+
+    def take_store_note(self) -> str:
+        """What the last write had to say about the file, then forget it.
+
+        Input: nothing. Output: a sentence for a person, "" in the
+        ordinary case. Reported rather than raised, because every caller
+        of ``_save`` is in the middle of an operation that has otherwise
+        succeeded and must not be rolled back by news about the file.
+        """
+        note, self._store_note = self._store_note, ""
+        return note
+
+    def _save(self) -> str:
         """Persist atomically, and merge rather than overwrite.
+
+        Returns the note a person should see about the file itself ("" in
+        the ordinary case); also kept for ``take_store_note``.
 
         Two problems, one write. A plain ``write_text`` is not atomic: this
         was the one state file in the agent that a reader could catch
@@ -229,9 +338,51 @@ class Scheduler:
 
         Merging on write keeps entries this instance never knew about,
         while entries it deliberately removed stay removed.
+
+        A third problem, same write. The merge read through ``_read_file``,
+        which answers ``{}`` for a file that cannot be read at all --
+        the very distinction ``_read_file_or_none`` exists to make. One
+        ``add()`` from a fresh process therefore REPLACED a corrupt
+        cron.json with the single entry just created, and every other
+        entry was gone with no copy anywhere. An unreadable file is now
+        moved aside first (see ``_quarantine_unreadable``), and where this
+        process holds nothing to write in its place the file is not
+        touched at all: writing an empty schedule over it, or moving it
+        aside and leaving nothing, both end with no schedule.
         """
+        self._store_note = ""
         try:
-            merged = self._read_file()
+            merged = self._read_file_or_none()
+            if merged is None and not self.path.exists():
+                # Absent is an empty schedule for a WRITE -- the first
+                # save of a new file lands here. (_read_file_or_none
+                # answers None for absent as well, because its other
+                # caller, _absorb_external_changes, must not read a file
+                # that is briefly gone as "every entry was deleted".)
+                merged = {}
+            if merged is None:
+                if not self._entries:
+                    self._store_note = (
+                        f"{self.path} could not be read and was NOT "
+                        "changed: this process holds no entries, so "
+                        "writing would leave an empty schedule. Move the "
+                        "file aside and schedule again.")
+                    return self._store_note
+                aside = self._quarantine_unreadable()
+                if aside is None:
+                    self._store_note = (
+                        f"{self.path} could not be read and could not be "
+                        "moved aside, so it was NOT changed. The entries "
+                        "of this process are not persisted.")
+                    return self._store_note
+                self._store_note = (
+                    f"{self.path} could not be read and was moved to "
+                    f"{aside.name}. The {len(self._entries)} "
+                    f"{'entry' if len(self._entries) == 1 else 'entries'} "
+                    "this process holds were written; any other entry is "
+                    "in that file only. Schedule those again, then delete "
+                    "it.")
+                merged = {}
             merged.update(self._entries)
             for entry_id in self._removed:
                 merged.pop(entry_id, None)
@@ -241,8 +392,11 @@ class Scheduler:
             if any(entry_id not in merged for entry_id in owners):
                 self._write_json(self._owners_path(), {
                     k: v for k, v in owners.items() if k in merged})
-        except OSError:
-            pass
+        except OSError as exc:
+            self._store_note = (
+                f"{self.path} could not be written ({type(exc).__name__}): "
+                f"{exc}")
+        return self._store_note
 
     @staticmethod
     def _write_json(path: Path, payload: dict) -> None:
@@ -413,6 +567,77 @@ class Scheduler:
         with self._lock:
             self._absorb_external_changes()
             return list(self._entries.values())
+
+    def enable(self, entry_id: str) -> tuple[bool, str]:
+        """Undo a disable: the way back from ``_disable``.
+
+        Input: an entry id. Output: ``(changed, message)``, where
+        ``changed`` says whether the file was written and ``message`` is
+        always a sentence for a person. Clears ``disabled``,
+        ``disabled_reason`` and ``fail_count`` -- the failure count too,
+        or a single further failure would disable the entry again at once.
+
+        Idempotent: enabling an enabled entry changes nothing and is not
+        an error, so a repair can be repeated or scripted.
+
+        Two refusals, both of which leave the entry exactly as it is:
+
+        * An entry the EMERGENCY STOP disabled. A stop is a person saying
+          that nothing of theirs runs; a repair command that quietly
+          undoes it turns the one switch meant to be absolute into a
+          suggestion. There is no "clear the stop" either -- stop_all
+          lets work resume only through a person acting on that specific
+          work -- so the route named is deleting the entry and scheduling
+          it again, which is that act.
+        * An entry whose recorded workspace no longer exists. The
+          headless daemon disables such an entry on its next tick, so
+          enabling it would report a repair that undoes itself.
+
+        A one-shot already past its grace is NOT refused -- it is
+        enabled, with the consequence named in the message. Rejected
+        alternative: refusing it as well. Firing it is the behaviour the
+        person asked for by enabling it, and the entry is theirs to
+        delete; a refusal would leave them with no route at all.
+        """
+        with self._lock:
+            self._absorb_external_changes()
+            ent = self._entries.get(entry_id)
+            if ent is None:
+                # A damaged file holds no readable entry, so every id
+                # looks absent. Saying "no such entry" would send the
+                # person looking for an id that is in the file they
+                # cannot read.
+                problem = self.store_problem()
+                return False, (
+                    problem if problem else
+                    f"no scheduled entry {entry_id}; `delfin-agent "
+                    "scheduler status` lists the ids.")
+            if not ent.disabled:
+                return False, (
+                    f"{entry_id} is not disabled; nothing changed.")
+            if disabled_by_emergency_stop(ent.disabled_reason):
+                return False, (
+                    f"refusing to enable {entry_id}: it was disabled by an "
+                    f"emergency stop ({ent.disabled_reason}). An emergency "
+                    "stop is not undone by a repair command. Schedule the "
+                    "work again yourself if you want it back.")
+            workspace = (ent.workspace or "").strip()
+            if workspace and not Path(workspace).is_dir():
+                return False, (
+                    f"refusing to enable {entry_id}: its workspace "
+                    f"{workspace} does not exist, so the next tick would "
+                    "disable it again. Restore that directory, or delete "
+                    "the entry and schedule it in a directory that exists.")
+            ent.disabled = False
+            ent.disabled_reason = ""
+            ent.fail_count = 0
+            note = self._save()
+        stale = " It is a one-shot whose moment has passed, so it will be " \
+                "disabled again as overdue rather than fired." \
+                if ent.is_stale() else ""
+        return True, (f"{entry_id} enabled ({ent.kind}); "
+                      f"{ent.reason or ent.prompt[:60]}.{stale}"
+                      + (f" {note}" if note else ""))
 
     def delete(self, entry_id: str) -> bool:
         with self._lock:
@@ -593,6 +818,8 @@ def reset_scheduler() -> None:
 
 __all__ = [
     "DisableEntry",
+    "EMERGENCY_DISABLE_PREFIX",
+    "disabled_by_emergency_stop",
     "ScheduleEntry",
     "Scheduler",
     "get_scheduler",

@@ -14416,6 +14416,9 @@ _PYTEST_FAILED_LINE_RE = re.compile(
     r"^(?:FAILED|ERROR)\s+([\w./\\-]+\.py)", re.MULTILINE)
 
 
+from . import test_loop_guard as _tlg  # g1: degenerate-TEST-loop guard
+
+
 def _parse_test_counts(output: str) -> tuple[int, int]:
     """(passed, failed+errors) parsed from pytest/unittest console output.
     (0, 0) when nothing matched — combine with the exit code."""
@@ -14895,6 +14898,10 @@ def _observe_test_evidence(
         evidence.append({
             "tool": "run_tests", "command": target, "exit_code": exit_code,
             "status": run_status, "passed": int(summary.get("passed", 0) or 0),
+            # g1: the canonical same-failure signature (failing
+            # node set + first message), from the already-parsed
+            # "failures" list.
+            "test_sig": _tlg.result_signature(data),
             "failed": failed, "ts": time.time(),
         })
         if failed or run_status in ("failed", "error"):
@@ -15067,7 +15074,8 @@ def _compact_between_rounds(api_messages: list, budget_chars: int,
                             turn_rows_base: int, session_id: str,
                             planning_window: int = 0,
                             system_chars: int = 0,
-                            schema_chars: int = 0) -> str:
+                            schema_chars: int = 0,
+                            workspace=None) -> str:
     """Compact older rounds of the running turn in place when the tool
     output is still over budget after the elision; returns a one-line
     notice when it did, "" otherwise. Never raises: a failed compaction
@@ -15088,7 +15096,8 @@ def _compact_between_rounds(api_messages: list, budget_chars: int,
     try:
         from . import in_turn_compaction as _itc
         new, record = _itc.compact(
-            api_messages, budget_chars, turn_rows_base=turn_rows_base)
+            api_messages, budget_chars, turn_rows_base=turn_rows_base,
+            session_id=str(session_id or ""), workspace=workspace)
     except Exception:
         return ""
     if record:
@@ -15138,7 +15147,8 @@ def _compact_between_rounds(api_messages: list, budget_chars: int,
                 non_tool = whole - tool_chars
                 tool_room = max(int(budget) - int(non_tool), 1)
                 new2, rec2 = _itc2.compact(
-                    api_messages, tool_room, turn_rows_base=turn_rows_base)
+                    api_messages, tool_room, turn_rows_base=turn_rows_base,
+                    session_id=str(session_id or ""), workspace=workspace)
                 if rec2:
                     api_messages[:] = new2
                     try:
@@ -26755,6 +26765,14 @@ class _DocToolExecutor:
                             "fire_count": e.fire_count,
                             "prompt": e.prompt[:120],
                             "reason": e.reason,
+                            # A stopped entry read exactly like one that
+                            # was simply not due yet: the rows carried
+                            # next_fire_at and nothing about the disable.
+                            # The reason travels with the flag, because
+                            # "disabled" alone sends the reader looking
+                            # for the why in the file.
+                            "disabled": bool(e.disabled),
+                            "disabled_reason": e.disabled_reason,
                         }
                         for e in entries
                     ],
@@ -29820,6 +29838,11 @@ def _scrubbed_bash_env() -> dict:
         _scratch = _session_scratch_dir()
         for _t in ("TMPDIR", "TMP", "TEMP"):
             env[_t] = _scratch
+        # Named export for code inside the cage that must find the
+        # session scratch without guessing it from TMPDIR (a cage layer
+        # may remap TMPDIR): DELFIN's ORCA scratch choice keys on this
+        # together with DELFIN_AGENT_SESSION (orca._ensure_orca_scratch_dir).
+        env["DELFIN_SESSION_SCRATCH"] = _scratch
     except Exception:
         pass
     # Every process an agent session starts says so: `delfin-agent
@@ -33374,6 +33397,10 @@ class OpenAIClient(_BaseClient):
         _last_round_signature: str = ""
         _identical_round_count = 0
         _consecutive_failure_count = 0
+        # g1: degenerate-TEST-loop state, beside the no-progress (identical
+        # tool-call) counter, which a model that edits a different character
+        # every round never trips.
+        _tlg_state: dict = {}
         # Thrash detector state (cleanup loops, same-file rewrites) — soft
         # nudges the model to change approach when it's spinning. Per turn.
         _thrash_state: dict = {}
@@ -33593,7 +33620,8 @@ class OpenAIClient(_BaseClient):
                 int(getattr(self, "_turn_rows_base", 0) or 0),
                 str(getattr(self, "session_id", "") or ""),
                 planning_window=(_planning_window_for_turn(self, _caps)),
-                schema_chars=_schema_chars)
+                schema_chars=_schema_chars,
+                workspace=getattr(self, "workspace", None))
             if _in_turn_note:
                 # The notice below reaches the user and nothing else. What is
                 # still running goes into the summary message, which the
@@ -34973,6 +35001,34 @@ class OpenAIClient(_BaseClient):
                     # Track the checkable files (artifact_check) edited this
                     # turn, for the turn-end auto-verify. A new edit
                     # invalidates a prior pass.
+                    # A merge writes files the turn never edited by name:
+                    # worktree_merge applies a patch, so the paths are in
+                    # its RESULT, not in its arguments. Without this the
+                    # work a delegate did in its own worktree arrived in
+                    # the tree and was the only writing in the whole system
+                    # that nothing checked.
+                    if (_av_mode != "off" and fn_name == "worktree_merge"
+                            and not str(result).lstrip().startswith('{"error"')):
+                        try:
+                            _merged = json.loads(str(result))
+                        except Exception:
+                            _merged = {}
+                        if str(_merged.get("status") or "") == "ok":
+                            # "target" is the key the executor returns.
+                            _tgt = str(_merged.get("target") or "")
+                            for _mf in (_merged.get("files") or []):
+                                if not _artifact_checkable(str(_mf)):
+                                    continue
+                                try:
+                                    _abs = (str(_mf) if os.path.isabs(str(_mf))
+                                            else os.path.join(
+                                                _tgt or str(getattr(
+                                                    self._permissions,
+                                                    "workspace", ".") or "."),
+                                                str(_mf)))
+                                    _edited_py[_abs] = True
+                                except Exception:
+                                    pass
                     if (_av_mode != "off"
                             and fn_name in ("edit_file", "multi_edit", "write_file")
                             and not str(result).lstrip().startswith('{"error"')):
@@ -35392,6 +35448,42 @@ class OpenAIClient(_BaseClient):
                     )
                     return
 
+                # g1: degenerate TEST loop -- a model that keeps editing and
+                # re-running a failing test. run_tests is a SUCCESSFUL call
+                # (not {"error"...}), and the edit differs every round, so
+                # the error and identical-arguments checks both miss it.
+                # Count identical failing-node-set + first-message from the
+                # evidence ledger; steer once at 3, abort at 5 with its own
+                # stop reason.
+                _tlg_act = _tlg.step(self._test_evidence, _tlg_state)
+                if _tlg_act == "steer":
+                    api_messages.append(_harness_row((
+                        "[system] The last 3 test runs produced the SAME "
+                        "failures (same failing tests, same first message "
+                        "each time). Editing and re-running them again will "
+                        "not change that. Stop editing and re-running; "
+                        "change approach, or reason about why the test "
+                        "output cannot differ."
+                    )))
+                elif _tlg_act == "abort":
+                    yield StreamEvent(type="notice", text=(
+                        "\u26a0 Aborting tool loop: the failing test(s) "
+                        "produced the identical result 5 runs in a row (same "
+                        "failing tests, same first message). Editing and "
+                        "re-running again cannot change it. Send 'continue' "
+                        "to resume.\n"
+                    ))
+                    cost = self._estimate_cost(_total_in, _total_out)
+                    yield StreamEvent(
+                        type="message_delta",
+                        input_tokens=_total_in,
+                        output_tokens=_total_out,
+                        cost_usd=cost,
+                        cached_tokens=_total_cached,
+                        stop_reason="degenerate_test_loop",
+                    )
+                    return
+
                 # Whether a call of this round never ran (its arguments
                 # were not valid JSON): the turn must not end on it.
                 _last_round_unexecuted = any(
@@ -35425,6 +35517,8 @@ class OpenAIClient(_BaseClient):
                         "exit_code": None,
                         "status": ("skipped" if _av_status.get("skipped")
                                    else ("failed" if _problems else "ok")),
+                        # g1: same-failure signature of this verify run.
+                        "test_sig": _tlg.report_text_signature(_problems or ""),
                         "passed": (0 if (_problems
                                          or _av_status.get("skipped")) else 1),
                         "failed": 1 if _problems else 0,
@@ -35504,6 +35598,9 @@ class OpenAIClient(_BaseClient):
                     self._test_evidence.append({
                         "tool": "auto_verify", "command": "",
                         "exit_code": None, "status": "gave_up",
+                        # g1: the last verify was RED -- carry its
+                        # signature.
+                        "test_sig": _tlg.report_text_signature(_last_verify_problem or ""),
                         "passed": 0, "failed": 1, "ts": time.time(),
                     })
                 except Exception:
@@ -35841,7 +35938,24 @@ class OpenAIClient(_BaseClient):
                 # A promise that survived the corrective budget: the turn
                 # does not end "done" -- the supervisor sees WHY it ended
                 # and resumes it (the brief's clear stop_reason).
-                if (not _tool_calls
+                if _last_verify_problem:
+                    # The last auto-verify that ran was RED and no green one
+                    # followed: _last_verify_problem is re-assigned on every
+                    # run, so a passing check clears it. The engine already
+                    # forced its fix rounds and warned that the final state
+                    # was not re-verified; what was missing is that the
+                    # OUTCOME said so. It wins over the task-list reasons
+                    # below -- both classify as "incomplete", and a red check
+                    # is the more specific fact about the work.
+                    #
+                    # A verification that was SKIPPED (no runner, a workspace
+                    # on the slow list) leaves this empty and still ends
+                    # "done": nothing is known then, which is a weaker
+                    # statement than a failure, and the existing notice says
+                    # it. Same for auto_verify off -- a switch the person
+                    # turned off must not invent an incomplete turn.
+                    _stop = "verify_still_red"
+                elif (not _tool_calls
                         and _promised_end_state.get("state", "none")
                         in ("open", "unknown")
                         and _promises_an_unmade_tool_call(

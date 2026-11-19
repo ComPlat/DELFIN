@@ -390,13 +390,22 @@ def _running_update(sa_id: str, entry: dict | None) -> None:
             if "owner_session" not in entry and f.exists():
                 # The run rewrites its entry at every step without knowing
                 # which session reserved it; the reservation's owner stays.
+                # A file that cannot be parsed is moved aside
+                # (state_file.quarantine) rather than overwritten: the
+                # read's empty answer must never reach this write, or one
+                # damaged byte erases the live record with no message and
+                # no copy.
                 try:
                     owner = json.loads(f.read_text(encoding="utf-8")).get(
                         "owner_session")
                     if owner:
                         entry = {**entry, "owner_session": owner}
                 except Exception:
-                    pass
+                    from .state_file import quarantine
+                    moved = quarantine(f)
+                    if moved is not None:
+                        entry = {**entry,
+                                 "_previous_unreadable": moved.name}
             if not f.exists():
                 # Starting an entry is the one moment guaranteed to happen
                 # and cheap enough to carry the cleanup of what an earlier
@@ -3567,6 +3576,48 @@ def _principles_text() -> str:
     return text.rstrip() + "\n\n" if _has_body(text) else ""
 
 
+def _isolate_sub_client(sub_client) -> None:
+    """Give a shallow-copied child client its own mutable per-run state.
+
+    ``run_subagent`` copies the parent client so concurrent fan-out runs do
+    not share one ``_permissions``. A shallow copy shares every attribute it
+    does not replace, and each one that is mutable and per-run has to be
+    named here. Extracted from the call site so a test can drive exactly
+    what production does: the defect this guards against was an attribute
+    MISSING from the list, which a test re-implementing the list cannot see.
+    """
+    # A shallow copy shares the parent's MUTABLE evidence ledgers: the
+    # child would union its own reads into the parent's session set in
+    # place, so a file only the delegate opened grounded the parent's
+    # citations -- even when the parent discarded the report (the
+    # fan-out timeout path abandons the thread, it does not stop it).
+    # The verified merge in _merge_delegate_evidence is the one route
+    # a delegate's reads may take to the parent; give the child its own
+    # ledger so that stays the only one.
+    # The same reasoning for the per-turn tool state. A shallow copy
+    # shares the parent's ToolContext object, so the child's turn start
+    # (tool_context.for_client(self).begin_turn()) emptied the PARENT's
+    # undo window mid-turn and rebound live_messages to the child's
+    # conversation. A parent that delegated anything and then called
+    # undo_changes(scope="turn") reverted the delegate's files and left
+    # its own edits on disk, reporting success either way -- the exact
+    # sharing the per-session ToolContext was built to end, surviving it
+    # by one missing line. Measured by probe: for_client(parent) is
+    # for_client(copy.copy(parent)), and the child's begin_turn() clears
+    # the parent's seq list.
+    try:
+        from . import tool_context as _tool_context
+        sub_client._tool_context = _tool_context.ToolContext()
+    except Exception:
+        pass
+    for _ledger in ("_observed_files", "_observed_files_session"):
+        if hasattr(sub_client, _ledger):
+            try:
+                setattr(sub_client, _ledger, set())
+            except Exception:
+                pass
+
+
 def run_subagent(
     *,
     subagent_type: str,
@@ -3736,20 +3787,7 @@ def run_subagent(
     restore_parent = False
     try:
         sub_client = _copy.copy(parent_client)
-        # A shallow copy shares the parent's MUTABLE evidence ledgers: the
-        # child would union its own reads into the parent's session set in
-        # place, so a file only the delegate opened grounded the parent's
-        # citations -- even when the parent discarded the report (the
-        # fan-out timeout path abandons the thread, it does not stop it).
-        # The verified merge in _merge_delegate_evidence is the one route
-        # a delegate's reads may take to the parent; give the child its own
-        # ledger so that stays the only one.
-        for _ledger in ("_observed_files", "_observed_files_session"):
-            if hasattr(sub_client, _ledger):
-                try:
-                    setattr(sub_client, _ledger, set())
-                except Exception:
-                    pass
+        _isolate_sub_client(sub_client)
         sub_client.set_permissions(sub_perms)
         # The copy inherited the parent's Stop probe; a stop the user gives
         # this run alone (the × in the Background panel) is heard too.

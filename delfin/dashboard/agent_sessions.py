@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 import os
 import re
 import threading
@@ -1127,10 +1128,23 @@ def save_open_sessions(rows: list[dict]) -> None:
     """Remember which sessions are open, whole and with this host's name.
 
     Never raises. Written atomically: a torn write of this file is the
-    whole list of open sessions gone on the next start."""
+    whole list of open sessions gone on the next start.
+
+    The file the next start reads back is this one, so a store this
+    process could not read is not simply replaced: the damaged file is
+    moved aside (its bytes kept for the person to look at) and the
+    message names where it went.
+    """
     try:
+        from delfin.agent import state_file
         from delfin.agent.state_paths import ensure_dir, write_text_atomic
         ensure_dir(_OPEN_SESSIONS_PATH.parent)
+        _ignore, moved = state_file.read_json_for_write(_OPEN_SESSIONS_PATH)
+        if moved:
+            logging.getLogger(__name__).warning(
+                "%s could not be read and was moved to %s; the list of "
+                "open sessions starts over, and what it held is in the "
+                "file kept aside", _OPEN_SESSIONS_PATH.name, moved.name)
         here = _host()
         stamped = [{**row, "host": row.get("host") or here}
                    for row in rows if isinstance(row, dict)]
@@ -3992,8 +4006,15 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             return
         if out["status"] == "ok":
             files = ", ".join(out.get("files") or []) or "no file changes"
+            # This runs outside any turn, so the turn-end auto-verify that
+            # follows an edit does not see these files, and the change
+            # journal has no record of them -- undo_changes cannot revert
+            # a merge. Saying so beats a notice that reads like success:
+            # the files are here, nothing ran on them.
             _say(f"Merged back to {out.get('target')}: {files}. "
-                 "Uncommitted, for review.")
+                 "Uncommitted, for review -- not checked: no tests were "
+                 "run on them and undo does not cover a merge. "
+                 f"See `git -C {out.get('target')} diff`.")
         elif out["status"] == "conflict":
             files = ", ".join(out.get("files") or []) or "the changed files"
             _say(f"Conflict, nothing overwritten: {files}. "

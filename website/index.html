@@ -14,6 +14,7 @@
   <script src="content.js" defer></script>
   <script src="assets/molecule.js" defer></script>
   <script src="app.js" defer></script>
+  <script src="assets/earth.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -21,9 +22,9 @@
   <header class="header">
     <a href="#" class="brand" aria-label="DELFIN home"><img src="assets/delfin.png" width="38" height="38" alt=""><span>DELFIN</span></a>
     <nav aria-label="Main navigation">
-      <a href="#science">The science</a><a href="#stack">The stack</a><a href="#purpose">The purpose</a><a href="#animal-loop">The Animal Loop</a>
+      <a href="#science">The science</a><a href="#stack">The stack</a><a href="framework.html">The agent</a><a href="#purpose">The purpose</a><a href="#animal-loop">The Animal Loop</a>
     </nav>
-    <a class="nav-cta" href="#start">Dive in <span aria-hidden="true">↗</span></a>
+    <a class="nav-cta" href="#start">Dive in <span aria-hidden="true">↓</span></a>
   </header>
   <main id="main">
     <section class="hero section-shell" aria-labelledby="hero-title">
@@ -91,6 +92,9 @@
         <div class="qm-foot"><span>SMILES in, properties out — the whole QM stack, AI-orchestrated.</span><a href="https://github.com/ComPlat/DELFIN">github.com/ComPlat/DELFIN</a></div>
       </figure>
     </section>
+    <section class="framework-intro section-shell" aria-labelledby="framework-intro-title">
+      <div class="framework-teaser"><div><p class="eyebrow">INSIDE THE AGENT</p><h2 id="framework-intro-title">How the framework works.</h2><p>Explore the architecture behind the research partner: tool use, memory, self-validation and measured, human-reviewed improvement.</p></div><a class="text-link" href="framework.html">Inside the agent framework <span aria-hidden="true">→</span></a></div>
+    </section>
     <section class="research section-shell section-pad" aria-labelledby="research-title">
       <div class="section-heading reveal"><p class="eyebrow">03 / QUESTIONS WORTH ASKING</p><h2 id="research-title">What will you<br><span class="serif">look into?</span></h2></div>
       <div class="research-layout reveal"><div class="research-choices" aria-label="Research areas"></div><article class="research-panel" aria-live="polite" aria-atomic="true"><div class="research-visual" aria-hidden="true"><div class="signal-lines"></div><span id="research-symbol">e⁻</span><span class="visual-note" id="research-note"></span></div><div class="research-copy"><h3 id="research-heading"></h3><p id="research-text"></p><div class="tags" id="research-tags"></div></div></article></div>
@@ -104,7 +108,21 @@
     </section>
     <section class="purpose" id="purpose" aria-labelledby="purpose-title">
       <div class="purpose-waves" aria-hidden="true"><svg viewBox="0 0 1440 500" preserveAspectRatio="none"><path d="M-200 220 Q160 0 520 220 T1240 220 T1960 220"/><path d="M-200 250 Q160 30 520 250 T1240 250 T1960 250"/><path d="M-200 280 Q160 60 520 280 T1240 280 T1960 280"/><path d="M-200 310 Q160 90 520 310 T1240 310 T1960 310"/><path d="M-200 340 Q160 120 520 340 T1240 340 T1960 340"/><path d="M-200 370 Q160 150 520 370 T1240 370 T1960 370"/></svg></div>
-      <div class="section-shell section-pad purpose-inner"><p class="eyebrow reveal">05 / A PLANET WORTH CARING ABOUT</p><h2 id="purpose-title" class="reveal">Science is our tool.<br><span class="serif">Life is the point.</span></h2><div class="purpose-bottom reveal"><span class="purpose-asterisk" aria-hidden="true">✳</span><div><p>We want to help make the Earth a better place. By making rigorous computational chemistry easier to use, easier to question, and easier to build on.</p><p class="purpose-small">That ambition is part of DELFIN’s operating principles: advance science for the long-term well-being of humanity and the planet. Progress should serve people and the living world we share.</p><a class="text-link" href="https://github.com/ComPlat/DELFIN/blob/main/delfin/agent/pack/shared/principles_addendum.md">Read the principles <span aria-hidden="true">↗</span></a></div></div></div>
+      <div class="section-shell section-pad purpose-inner"><p class="eyebrow reveal">05 / A PLANET WORTH CARING ABOUT</p><h2 id="purpose-title" class="reveal">Science is our tool.<br><span class="serif">Life is the point.</span></h2><div class="purpose-bottom reveal"><span class="purpose-globe" aria-hidden="true"><svg preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 360">
+  <path fill="#416d96" d="M0 0h720v360H0z"/>
+  <g fill="#c3d9e8" stroke="#c3d9e8" stroke-width="2" stroke-linejoin="round">
+    <path d="m20 42 30-15 44 5 22 16 36-5 28 17 18 26-11 17-17-2-14 18-13 21 6 17 21 12 5 17 19 9 4 16-12 1-19-20-18-3-9-19-23-10-11-22-20-11-11-28-28-10-19-20-18 3z"/>
+    <path d="m192 192 25-5 29 15 16 23-6 22-14 17-8 30-17 32-12 5-6-25-10-22-3-30-13-25 5-25z"/>
+    <path d="m267 17 24-8 28 9-4 31-20 22-14-7-9-23z"/>
+    <path d="m335 108 9-12 16 1 10-15-2-18 16-15 8 7-4 31-12 15 9 9 14-6 9 9-8 13-29-2-15 10-23-9z"/>
+    <path d="m337 137 24-9 27 4 19 16 11 25 24 6-12 24-22 14-10 28-15 20-13-3-7-25-17-23-5-20-20-17-1-23z"/>
+    <path d="m393 61 31-16 37 4 28-10 37 10 23-5 40 12 43-2 30 15 35 12-8 14-30-2-10 15-19 3-8 21-23 5-12 24-24 5-4 24-16 11-14-29-13-7-6 28-12 13-10-20-6-24-24-1-9-17-25-10-14 5-10-15-18-1-13-14 8-15z"/>
+    <path d="m417 151 27 9 10 20-16 14-14-16zM551 199l20 8 12 12-10 5-21-12zM582 220l27 2 13 11-25 2zM637 126l6 7-7 19-6-4z"/>
+    <path d="m588 247 23-12 31 2 9 20 10 17-9 20-24-4-16 5-19-16-19-8zM645 304l9 2-3 13-8-2zM689 284l7 6-9 19-8 4-3-7zM418 251l8-17 4 11-4 18z"/>
+    <path d="m0 340 54-5 51 8 52-5 48 7 43-10 41 3 42-8 33 7 46-2 43 8 46-8 37 4 48-5 37 6 44-5 51 7 26-2v20H0z"/>
+  </g>
+</svg>
+<canvas width="320" height="320"></canvas></span><div><p>We want to help make the Earth a better place. By making rigorous computational chemistry easier to use, easier to question, and easier to build on.</p><p class="purpose-small">That ambition is part of DELFIN’s operating principles: advance science for the long-term well-being of humanity and the planet. Progress should serve people and the living world we share.</p><a class="text-link" href="https://github.com/ComPlat/DELFIN/blob/main/delfin/agent/pack/shared/principles_addendum.md">Read the principles <span aria-hidden="true">↗</span></a></div></div></div>
     </section>
     <section class="animals section-shell section-pad" id="animal-loop" aria-labelledby="animal-title">
       <div class="section-heading reveal"><p class="eyebrow">06 / SCIENCE HAS A WILD SIDE</p><h2 id="animal-title">Stay in the<br><span class="serif blue">Animal Loop.</span></h2><p>A dolphin. A manta ray. A seal. And a little evolution.<br>A shared curiosity for what comes next.</p></div>

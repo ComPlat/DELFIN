@@ -116,8 +116,12 @@ def test_missing_fields_degrade_to_defaults(tmp_path):
 def test_working_state_renders_person_instruction_from_store(tmp_path,
                                                             monkeypatch):
     # Second writer, same store: working_state picks up the person's
-    # instruction from the task_state store at compaction time.
-    st = ts.open(tmp_path / "task_state.json")
+    # instruction from the task_state store at compaction time. The path
+    # comes from the production helper -- the store lives under the
+    # per-workspace state root, not in the workspace, so a test that
+    # builds `<workspace>/task_state.json` itself pins a location the
+    # reader no longer uses (and that put a state file in the checkout).
+    st = ts.open(ts.task_state_path(tmp_path))
     st.set_person_instruction("verify against the ORCA manual first")
     st.save()
 
