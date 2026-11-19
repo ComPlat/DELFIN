@@ -377,13 +377,34 @@ def _header_root_segment() -> str:
     # name -> source of what is assigned to it; the header is assembled
     # from named groups (the bar, its status group), so a name used in
     # the header root is followed to what it holds.
+    # Augmented assignment and in-place list calls count as well. A row
+    # built as `items = [...]` and then extended with `items += [...]` or
+    # `items.insert(0, x)` mounts just as truly as one built in a single
+    # expression, and a guard that followed only `=` reported such a row
+    # as unmounted -- a false alarm on 2026-11-19 that cost a real look.
+    # The opposite mistake is the one that matters: not seeing a mounted
+    # widget is noise, while not seeing an UNmounted one is the defect
+    # this guard exists for, so it errs towards following more.
     assigned: dict = {}
+
+    def _record(name: str, value_node) -> None:
+        assigned.setdefault(name, []).append(
+            ast.get_source_segment(src, value_node) or "")
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
             for t in node.targets:
                 if isinstance(t, ast.Name):
-                    assigned.setdefault(t.id, []).append(
-                        ast.get_source_segment(src, node.value) or "")
+                    _record(t.id, node.value)
+        elif isinstance(node, ast.AugAssign):
+            if isinstance(node.target, ast.Name):
+                _record(node.target.id, node.value)
+        elif (isinstance(node, ast.Call)
+              and isinstance(node.func, ast.Attribute)
+              and node.func.attr in ("append", "extend", "insert")
+              and isinstance(node.func.value, ast.Name)):
+            for arg in node.args:
+                _record(node.func.value.id, arg)
     if "_header_root" not in assigned:
         raise AssertionError("create_dashboard no longer builds a _header_root")
     seen, out, todo = set(), [], ["_header_root"]
