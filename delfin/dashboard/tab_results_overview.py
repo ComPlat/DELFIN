@@ -162,7 +162,7 @@ class ResultsOverviewPanel:
             indent=False,
         )
         self._show_h.observe(self._on_png_opts_change, names="value")
-        self._latex_btn = widgets.Button(description="Export LaTeX/PDF")
+        self._latex_btn = widgets.Button(description="LaTeX \u2192 PDF")
         # Gallery controls: relative scan only, size in percent of the
         # 640px default, images per row before wrapping.
         self._png_size = widgets.IntSlider(
@@ -177,7 +177,7 @@ class ResultsOverviewPanel:
             self._png_size, self._png_cols])
         self._csv_btn = widgets.Button(description="Export CSV")
         self._xlsx_btn = widgets.Button(description="Export XLSX")
-        self._zip_btn = widgets.Button(description="Export PNG-ZIP")
+        self._zip_btn = widgets.Button(description="LaTeX-ZIP (tex + Bilder)")
         self._export_status = widgets.HTML()
         # Custom columns section (semantics shared with the calculations
         # browser table panel: text/regex/jsonpath per arbitrary file).
@@ -685,18 +685,25 @@ class ResultsOverviewPanel:
                            "officedocument.spreadsheetml.sheet")
 
     def _on_export_zip(self, _btn=None) -> None:
-        if not self._paths:
+        """LaTeX-ZIP: results.tex + every image the .tex references.
+
+        The .tex comes from the SAME generator as the PDF export, so
+        all \includegraphics paths match the archive entries exactly
+        and the archive compiles standalone in an empty directory.
+        """
+        if self._table is None:
             self._export_status.value = (
                 "<span style='color:#dc3545'>Build a table first "
                 "(select calculations).</span>")
             return
-        payload = self._pngs_bytes_zip()
-        if not payload:
-            self._export_status.value = (
-                "<span style='color:#dc3545'>Keine RSS-PNGs "
-                "gefunden.</span>")
-            return
-        self._export_bytes("rss_pngs.zip", payload, "application/zip")
+        tex = self._latex_bytes()
+        out = _io.BytesIO()
+        with _zipfile.ZipFile(out, "w", _zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("results.tex", tex)
+            for name, data in self._latex_images:
+                zf.writestr(name, data)
+        self._export_bytes("results_overview_latex.zip",
+                           out.getvalue(), "application/zip")
 
     # -- LaTeX / PDF export ---------------------------------------------------
 
@@ -734,14 +741,25 @@ class ResultsOverviewPanel:
             r"\setlength{\parindent}{0pt}",
             r"\begin{document}",
         ]
-        images: List[tuple] = []  # (arcname, png bytes)
-        n_img = 0
+        images: List[tuple] = []  # (arcname, image bytes)
+        used_names: set = set()
 
-        def _add_image(png: bytes) -> str:
-            nonlocal n_img
-            n_img += 1
+        def _add_image(png: bytes, label: str, kind: str) -> str:
+            """Central image naming for BOTH the .tex and the ZIP.
+
+            <calc>_<kind>.<ext> under images/, sanitized (no spaces or
+            special chars) - the LaTeX-ZIP writes exactly these names.
+            """
+            import re as _re
+            base = _re.sub(r"[^A-Za-z0-9_-]+", "_",
+                           os.path.basename(label.rstrip("/")))
             ext = "pdf" if png[:5] == b"%PDF-" else "png"
-            name = f"{img_dir}/img{n_img:04d}.{ext}"
+            name = f"{img_dir}/{base}_{kind}.{ext}"
+            n = 0
+            while name in used_names:  # same calc+kind twice? keep unique
+                n += 1
+                name = (f"{img_dir}/{base}_{kind}{n}.{ext}")
+            used_names.add(name)
             images.append((name, png))
             return name
 
@@ -768,7 +786,7 @@ class ResultsOverviewPanel:
                 if png:
                     struct_blocks.append(
                         rf"\includegraphics[width={width}\textwidth]"
-                        rf"{{{_add_image(png)}}}")
+                        rf"{{{_add_image(png, row['label'], '2d_smiles')}}}")
             def _xyz_call(path):
                 return initial_xyz_png_bytes(
                     path, show_h=self._show_h.value, fmt="pdf")
@@ -782,9 +800,11 @@ class ResultsOverviewPanel:
                     continue
                 png = fn(row["path"])
                 if png:
+                    kind = "3d_skeleton" if fn is _xyz_call \
+                        else "3d_optimized"
                     struct_blocks.append(
                         rf"\includegraphics[width={width}\textwidth]"
-                        rf"{{{_add_image(png)}}}")
+                        rf"{{{_add_image(png, row['label'], kind)}}}")
             if struct_blocks:
                 lines.append(r"\begin{center}")
                 lines.append(r"\hfill".join(struct_blocks))
@@ -798,7 +818,7 @@ class ResultsOverviewPanel:
                 try:
                     with open(rel_only[0]["abs"], "rb") as fh:
                         scan_png = fh.read(8 * 1024 * 1024)
-                    path = _add_image(scan_png)
+                    path = _add_image(scan_png, row["label"], "rss")
                     lines.append(
                         r"\begin{center}"
                     rf"\includegraphics[width=0.62\textwidth]{{{path}}}"
@@ -870,12 +890,14 @@ class ResultsOverviewPanel:
                     pdf = None
         except Exception:  # noqa: BLE001 - pdflatex optional
             pdf = None
-        # The .tex source is always delivered alongside the PDF so the
-        # document can be edited or re-compiled elsewhere (user request).
-        self._export_bytes("results_overview.tex", tex.encode("utf-8"),
-                           "application/x-tex")
+        # PDF only: the editable source ships in the LaTeX-ZIP button
+        # (results.tex + all referenced images, consistent names).
         if pdf:
             self._export_bytes("results_overview.pdf", pdf, "application/pdf")
+        else:
+            self._export_status.value = (
+                "<span style='color:#dc3545'>pdflatex unavailable - "
+                "use the LaTeX-ZIP (tex + images) button instead.</span>")
         self._latex_source = tex
 
     def _render(self) -> None:
