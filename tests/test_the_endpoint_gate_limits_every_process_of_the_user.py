@@ -212,7 +212,10 @@ def test_a_second_acquire_on_one_gate_is_refused(runtime):
     release). A second request in the same process builds its own gate."""
     g = G.EndpointGate(URL, "m")
     (g._dir() / "state.json").write_text(json.dumps({"limit": 2}))
-    assert g.acquire() == 0
+    # The slot index is an implementation detail of the ordering (a
+    # headless request prefers slot 1, keeping slot-0 for a person); the
+    # test protects the refusal, not the index.
+    assert g.acquire() in (0, 1)
     with pytest.raises(RuntimeError):
         g.acquire(timeout_s=0.3)
     g.release()
