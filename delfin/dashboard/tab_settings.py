@@ -5094,7 +5094,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     # again. Nothing ever echoes it, and the status line below is built from
     # credentials.list_credentials(), which masks every value.
     key_name = widgets.Dropdown(
-        options=['KIT_TOOLBOX_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY'],
+        options=['KIT_TOOLBOX_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY',
+                 'BLABLADOR_API_KEY'],
         value='KIT_TOOLBOX_API_KEY',
         layout=widgets.Layout(width='230px'))
     key_value = widgets.Password(

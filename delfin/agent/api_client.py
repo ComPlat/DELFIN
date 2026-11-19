@@ -36526,6 +36526,24 @@ def create_client(
             provider="kit",
             effort=effort,
         )
+    if provider == "blablador":
+        # Helmholtz Blablador (Forschungszentrum Jülich). OpenAI-compatible,
+        # so it is the same client and the same sandbox as the other chat
+        # APIs -- a second implementation would be a second place for the
+        # tool gate to be forgotten. Only the endpoint and the key differ.
+        from .credentials import load_credential as _load_cred_bla
+        from .model_capabilities import _BLABLADOR_BASE_URL as _bla_base_url
+        bla_key = api_key or _load_cred_bla("BLABLADOR_API_KEY")
+        return OpenAIClient(
+            api_key=bla_key, model=model,
+            base_url=_bla_base_url,
+            key_env_var="BLABLADOR_API_KEY",
+            permissions=_kit_sandbox(
+                cwd, permission_mode, kit_confirm_callback, extra_dirs,
+                read_only_dirs, confirm_write_dirs),
+            provider="blablador",
+            effort=effort,
+        )
     if provider == "openai":
         if backend == "cli":
             return CodexCLIClient(model=model, cwd=cwd,
