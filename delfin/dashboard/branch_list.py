@@ -36,6 +36,7 @@ branches of every contributor), and storing the pins in the repository
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -346,33 +347,27 @@ def _load_all(*, for_write: bool = False) -> dict:
     unreadable. A caller that writes the store back must ask for
     ``for_write=True``: a damaged file is then moved aside (a copy the
     person can look at) instead of being overwritten with an empty
-    answer, and :func:`unreadable_note` says where it went.
+    answer.
+
+    The quarantine file lands beside the store, under the state root, so
+    the Settings tab's diagnosis lists it (``doctor._check_state_files``);
+    the warning below is the second record of the same event.
     """
     from delfin.agent import state_file
     if for_write:
         data, moved = state_file.read_json_for_write(_prefs_path(),
                                                      default={})
         if moved:
-            _unreadable_note = (f"{_prefs_path()} was not readable JSON "
-                                f"and was moved to {moved}; your pinned "
-                                "and hidden lists start empty.")
-            _unreadable_messages.append(_unreadable_note)
+            logging.getLogger(__name__).warning(
+                "%s could not be read and was moved to %s; the pinned and "
+                "hidden branch lists start empty, and what they held is in "
+                "the file kept aside", _prefs_path().name, moved.name)
         return data if isinstance(data, dict) else {}
     try:
         data = json.loads(_prefs_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
-
-
-#: What the last strict load found, so the panel can say it instead of
-#: losing the file quietly.
-_unreadable_messages: list[str] = []
-
-
-def unreadable_note() -> str:
-    """The message about a store moved aside, for the panel to show."""
-    return "\n".join(_unreadable_messages)
 
 
 def _save_all(data: dict) -> None:

@@ -11,7 +11,7 @@ import json
 from delfin.dashboard import tab_turbomole_builder as TTB
 
 
-def test_append_after_damage_keeps_the_old_commands(tmp_path, capsys):
+def test_append_after_damage_keeps_the_old_commands(tmp_path, caplog):
     json_file = tmp_path / "delfin_import.json"
     json_file.write_text(json.dumps(
         {"define_commands": ["a coord", "scf"], "settings": {}}),
@@ -28,5 +28,11 @@ def test_append_after_damage_keeps_the_old_commands(tmp_path, capsys):
     assert "not json" in kept[0].read_text(encoding="utf-8")
     data = json.loads(json_file.read_text(encoding="utf-8"))
     assert data["define_commands"] == ["browzig"]
-    out = capsys.readouterr().out
-    assert "delfin_import.json" in out, "the loss must be said, not silent"
+    # The report is a log warning, not stdout: in a served dashboard
+    # nothing reads the kernel's stdout, and the Settings tab's
+    # diagnosis is the route a person sees (it lists the quarantine
+    # file). The record is asserted here, where its wording lives.
+    said = "\n".join(r.getMessage() for r in caplog.records)
+    assert "delfin_import.json" in said, (
+        "the loss must be said, not silent")
+    assert "moved to" in said and "kept aside" in said

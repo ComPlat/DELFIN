@@ -19,7 +19,7 @@ def prefs_file(tmp_path, monkeypatch):
     return path
 
 
-def test_save_prefs_after_damage_keeps_the_old_keys(prefs_file, capsys):
+def test_save_prefs_after_damage_keeps_the_old_keys(prefs_file, caplog):
     prefs_file.write_text("{not json", encoding="utf-8")
     assert HU.load_prefs() == {}                       # reader stays lenient
 
@@ -30,6 +30,11 @@ def test_save_prefs_after_damage_keeps_the_old_keys(prefs_file, capsys):
     assert kept, "the damaged file was overwritten with no copy anywhere"
     assert "not json" in kept[0].read_text(encoding="utf-8")
     assert json.loads(prefs_file.read_text(encoding="utf-8")) == {"ring_size": 7}
-    out = capsys.readouterr().out
-    assert "dashboard_header.json" in out, "the loss must be said, not silent"
-    assert "unreadable" in out or "moved" in out
+    # The report is a log warning, not stdout: in a served dashboard
+    # nothing reads the kernel's stdout, and the Settings tab's
+    # diagnosis is the route a person sees (it lists the quarantine
+    # file). The record is asserted here, where its wording lives.
+    said = "\n".join(r.getMessage() for r in caplog.records)
+    assert "dashboard_header.json" in said, (
+        "the loss must be said, not silent")
+    assert "moved to" in said and "kept aside" in said

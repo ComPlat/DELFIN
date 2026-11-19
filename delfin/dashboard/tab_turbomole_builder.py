@@ -2,6 +2,7 @@
 
 import html as _html
 import json
+import logging
 import time as _time
 from pathlib import Path
 
@@ -37,8 +38,10 @@ def _read_import_json(json_file):
     from delfin.agent import state_file
     data, moved = state_file.read_json_for_write(json_file, default={})
     if moved:
-        print(f"{json_file} was not readable JSON and was moved to {moved}; "
-              "the recorded Define commands of this job start over.")
+        logging.getLogger(__name__).warning(
+            "%s could not be read and was moved to %s; the recorded Define "
+            "commands of this job start over, and what they held is in the "
+            "file kept aside", json_file, moved.name)
     return data if isinstance(data, dict) else {
         'define_commands': [], 'settings': {}}
 

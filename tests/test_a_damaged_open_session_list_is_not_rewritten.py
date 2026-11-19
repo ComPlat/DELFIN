@@ -25,7 +25,7 @@ def open_file(tmp_path, monkeypatch):
     return path
 
 
-def test_save_open_sessions_after_damage_keeps_the_old_rows(open_file, capsys):
+def test_save_open_sessions_after_damage_keeps_the_old_rows(open_file, caplog):
     open_file.write_text("{not json", encoding="utf-8")
     assert AS.load_open_sessions() == []               # reader stays lenient
 
@@ -38,5 +38,11 @@ def test_save_open_sessions_after_damage_keeps_the_old_rows(open_file, capsys):
     data = json.loads(open_file.read_text(encoding="utf-8"))
     ids = [row["session_id"] for row in data["sessions"]]
     assert ids == ["s2"]
-    out = capsys.readouterr().out
-    assert "agent_open_sessions.json" in out, "the loss must be said, not silent"
+    # The report is a log warning, not stdout: in a served dashboard
+    # nothing reads the kernel's stdout, and the Settings tab's
+    # diagnosis is the route a person sees (it lists the quarantine
+    # file). The record is asserted here, where its wording lives.
+    said = "\n".join(r.getMessage() for r in caplog.records)
+    assert "agent_open_sessions.json" in said, (
+        "the loss must be said, not silent")
+    assert "moved to" in said and "kept aside" in said

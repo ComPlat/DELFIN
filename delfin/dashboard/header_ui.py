@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 import threading
 import time
 from pathlib import Path
@@ -65,9 +66,10 @@ def save_prefs(**changes) -> None:
         data, moved = state_file.read_json_for_write(_prefs_path(),
                                                      default={})
         if moved:
-            print(f"dashboard_header.json was not readable JSON and was "
-                  f"moved to {moved}; the header's remembered state "
-                  "starts over.")
+            logging.getLogger(__name__).warning(
+                "%s could not be read and was moved to %s; the header's "
+                "remembered state starts over, and what it held is in the "
+                "file kept aside", _prefs_path().name, moved.name)
         data.update(changes)
         write_text_atomic(_prefs_path(), json.dumps(data, indent=1, sort_keys=True))
     except Exception:
