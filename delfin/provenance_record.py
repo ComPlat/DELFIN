@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import sys
 from datetime import datetime, timezone
@@ -342,10 +343,31 @@ def build_record(
 
 
 def write_record(record: dict, result_dir: str | Path) -> Path:
-    """Write ``record`` as PROVENANCE.json next to the result; return the path."""
+    """Write ``record`` as PROVENANCE.json next to the result; return the path.
+
+    A provenance record is a run's origin and not reconstructable from the
+    run folder, so a damaged record already there is moved aside
+    (``agent.state_file.quarantine``) rather than truncated in place -- the
+    write is atomic, so a crash mid-write cannot create the damaged file
+    this guards against in the first place.
+    """
+    from delfin.agent.state_file import quarantine, write_json_atomic
+
     run_root = Path(result_dir).resolve()
     out_path = run_root / PROVENANCE_FILE
-    out_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if out_path.exists():
+        try:
+            json.loads(out_path.read_text(encoding="utf-8"))
+        except (ValueError, UnicodeDecodeError) as exc:
+            aside = quarantine(out_path)
+            logging.getLogger(__name__).warning(
+                "The existing %s could not be read (%s); it was moved to %s "
+                "and kept -- a provenance record is not reconstructable.",
+                PROVENANCE_FILE, exc, aside)
+    # 0o644, not the helper's secret-store default: the record is public data.
+    # (write_json_atomic does not sort keys; readers parse the JSON, so the
+    # on-disk key order is cosmetic.)
+    write_json_atomic(out_path, record, mode=0o644, indent=2)
     return out_path
 
 
