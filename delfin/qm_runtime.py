@@ -712,9 +712,11 @@ def run_tool(
     stdout=None,
     stderr=None,
     track_process: bool = False,
+    timeout: Optional[float] = None,
+    allow_install: bool = True,
 ) -> subprocess.CompletedProcess:
     resolved = resolve_tool(name)
-    if resolved is None:
+    if resolved is None and allow_install:
         # Needed and not there. For anything DELFIN installs, that is a wait
         # rather than a wall -- and it is the moment to find out, because the
         # caller is about to use it. Imported here, not at the top: the health
@@ -750,6 +752,8 @@ def run_tool(
 
     logger.info("Running QM tool %s from %s: %s", resolved.canonical_name, resolved.source, cmd)
     if not track_process:
+        if timeout is not None:
+            run_kwargs["timeout"] = timeout
         return subprocess.run(cmd, **run_kwargs)
 
     popen_kwargs = {
@@ -786,7 +790,17 @@ def run_tool(
             logger.debug("Failed to register QM tool subprocess %s: %s", resolved.canonical_name, exc)
 
     try:
-        stdout_data, stderr_data = process.communicate()
+        try:
+            stdout_data, stderr_data = (process.communicate(timeout=timeout)
+                                        if timeout is not None else process.communicate())
+        except subprocess.TimeoutExpired:
+            import signal
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                process.kill()
+            stdout_data, stderr_data = process.communicate()
+            raise subprocess.TimeoutExpired(cmd, timeout, output=stdout_data, stderr=stderr_data)
     finally:
         if manager is not None:
             try:

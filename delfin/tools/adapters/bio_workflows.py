@@ -1,4 +1,4 @@
-"""Agent-discoverable planning and input preparation; never run an engine."""
+"""Separate agent entry points for planning, input preparation and execution."""
 from __future__ import annotations
 
 import hashlib
@@ -23,7 +23,7 @@ class BioWorkflowPlan(StepAdapter):
     required_artifacts = produces
     example_kwargs = {"template": "docking"}
     params = (ParamSpec("plan", "dict"), ParamSpec("template", "str",
-              description="docking, medchem, md, or predictor ID; exactly one of plan/template"))
+              description="processing, docking, medchem, md, or predictor ID; exactly one of plan/template"))
     data_keys = (DataKeySpec("valid", "bool"), DataKeySpec("execution_ready", "bool"), DataKeySpec("blockers", "list"))
 
     def validate_params(self, **kwargs):
@@ -128,3 +128,55 @@ class BioPredictionInput(StepAdapter):
 register(BioWorkflowPlan())
 register(BioBackendCatalog())
 register(BioPredictionInput())
+
+
+class BioWorkflowExecution(StepAdapter):
+    category = "meta"
+    produces_geometry = False
+    produces = ("json_report",)
+    required_artifacts = produces
+    params = (ParamSpec("plan", "dict", required=True), ParamSpec("resume", "bool", default=False))
+    data_keys = (DataKeySpec("status", "str"), DataKeySpec("execution_performed", "bool"))
+    example_kwargs = {"plan": {"schema_version": 1, "inputs": {"ligand": {"type": "ligand", "path": "ligand.sdf"}},
+                               "nodes": [{"id": "prepare", "backend": "rdkit_prepare", "inputs": {"ligand": "inputs.ligand"}}]}}
+
+    def __init__(self, preflight=False):
+        self.preflight = preflight
+        self.name = "bio_workflow_preflight" if preflight else "bio_workflow_execute"
+        self.description = ("Check actual input files, adapter bindings and local environments; optional version probes run but no calculation"
+                            if preflight else "Execute a bound biomolecular DAG through DELFIN adapters with explicit edges, failure stop and checksum-verified resume")
+
+    def validate_params(self, **kwargs):
+        if kwargs.get("plan") is None:
+            raise ValueError("plan is required")
+        result = validate_plan(kwargs["plan"])
+        if not result["valid"]:
+            raise ValueError("; ".join(result["errors"]))
+        if type(kwargs.get("resume", False)) is not bool:
+            raise ValueError("resume must be boolean")
+
+    def execute(self, work_dir, *, geometry=None, cores=1, **kwargs):
+        from delfin.tools.bio.execution import execute_plan, preflight_plan
+        start = time.monotonic()
+        try:
+            self.validate_params(**kwargs)
+            if self.preflight:
+                data = preflight_plan(kwargs["plan"])
+                ok = data["execution_ready"]
+            else:
+                data = execute_plan(kwargs["plan"], Path(work_dir) / "workflow", cores=cores, resume=kwargs.get("resume", False))
+                ok = data["status"] == "success"
+            path = Path(work_dir) / "workflow_report.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data, indent=2, allow_nan=False), encoding="utf-8")
+            return self._make_result(self.name, StepStatus.SUCCESS if ok else StepStatus.FAILED, work_dir, start,
+                                     data=data, artifacts={"json_report": path},
+                                     error=None if ok else "Workflow blocked or failed; see workflow_report.json",
+                                     error_kind=ErrorKind.NONE if ok else ErrorKind.TOOL_FAILED)
+        except (ValueError, OSError) as exc:
+            return self._make_result(self.name, StepStatus.FAILED, work_dir, start,
+                                     error=str(exc), error_kind=ErrorKind.UNSUITABLE_INPUT)
+
+
+register(BioWorkflowExecution(preflight=True))
+register(BioWorkflowExecution())

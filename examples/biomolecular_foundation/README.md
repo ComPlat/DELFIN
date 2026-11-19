@@ -39,3 +39,15 @@ Use a fresh output path. This writes the backend catalog, six typed workflow
 plans and AlphaFold 3/Boltz/Chai inputs for synthetic demonstration entities.
 No external engine is executed. See `docs/BIOMOLECULAR_WORKFLOWS.md` for the
 agent tools, supported input subset and remaining execution integration.
+
+For an executable processing DAG with descriptors, SVG and a portable 3D viewer:
+
+```sh
+python -m examples.biomolecular_foundation.run_processing --output /tmp/delfin-processing
+```
+
+Open `/tmp/delfin-processing/run/view_1/view.html`. No server or external CDN is
+needed. The same directory includes scripts for PyMOL and ChimeraX; those apps
+must already be installed to run them. The example uses synthetic spatial SDF
+coordinates explicitly marked 3D, not a scientifically validated docking system.
+The run manifest records actual steps, hashes and output paths.

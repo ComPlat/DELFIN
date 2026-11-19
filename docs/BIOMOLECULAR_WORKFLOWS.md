@@ -1,9 +1,8 @@
-# Biomolecular workflow scaffold
+# Biomolecular workflow foundation
 
-This is the planning and input-contract layer for building workflows with the
-DELFIN agent. It does not install or execute the catalogued external engines.
-Use the existing tools platform for executable adapters; keep unimplemented
-backends as explicit blockers while constructing a workflow.
+This layer provides typed planning, native predictor inputs, executable processing
+and selected external engine adapters. It never installs engines or downloads
+model weights. Unimplemented backends remain explicit execution blockers.
 
 ## Agent entry points
 
@@ -16,7 +15,7 @@ The DELFIN tools MCP server exposes two read-only tools:
 
 Both are available during planning. Neither probes engines, accesses the
 network, writes files or submits jobs. The tools platform's `get_guide` explains
-this route. Three regular registered adapters are also available:
+this route. Regular registered adapters include:
 
 | Adapter | Work performed |
 | --- | --- |
@@ -29,8 +28,9 @@ requests cannot be inferred from a placeholder such as an empty dictionary.
 
 ## Catalog coverage and status
 
-The initial catalog has 38 backend/operation contracts. These are extension
-points, not a claim that 38 integrations run in DELFIN.
+The catalog has 46 backend/operation contracts, of which 21 have execution
+bindings. Additional registered adapters handle prediction import and workflow
+execution. Catalog coverage is not a claim that every engine runs in DELFIN.
 
 | Domain | Entries |
 | --- | --- |
@@ -38,21 +38,79 @@ points, not a claim that 38 integrations run in DELFIN.
 | Preparation | Existing RDKit ligand preparation, ligand-state enumeration, Molscrub, explicit receptor preparation, Meeko receptor/ligand conversion |
 | Docking | AutoDock Vina, GNINA, smina, DiffDock, HADDOCK3, Glide, GOLD |
 | Conversion and validation | Meeko pose export, PoseBusters, model selection, complex assembly |
-| Analysis/MedChem | ProLIF, PLIP, properties/scaffolds/similarity, assay joining |
+| Analysis/MedChem | ProLIF, PLIP, properties/scaffolds, assay joining |
 | Simulation | Parameterization, OpenMM, GROMACS, Amber, NAMD, MDAnalysis |
 | QM connection and design | Explicit QM/MM-region construction, RFdiffusion, ProteinMPNN |
 
 `integration=planned` means the execution adapter still needs implementing.
-`integration=adapter` currently identifies the existing `ligand_prepare` path.
+`integration=adapter` identifies an implemented execution binding; its runtime
+may still be unavailable or its input subset unsuitable.
 A found executable does not verify its version, dependencies, weights, license
 terms, GPU support or scientific applicability. Catalog and planning calls
 therefore never claim `execution_ready=true`.
 
-Execution integrations should reuse DELFIN's existing runtime/scheduler,
-environment handling and job controls. They must implement version checks,
-resource requests, timeout/cancellation and restart semantics. These controls
-are not implemented by the planning scaffold. Do not route a planning graph
-directly into `run_application` or submit it as a pipeline spec.
+## Executable foundation and verification status
+
+| Area | Available implementation | Verification / boundary |
+| --- | --- | --- |
+| Ligand processing | RDKit preparation, descriptors/scaffolds, tautomer enumeration, explicit record selection, ligand-derived binding box, SVG grid | Real local adapter tests; no pH populations or measured ADMET |
+| Assay processing | Exact chemical-state joins with units, censoring, conditions, replicates and unmatched rows | Real local MedChem DAG tests; no unit conversion or averaging |
+| Structure processing | Explicit model/chain/water/hetero/altloc selection and atom mapping | Real PDB/mmCIF tests; coordinate selection is not chemical receptor preparation |
+| Prediction results | Explicit import, raw confidence assets, SHA-256 validation, model selection | Local tests, including changed confidence and path escape refusal; engine provenance is caller supplied |
+| Visualization | Offline vendored 3Dmol viewer, pose/chain/water controls, binding box; PyMOL and ChimeraX scripts | Export tests; desktop scripts syntax checked; actual browser/WebGL and desktop applications not verified |
+| Docking | Vina, GNINA, smina adapters with exact version banner, explicit seed/box/CPU count, timeout, checked outputs | Vina 1.2.5 synthetic live I/O smoke passed; GNINA/smina not installed/tested live; no scientific benchmark |
+| Preparation/export | Meeko ligand/receptor PDBQT and pose SDF export in a selected Python environment | Implemented optional adapters; Meeko absent locally. Receptor subset: one prepared canonical PDB model, no unresolved altlocs/cofactors/metals |
+| Validation | PoseBusters redocking checks retaining raw per-pose CSV values | Mocked boundary tests; package absent locally; failed checks remain visible even when report execution succeeds |
+| Interactions | PLIP XML report for an explicitly assembled PDB complex | Implemented optional adapter; package absent locally |
+| Execution | `bio_workflow_preflight`, `bio_workflow_execute` | Actual typed DAG through `run_step`, stop on failure, checksummed outputs, resume refusal after changed inputs/settings/runtime/code |
+
+`bio_workflow_preflight` reads actual files and may run bounded version probes.
+It is separate from the read-only planning MCP tools. Exact package versions are
+required for optional Python tools; select their environment with `python`.
+Docking requires `expected_version` equal to the complete stripped `--version`
+banner. External runs use DELFIN's tracked process runtime with installation
+disabled. Timeouts terminate the process group. Cancellation callbacks stop
+between DAG nodes; active subprocess cancellation uses DELFIN's process manager.
+Execution is sequential and accepts a CPU core count; GPU scheduling and remote
+cluster submission are not implemented by this executor.
+
+Successful resume verifies recorded files plus plan, input hashes, relevant code,
+Python dependency versions and probed executable identity. It is not an atomic
+snapshot of all installed libraries, drivers or weights. Only one writer may run
+against a workflow directory. Output records retain the original coordinate
+frame; no implicit structure alignment or receptor preparation occurs.
+
+Run an offline example with synthetic structures:
+
+```sh
+python -m examples.biomolecular_foundation.run_processing --output /tmp/delfin-processing
+```
+
+Open `/tmp/delfin-processing/run/view_1/view.html` locally. The directory includes
+its JavaScript, input coordinates, desktop viewer scripts and manifest; no web
+server is needed. `plan.json` documents all graph edges; `run/run.json` records
+actual node outcomes. Invoke custom plans with
+`run_step("bio_workflow_execute", plan=plan, work_dir=directory)`; the planning
+DAG itself is not a generic DELFIN pipeline spec.
+
+### Remaining foundation work
+
+Predictor execution (AlphaFold family, ColabFold, ESMFold, Boltz, Chai and
+RoseTTAFold), model assets/GPU validation, receptor chemistry preparation,
+Molscrub, ProLIF, complex assembly, MD parameterization and
+OpenMM/GROMACS/Amber/NAMD/MDAnalysis execution remain unimplemented bindings.
+The same applies to DiffDock, HADDOCK3, licensed docking, protein design and
+QM/MM-region construction. Existing native predictor input generation does not
+remove these blockers. Scientific reference datasets and installed-engine tests
+are needed before calling any complete docking/MedChem/MD workflow validated.
+
+External adapter interfaces follow the official
+[Vina tutorial](https://autodock-vina.readthedocs.io/en/latest/docking_basic.html),
+[GNINA CLI](https://github.com/gnina/gnina),
+[Meeko CLI](https://github.com/forlilab/Meeko/tree/develop/meeko/cli),
+[PoseBusters CLI](https://github.com/maabuu/posebusters/blob/main/posebusters/cli.py)
+and [PLIP](https://github.com/pharmai/plip). Pin installed versions; documentation
+of a CLI is not evidence of a successful local scientific run.
 
 ## Explicit wiring
 
@@ -78,11 +136,11 @@ selection. Cofolded ligands require explicit extraction; selection alone does
 not provide a prepared docking receptor. Simulation requires a parameterized
 system, not merely a coordinate file. An `alphafold3_input` cannot feed Boltz.
 
-This validator checks graph structure. It does not yet validate engine-specific
-settings, inspect external paths, establish coordinate compatibility or compile
-a graph into executable tasks. Those are reported as remaining execution work.
+The planning validator checks graph structure only. The separate execution
+preflight validates bound adapter settings, reads external artifacts and probes
+selected runtimes. It does not establish scientific coordinate compatibility.
 
-Templates are provided for `docking`, `medchem`, `md` and each predictor ID.
+Templates are provided for `processing`, `docking`, `medchem`, `md` and each predictor ID.
 The public JSON schemas and semantic validator complement each other: the
 schema describes shape, while the validator checks IDs, references and ports.
 
@@ -182,14 +240,26 @@ Other engine documentation links are included in each catalog entry.
 
 ## Validation of this update
 
-The selected Python 3.12 suite completed with 383 passed and three failures.
-The two existing contract failures (`test_declared_required_params_are_enforced`
-and `test_every_adapter_has_a_contract`) and the upstream-producer hint failure
-(`test_validation_names_upstream_producers_for_missing_input`) reproduce on
-unchanged main `03a02d048f674a972d6c2e2551908eb5ece24b6c`.
+The focused suite covers real RDKit processing, artifact integrity, DAG execution,
+resume rejection, failure/cancellation handling, optional-engine boundaries,
+synthetic live Vina I/O and existing biomolecular readers/viewer helpers.
+Three pre-existing failures reproduce on unchanged main
+`03a02d048f674a972d6c2e2551908eb5ece24b6c`:
+`test_declared_required_params_are_enforced` (`orca_th_opi.output_file`),
+`test_every_adapter_has_a_contract` (`orca_qmmm_opi`), and
+`test_validation_names_upstream_producers_for_missing_input` (hint truncation).
 
-The command-line example writes 38 catalog entries, six plans and three native
-input sets. No inference/docking/MD engine was executed. The native formats are
-checked by local content tests; real engine-parser compatibility remains an
-integration check. The optional `jsonschema` package is absent here, so a
-Draft-2020-12 meta-validation run was not performed.
+The planning CLI writes 46 catalog entries, six plans and three native input
+sets without executing an engine. The separate processing example executes a
+real four-node offline DAG. Synthetic spatial SDF fixtures explicitly carry the
+3D dimension marker; this does not make them chemically realistic benchmarks.
+Native predictor formats have local content tests; real engine-parser/inference
+compatibility remains an integration check. The optional `jsonschema` package is
+absent, so Draft-2020-12 meta-validation was not performed.
+
+Assay tables use `schema_version: 1` and `records`. Each measurement requires
+`measurement_id`, the exact DELFIN `chemical_state_id`, `assay_id`, `endpoint`,
+finite numeric `value`, explicit `unit`, `relation`, `source` and a `conditions`
+object. Replicates need distinct measurement IDs. The public `assay_table` schema
+is included in the backend catalog. Endpoint names and units are retained as
+supplied; normalization and quality assessment remain separate operations.

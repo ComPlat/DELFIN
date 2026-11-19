@@ -45,3 +45,16 @@ def plan_schema() -> dict:
                                    "inputs": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*\\.[A-Za-z][A-Za-z0-9_]*$"}},
                                    "settings": {"type": "object"}}}},
             }}
+
+
+def assay_table_schema() -> dict:
+    return {'$schema': 'https://json-schema.org/draft/2020-12/schema', 'type': 'object',
+            'required': ['schema_version', 'records'], 'properties': {
+                'schema_version': {'const': 1, 'type': 'integer'},
+                'records': {'type': 'array', 'items': {'type': 'object',
+                    'required': ['measurement_id', 'chemical_state_id', 'assay_id', 'endpoint', 'unit', 'relation', 'source', 'value', 'conditions'],
+                    'properties': {
+                        **{key: {'type': 'string', 'minLength': 1} for key in ('measurement_id', 'assay_id', 'endpoint', 'unit', 'source')},
+                        'chemical_state_id': {'type': 'string', 'pattern': '^[0-9a-f]{64}$'},
+                        'relation': {'enum': ['=', '<', '<=', '>', '>=', '~']},
+                        'value': {'type': 'number'}, 'conditions': {'type': 'object'}}}}}}

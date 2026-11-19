@@ -40,6 +40,9 @@ class Backend:
 
 
 def _backend(id, task, inputs, outputs, requirements, url, scope, commands=(), adapter=None):
+    from delfin.tools.bio.execution import BINDINGS
+    if adapter is None and id in BINDINGS:
+        adapter = BINDINGS[id].adapter
     return Backend(id, task, tuple(inputs.items()), tuple(outputs.items()),
                    tuple(requirements), url, scope, tuple(commands), adapter)
 
@@ -67,9 +70,9 @@ BACKENDS = tuple(
              ("rdkit",), "https://www.rdkit.org/docs/", "Coordinates, hydrogens and charges; protonation as supplied",
              adapter="ligand_prepare"),
     _backend("ligand_states", "preparation", {"ligand": "ligand"}, {"states": "ligand_state_set"},
-             ("enumeration limits", "pH/protonation method", "stereochemistry policy"),
+             ("rdkit", "enumeration limits", "stereochemistry policy"),
              "https://www.rdkit.org/docs/source/rdkit.Chem.MolStandardize.rdMolStandardize.html",
-             "RDKit tautomer/stereo foundation; pH-dependent states require a separate method"),
+             "Executable RDKit tautomer enumeration; pH-dependent states require a separate method"),
     _backend("molscrub", "preparation", {"ligand": "ligand"}, {"states": "ligand_state_set"},
              ("molscrub", "pH range", "enumeration limits"), _GH + "forlilab/molscrub",
              "Ligand protonation/tautomer and coordinate preparation", ("scrub.py",)),
@@ -118,7 +121,7 @@ BACKENDS = tuple(
              "Interaction analysis of an assembled complex", ("plip",)),
     _backend("medchem_properties", "medchem", {"ligands": "ligand_library"}, {"properties": "property_table"},
              ("rdkit", "compound IDs", "descriptor definitions"), "https://www.rdkit.org/docs/",
-             "Descriptors, scaffolds, similarity and alerts; no automatic ADMET validity claim"),
+             "Computed descriptors and Murcko scaffolds; no automatic ADMET validity claim"),
     _backend("assay_join", "medchem", {"properties": "property_table", "assays": "assay_table"},
              {"dataset": "medchem_dataset"}, ("compound/state identity", "assay units/conditions", "measurement provenance"),
              "https://www.ebi.ac.uk/chembl/", "Join measured endpoints without conflating IC50, Ki and docking scores"),
@@ -152,6 +155,23 @@ BACKENDS = tuple(
     _backend("proteinmpnn", "design", {"backbone": "macromolecule"}, {"sequences": "sequence_set"},
              ("checkpoint", "fixed/designed positions", "sampling controls"), _GH + "dauparas/ProteinMPNN",
              "Sequence design conditioned on a selected backbone"),
+    _backend("structure_select", "processing", {"structure": "macromolecule"}, {"structure": "macromolecule"},
+             ("explicit model/chains/altloc policy",), _GH + "ComPlat/DELFIN", "Coordinate selection with atom mapping, not receptor preparation"),
+    _backend("ligand_depict", "visualization", {"ligands": "ligand_library"}, {"image": "svg"},
+             ("rdkit",), "https://www.rdkit.org/docs/", "Offline 2D structure grid"),
+    _backend("visualize", "visualization", {"structure": "macromolecule"}, {"view": "html_view", "manifest": "view_manifest"},
+             ("browser WebGL for viewing",), "https://3dmol.csb.pitt.edu/", "Offline 3Dmol viewer plus PyMOL and ChimeraX entry scripts"),
+    _backend("visualize_poses", "visualization", {"structure": "macromolecule", "poses": "pose_set", "site": "binding_box"},
+             {"view": "html_view", "manifest": "view_manifest"}, ("shared coordinate frame", "browser WebGL"),
+             "https://3dmol.csb.pitt.edu/", "Explicit receptor/poses/box wiring into an offline viewer"),
+    _backend("ligand_select", "processing", {"ligands": "ligand_library"}, {"ligand": "ligand"},
+             ("explicit record_id",), "https://www.rdkit.org/docs/", "Select one ligand without changing chemistry"),
+    _backend("pose_select", "processing", {"poses": "pose_set"}, {"ligand": "ligand"},
+             ("explicit record_id",), "https://www.rdkit.org/docs/", "Select one pose without alignment or score guessing"),
+    _backend("state_select", "processing", {"states": "ligand_state_set"}, {"ligand": "ligand"},
+             ("explicit record_id",), "https://www.rdkit.org/docs/", "Select a chemical state; regenerate 3D before docking"),
+    _backend("box_from_ligand", "processing", {"ligand": "ligand"}, {"site": "binding_box"},
+             ("3D ligand in receptor coordinate frame",), _GH + "ComPlat/DELFIN", "Heavy-atom bounding box plus padding in angstrom"),
 )
 _INDEX = {backend.id: backend for backend in BACKENDS}
 PORT_TYPES = frozenset(kind for b in BACKENDS for _, kind in (*b.inputs, *b.outputs))
@@ -159,13 +179,13 @@ PORT_TYPES = frozenset(kind for b in BACKENDS for _, kind in (*b.inputs, *b.outp
 
 def backend_catalog(*, task: str | None = None, probe: bool = False,
                     env: Mapping[str, str] | None = None) -> dict:
-    from delfin.tools.bio.schemas import plan_schema, prediction_request_schema
+    from delfin.tools.bio.schemas import plan_schema, prediction_request_schema, assay_table_schema
     if task is not None and task not in {b.task for b in BACKENDS}:
         raise ValueError(f"unknown biomolecular task: {task}")
     environment = (os.environ if env is None else env) if probe else None
     return {"schema_version": 1, "kind": "biomolecular_backend_catalog",
             "execution_performed": False,
-            "schemas": {"plan": plan_schema(), "prediction_request": prediction_request_schema()},
+            "schemas": {"plan": plan_schema(), "prediction_request": prediction_request_schema(), "assay_table": assay_table_schema()},
             "backends": [b.describe(environment) for b in BACKENDS if task is None or b.task == task]}
 
 
@@ -243,6 +263,15 @@ def validate_plan(plan: dict) -> dict:
 
 
 def workflow_template(name: str) -> dict:
+    if name == "processing":
+        return {"schema_version": 1, "name": name,
+                "inputs": {"structure": {"type": "macromolecule"}, "ligands": {"type": "ligand_library"}},
+                "nodes": [
+                    {"id": "select", "backend": "structure_select", "inputs": {"structure": "inputs.structure"}},
+                    {"id": "view", "backend": "visualize", "inputs": {"structure": "select.structure"}},
+                    {"id": "properties", "backend": "medchem_properties", "inputs": {"ligands": "inputs.ligands"}},
+                    {"id": "depict", "backend": "ligand_depict", "inputs": {"ligands": "inputs.ligands"}},
+                ]}
     if name == "docking":
         return {"schema_version": 1, "name": name,
                 "inputs": {"structure": {"type": "macromolecule"}, "ligand": {"type": "ligand"}, "site": {"type": "binding_box"}},

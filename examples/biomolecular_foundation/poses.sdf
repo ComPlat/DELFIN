@@ -1,5 +1,5 @@
 reference_placement
-  DELFIN
+  DELFIN            3D
 
   2  1  0  0  0  0            999 V2000
     0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
@@ -11,7 +11,7 @@ M  END
 
 $$$$
 translated_one_angstrom
-  DELFIN
+  DELFIN            3D
 
   2  1  0  0  0  0            999 V2000
     1.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
@@ -23,7 +23,7 @@ M  END
 
 $$$$
 translated_three_angstrom
-  DELFIN
+  DELFIN            3D
 
   2  1  0  0  0  0            999 V2000
     3.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
