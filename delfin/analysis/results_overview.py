@@ -374,7 +374,7 @@ def initial_xyz_png_bytes(calc_dir: str, size: int = 320, show_h=True,
     cov = [_XYZ_COVALENT.get(s, _XYZ_COVALENT_DEFAULT) for s in sym]
     bonds = _detect_bonds(sym, cov, rotated)
     bond_orders = bond_orders if bond_orders is not None \
-        else _infer_bond_orders(sym, bonds, rotated)
+        else _rdkit_bond_orders(sym, bonds, rotated)
 
     # Skeletal convention, INDEPENDENT of the checkbox: aliphatic H
     # (C-H) are never drawn in the skeleton; protons on heteroatoms
@@ -561,6 +561,59 @@ def formula_to_richtext(formula: str):
     if i < len(formula):
         parts.append((formula[i:], None))
     return parts or [(formula, None)]
+
+
+def _rdkit_bond_orders(sym, bonds, positions):
+    """Bond orders via RDKit: metal-free graph, DetermineBondOrders,
+    kekulize; mapped back to the original indices.
+
+    Metals and their bonds are removed (the ligands become fragments);
+    RDKit assigns orders from valences (charged fragments allowed, total
+    charge 0); Kekulization produces the alternating aromatic pattern.
+    Falls back to the valence heuristic on any failure.  Returns
+    {(i, j): 2|3} over ORIGINAL indices; metal bonds are never upgraded.
+    """
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import rdDetermineBonds
+    except ImportError:
+        return _infer_bond_orders(sym, bonds)
+    metal = set(_XYZ_MASS) - {"H", "B", "C", "N", "O", "F", "Si", "P",
+                              "S", "Cl", "Br", "I"}
+    keep = [i for i, s in enumerate(sym) if s not in metal]
+    if len(keep) < 2:
+        return _infer_bond_orders(sym, bonds)
+    kset = set(keep)
+    remap = {old: new for new, old in enumerate(keep)}
+    rw = Chem.RWMol()
+    for i in keep:
+        rw.AddAtom(Chem.Atom(sym[i]))
+    for i, j in bonds:
+        if i in kset and j in kset:
+            rw.AddBond(remap[i], remap[j], Chem.BondType.SINGLE)
+    conf = Chem.Conformer(rw.GetNumAtoms())
+    for n, o in enumerate(keep):
+        conf.SetAtomPosition(n, tuple(float(x) for x in positions[o]))
+    conf.SetId(0)
+    rw.AddConformer(conf, assignId=True)
+    mol = rw.GetMol()
+    try:
+        rdDetermineBonds.DetermineBondOrders(
+            mol, charge=0, allowChargedFragments=True)
+        Chem.SanitizeMol(mol)
+        Chem.Kekulize(mol)
+    except Exception:
+        return _infer_bond_orders(sym, bonds)
+    upgrades = {}
+    for b in range(mol.GetNumBonds()):
+        bond = mol.GetBondWithIdx(b)
+        name = str(bond.GetBondType())
+        if name not in ("DOUBLE", "TRIPLE"):
+            continue
+        i = keep[bond.GetBeginAtomIdx()]
+        j = keep[bond.GetEndAtomIdx()]
+        upgrades[(i, j)] = 2 if name == "DOUBLE" else 3
+    return upgrades or _infer_bond_orders(sym, bonds)
 
 
 def _infer_bond_orders(sym, bonds, rotated_pos=None):
