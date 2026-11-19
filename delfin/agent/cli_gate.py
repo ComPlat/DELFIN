@@ -272,6 +272,33 @@ def _permissions(state: dict, token: str):
     return perms
 
 
+def permissions_for(token: str):
+    """The policy this token's gate applies, or None when none is written.
+
+    Input: a gate token. Output: the same ``KitToolPermissions`` the hook
+    builds for the external agent's own tool calls, or None when no state
+    has been written for the token yet (no workspace is recorded, so there
+    is no boundary to enforce and nothing may be granted).
+
+    Exists for the one caller that is NOT the hook: a `!cmd` typed by the
+    person on a backend whose client carries no permissions object of its
+    own. The CLI backend's policy lives only in this state file, and a
+    second construction of it elsewhere would be a second place for the
+    boundary to drift. Returning the hook's own policy keeps the shell
+    escape and the model's tool calls on one set of rules.
+
+    An unreadable state file reads as absent and therefore grants nothing;
+    it does not read as "no restriction is recorded".
+    """
+    token = str(token or "")
+    if not token:
+        return None
+    state = _read_state(_state_path(token))
+    if not state.get("workspace"):
+        return None
+    return _permissions(state, token)
+
+
 #: At most this many URLs of each kind are kept in the state file.
 _URLS_KEPT = 2000
 

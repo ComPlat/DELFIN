@@ -266,10 +266,15 @@ class TestDocsIndex:
 class TestRunAll:
     def test_returns_every_check_in_order(self, clean_env, scratch_dir, docs_index_file):
         docs_index_file(None)
-        results = run_all(scratch_dir=scratch_dir)
+        # settings={} so the cluster check has nothing to report. Without it
+        # this read the live machine's remote.clusters, and the count was 10
+        # on a machine with no cluster and 11 on one that has one (or that
+        # lacks the optional cluster tunnel, which used to be reported as a
+        # crash). The fixed checks are what this test is about.
+        results = run_all(scratch_dir=scratch_dir, settings={})
         names = [r.name for r in results]
         # 10: the OPI check (test_opi_is_the_same_everywhere).
-        assert len(results) == 10
+        assert len(results) == 10, names
         assert len(set(names)) == 10  # distinct, no duplicates
         assert all(isinstance(r, CheckResult) for r in results)
 
@@ -288,7 +293,7 @@ class TestRunAll:
         monkeypatch.setattr("delfin.doctor.check_opi",
                             lambda: CheckResult("opi", OK, "supplied"))
         docs_index_file({"documents": []})
-        results = run_all(scratch_dir=scratch_dir)
+        results = run_all(scratch_dir=scratch_dir, settings={})
         assert all(r.status == OK for r in results), [
             (r.name, r.status, r.detail) for r in results
         ]
@@ -298,7 +303,7 @@ class TestRunAll:
             raise RuntimeError("unexpected")
 
         monkeypatch.setattr("delfin.doctor.check_orca", boom)
-        results = run_all(scratch_dir=scratch_dir)
+        results = run_all(scratch_dir=scratch_dir, settings={})
         crashed = [r for r in results if r.status == BROKEN]
         assert crashed, "a crashing check must surface as broken"
 
@@ -336,12 +341,12 @@ class TestExitCode:
         docs_index_file(None)
         make_binary(clean_env, "mpirun", "broken")
         make_binary(clean_env, "sinfo", "ok")
-        results = run_all(scratch_dir=scratch_dir)
+        results = run_all(scratch_dir=scratch_dir, settings={})
         assert exit_code(results) == 1
 
     def test_end_to_end_missing_only(self, clean_env, scratch_dir, docs_index_file):
         docs_index_file(None)
-        results = run_all(scratch_dir=scratch_dir)
+        results = run_all(scratch_dir=scratch_dir, settings={})
         assert exit_code(results) == 0
         # no binary, no key, no index: the only "ok" is the writable scratch dir
         assert all(r.status in (MISSING, OK) for r in results)
