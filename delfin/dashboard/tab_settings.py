@@ -72,6 +72,94 @@ def _subagent_caps_now() -> str:
         return "see delfin/agent/subagents.py"
 
 
+#: The keys a person may need to set here, with the provider each serves.
+#: Only names DELFIN itself reads: an arbitrary name would be stored and
+#: never used, which looks like it worked.
+API_KEY_NAMES: tuple[tuple[str, str], ...] = (
+    ("KIT_TOOLBOX_API_KEY", "KIT Toolbox (provider kit)"),
+    ("OPENAI_API_KEY", "OpenAI-compatible endpoints (provider openai)"),
+    ("ANTHROPIC_API_KEY", "Anthropic API backend"),
+)
+
+
+def store_api_key(name: str, value: str) -> tuple[bool, str]:
+    """Put one API key in this person's credential store.
+
+    Input: the variable name and the key. Output: (stored, message). The
+    message is for the page and NEVER contains the key or any part of it
+    -- not on success, not in an error. ``set_credential`` reports only
+    whether the store changed, and a key that was already there is as
+    good an outcome as a key just written.
+
+    Before this, a key could only be set by exporting it in the shell
+    before the dashboard started, or by `delfin-agent credentials set`.
+    Someone who reaches their dashboard through the Windows launcher has
+    neither: the working shell is off by default, and the dashboard had
+    no field. The agent then could not run at all and the page said only
+    that the key "is not set in the dashboard process".
+
+    Where it is written is the store's own decision (keyring or
+    ``~/.delfin/credentials.json``, 0600). On a shared account that file
+    is readable by everyone who can log into that account -- see the
+    caller's note; this function cannot change that.
+    """
+    name = str(name or "").strip()
+    value = str(value or "").strip()
+    if not name:
+        return False, "No key selected."
+    if not value:
+        return False, "Nothing entered, so nothing was stored."
+    known = {n for n, _ in API_KEY_NAMES}
+    if name not in known:
+        return False, f"{name} is not a key DELFIN reads."
+    try:
+        from delfin.agent import credentials as _cred
+        _cred.set_credential(name, value)
+    except Exception as exc:
+        # The message of a store failure can quote what it was given.
+        return False, f"{name} was not stored: {type(exc).__name__}."
+    # Read it back through the same path the agent uses, so "stored" means
+    # "the agent will find it" and not "a write returned without raising".
+    if not api_key_is_available(name):
+        return False, (f"{name} was written but cannot be read back; "
+                       "the agent would not find it.")
+    os.environ[name] = value      # this dashboard process, without a restart
+    return True, f"{name} stored. It takes effect on the next New Cycle."
+
+
+def api_key_is_available(name: str) -> bool:
+    """Whether the agent would find this key, by the agent's own lookup."""
+    try:
+        from delfin.agent.credentials import load_credential
+        return bool(load_credential(str(name or "")))
+    except Exception:
+        return bool(os.environ.get(str(name or ""), ""))
+
+
+def api_key_status_rows() -> list[tuple[str, str]]:
+    """(name, where it is) for every key DELFIN reads. Never the value.
+
+    "not set" is a fact worth showing: a person whose agent will not
+    start needs to see which key is missing, and an empty list would
+    look like a page that had not loaded.
+    """
+    try:
+        from delfin.agent.credentials import list_credentials
+        known = list_credentials()
+    except Exception:
+        known = {}
+    rows = []
+    for name, _label in API_KEY_NAMES:
+        if os.environ.get(name):
+            rows.append((name, "set (environment)"))
+        elif name in known:
+            source = str(known[name].get("source") or "stored")
+            rows.append((name, f"set ({source})"))
+        else:
+            rows.append((name, "not set"))
+    return rows
+
+
 def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     """Create the dashboard Settings tab."""
     settings_path = get_settings_path()
@@ -4730,9 +4818,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         value=(
             '<span style="color:#757575;font-size:12px;">'
             '<b>CLI backend</b> uses your Anthropic subscription via OAuth (no API key needed).<br>'
-            '<b>API backend</b> requires the <code>ANTHROPIC_API_KEY</code> environment variable '
-            '(set it in your shell before launching the dashboard). '
-            'Keys are never stored on disk.'
+            '<b>API backend</b> requires <code>ANTHROPIC_API_KEY</code>. '
+            'Set it below, or export it before launching the dashboard.'
             '</span>'
         ),
     )
@@ -4919,6 +5006,72 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         ]
         return {'enabled': bool(_ros_enabled.value), 'enabled_shapes': shapes}
 
+    # -- API keys ----------------------------------------------------------
+    # The agent cannot start without one, and until now the only ways to
+    # set one were an export before the dashboard started and a CLI
+    # command. Someone arriving through the Windows launcher has neither.
+    api_key_choice = widgets.Dropdown(
+        options=[(f'{label}  -  {name}', name)
+                 for name, label in API_KEY_NAMES],
+        description='API key',
+        style={'description_width': '110px'},
+        layout=widgets.Layout(width='420px'),
+    )
+    api_key_value = widgets.Password(
+        placeholder='Paste the key, then Store',
+        description='',
+        layout=widgets.Layout(width='280px', height='28px'),
+    )
+    api_key_store_btn = widgets.Button(
+        description='Store key',
+        button_style='primary',
+        layout=widgets.Layout(width='110px'),
+    )
+    api_key_status = widgets.HTML(value='')
+
+    def _show_api_key_status(message='', color='#455a64'):
+        rows = ''.join(
+            f'<div>{html.escape(name)}: '
+            f'<span style="color:{"#2e7d32" if state != "not set" else "#757575"};">'
+            f'{html.escape(state)}</span></div>'
+            for name, state in api_key_status_rows())
+        said = (f'<div style="color:{color};margin-bottom:4px;">'
+                f'{html.escape(message)}</div>') if message else ''
+        api_key_status.value = (
+            f'<div style="font-size:12px;">{said}{rows}</div>')
+
+    def _on_store_api_key(_btn=None):
+        # The value leaves this function only into the store. It is not
+        # logged, not echoed and not put in the status line.
+        stored, message = store_api_key(api_key_choice.value,
+                                        api_key_value.value)
+        api_key_value.value = ''
+        _show_api_key_status(message, '#2e7d32' if stored else '#d32f2f')
+
+    api_key_store_btn.on_click(_on_store_api_key)
+    _show_api_key_status()
+
+    api_key_box = widgets.VBox(
+        [
+            widgets.HTML(
+                '<b style="font-size:13px;">API keys</b>'
+                '<div style="color:#757575;font-size:12px;">'
+                'Stored for this account only (keyring, else '
+                '<code>~/.delfin/credentials.json</code>, mode 0600). '
+                'The field is never shown back and the key is never '
+                'written to a log or a message.<br>'
+                '<b>On a shared account</b> - a lab box where several '
+                'people connect through one Unix user - everyone who can '
+                'log into that account can read the stored key. Use a '
+                'personal account for a personal key.'
+                '</div>'),
+            widgets.HBox([api_key_choice, api_key_value,
+                          api_key_store_btn]),
+            api_key_status,
+        ],
+        layout=widgets.Layout(gap='4px'),
+    )
+
     agent_section = widgets.VBox(
         [
             agent_backend_input,
@@ -4928,6 +5081,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             _ros_box,
             widgets.HBox([agent_save_btn, agent_status_html]),
             agent_env_hint,
+            api_key_box,
         ],
         layout=widgets.Layout(padding='8px', gap='6px'),
     )
