@@ -617,13 +617,42 @@ def _infer_bond_orders(sym, bonds, rotated_pos=None):
     # One double bond per atom, preferring larger deficits and shorter
     # bonds (true C=N/C=C are shorter than their single neighbours),
     # reproduces the alternating pattern.
+    # Only TWO situations deserve a drawn double bond:
+    # 1. both partners sit in a common ring (aromatic alternation -
+    #    pyridine C=N/C=C, benzene, fluorenyl).  Ring bonds are found
+    #    with a simple cycle search over the bond graph.
+    # 2. a short C=O carbonyl (bond < 1.30 A; a hydroxyl C-OH is
+    #    ~1.36 A and stays single - its O is labeled OH instead).
+    # Everything else (bridging single bonds, long C-N links) must NOT
+    # be doubled even when both ends are one bond short - the greedy
+    # all-pairs rule drew double lines everywhere (user report 406).
+    METAL = set(_XYZ_MASS) - {"H", "B", "C", "N", "O", "F", "Si",
+                              "P", "S", "Cl", "Br", "I"}
+    # Chelate rings through the metal are coordination, not aromatic -
+    # their bonds must never be doubled.
+    rings = [r for r in _find_rings(sym, bonds)
+             if not any(sym[a] in METAL for a in r)]
+    in_same_ring = {}
+    for ring in rings:
+        rset = set(ring)
+        for a in ring:
+            for b in ring:
+                if a < b:
+                    in_same_ring[(a, b)] = True
     atom_upgraded = set()
-    candidates = sorted(
-        ((min(need[i], need[j]), -bond_length(i, j), i, j)
-         for i, j in bonds
-         if i in need and j in need and i not in atom_upgraded
-         and j not in atom_upgraded),
-        reverse=True)
+    candidates = []
+    for i, j in bonds:
+        if i not in need or j not in need:
+            continue
+        if i in atom_upgraded or j in atom_upgraded:
+            continue
+        deficit = min(need[i], need[j])
+        length = bond_length(i, j)
+        carbonyl = ({sym[i], sym[j]} == {"C", "O"} and length < 1.30)
+        if (i, j) not in in_same_ring and not carbonyl:
+            continue
+        candidates.append((deficit, -length, i, j))
+    candidates.sort(reverse=True)
     for deficit, _neglen, i, j in candidates:
         if deficit >= 3:
             upgrades[(i, j)] = 3
@@ -634,6 +663,53 @@ def _infer_bond_orders(sym, bonds, rotated_pos=None):
         atom_upgraded.add(i)
         atom_upgraded.add(j)
     return upgrades
+
+
+def _find_rings(sym, bonds):
+    """Small rings (<= 8 atoms) of the bond graph, as index tuples.
+
+    Simple DFS cycle detection over heavy-atom bonds; returns each
+    shortest cycle once.  Good enough to mark aromatic systems.
+    """
+    import collections
+    adj = collections.defaultdict(set)
+    for i, j in bonds:
+        if sym[i] != "H" and sym[j] != "H":
+            adj[i].add(j)
+            adj[j].add(i)
+    rings = []
+    seen = set()
+    for start in adj:
+        # BFS shortest cycle through start via each neighbour pair.
+        for n1 in adj[start]:
+            for n2 in adj[start]:
+                if n1 >= n2:
+                    continue
+                # shortest path n1 -> n2 not through start
+                prev = {start: None}
+                queue = collections.deque([n1])
+                dist = {n1: 0}
+                parent = {}
+                while queue:
+                    cur = queue.popleft()
+                    if cur == n2:
+                        break
+                    for nb in adj[cur]:
+                        if nb == start:
+                            continue
+                        if nb not in dist:
+                            dist[nb] = dist[cur] + 1
+                            parent[nb] = cur
+                            queue.append(nb)
+                if n2 in dist and dist[n2] <= 7:
+                    path = [n2]
+                    while path[-1] != n1:
+                        path.append(parent[path[-1]])
+                    cycle = tuple(sorted(path + [start]))
+                    if cycle not in seen and len(cycle) <= 8:
+                        seen.add(cycle)
+                        rings.append(cycle)
+    return rings
 
 
 def _render_skeleton(sym, rotated, bonds, size, show_h=False,
