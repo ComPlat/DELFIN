@@ -1003,7 +1003,11 @@ class ResultsOverviewPanel:
     ".ro-tab-root .widget-label{font-size:12px;color:#334155}"
   ].join("");
   document.head.appendChild(css);
-  if (window.__roSortBind) { return; }
+  // Sort binding must survive a second create_tab/init_js call: the
+  // style guard above returns early and would skip the bind setup
+  // (that was the lost-sorting bug). The bind guard lives inside
+  // __roSortBind instead.
+  if (!window.__roSortBind) {
   window.__roSortBind = function (root) {
     (root || document).querySelectorAll('a.ro-sort').forEach(function (a) {
       if (a.__roBound) { return; }
@@ -1024,6 +1028,7 @@ class ResultsOverviewPanel:
     });
   }).observe(document.body, {childList: true, subtree: true});
   window.__roSortBind();
+  }
 })();
 """
 
