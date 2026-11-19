@@ -31420,6 +31420,80 @@ def _is_stream_unsupported_error(exc: Exception) -> bool:
 _STREAM_RETRY_MAX = int(os.environ.get("DELFIN_STREAM_RETRY_MAX", "7") or 7)
 
 
+#: The furthest a server's own Retry-After may park a round. Longer than
+#: this and the header is not a hint any more: a turn that sleeps for half
+#: an hour on a header nobody checked is indistinguishable from a hang, and
+#: a shared service answering with an hour is more likely misconfigured
+#: than serious. Beyond the cap the ladder decides instead.
+_RETRY_AFTER_MAX_S = 300.0
+
+#: Below this a Retry-After is treated as "immediately, but not instantly":
+#: honouring a literal 0 would retry inside the same millisecond.
+_RETRY_AFTER_MIN_S = 1.0
+
+
+def _retry_after_seconds(exc: Any, *, now: float | None = None
+                         ) -> Optional[float]:
+    """The server's own Retry-After for this error, in seconds, or None.
+
+    Input: the exception a failed request raised. Output: the wait the
+    SERVER asked for, clamped to [_RETRY_AFTER_MIN_S, _RETRY_AFTER_MAX_S],
+    or None when there is no usable header.
+
+    Why read it at all: the backoff ladder is a guess made here, while
+    Retry-After is the one number the service actually knows. On a shared
+    research endpoint (Blablador, KIT) guessing long wastes the user's
+    turn and guessing short adds load to something already struggling.
+
+    Both forms RFC 9110 allows are accepted: delta-seconds, and an
+    HTTP-date, which is resolved against *now*. A date in the past yields
+    the floor rather than a negative wait.
+
+    Never raises and never trusts: an exception that carries no response,
+    no headers, or a header that is not a number or a date, answers None,
+    and the caller falls back to the ladder. A quota 429 is NOT handled
+    here -- that one carries its own reset (``_quota_429_reset``) and
+    parks the run until it, which is a different and longer decision.
+    """
+    try:
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers is None:
+            return None
+        raw = headers.get("retry-after") or headers.get("Retry-After")
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    seconds: Optional[float] = None
+    try:
+        seconds = float(text)
+    except ValueError:
+        try:
+            from email.utils import parsedate_to_datetime
+            when = parsedate_to_datetime(text)
+        except Exception:
+            return None
+        if when is None:
+            return None
+        try:
+            import datetime as _dt
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=_dt.timezone.utc)
+            seconds = when.timestamp() - (now if now is not None
+                                          else time.time())
+        except Exception:
+            return None
+    if seconds is None or seconds != seconds:          # NaN
+        return None
+    if seconds > _RETRY_AFTER_MAX_S:
+        return None
+    return max(_RETRY_AFTER_MIN_S, float(seconds))
+
+
 def _transient_retry_delay(attempt: int) -> float:
     """Seconds to wait before transient-retry ``attempt`` (1-based).
 
@@ -34024,7 +34098,13 @@ class OpenAIClient(_BaseClient):
                         _round_in = 0
                         finish_reason = None
                         _stream_attempt += 1
-                        _delay = _transient_retry_delay(_stream_attempt)
+                        # The server's own Retry-After outranks the ladder:
+                        # the ladder is a guess made here, the header is the
+                        # one number the service knows. Absent, unusable or
+                        # absurdly long, the ladder decides as before.
+                        _delay = _retry_after_seconds(_stream_exc)
+                        if _delay is None:
+                            _delay = _transient_retry_delay(_stream_attempt)
                         yield StreamEvent(type="notice", text=_retry_notice(
                             type(_stream_exc).__name__,
                             time.monotonic() - _round_t0, _had_partial,
