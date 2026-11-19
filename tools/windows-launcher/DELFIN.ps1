@@ -224,7 +224,15 @@ if ($Mode -ne 'App') {
         if ($p.RememberLogin) { try { $loginKey = Get-LoginKey } catch { $loginKey = $null } }
         $publicKey = ''
         $identity = @()
-        if ($loginKey) { $options += @('-i',$loginKey.Key); $identity = @('-i',$loginKey.Key); $publicKey = $loginKey.Public }
+        # IdentitiesOnly: offer THIS key and no other. Without it, -i adds
+        # the launcher's key to the agent's keys and every default
+        # ~/.ssh/id_* , and each one offered is one of the server's
+        # MaxAuthTries. On a hardened server (the lab Pi allows 3) the
+        # password prompt is then never reached, or the connection is cut
+        # with "Too many authentication failures" -- which reads exactly
+        # like a refused password. Measured 2026-11-19: that server offers
+        # publickey,password and allows three attempts.
+        if ($loginKey) { $options += @('-o','IdentitiesOnly=yes','-i',$loginKey.Key); $identity = @('-o','IdentitiesOnly=yes','-i',$loginKey.Key); $publicKey = $loginKey.Public }
         if ($Mode -eq 'Terminal') {
             Write-Host 'Working terminal. Password and OTP prompts are handled exclusively by OpenSSH.'
             Write-Host 'To paste a password here: right-click in this window. Ctrl+V does not paste into this console; it sends a control character, and the server sees a wrong password.'

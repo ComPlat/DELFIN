@@ -619,7 +619,18 @@ def test_the_app_and_the_server_agree_on_the_login_key_argument():
     server = (root / 'remote_bootstrap.sh').read_text(encoding='utf-8')
     assert "(Shell-Quote (Get-PersonName)) + ' ' + (Shell-Quote $publicKey)" in app
     assert 'person=${9:-}' in server and 'login_key=${10:-}' in server
-    assert "$options += @('-i',$loginKey.Key)" in app
+    assert "'-i',$loginKey.Key" in app
+    # ...and ONLY that key. Without IdentitiesOnly, -i adds the launcher's
+    # key to the agent's and every default ~/.ssh/id_*, and each one
+    # offered spends one of the server's MaxAuthTries. Where that limit is
+    # low (3 on the lab Pi, measured 2026-11-19) the password prompt is
+    # never reached, or the connection is cut with "Too many
+    # authentication failures" -- indistinguishable, to the person typing,
+    # from a password the server refused.
+    offers = [l for l in app.splitlines() if "$loginKey.Key" in l]
+    assert offers, "the login key is never offered to ssh"
+    for line in offers:
+        assert line.count("IdentitiesOnly=yes") == line.count("'-i'"), line
     assert 'RememberLogin=$rememberToggle.Checked' in app and 'RememberLogin=$true' in app
 
 
