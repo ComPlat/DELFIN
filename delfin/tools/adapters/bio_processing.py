@@ -33,6 +33,11 @@ class BioProcessing(StepAdapter):
             value = kwargs.get("record_id")
             if type(value) is not int or value < 1:
                 raise ValueError("record_id must be a positive 1-based integer")
+        if self.name == "bio_assemble_complex":
+            if type(kwargs.get("record_id")) is not int or kwargs["record_id"] < 1:
+                raise ValueError("record_id must be a positive 1-based integer")
+            if kwargs.get("shared_coordinate_frame") is not True:
+                raise ValueError("shared_coordinate_frame=True must be explicitly asserted")
         if self.name == "bio_ligand_states":
             value = kwargs.get("max_states", 32)
             if type(value) is not int or not 1 <= value <= 1024:
@@ -69,6 +74,12 @@ class BioProcessing(StepAdapter):
 
     def _run(self, directory, options):
         from delfin.tools.bio import processing, structures, visualization
+        if self.name == "bio_assemble_complex":
+            from delfin.tools.bio.assembly import assemble_complex
+            data = assemble_complex(Path(options["receptor_file"]), Path(options["poses_file"]), directory,
+                                    record_id=options["record_id"], shared_coordinate_frame=options["shared_coordinate_frame"],
+                                    ligand_chain=options.get("ligand_chain", "L"))
+            return data, {"complex_structure": directory / "complex.pdb", "ligand": directory / "selected_ligand.sdf"}
         if self.name == "bio_assay_join":
             from delfin.tools.bio.assays import join_assays
             data = join_assays(Path(options["properties_file"]), Path(options["assays_file"]))
@@ -116,6 +127,12 @@ class BioProcessing(StepAdapter):
         raise ValueError(f"unknown processing operation {self.name}")
 
 
+register(BioProcessing("bio_assemble_complex", "Assemble one explicit pose and a single prepared PDB receptor, preserving atom mapping and ligand SDF",
+                      [ParamSpec("receptor_file", "path", required=True), ParamSpec("poses_file", "path", required=True),
+                       ParamSpec("record_id", "int", required=True), ParamSpec("shared_coordinate_frame", "bool", required=True),
+                       ParamSpec("ligand_chain", "str", default="L")],
+                      ["complex_structure", "ligand", "json_report"], [("prepared_receptor", "receptor_file"), ("pose_set", "poses_file")],
+                      ["rdkit"], example={"receptor_file": "receptor.pdb", "poses_file": "poses.sdf", "record_id": 1, "shared_coordinate_frame": True}))
 register(BioProcessing("bio_ligand_properties", "Compute RDKit descriptors and scaffolds for every ligand record",
                       [ParamSpec("ligands_file", "path", required=True)], ["property_table", "json_report"],
                       [("ligand_library", "ligands_file")], ["rdkit"]))

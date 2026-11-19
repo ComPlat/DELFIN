@@ -21,6 +21,8 @@ class Binding:
 
 
 BINDINGS = {
+    "receptor_prepare": Binding("bio_receptor_prepare", {"structure": "structure_file"}, {"receptor": "prepared_receptor"}),
+    "assemble_complex": Binding("bio_assemble_complex", {"receptor": "receptor_file", "poses": "poses_file"}, {"complex": "complex_structure"}),
     "assay_join": Binding("bio_assay_join", {"properties": "properties_file", "assays": "assays_file"}, {"dataset": "medchem_dataset"}),
     "ligand_select": Binding("bio_ligand_select", {"ligands": "ligands_file"}, {"ligand": "ligand"}),
     "pose_select": Binding("bio_ligand_select", {"poses": "ligands_file"}, {"ligand": "ligand"}),

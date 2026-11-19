@@ -28,7 +28,7 @@ requests cannot be inferred from a placeholder such as an empty dictionary.
 
 ## Catalog coverage and status
 
-The catalog has 46 backend/operation contracts, of which 21 have execution
+The catalog has 46 backend/operation contracts, of which 23 have execution
 bindings. Additional registered adapters handle prediction import and workflow
 execution. Catalog coverage is not a claim that every engine runs in DELFIN.
 
@@ -56,6 +56,8 @@ therefore never claim `execution_ready=true`.
 | Ligand processing | RDKit preparation, descriptors/scaffolds, tautomer enumeration, explicit record selection, ligand-derived binding box, SVG grid | Real local adapter tests; no pH populations or measured ADMET |
 | Assay processing | Exact chemical-state joins with units, censoring, conditions, replicates and unmatched rows | Real local MedChem DAG tests; no unit conversion or averaging |
 | Structure processing | Explicit model/chain/water/hetero/altloc selection and atom mapping | Real PDB/mmCIF tests; coordinate selection is not chemical receptor preparation |
+| Receptor preparation | PDBFixer/OpenMM worker with exact versions, pH, water and atom-repair policies, original-atom checks | Boundary tests only; packages absent locally; canonical hydrogen-free single-model PDB subset |
+| Complex assembly | Explicit pose selection, shared-frame assertion, PDB serial/CONECT remapping and authoritative ligand SDF sidecar | Real local assembly tests; no coordinate alignment or chemistry inference |
 | Prediction results | Explicit import, raw confidence assets, SHA-256 validation, model selection | Local tests, including changed confidence and path escape refusal; engine provenance is caller supplied |
 | Visualization | Offline vendored 3Dmol viewer, pose/chain/water controls, binding box; PyMOL and ChimeraX scripts | Export tests; desktop scripts syntax checked; actual browser/WebGL and desktop applications not verified |
 | Docking | Vina, GNINA, smina adapters with exact version banner, explicit seed/box/CPU count, timeout, checked outputs | Vina 1.2.5 synthetic live I/O smoke passed; GNINA/smina not installed/tested live; no scientific benchmark |
@@ -96,8 +98,8 @@ DAG itself is not a generic DELFIN pipeline spec.
 ### Remaining foundation work
 
 Predictor execution (AlphaFold family, ColabFold, ESMFold, Boltz, Chai and
-RoseTTAFold), model assets/GPU validation, receptor chemistry preparation,
-Molscrub, ProLIF, complex assembly, MD parameterization and
+RoseTTAFold), model assets/GPU validation, richer receptor chemistry support,
+Molscrub, ProLIF, MD parameterization and
 OpenMM/GROMACS/Amber/NAMD/MDAnalysis execution remain unimplemented bindings.
 The same applies to DiffDock, HADDOCK3, licensed docking, protein design and
 QM/MM-region construction. Existing native predictor input generation does not
@@ -263,3 +265,35 @@ finite numeric `value`, explicit `unit`, `relation`, `source` and a `conditions`
 object. Replicates need distinct measurement IDs. The public `assay_table` schema
 is included in the backend catalog. Endpoint names and units are retained as
 supplied; normalization and quality assessment remain separate operations.
+
+## Receptor preparation and complex assembly
+
+`bio_receptor_prepare` binds `receptor_prepare` to PDBFixer/OpenMM in an explicit
+Python environment. Required settings are exact `pdbfixer_version` and
+`openmm_version`, `ph` (0..14), `seed`, `waters` (`keep`/`drop`) and
+`missing_atoms` (`reject`/`repair`). It uses the CPU Reference platform and never
+installs packages. This first subset accepts one hydrogen-free canonical protein
+PDB with resolved alternate locations. Modified residues, cofactors, metals,
+nonprotein components and detected missing residues are refused. Existing
+protonation requires a separate policy; no residues or loops are built implicitly.
+Hydrogen assignment uses default residue rules rather than an electrostatic pKa
+calculation. Missing-residue detection depends on sequence records. Output atom
+identities and original heavy-atom coordinates are checked; additions/removals
+are reported. Original annotations remain in `input.pdb`. No system force-field
+parameterization or scientific validation is implied.
+
+The API sequence follows the [PDBFixer manual](https://github.com/openmm/pdbfixer/blob/master/Manual.html)
+and [implementation](https://github.com/openmm/pdbfixer/blob/master/pdbfixer/pdbfixer.py).
+PDBFixer/OpenMM are absent in this development environment, so adapter boundary
+checks use a simulated worker; no successful live receptor repair is claimed.
+
+`bio_assemble_complex` binds `assemble_complex` to native DELFIN processing.
+Required settings are a 1-based `record_id` and `shared_coordinate_frame=true`.
+The latter is the caller's assertion, not a computed alignment check. An optional
+single-character `ligand_chain` defaults to `L`; collisions are refused. Original
+receptor coordinate fields and residue identities are preserved, serial numbers
+and CONECT references are remapped, and the selected ligand's graph is preserved
+in `selected_ligand.sdf`. PDB output alone cannot preserve every chemical detail;
+ligand coordinates are rounded to PDB precision. Unsupported anisotropic records,
+serial overflow, unresolved alternate locations and multiple receptor models
+are refused rather than silently discarded.
