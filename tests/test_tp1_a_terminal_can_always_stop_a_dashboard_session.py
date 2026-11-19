@@ -78,13 +78,26 @@ def test_stop_ends_the_wait_for_a_slot(runtime):
 
 
 def test_a_slot_free_at_once_is_no_wait_and_says_nothing(runtime):
+    """The subject is the notice, not which slot was handed out.
+
+    This asserted slot 0 for the first caller and slot 1 for the second.
+    That was true until #694 reserved slot-0 for a person: a headless
+    request now scans 1..N-1 and never takes slot-0, so the first
+    caller here gets 1 and the second 2. Pinning the index made this
+    test fail on a deliberate change elsewhere while saying nothing
+    about what it is for -- that a slot which was free at once must not
+    be reported as a wait.
+    """
     g = _gate()
     (g._dir() / "state.json").write_text(json.dumps({"limit": 4}))
     first = G.EndpointGate(URL, "m")
-    assert first.acquire() == 0
+    first_slot = first.acquire()
+    assert first_slot is not None and first_slot >= 1, (
+        "slot-0 is the person's; a headless caller must not take it")
     try:
         second = G.EndpointGate(URL, "m")
-        assert second.acquire(timeout_s=1.0) == 1
+        second_slot = second.acquire(timeout_s=1.0)
+        assert second_slot is not None and second_slot != first_slot
         assert second.wait_notice == "", second.wait_notice
         second.release()
     finally:
