@@ -26,6 +26,7 @@ notices until the key is somewhere else.
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -209,3 +210,57 @@ def test_only_keys_delfin_reads_are_offered(own_store):
 
     from delfin.agent.credentials import load_credential
     assert load_credential("SOME_OTHER_TOKEN") == ""
+
+
+def test_one_persons_key_does_not_replace_the_accounts(tmp_path,
+                                                        monkeypatch):
+    """On a shared account the person's store is a LINK to the account's.
+
+    ``remote_bootstrap.sh`` gives each person a home under ``~/people``
+    and links the account's files into it, ``.delfin/credentials.json``
+    among them, so that someone who has set no key of their own still
+    finds the account's. Measured on the lab Raspberry Pi on 2026-11-19:
+    every person's credentials file is such a link, and the account's
+    file held the one shared KIT key.
+
+    A write that FOLLOWED that link would replace the key for everyone
+    on the box -- the other people and the machine's own agents -- from
+    a button in the Settings tab. It does not: the store writes a
+    private temporary file and renames it over the path, which replaces
+    the LINK rather than its target. The person ends up with a file of
+    their own holding what the account's held plus their key, and the
+    account's file is untouched.
+
+    Pinned here because the whole arrangement is load-bearing for that
+    machine and nothing else holds it.
+    """
+    from delfin.agent import credentials as cred
+
+    account = tmp_path / "account" / ".delfin"
+    account.mkdir(parents=True)
+    account.chmod(0o700)
+    shared = account / "credentials.json"
+    shared.write_text('{"KIT_TOOLBOX_API_KEY": "the-accounts-key"}',
+                      encoding="utf-8")
+    shared.chmod(0o600)
+
+    person = tmp_path / "account" / "people" / "simone" / ".delfin"
+    person.mkdir(parents=True)
+    person.chmod(0o700)
+    link = person / "credentials.json"
+    link.symlink_to(shared)
+
+    monkeypatch.setenv("HOME", str(person.parent))
+    monkeypatch.setattr(cred, "_DEFAULT_PATH", link)
+    monkeypatch.setattr(cred, "configured_store", lambda: "file")
+
+    stored, _message = tab_settings.store_api_key(KEY, SECRET)
+
+    assert stored
+    assert not link.is_symlink(), (
+        "the person's store must become a file of their own; while it is "
+        "a link, every write lands in the account's file")
+    assert json.loads(shared.read_text())[KEY] == "the-accounts-key", (
+        "one person setting a key in Settings replaced the key the whole "
+        "account uses")
+    assert json.loads(link.read_text())[KEY] == SECRET
