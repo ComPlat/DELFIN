@@ -298,6 +298,7 @@ def permissions_for(token: str):
         return None
     return _permissions(state, token)
 
+
 #: At most this many URLs of each kind are kept in the state file.
 _URLS_KEPT = 2000
 
