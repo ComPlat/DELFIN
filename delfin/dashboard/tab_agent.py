@@ -273,6 +273,73 @@ def _shell_run_for_chat(run: dict, directory) -> dict:
     return out
 
 
+def shell_escape_engine(current, build):
+    """The engine a `!cmd` runs through: the session's, else a new one.
+
+    Input: the engine the session already holds (None before the first
+    message on this surface) and the callable that builds one. Output: an
+    engine, or None when none could be had.
+
+    The gate `!` runs through is reached as ``engine.run_gated_bash``, so
+    without an engine the escape is answered "not available on this
+    backend" -- a sentence about the backend for a session that had simply
+    not started. The terminal never had this: it constructs the session
+    before its input loop reads a line.
+
+    Module level, with the builder passed in, because the caller is a
+    closure inside ``create_tab`` built around live widgets: the branch
+    could only be checked by reading the source for a string, and it was.
+    """
+    if current is not None:
+        return current
+    try:
+        return build()
+    except Exception:
+        return None
+
+
+def shell_escape_entry(engine, command: str, fallback_dir) -> dict:
+    """One `!cmd`, run and rendered as the chat entry for its result.
+
+    Input: the engine carrying the gate, the command after the `!`, and
+    the directory to save over-long output in when the engine names none.
+    Output: a chat message dict with ``role``, ``content`` (plain text for
+    what reads content: search, export, a mode handoff), ``role_label``
+    and ``shell`` (the fields the chat renders).
+
+    Everything here is what used to sit inside the sending closure, where
+    no test could reach it without a browser. The gate itself is
+    ``repl.shell_escape_result``, shared with the terminal; this adds only
+    the saving of long output and the plain-text rendering.
+    """
+    from delfin.agent.repl import shell_escape_result
+
+    run = shell_escape_result(engine, command)
+    directory = None
+    try:
+        perms = getattr(engine, "kit_permissions", None)
+        directory = getattr(perms, "agent_workspace_dir", None)
+    except Exception:
+        directory = None
+    try:
+        run = _shell_run_for_chat(run, Path(directory or fallback_dir)
+                                  / "shell_output")
+    except Exception:
+        run = _shell_run_for_chat(run, Path.cwd() / "shell_output")
+
+    plain = [f"! {command}"]
+    if run.get("refused"):
+        plain.append(f"  refused: {run['refused']}")
+    if run.get("error"):
+        plain.append(f"  [error] {run['error']}")
+    body = "\n".join(s for s in (run.get("stdout"), run.get("stderr")) if s)
+    plain += ["  " + ln for ln in body.splitlines()[:200]]
+    if run.get("exit_code") not in (0, None):
+        plain.append(f"  (exit {run['exit_code']})")
+    return {"role": "system", "content": "\n".join(plain),
+            "role_label": "", "shell": run}
+
+
 def input_placeholder(steps, default: str, proposed=None) -> str:
     """The line waiting in the message box: an offer, a task, or the hint.
 
@@ -710,43 +777,15 @@ _build_verify_hint = turn_context.verify_hint
 
 
 def _self_verification_note(verified: bool) -> str:
-    """The line shown after a forced self-correction turn.
-
-    Two outcomes, two lines. The green check is a VERDICT — it may only
-    appear when a re-scan of the corrected answer finds the claims
-    grounded. Spending the correction budget is not the same event: a
-    correction that raised a new claim, or that only rewrote the wording
-    into hedges, is still an answer nobody checked, and printing the
-    check for it told the reader the opposite of what happened.
-    """
-    if verified:
-        return "✓ Self-verification: statements checked, answer corrected."
-    return (
-        "⚠️ Self-verification: the answer was revised, but the claims in it "
-        "are still not backed by anything looked up this turn — treat them "
-        "as unconfirmed."
-    )
+    """Moved to delfin.agent.code_citation_guard (one-line delegate)."""
+    from delfin.agent import code_citation_guard as _ccg
+    return _ccg.self_verification_note(verified)
 
 
 def _correction_verdict_note(scan, text, *, keep=None, **kwargs) -> str:
-    """Re-scan a corrected answer and return the note that matches the
-    verdict, never the fact that a retry ran.
-
-    ``keep`` filters the flags that count as "still ungrounded" (the code
-    citation scan also returns soft, non-forcing flags). A scanner that
-    raises counts as NOT verified: the check must be earned, and an
-    unreadable answer has not earned it.
-    """
-    try:
-        flags = list(scan(text, **kwargs) or ())
-    except Exception:
-        flags = ["rescan-failed"]
-    if keep is not None:
-        try:
-            flags = [f for f in flags if keep(f)]
-        except Exception:
-            pass
-    return _self_verification_note(not flags)
+    """Moved to delfin.agent.code_citation_guard (one-line delegate)."""
+    from delfin.agent import code_citation_guard as _ccg
+    return _ccg.correction_verdict_note(scan, text, keep=keep, **kwargs)
 
 
 # The stall watchdog measures PROVIDER silence. A tool call that is doing
@@ -931,7 +970,7 @@ def _finalize_plan_decision(
     repo_root: str,
     save_plan_fn=None,
 ) -> list[str]:
-    """Shared plan approve/reject logic for BOTH the 'Plan akzeptieren'
+    """Shared plan approve/reject logic for BOTH the 'Accept plan & execute'
     button (``_on_plan_accept_phase5``) and the ``/plan approve|reject``
     text fallback, so the two paths can never drift apart.
 
@@ -968,6 +1007,49 @@ def _finalize_plan_decision(
         result["approved"] = False
         result["new_mode"] = "default"
     return messages
+
+
+#: The key each provider cannot start without. A provider absent from this
+#: map needs none (the CLI backend signs in through its own OAuth).
+PROVIDER_KEY_NAMES: dict[str, str] = {
+    "kit": "KIT_TOOLBOX_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "api": "ANTHROPIC_API_KEY",
+}
+
+
+def missing_key_notice(provider: str, lookup) -> str:
+    """The first message of a session that cannot start, or "".
+
+    Input: the chosen provider and the key lookup to ask (normally
+    ``_provider_key``). Output: what to put in the chat, or "" when a key
+    is there or the provider needs none.
+
+    What a person met instead was a symptom: a 401 from the model endpoint,
+    or the model list quietly falling back to nine hard-coded entries. Both
+    are true and neither says "you have not entered a key yet", let alone
+    where to enter one -- the older hint sent them to type
+    ``os.environ[...]`` into a notebook cell, which puts a credential in
+    the notebook and in the kernel's history.
+
+    Numbered, and in the first message of the session, because the person
+    reading it has just arrived and is not going to go looking.
+    """
+    name = PROVIDER_KEY_NAMES.get(str(provider or ""))
+    if not name:
+        return ""
+    try:
+        if lookup(name):
+            return ""
+    except Exception:
+        return ""
+    return (
+        "No API key yet, so the agent cannot start.\n"
+        "   1. Open the Settings tab.\n"
+        "   2. Open the section Diagnosis & API key.\n"
+        f"   3. Pick {name}, paste your key, press Store key.\n"
+        "   4. Come back here and press New Cycle.\n"
+        "Nothing has to be installed and nothing has to be restarted.")
 
 
 def _provider_key(name: str) -> str:
@@ -2892,7 +2974,7 @@ def resolve_office_workspace(configured) -> Path | None:
 # a directory "always", approve every staged diff, schedule autonomous
 # loops, delete memories or write a user-wide memory.
 _USER_ONLY_SLASH_COMMANDS = frozenset({
-    "/sync", "/perms", "/perm-cycle",
+    "/sync", "/pair", "/perms", "/perm-cycle",
     "/grant", "/hooks", "/mcp", "/approve", "/reject",
     "/loop", "/auto", "/forget", "/profile", "/session", "/init",
     "/undo", "/undo-file", "/git",
@@ -2946,7 +3028,7 @@ def _awaiting_user_answer(state: dict) -> bool:
 # dispatcher. Kept at module scope so a test can drive the same routing
 # decision the send path makes.
 _BUILTIN_SLASH_PREFIXES = frozenset({
-    "/sync", "/help", "/guide", "/clear", "/cost", "/compact", "/stop", "/status",
+    "/sync", "/pair", "/help", "/guide", "/clear", "/cost", "/compact", "/stop", "/status",
     "/usage", "/export", "/search", "/retry", "/undo", "/git", "/provider",
     "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
     "/memories", "/memorize", "/tidy", "/remember", "/forget", "/plans", "/plan", "/hooks",
@@ -3404,7 +3486,7 @@ def _md_to_html(text: str) -> str:
 # - has_args: True means the command takes arguments — palette adds a trailing
 #   space so the user starts typing immediately
 _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
-    ("Session", "/sync", "SimpleX für diese Sitzung on|off|status", True),
+    ("Session", "/sync", "SimpleX for this session on|off|status", True),
     # Session
     ("Session", "/help", "Show this help", False),
     ("Session", "/guide", "Full user guide (models, /grant, monitoring, safety)", False),
@@ -3571,6 +3653,14 @@ def _kernel_lost_its_lifeline() -> None:
         _kept.drop_record(reason="kernel ended with its lifeline")
     except Exception:
         pass
+    # Sessions switched to Keep session go on in the agent service, which
+    # lives under no lifeline -- unless this is an emergency stop.
+    try:
+        from delfin.agent import lifeline as _lifeline
+        from delfin.dashboard import kept_agent_sessions as _kept_sessions
+        _kept_sessions.on_kernel_end(emergency=_lifeline._stopped())
+    except Exception:
+        pass
     os._exit(0)
 
 
@@ -3678,6 +3768,32 @@ _AGENT_PAGE_JS = """
     }
     if (window.__delfinAgentKeys) return;
     window.__delfinAgentKeys = true;
+
+    /* Enter sends what is in the box NOW. Clicking Send right away read
+       the kernel's copy, which lags behind ipywidgets' throttled value
+       updates: fast typing or a paste then Enter sent "g" of "gamma three"
+       (measured 11.11.). The text goes with the request instead, through
+       the session's submit channel; the box is cleared at once so a late
+       value update cannot bring the old text back. */
+    window.__delfinAgentSubmit = window.__delfinAgentSubmit || function(ta) {
+        var root = ta && ta.closest ? (ta.closest('.delfin-agent-root') || document) : document;
+        var ch = root.querySelector('.delfin-agent-submit input');
+        if (!ch) {
+            var sb = window.__delfinQ('.delfin-agent-send-row button');
+            if (sb) sb.click();
+            return;
+        }
+        window.__delfinAgentSubmitSeq = (window.__delfinAgentSubmitSeq || 0) + 1;
+        var text = ta.value;
+        var set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        set.call(ch, JSON.stringify({seq: window.__delfinAgentSubmitSeq, text: text}));
+        ch.dispatchEvent(new Event('input', {bubbles: true}));
+        if (text.trim()) {
+            var tset = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+            tset.call(ta, '');
+            ta.dispatchEvent(new Event('input', {bubbles: true}));
+        }
+    };
     document.addEventListener('keydown', function(e) {
         if (!window.__delfinAgentOwnsKey(e)) return;
         if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
@@ -3687,8 +3803,7 @@ _AGENT_PAGE_JS = """
                 if (container) {
                     e.preventDefault();
                     e.stopPropagation();
-                    var sendBtn = window.__delfinQ('.delfin-agent-send-row button');
-                    if (sendBtn) sendBtn.click();
+                    window.__delfinAgentSubmit(e.target);
                     return;
                 }
             }
@@ -3702,23 +3817,9 @@ _AGENT_PAGE_JS = """
                 }
             }
         }
-        if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
-            var a = window.__delfinQ('.delfin-agent-chat');
-            if (a) {
-                e.preventDefault();
-                var ta = window.__delfinQ('.delfin-agent-input textarea');
-                if (ta) {
-                    var ns = Object.getOwnPropertyDescriptor(
-                        window.HTMLTextAreaElement.prototype, 'value').set;
-                    ns.call(ta, '/clear');
-                    ta.dispatchEvent(new Event('input', {bubbles: true}));
-                    setTimeout(function() {
-                        var sb = window.__delfinQ('.delfin-agent-send-row button');
-                        if (sb) sb.click();
-                    }, 50);
-                }
-            }
-        }
+        /* Ctrl+L stays the browser's (focus the address bar). It used to
+           send /clear -- a fresh conversation and a lost draft, from any
+           focus; neither the TUI nor Claude Code clears a session on it. */
         if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
             var a = window.__delfinQ('.delfin-agent-chat');
             if (a) {
@@ -6709,22 +6810,22 @@ def _render_eml_summary(path) -> str | None:
             return str(raw)
 
     rows = [(label, _field(key)) for label, key in
-            (("An", "To"), ("Cc", "Cc"), ("Betreff", "Subject"))]
+            (("To", "To"), ("Cc", "Cc"), ("Subject", "Subject"))]
     rows = [(label, value) for label, value in rows if value]
     if not rows:
         return None
     attachments = sum(
         1 for part in msg.walk() if part.get_filename())
     if attachments:
-        rows.append(("Anhänge", str(attachments)))
+        rows.append(("Attachments", str(attachments)))
     body = "".join(
         f'<div style="font-size:11px;color:#374151;">'
         f'<span style="color:#6b7280;">{_html.escape(label)}:</span> '
         f'{_html.escape(value)}</div>'
         for label, value in rows)
     return (body + '<div style="font-size:11px;color:#6b7280;'
-            'margin-top:4px;">Wird nicht versendet — öffnen und selbst '
-            'senden.</div>')
+            'margin-top:4px;">Not sent — open it and send it '
+            'yourself.</div>')
 
 
 # Which write a tool performs, under every name it is served by. The
@@ -8120,7 +8221,14 @@ def create_tab(ctx):
 
     # Detect which providers are actually usable
     _available_providers: list[tuple[str, str]] = []
-    if _cli_available or _provider_key("ANTHROPIC_API_KEY"):
+    # A CLI program counts only when it runs DELFIN's command line; an
+    # older one answers "unknown option" (model_setup.cli_program_problem,
+    # from its files: building the tab starts no program).
+    _cli_problem = ""
+    if not _provider_key("ANTHROPIC_API_KEY") and _cli_available:
+        from delfin.agent.model_setup import cli_program_problem as _cli_prog_problem
+        _cli_problem = _cli_prog_problem(run_help=False)
+    if (_cli_available and not _cli_problem) or _provider_key("ANTHROPIC_API_KEY"):
         _available_providers.append(("Anthropic", "claude"))
     if _codex_cli_available or _provider_key("OPENAI_API_KEY"):
         _available_providers.append(("OpenAI", "openai"))
@@ -8158,9 +8266,18 @@ def create_tab(ctx):
                     _available_providers.append(("Ollama (local)", "ollama"))
         except Exception:
             pass
-    # Fallback: always show at least the Anthropic provider (will error with helpful message)
+    # Nothing connected: the empty chat shows how to connect a model
+    # (_empty_chat_html) and the selector keeps one entry. In the chat, not
+    # a row of its own: above the chat it pushed the input row below the
+    # fold at 1366x768.
+    _no_model_html = ""
     if not _available_providers:
+        from delfin.agent.model_setup import no_model_card_html
+        _no_model_html = no_model_card_html(_cli_problem)
         _available_providers.append(("Anthropic", "claude"))
+
+    def _empty_chat_html():
+        return _no_model_html or "<i>Start a conversation...</i>"
 
     # -- state -------------------------------------------------------------
     state = {
@@ -8380,7 +8497,8 @@ def create_tab(ctx):
                 key = _provider_key("KIT_TOOLBOX_API_KEY")
                 if not key:
                     return None
-                url = "https://ki-toolbox.scc.kit.edu/api/v1/models"
+                from delfin.agent.model_capabilities import _KIT_BASE_URL as _kit_base
+                url = _kit_base + "/models"
                 import urllib.request
                 req = urllib.request.Request(
                     url, headers={"Authorization": f"Bearer {key}"}
@@ -8565,10 +8683,8 @@ def create_tab(ctx):
                 "KIT_TOOLBOX_API_KEY", ""
             ):
                 hint = (
-                    " → KIT_TOOLBOX_API_KEY is not set in the dashboard "
-                    "process. Set it before startup or via "
-                    "`os.environ['KIT_TOOLBOX_API_KEY']='…'` in a "
-                    "notebook cell and press ↻ again."
+                    " → no KIT key yet. Settings tab → Diagnosis & API "
+                    "key → paste it → Store key. Then press ↻ here."
                 )
             elif provider == "openai" and not os.environ.get(
                 "OPENAI_API_KEY", ""
@@ -8679,7 +8795,7 @@ def create_tab(ctx):
     stop_btn = widgets.Button(
         description="Stop",
         button_style="",
-        layout=widgets.Layout(width="80px"),
+        layout=widgets.Layout(width="auto", flex="0 0 auto"),
     )
     stop_btn.disabled = True
 
@@ -9120,7 +9236,7 @@ def create_tab(ctx):
     question_hint_html = widgets.HTML(value="")
     question_buttons_box = widgets.HBox(
         [],
-        layout=widgets.Layout(gap="4px", flex_wrap="wrap"),
+        layout=widgets.Layout(gap="4px", flex_flow="row wrap"),
     )
     question_row = widgets.HBox(
         [question_hint_html, question_buttons_box],
@@ -9574,24 +9690,14 @@ def create_tab(ctx):
 
     def _settle_isolation_posture(engine):
         """The CLI's start check (isolation_posture.apply_at_start) for
-        this tab: bypass without isolation is asked in the approval panel,
-        on a thread of its own, and the session runs in default until the
-        answer. Called after an engine is built and after a live switch of
-        its mode; a mode other than bypass, or an isolated host, is left
+        this tab: bypass without isolation runs in default, with a note.
+        Called after an engine is built and after a live switch of its
+        mode; a mode other than bypass, or an isolated host, is left
         alone. Never raises."""
         try:
             from delfin.agent.isolation_posture import apply_at_start
-            broker = _ensure_kit_broker()
-
-            def _ask_in_panel(question):
-                return broker.callback(
-                    "bypassPermissions", {"isolation": "none"},
-                    "[NO ISOLATION]\n" + question)
-
-            ask = _ask_in_panel if broker is not None else None
             notes = apply_at_start(
-                engine, can_ask=ask is not None, ask=ask, background=True,
-                on_confirmed=_refresh_kit_mode_chip)
+                engine, can_ask=_ensure_kit_broker() is not None)
             for note in notes:
                 _append_system_message(note)
             if notes:
@@ -9625,7 +9731,7 @@ def create_tab(ctx):
 
     # Chat display
     chat_html = widgets.HTML(
-        value=_chat_value(_CHAT_OPEN + '<i>Start a conversation...</i></div>'),
+        value=_chat_value(_CHAT_OPEN + _empty_chat_html() + '</div>'),
         layout=widgets.Layout(min_height="200px"),
     )
     chat_html.add_class("delfin-agent-chat-host")
@@ -9900,7 +10006,34 @@ def create_tab(ctx):
     send_btn.add_class("delfin-agent-send")
     # Send alone in the row the page scripts look in: they find it as the
     # row's first button (Enter, follow-to-bottom, the grow reset).
-    send_row = widgets.HBox([send_btn])
+    # Enter's request carries the text that was in the box (the page script
+    # __delfinAgentSubmit): the kernel's copy of the box lags behind
+    # ipywidgets' throttled value updates, and Send read "g" of a quickly
+    # typed "gamma three". A hidden field per session, found from the box.
+    submit_channel = widgets.Text(value="", layout=widgets.Layout(display="none"))
+    submit_channel.add_class("delfin-agent-submit")
+    _submit_seen = {"seq": 0}
+
+    def _on_submit_channel(change):
+        try:
+            import json as _sjson
+            data = _sjson.loads(change.get("new") or "{}")
+        except (TypeError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        seq = int(data.get("seq") or 0)
+        if seq <= _submit_seen["seq"]:
+            return
+        _submit_seen["seq"] = seq
+        text = str(data.get("text") or "")
+        if not text.strip():
+            return
+        input_textarea.value = text
+        _on_send(None)
+
+    submit_channel.observe(_on_submit_channel, names="value")
+    send_row = widgets.HBox([send_btn, submit_channel])
     send_row.add_class("delfin-agent-send-row")
 
     # What could come next, under the box you type in. Drawn from the
@@ -10884,6 +11017,7 @@ def create_tab(ctx):
             state["_ask_user_args"] = dict(args or {})
             state["_ask_user_deadline"] = time.monotonic() + 300
         from html import escape as _esc
+        from delfin.agent.approval_answers import answer_hint as _answer_hint
         header_html = (f"<span style='background:#0a84ff;color:white;"
                        f"padding:2px 6px;border-radius:3px;font-size:11px;"
                        f"margin-right:6px;'>{_esc(header)}</span>"
@@ -10892,7 +11026,7 @@ def create_tab(ctx):
             f"<div style='font-size:14px;'>{header_html}"
             f"<b>{_esc(question)}</b></div>"
             "<div style='color:#888;font-size:11px;margin-top:2px;'>"
-            "Pick an option, or type your own answer in the chat.</div>"
+            + _esc(_answer_hint(len(options), multi)) + "</div>"
         )
         chosen: set[str] = set()
         button_widgets: list = []
@@ -11023,7 +11157,8 @@ def create_tab(ctx):
             ev.wait(timeout=300)
         _close_ask_user_modal(ev)
         if not result["answers"]:
-            return {"answers": [], "timed_out": True}
+            return {"answers": [], "timed_out": True,
+                    "unanswered": "no answer (timed out after 300 s)"}
         return result
 
     @_serialized_gate(state)
@@ -11061,7 +11196,13 @@ def create_tab(ctx):
         result = state.get("_ask_user_result")
         if ev is None or result is None or ev.is_set() or not text:
             return False
-        from delfin.agent.approval_answers import typed_answer
+        from delfin.agent.approval_answers import range_problem, typed_answer
+        problem = range_problem(text, state.get("_ask_user_args") or {})
+        if problem:
+            # Taken by the question (not sent to the model), refused with
+            # the real range.
+            _append_system_message(problem)
+            return True
         answer = typed_answer(text, state.get("_ask_user_args") or {})
         if not answer.get("answers"):
             return False
@@ -11555,6 +11696,19 @@ def create_tab(ctx):
     # chat by the height of the list, and closing it moved everything back.
     _palette_pop = widgets.VBox([palette_search, palette_select])
     _palette_pop.add_class("delfin-agent-palette-pop")
+    # The phone pairing panel (/pair, or the Phone button): the one-time
+    # invitation shown here, never in the chat transcript or the saved
+    # session; once the phone connected, a field for the code it got.
+    messenger_pair_html = widgets.HTML(value="", layout=widgets.Layout(display="none"))
+    messenger_code_input = widgets.Text(
+        placeholder="6-digit code from your phone",
+        layout=widgets.Layout(width="200px"))
+    messenger_code_btn = widgets.Button(description="Confirm", button_style="primary",
+                                        layout=widgets.Layout(width="auto"))
+    messenger_cancel_btn = widgets.Button(description="Cancel", layout=widgets.Layout(width="auto"))
+    messenger_code_row = widgets.HBox(
+        [messenger_code_input, messenger_code_btn, messenger_cancel_btn],
+        layout=widgets.Layout(display="none", gap="6px", margin="2px 0 4px 0"))
     # The composer is one rounded box: the message on top; below it the
     # commands and attach buttons, the chips that shape the next message
     # (permission, model, effort), the KIT quick mode, and the round Send.
@@ -11573,7 +11727,7 @@ def create_tab(ctx):
     composer_bar.add_class("delfin-agent-composer-bar")
     composer = widgets.VBox([input_textarea, composer_bar])
     composer.add_class("delfin-agent-composer")
-    _input_area = widgets.VBox([_palette_pop, composer])
+    _input_area = widgets.VBox([_palette_pop, messenger_pair_html, messenger_code_row, composer])
     _input_area.add_class("delfin-agent-input-area")
     # The terminal panel beside the chat (delfin-voila --agent-terminal
     # only): the one program the launcher was given. The page script
@@ -11614,6 +11768,34 @@ def create_tab(ctx):
         _chat_area = widgets.HBox([chat_frame, agent_term_panel])
         _chat_area.add_class("delfin-agent-chat-row")
         ctx.add_init_js(_agent_term.init_js())
+    # Connect a phone: the same as typing /pair; the code goes the same way.
+    # An icon like the report beetle beside it: with a word the row did not
+    # fit 1366 px and the beetle wrapped onto a line of its own. The tooltip
+    # is the button's title, its accessible name.
+    messenger_phone_btn = widgets.Button(
+        description="", icon="mobile",
+        tooltip=("Connect your phone (SimpleX): scan the code shown above the input, "
+                 "then type the 6-digit code your phone gets."),
+        layout=widgets.Layout(width="44px", flex="0 0 auto"))
+
+    def _messenger_send_code(_b=None):
+        code = "".join(ch for ch in str(messenger_code_input.value or "") if ch.isdigit())
+        if len(code) != 6:
+            _append_system_message("The code has 6 digits; it is in the first message on your phone.")
+            return
+        messenger_code_input.value = ""
+        _handle_slash_command("/pair " + code)
+
+    messenger_phone_btn.on_click(lambda _b: _handle_slash_command("/pair"))
+    messenger_code_btn.on_click(_messenger_send_code)
+    messenger_cancel_btn.on_click(lambda _b: _handle_slash_command("/pair cancel"))
+    # Only where a phone can be paired from: a messenger bridge runs here or
+    # one is set up (stopped for now). On a host without one (an HPC login
+    # node) the button led to 30 s of waiting and "No answer"; /pair typed
+    # there says why at once (delfin.messenger.activation.UNAVAILABLE).
+    from delfin.messenger import activation as _messenger_activation
+    if _messenger_activation.messenger_here():
+        git_group.children = tuple(git_group.children) + (messenger_phone_btn,)
     agent_content = widgets.VBox(
         [css_widget, _enter_js_output, controls_row, search_row,
          cycle_inspector_html, inspector_actions_row,
@@ -13792,7 +13974,7 @@ def create_tab(ctx):
         if not msgs:
             chat_html.value = _chat_value(
                 _CHAT_OPEN
-                + "<i>Start a conversation...</i>"
+                + _empty_chat_html()
                 + _SCROLL_RESET_TAG + "</div>"
             )
             _html_cache["prefix"] = ""
@@ -14566,17 +14748,25 @@ def create_tab(ctx):
         engine = _ensure_engine()
         sid = str(getattr(engine, "session_id", "") or state.get("active_session_id") or "")
         if not sid:
-            return "Zuerst eine Sitzung starten, dann /sync eingeben."
+            return "Start a session first, then type /sync."
         adapters = state.setdefault("_messenger_adapters", {})
-        if args.strip().lower() in {"off", "status"}:
+        action, name = activation.parse_sync(args)
+        if action in {"off", "status", "usage"}:
             return activation.configure(sid, args)
-        if args.strip().lower() not in {"", "on"}:
-            return activation.configure(sid, args)
+        if name:
+            # /sync name NAME: the session's title too -- what the save
+            # writes as title and the messenger adapter answers as the name.
+            state.setdefault("_messenger_titles", {})[sid] = name
+            try:
+                _auto_save_session()
+            except Exception:
+                pass
+        # "", "on" and "/sync NAME" all switch on, with the live adapter.
         if sid not in adapters:
             def answer_detected_question(text):
                 if input_textarea.value.strip() or not state.get("_pending_question"):
                     return False
-                input_textarea.value = "Antwort auf deine Rückfrage: " + text
+                input_textarea.value = "Answer to your question: " + text
                 _on_send(None)
                 return not state.get("_pending_question")
             def send(text):
@@ -14600,7 +14790,7 @@ def create_tab(ctx):
         cmd = text.lower().strip()
         if cmd == "/sync" or cmd.startswith("/sync "):
             if state.get("_on_its_own"):
-                _append_system_message("SimpleX kann nur von dir in dieser Sitzung aktiviert werden.")
+                _append_system_message("Only you can turn SimpleX on for this session.")
             else:
                 _append_system_message(_messenger_command(text[5:].strip()))
             return True
@@ -14667,7 +14857,6 @@ def create_tab(ctx):
                     "  Enter            \u2014 Send message\n"
                     "  Shift+Enter      \u2014 New line\n"
                     "  Escape           \u2014 Stop generation\n"
-                    "  Ctrl+L           \u2014 Clear chat\n"
                     "  Ctrl+K           \u2014 Toggle search\n"
                     "  Shift+Tab        \u2014 Cycle permission mode")
             _append_system_message(_help_text)
@@ -15884,7 +16073,7 @@ def create_tab(ctx):
                         "Switch to /mode plan and ask the agent to draft a plan."
                     )
                     return True
-                # Same shared logic as the 'Plan akzeptieren' button so the
+                # Same shared logic as the 'Accept plan & execute' button so the
                 # two paths are functionally identical (persist + perm flip).
                 for _m in _finalize_plan_decision(
                     state,
@@ -16303,6 +16492,36 @@ def create_tab(ctx):
                 _append_system_message("\n".join(lines))
             return True
 
+        if cmd == "/pair" or cmd.startswith("/pair "):
+            # Phone pairing (delfin.messenger.pairing). The invitation and
+            # the code step go to the pairing panel above the input (not the
+            # chat, not the saved session); the rest to the chat.
+            if state.get("_on_its_own"):
+                _append_system_message("Only you pair a phone, in a session of your own.")
+                return True
+            from delfin.messenger import pairing as _pairing
+            from delfin.messenger.dashboard import PairPanel as _PairPanel
+            _panel = state.get("_messenger_pair_panel")
+            if _panel is None:
+                def _render(value):
+                    messenger_pair_html.value = value
+                    messenger_pair_html.layout.display = "" if value else "none"
+
+                def _stage(stage):
+                    # The code field only while the gateway waits for it.
+                    messenger_code_row.layout.display = "" if stage == "code" else "none"
+                    if stage != "code":
+                        messenger_code_input.value = ""
+                _panel = state["_messenger_pair_panel"] = _PairPanel(
+                    render=_render, say=_append_system_message, on_stage=_stage)
+            if text[5:].strip().lower() == "cancel":
+                _panel.clear()
+            _sid = str(getattr(state.get("engine"), "session_id", "")
+                       or state.get("active_session_id") or "")
+            _append_system_message(_pairing.session_command(
+                text[5:].strip(), requester="dashboard:" + _sid if _sid else "",
+                show=_panel.show))
+            return True
         if cmd == "/plans" or cmd.startswith("/plans "):
             from delfin.agent.memory_store import (
                 list_plans, get_plan, delete_plan,
@@ -21021,7 +21240,14 @@ def create_tab(ctx):
         if _shell_text.startswith(_SHELL_PREFIX) and len(_shell_text) > 1:
             _cmd = _shell_text[len(_SHELL_PREFIX):].strip()
             input_textarea.value = ""
-            _eng = state.get("engine")
+            # The gate lives on the engine, and on this surface the engine
+            # is built by the first message (`_ensure_engine`, called below
+            # for an ordinary one). Reading state["engine"] here meant a `!`
+            # typed before any message had been sent found None and was
+            # answered "! is not available on this backend", which names the
+            # wrong cause: the backend carried the gate, the session had
+            # simply not started. Measured on the agent tab 2026-11-19.
+            _eng = shell_escape_engine(state.get("engine"), _ensure_engine)
 
             # The offer was the previous answer's, as for any message; left
             # standing, the command just sent would wait to be sent again.
@@ -21038,33 +21264,15 @@ def create_tab(ctx):
             _live_system_message(f"! {_cmd}\n  running …", _key)
 
             def _run_escape():
-                from delfin.agent.repl import shell_escape_result as _escape
-                run = _escape(_eng, _cmd)
                 try:
-                    _kp = getattr(_eng, "kit_permissions", None)
-                    _dir = (getattr(_kp, "agent_workspace_dir", None)
-                            or Path(_agent_workspace_path()) / "agent_workspace")
-                    run = _shell_run_for_chat(run, Path(_dir) / "shell_output")
+                    _fallback = Path(_agent_workspace_path()) / "agent_workspace"
                 except Exception:
-                    run = _shell_run_for_chat(run, Path.cwd() / "shell_output")
-                # Plain text for what reads content (search, export, a
-                # mode handoff); the chat renders the fields.
-                plain = [f"! {_cmd}"]
-                if run.get("refused"):
-                    plain.append(f"  refused: {run['refused']}")
-                if run.get("error"):
-                    plain.append(f"  [error] {run['error']}")
-                body = "\n".join(s for s in (run.get("stdout"),
-                                             run.get("stderr")) if s)
-                plain += ["  " + ln for ln in body.splitlines()[:200]]
-                if run.get("exit_code") not in (0, None):
-                    plain.append(f"  (exit {run['exit_code']})")
+                    _fallback = Path.cwd()
+                entry = shell_escape_entry(_eng, _cmd, _fallback)
                 msgs = state["chat_messages"]
                 live = state.setdefault("_live_messages", {})
                 index = _live_message_slot(msgs, live, _key)
                 live.pop(_key, None)
-                entry = {"role": "system", "content": "\n".join(plain),
-                         "role_label": "", "shell": run}
                 if index is None:
                     msgs.append(entry)
                 else:
@@ -23046,83 +23254,37 @@ def create_tab(ctx):
                             )
                         except Exception:
                             _vflags = []
-                        # Code-claim citation check: cited paths that
-                        # don't exist force a
-                        # correction turn via the same machinery; existing-
-                        # but-unread paths only soft-warn (injected context
-                        # legitimately surfaces paths).
-                        _cflags = []
+                        # Cited-but-unread paths: a SOFT hint, kept
+                        # here. The hard case (a path that does not
+                        # exist) moved into the engine's grounding
+                        # guard, so every surface forces the one
+                        # correction turn; this hint forces nothing and
+                        # would otherwise have been lost with that
+                        # block. It stays quiet unless nothing else is
+                        # going on.
                         try:
-                            _cflags = _vg.scan_for_ungrounded_code_claims(
-                                "".join(chunks),
-                                repo_root=getattr(engine, "repo_dir", None),
-                                observed_files=getattr(
-                                    engine, "_last_observed_files", None),
-                                named_in=_session_user_text(),
-                            )
-                        except Exception:
-                            _cflags = []
-                        _c_hard = [c for c in _cflags
-                                   if c.kind == "nonexistent"]
-                        _c_soft = [c for c in _cflags
-                                   if c.kind != "nonexistent"]
-                        # One compact line instead of per-flag chat spam;
-                        # soft (unread-path) hints stay quiet unless there
-                        # is nothing else going on.
-                        if _c_soft and not _c_hard:
-                            _refs = ", ".join(
-                                f.path for f in _c_soft[:3])
-                            _more = (f" (+{len(_c_soft) - 3})"
-                                     if len(_c_soft) > 3 else "")
-                            _append_system_message(
-                                f"🔎 Note: cited but not read this turn: "
-                                f"{_refs}{_more}")
-                        if _c_hard and not _vflags:
-                            _refs = ", ".join(
-                                f.path for f in _c_hard[:3])
-                            _append_system_message(
-                                f"🔎 Automatic check: {len(_c_hard)} cited "
-                                f"path(s) not found as written ({_refs}) — "
-                                f"asking the agent to verify them …")
-                            _cfeedback = (
-                                "[Verify] " + _vg.code_claim_feedback(
-                                    _c_hard,
-                                    observed=getattr(
-                                        engine, "_last_observed_files", None))
-                            )
-                            engine.messages.append(
-                                {"role": "user", "content": _cfeedback, "_harness": True}
-                            )
-                            chunks.clear()
-                            thinking_chunks.clear()
-                            engine.stream_response(
-                                user_message=_cfeedback,
-                                on_token=_on_token,
-                                on_tool_use=_on_tool_use,
-                                on_tool_result=_on_tool_result,
-                                on_permission_denied=_on_permission_denied,
-                                on_thinking=_on_thinking,
-                                thinking_budget=_budget,
-                                memory_context=_memory,
-                            )
-                            _flush_held_previews()   # as after the first call
-                            if chunks:
-                                _update_last_assistant(
-                                    "".join(chunks), role_label,
-                                    finalize=True,
-                                )
-                                _append_system_message(
-                                    _correction_verdict_note(
-                                        _vg.scan_for_ungrounded_code_claims,
+                            _c_soft = [
+                                c for c in (
+                                    _vg.scan_for_ungrounded_code_claims(
                                         "".join(chunks),
-                                        keep=lambda f: f.kind == "nonexistent",
                                         repo_root=getattr(
                                             engine, "repo_dir", None),
                                         observed_files=getattr(
                                             engine, "_last_observed_files",
                                             None),
                                         named_in=_session_user_text(),
-                                    ))
+                                    ) or ())
+                                if c.kind != "nonexistent"]
+                        except Exception:
+                            _c_soft = []
+                        if _c_soft and not _vflags:
+                            _refs = ", ".join(
+                                f.path for f in _c_soft[:3])
+                            _more = (f" (+{len(_c_soft) - 3})"
+                                     if len(_c_soft) > 3 else "")
+                            _append_system_message(
+                                f"\U0001F50E Note: cited but not read this "
+                                f"turn: {_refs}{_more}")
                         if _vflags:
                             _kws = ", ".join(
                                 getattr(f, "keyword", str(f))
@@ -23185,7 +23347,7 @@ def create_tab(ctx):
                             _append_system_message(
                                 f"🔎 Verifying {len(_qflags)} "
                                 f"unsourced numeric claim(s) …")
-                        if _qflags and not _vflags and not _c_hard:
+                        if _qflags and not _vflags:
                             _qgrounded = any(
                                 re.search(r"(?i)search|read|grep|fetch|docs",
                                           _t or "")
@@ -25086,6 +25248,32 @@ def create_tab(ctx):
 (function() {
     if (window.__delfinAgentKeys) return;
     window.__delfinAgentKeys = true;
+
+    /* Enter sends what is in the box NOW. Clicking Send right away read
+       the kernel's copy, which lags behind ipywidgets' throttled value
+       updates: fast typing or a paste then Enter sent "g" of "gamma three"
+       (measured 11.11.). The text goes with the request instead, through
+       the session's submit channel; the box is cleared at once so a late
+       value update cannot bring the old text back. */
+    window.__delfinAgentSubmit = window.__delfinAgentSubmit || function(ta) {
+        var root = ta && ta.closest ? (ta.closest('.delfin-agent-root') || document) : document;
+        var ch = root.querySelector('.delfin-agent-submit input');
+        if (!ch) {
+            var sb = window.__delfinQ('.delfin-agent-send-row button');
+            if (sb) sb.click();
+            return;
+        }
+        window.__delfinAgentSubmitSeq = (window.__delfinAgentSubmitSeq || 0) + 1;
+        var text = ta.value;
+        var set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        set.call(ch, JSON.stringify({seq: window.__delfinAgentSubmitSeq, text: text}));
+        ch.dispatchEvent(new Event('input', {bubbles: true}));
+        if (text.trim()) {
+            var tset = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+            tset.call(ta, '');
+            ta.dispatchEvent(new Event('input', {bubbles: true}));
+        }
+    };
     document.addEventListener('keydown', function(e) {
         if (!window.__delfinAgentOwnsKey(e)) return;
         /* Enter = Approve (if approval pending) or Send */
@@ -25104,8 +25292,7 @@ def create_tab(ctx):
                 if (container) {
                     e.preventDefault();
                     e.stopPropagation();
-                    var sendBtn = window.__delfinQ('.delfin-agent-send-row button');
-                    if (sendBtn) sendBtn.click();
+                    window.__delfinAgentSubmit(e.target);
                     return;
                 }
             }
@@ -25132,26 +25319,7 @@ def create_tab(ctx):
                 }
             }
         }
-        /* Ctrl+L = Clear chat */
-        if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
-            /* Only if focus is in the agent area */
-            var agentArea = window.__delfinQ('.delfin-agent-chat');
-            if (agentArea) {
-                e.preventDefault();
-                /* Trigger /clear by setting textarea and clicking send */
-                var ta = window.__delfinQ('.delfin-agent-input textarea');
-                if (ta) {
-                    var nativeSet = Object.getOwnPropertyDescriptor(
-                        window.HTMLTextAreaElement.prototype, 'value').set;
-                    nativeSet.call(ta, '/clear');
-                    ta.dispatchEvent(new Event('input', {bubbles: true}));
-                    setTimeout(function() {
-                        var sendBtn = window.__delfinQ('.delfin-agent-send-row button');
-                        if (sendBtn) sendBtn.click();
-                    }, 50);
-                }
-            }
-        }
+        /* Ctrl+L stays the browser's (see the other key handler). */
         /* Ctrl+K = Toggle search */
         if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
             var agentArea = window.__delfinQ('.delfin-agent-chat');
@@ -25266,6 +25434,16 @@ def create_tab(ctx):
     # Note: claude has no /models endpoint — its list is intentionally
     # hard-coded (CLI manages the actual model selection), so we don't
     # call that a "failure".
+    # Before anything about models: the agent does not run at all without a
+    # key, and what a person saw instead was a 401 from the endpoint or a
+    # models list quietly falling back. Both describe a symptom.
+    try:
+        _notice = missing_key_notice(provider_dropdown.value, _provider_key)
+        if _notice:
+            _append_system_message(_notice)
+    except Exception:
+        pass
+
     _LIVE_FETCH_PROVIDERS = {"kit", "openai"}
     try:
         _mst = state.get("_models_init_status") or {}
@@ -25286,10 +25464,8 @@ def create_tab(ctx):
                     else "OPENAI_API_KEY"
                 )
                 _hint = (
-                    f" — {_key_name} is not set in the dashboard "
-                    f"process. Set it before startup or via a notebook "
-                    f"cell (`import os; "
-                    f"os.environ['{_key_name}']='…'`) and press ↻."
+                    " — no key yet. Settings tab → Diagnosis & API key "
+                    "→ paste it → Store key. Then press ↻ here."
                 )
             else:
                 _hint = (
@@ -25523,6 +25699,79 @@ def create_tab(ctx):
         except Exception:
             pass
 
+    # -- hosted in the agent service (delfin/dashboard/hosted_sessions.py) --
+    # Another dashboard, the terminal and the phone reach this session
+    # through the agent service; what they send runs through the tab's own
+    # callbacks, as if done here. Nothing below changes how the tab works.
+    _host_send_lock = threading.Lock()
+
+    def _host_send(text: str) -> bool:
+        """A line from another window, run as if typed here -- slash
+        commands, queueing and steering included. What the person has in
+        the box stays there."""
+        with _host_send_lock:
+            draft = input_textarea.value
+            input_textarea.value = text
+            try:
+                _on_send(None)
+            finally:
+                if draft.strip() and not input_textarea.value.strip():
+                    input_textarea.value = draft
+        return True
+
+    def _host_answer_detected(text: str) -> bool:
+        if not state.get("_pending_question"):
+            return False
+        _host_send("Answer to your question: " + text)
+        return not state.get("_pending_question")
+
+    _HOST_APPROVAL = {"plan": "plan", "ask_all": "default", "repo_free": "acceptEdits",
+                      "all_free": "bypassPermissions"}
+
+    def _host_set_permission(profile: str, confirmed: bool) -> str:
+        """The permission selector, moved from another window. Bypass needs
+        the window's own confirmation (its second step), as here."""
+        if profile not in set(_dropdown_values(perm_dropdown.options)):
+            return str(perm_dropdown.value)
+        if profile == "all_free" and not confirmed:
+            return str(perm_dropdown.value)
+        if perm_dropdown.value != profile:
+            perm_dropdown.value = profile
+        return str(perm_dropdown.value)
+
+    def _host_choices(what: str) -> dict:
+        dd = {"model": model_dropdown, "effort": effort_dropdown,
+              "mode": mode_dropdown}.get(str(what or ""))
+        if dd is None:
+            return {"current": "", "choices": []}
+        return {"current": str(dd.value or ""),
+                "choices": [{"value": v} for v in _dropdown_values(dd.options)]}
+
+    def _host_info() -> dict:
+        profile = str(state.get("_perm_profile") or perm_dropdown.value or "ask_all")
+        return {"provider": str(provider_dropdown.value or ""),
+                "model": str(model_dropdown.value or ""),
+                "effort": str(effort_dropdown.value or ""),
+                "mode": str(mode_dropdown.value or ""),
+                "approval": _HOST_APPROVAL.get(profile, "default")}
+
+    def _host_status() -> dict:
+        engine = state.get("engine")
+        try:
+            return dict(engine.get_status()) if engine is not None else {}
+        except Exception:
+            return {}
+
+    def _host_adapter() -> dict:
+        return {"state": state, "send": _host_send, "stop": lambda: _on_stop(None),
+                "answer": _answer_ask_from_chat,
+                "plan": lambda yes: _handle_slash_command(
+                    "/plan approve" if yes else "/plan reject"),
+                "approval": lambda yes: _on_approve(None) if yes else _on_deny(None),
+                "question": _host_answer_detected, "set_permission": _host_set_permission,
+                "choices": _host_choices, "info": _host_info, "chat_html": chat_html,
+                "status": _host_status, "input": input_textarea}
+
     # The kernel ending is the session ending, and nothing it started may
     # outlive it. The server ends an unkept kernel with its last window and
     # a kept one once it is no longer kept; this is what makes that the end
@@ -25535,6 +25784,10 @@ def create_tab(ctx):
 
     return tab_widget, {
         "state": state,
+        # The session list puts its Keep session switch into this row,
+        # right after the Stop button.
+        "control_row": _controls_hbox,
+        "stop_button": stop_btn,
         "shutdown": _shutdown_tab,
         "workspace": _agent_workspace_path,
         "load_session": _load_saved_session,
@@ -25560,6 +25813,9 @@ def create_tab(ctx):
             state, tool_name, payload),
         "stop_delegate_card": lambda sa_id: _delegate_stop(
             state, sa_id, _agent_workspace_path()),
+        # The tab's own callbacks for a session hosted in the agent
+        # service (hosted_sessions.TabHost).
+        "host_adapter": _host_adapter,
     }
 
 

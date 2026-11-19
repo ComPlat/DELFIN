@@ -1,5 +1,5 @@
 """Device drivers. Implemented: simulator, Shelly Gen2 RPC, Tasmota, MQTT,
-OPC UA."""
+OPC UA, GPIO (libgpiod)."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ REGISTRY: dict = {}
 
 
 def _register_builtin() -> None:
+    from .gpio import GpioDriver
     from .mqtt import MqttDriver
     from .opcua_lads import OpcUaLadsDriver
     from .simulator import SimulatorDriver
@@ -20,6 +21,7 @@ def _register_builtin() -> None:
     REGISTRY.setdefault("tasmota", TasmotaDriver)
     REGISTRY.setdefault("mqtt", MqttDriver)
     REGISTRY.setdefault("opcua_lads", OpcUaLadsDriver)
+    REGISTRY.setdefault("gpiod", GpioDriver)
 
 
 def make(name: str) -> Driver:
@@ -41,7 +43,7 @@ DEVICE_WATCHDOG_SUPPORT = {
     "home_assistant": "no: HA automations run on the HA host, not on the "
                       "device (planned)",
     "gpiod": "no: a line keeps its value while the chip is powered; use a "
-             "hardware watchdog relay (planned)",
+             "hardware watchdog relay",
     "sila2": "lock timeout yes; safe state on timeout depends on the "
              "server (planned)",
     "opcua_lads": "yes when the FunctionalUnit has a WatchdogTimeout variable "

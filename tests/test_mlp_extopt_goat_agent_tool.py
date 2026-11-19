@@ -20,23 +20,19 @@ WATER_XYZ = "3\nwater\nO 0.0 0.0 0.0\nH 0.757 0.586 0.0\nH -0.757 0.586 0.0\n"
 
 
 @pytest.fixture()
-def fake_orca_mlips(monkeypatch):
-    from delfin.mlp_tools import orca_mlips as om
-
+def fake_orca_mlips(monkeypatch, tmp_path):
     class _Dist:
         version = "0.0-test"
+        entry_points = [SimpleNamespace(name="orca-mlips-uma", group="console_scripts",
+                                        value="orca_mlips_plugins.uma_orca:main")]
 
-    real_find_spec, real_dist, real_eps = om._find_spec, im.distribution, im.entry_points
-    eps = [SimpleNamespace(name="orca-mlips-uma", value="orca_mlips.uma:main")]
-    # Only orca-mlips' own metadata is faked; every other package (ase's
-    # IO plugins read entry points too) sees the real metadata.
-    monkeypatch.setattr(om, "_find_spec",
-                        lambda name: object() if name == "orca_mlips" else real_find_spec(name))
+    real_dist = im.distribution
+    # Only orca-mlips' own metadata is faked (in this interpreter; no
+    # environment of its own); every other package sees the real metadata.
+    monkeypatch.setenv("DELFIN_AI_TOOLS_ROOT", str(tmp_path / "ai_tools"))
+    monkeypatch.delenv("DELFIN_ORCA_MLIPS_PYTHON", raising=False)
     monkeypatch.setattr(im, "distribution",
                         lambda name: _Dist() if name == "orca-mlips" else real_dist(name))
-    monkeypatch.setattr(im, "entry_points",
-                        lambda **kw: eps if kw.get("group") == "console_scripts"
-                        else real_eps(**kw))
 
 
 def test_goat_plan_writes_input_script_and_names_outputs(tmp_path, fake_orca_mlips):

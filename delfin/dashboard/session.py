@@ -218,8 +218,10 @@ _heartbeat: "threading.Event | None" = None
 
 
 def _beat(name: str, stop: "threading.Event") -> None:
+    # Refreshes, never re-creates: a record dropped from elsewhere -- End in
+    # another window's Dashboards menu -- stays dropped, and the beat stops.
     while not stop.wait(HEARTBEAT_S):
-        if not write_record(name):
+        if not refresh_record(name):
             return
 
 
@@ -299,6 +301,10 @@ SESSION_QUERY_KEY = "session"
 #: address -- that one renders and EXECUTES the full notebook, which
 #: against a live kernel would run all nineteen tabs a second time.
 RESUME_PATH_ENV = "DELFIN_RESUME_URL_PATH"
+
+#: Set by the launcher: the dashboard's own render path, which the header's
+#: "New dashboard" opens (dashboards_menu).
+DASHBOARD_PATH_ENV = "DELFIN_DASHBOARD_URL_PATH"
 
 
 def _request_url() -> str:
@@ -387,7 +393,7 @@ def _strip_html(armed: bool, name: str, url: str) -> str:
         return (
             '<div class="delfin-session-strip">'
             '<span class="delfin-session-dot" '
-            'title="Session ends when the window closes"></span></div>'
+            'title="This dashboard ends when the browser closes"></span></div>'
         )
     if url:
         # The title sits on the dot, which is what a pointer hovers; the
@@ -413,7 +419,7 @@ def _failed_strip_html(reason: str) -> str:
     return (
         '<div class="delfin-session-strip">'
         f'<span class="delfin-session-dot failed" title="Could not keep the '
-        f'session: {safe}"></span></div>'
+        f'dashboard: {safe}"></span></div>'
     )
 
 
@@ -442,6 +448,30 @@ def _keep_by_default() -> bool:
         "1", "true", "yes", "on")
 
 
+def keep_dashboard_tooltip() -> str:
+    """What the Keep dashboard switch does, and what holds a dashboard
+    that is not kept -- the numbers the server uses (resume_server)."""
+    try:
+        from delfin.dashboard import resume_server as _rs
+        grace, dropped = _rs.grace_seconds(), _rs.dropped_seconds()
+    except Exception:
+        grace, dropped = 90.0, 900.0
+
+    def _span(seconds: float) -> str:
+        return (f"{seconds / 60:.0f} min" if seconds >= 120 else f"{seconds:.0f} s")
+
+    return (
+        "On: this dashboard keeps running when the browser closes -- its "
+        "tabs, forms, calculations and agent sessions stay; the dot beside "
+        "the switch links back. Scroll positions do not come back. "
+        f"Off: closing the browser ends it after {_span(grace)} (time for a "
+        "reload), and every agent session in it with Keep session off ends "
+        "too, a running turn included. A lost connection (the page may "
+        f"still be open) gets {_span(dropped)}, and a running turn finishes "
+        "first. Sessions with Keep session on (agent tab) go on in the "
+        "agent service either way.")
+
+
 def build_status_strip():
     """The control that arms the opt-in, and shows it while it is armed.
 
@@ -465,14 +495,14 @@ def build_status_strip():
     _armed = _keep_by_default()
     toggle = widgets.ToggleButton(
         value=_armed,
-        description="Keep session",
-        tooltip=(
-            "Keep the session running after the browser closes. The agent "
-            "keeps working, forms and open calculations stay. Scroll "
-            "positions do not come back."
-        ),
+        # "Keep dashboard", not "Keep session": it keeps this dashboard's
+        # kernel -- every tab, form and session in it. One agent session is
+        # kept with the switch in the agent tab's control row
+        # (kept_agent_sessions); one word for both read as one switch.
+        description="Keep dashboard",
+        tooltip=keep_dashboard_tooltip(),
         # Drawn as a switch by the header's style (header_ui): its state
-        # is the knob's position, and the label stays "Keep session".
+        # is the knob's position, and the label stays "Keep dashboard".
         # flex 0 0 auto: the header is a flex row, and a control that may
         # shrink is one that renders twenty pixels wide the moment the
         # row is full -- seen in a browser, clickable and unreadable.
@@ -580,7 +610,7 @@ def announce(name: str = "") -> str:
     line = (
         f"[delfin] Session \"{who}\" is kept.\n"
         f"         Return:  {url or '(address unknown)'}\n"
-        f"         End:     in the dashboard, or Ctrl+C here"
+        f"         End:     in the dashboard (Dashboards, End), or delfin-voila stop"
     )
     # Only a kernel has to reach past its own captured stdout; anywhere
     # else -- a test, a CLI -- the parent is not the server, and print
@@ -727,6 +757,44 @@ def write_record(name: str = "", *, root: str = "", kid: str = "") -> str:
 
 
 _last_write_error = ""
+
+
+def refresh_record(name: str = "", *, root: str = "") -> bool:
+    """Renew the sign of life of an existing record; never create one.
+
+    Returns False when there is no record (it was dropped: disarmed, or
+    ended from another window) or it cannot be rewritten. Everything but
+    ``updated_at`` stays as written, ``started_at`` included.
+    """
+    import json
+    import tempfile
+
+    who = name or session_name()
+    if not who:
+        return False
+    directory = root or RECORD_DIR
+    path = record_path(who, root=directory)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    payload["updated_at"] = time.time()
+    try:
+        fd, tmp = tempfile.mkstemp(prefix=f".{who}.", suffix=".tmp",
+                                   dir=directory)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=1)
+        if not os.path.exists(path):
+            # Dropped while this was being written: leave it dropped.
+            os.unlink(tmp)
+            return False
+        os.replace(tmp, path)
+    except OSError:
+        return False
+    return True
 
 
 def last_write_error() -> str:

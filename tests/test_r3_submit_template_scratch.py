@@ -72,3 +72,36 @@ def test_turbomole_template_documents_no_python_then_keeps_scratch_local():
     assert "exec \"$TM_COMMAND\"" in t
     # Per-item scratch still stays off the shared FS: node-local $TMPDIR.
     assert "RUN_DIR=\"${TMPDIR:-$JOB_DIR}/turbomole_" in t
+
+
+def _tmpdir_after_the_hints(env: dict) -> str:
+    """Run the template's scratch-hint block, as the job does, in ``env``."""
+    import subprocess
+    t = _template("submit_delfin.sh")
+    start = t.index("# Normalise SLURM scratch hints early")
+    end = t.index("STAGE_BASE=", start)
+    script = t[start:end] + 'printf "%s" "${TMPDIR:-}"\n'
+    got = subprocess.run(["bash", "-c", script], env={"PATH": "/usr/bin:/bin", **env},
+                         capture_output=True, text=True, timeout=30)
+    assert got.returncode == 0, got.stderr
+    return got.stdout
+
+
+def test_a_remote_submit_takes_the_nodes_tmp_before_network_scratch(tmp_path):
+    """delfin.remote.jobs exports no login-node TMPDIR and names /tmp as the
+    fallback: the node's TMPDIR and SLURM_TMPDIR still come first, a TMPDIR
+    that does not exist here is passed over, and nothing changes for a job
+    that names no fallback (the dashboard's)."""
+    node = tmp_path / "node-tmp"
+    node.mkdir()
+    fallback = tmp_path / "fallback"
+    fallback.mkdir()
+    assert _tmpdir_after_the_hints({"DELFIN_TMP_FALLBACK": str(fallback)}) == str(fallback)
+    assert _tmpdir_after_the_hints({"TMPDIR": str(tmp_path / "login03"),
+                                    "DELFIN_TMP_FALLBACK": str(fallback)}) == str(fallback)
+    assert _tmpdir_after_the_hints({"TMPDIR": str(node),
+                                    "DELFIN_TMP_FALLBACK": str(fallback)}) == str(node)
+    assert _tmpdir_after_the_hints({"SLURM_TMPDIR": str(node),
+                                    "DELFIN_TMP_FALLBACK": str(fallback)}) == str(node)
+    assert _tmpdir_after_the_hints({}) == ""
+    assert _tmpdir_after_the_hints({"DELFIN_TMP_FALLBACK": str(tmp_path / "none")}) == ""

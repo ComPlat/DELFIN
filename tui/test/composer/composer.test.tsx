@@ -58,9 +58,11 @@ async function mount(options: { history?: Entry[]; turn?: boolean } = {}) {
   }
   const history = new History(null, options.history ?? [])
   let quits = 0
+  const shown: string[] = []                       // the window's own lines (/keys)
   await render(() => (
     <App renderer={setup.renderer} store={store} keymap={new Keymap()} theme={() => DARK}
-         client={client} history={history} onQuit={() => quits++} onRedraw={() => {}} />
+         client={client} history={history} onQuit={() => quits++} onRedraw={() => {}}
+         onLines={(title: string) => { shown.push(title) }} />
   ), setup.renderer)
   await setup.renderOnce()
   const settle = async () => {
@@ -77,7 +79,7 @@ async function mount(options: { history?: Entry[]; turn?: boolean } = {}) {
   }
   const prompts = () => calls.filter((c) => c.method === "session.prompt").map((c) => c.params)
   const frame = () => setup.captureCharFrame()
-  return { setup, keys: setup.mockInput, calls, prompts, history, frame, settle, escape, quits: () => quits }
+  return { setup, keys: setup.mockInput, calls, prompts, history, frame, settle, escape, shown, quits: () => quits }
 }
 
 describe("the composer", () => {
@@ -223,7 +225,7 @@ describe("completion in the composer", () => {
     expect(w.prompts()[0]!.text).toBe("look at @delfin/xtb.py")
   })
 
-  test("esc closes the list; enter then sends what is typed", async () => {
+  test("esc closes the list; enter then acts on what is typed", async () => {
     const w = await mount()
     await w.keys.typeText("/s")
     await w.settle()
@@ -231,7 +233,37 @@ describe("completion in the composer", () => {
     expect(w.frame()).not.toContain("Model, mode, tokens, cost")
     w.keys.pressEnter()
     await w.settle()
-    expect(w.prompts()[0]!.text).toBe("/s")
+    // Not the highlighted /status: the typed "/s", which names no command,
+    // so it is answered in the window and nothing is sent (unknown.test.tsx).
+    expect(w.prompts()).toEqual([])
+    expect(w.frame()).toContain("Unknown command: /s")
+  })
+})
+
+describe("enter on a command typed out in full", () => {
+  test("runs it, even when the list on screen is still the one for fewer letters", async () => {
+    const w = await mount()
+    await w.keys.typeText("/s")
+    await w.settle()                               // the list for "/s": /swarm first
+    await w.keys.typeText("tatus")                 // a quick burst, then at once:
+    w.keys.pressEnter()
+    await w.settle()
+    expect(w.prompts()).toEqual([{ sessionId: "s1", text: "/status" }])
+    expect(w.frame()).not.toContain("❯ /status")   // sent, not left in the prompt
+  })
+})
+
+describe("? on an empty prompt", () => {
+  test("shows the keys, as in Claude Code; after text it is a question mark", async () => {
+    const w = await mount()
+    await w.keys.typeText("?")
+    await w.settle()
+    expect(w.shown).toEqual(["keys in this window"])
+    expect(w.prompts()).toEqual([])
+    await w.keys.typeText("why?")
+    await w.settle()
+    expect(w.frame()).toContain("❯ why?")
+    expect(w.shown).toHaveLength(1)
   })
 })
 

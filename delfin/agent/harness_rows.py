@@ -86,6 +86,38 @@ def is_harness_row(msg: Any) -> bool:
             or isinstance(msg.get("content"), HarnessText))
 
 
+class TypedText(str):
+    """A user row's text as sent, the turn's steering tail appended
+    (``engine._with_turn_tail``); ``typed`` is the part before the tail,
+    what the user wrote. The tail (context status, open tasks, the CPU
+    note) is harness text in the user's row, and a reader of the user's
+    words must not take "this session may use" for the user asking about
+    a session. ``str`` methods return plain ``str``, as for HarnessText."""
+    typed: str = ""
+
+
+class SteeringBlock(dict):
+    """The text block a list content gets for the steering tail: a plain
+    ``dict`` on the wire, left out by :func:`typed_part`."""
+
+
+def typed_text(text: str, typed: str) -> TypedText:
+    out = TypedText(text)
+    out.typed = str.__str__(typed)
+    return out
+
+
+def typed_part(content: Any) -> Any:
+    """``content`` without the steering tail: ``typed`` of a TypedText, a
+    list without its SteeringBlock, anything else as it is."""
+    if isinstance(content, TypedText):
+        return content.typed
+    if isinstance(content, list) and any(
+            isinstance(b, SteeringBlock) for b in content):
+        return [b for b in content if not isinstance(b, SteeringBlock)]
+    return content
+
+
 def history_mark(row: dict, source: Any) -> dict:
     """``row`` with the history key set when ``source`` is a marked row;
     for a projection that copies the keys it knows."""

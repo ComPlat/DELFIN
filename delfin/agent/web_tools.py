@@ -24,10 +24,12 @@ install (no extra ``requests`` / ``beautifulsoup4`` dependency).
 
 from __future__ import annotations
 
+import contextvars
 import html as _html
 import http.client
 import ipaddress
 import json
+import math
 import os
 import re
 import socket
@@ -142,6 +144,114 @@ def outbound_secret_reason(text: str) -> Optional[str]:
     return None
 
 
+#: Above this many characters a URL's query is data, not a lookup, for a
+#: request nobody can be asked about (``url_payload_reason``).
+_MAX_UNATTENDED_QUERY_CHARS = 256
+_TOKEN_RE = re.compile(r"[A-Za-z0-9+/=_\-]{16,}")
+_UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                      r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+
+def _entropy(text: str) -> float:
+    counts: dict = {}
+    for ch in text:
+        counts[ch] = counts.get(ch, 0) + 1
+    n = len(text)
+    return -sum(c / n * math.log2(c / n) for c in counts.values())
+
+
+def _random_token(text: str) -> Optional[str]:
+    """The first run of characters in ``text`` that looks like encoded
+    data rather than words, or None.
+
+    Encoded data: a hex run of 16+ characters with a digit and a letter
+    (a hash, a hex dump), a UUID, or a token of 16+ characters whose
+    longest piece between ``-_.`` is 12+ characters, with Shannon entropy
+    of at least 3.3 bits per character and either digits that alternate
+    with letters four or more times, five or more case changes together
+    with a digit or ``+/`` (base64), or 16+ letters with fewer than one
+    vowel in five (base32-like).
+
+    Calibrated (2026-11-13) on 3000 random samples per encoding and 31
+    tokens that real documentation and literature URLs carry (method
+    names such as ``B3LYP-D3BJ-def2-TZVP``, DOIs, wheel tags, CamelCase
+    identifiers): no false positive; missed 0.4% of 16-hex markers, 0% of
+    UUIDs, 2% of base64, 12% of URL-safe base64 and a third of base32.
+    Data spelled as words is not seen; this is a bound on what an
+    unattended URL carries unnoticed, not a proof that it carries nothing.
+    Rejected: an entropy threshold alone (method names and wheel tags
+    score as high as short base64)."""
+    for tok in _TOKEN_RE.findall(text or ""):
+        core = tok.strip("=-_")
+        if len(core) < 16:
+            continue
+        for run in re.findall(r"[0-9a-fA-F]{16,}", core):
+            if re.search(r"\d", run) and re.search(r"[a-fA-F]", run):
+                return tok
+        if _UUID_RE.search(core):
+            return tok
+        if max(len(p) for p in re.split(r"[-_.]", core)) < 12:
+            continue
+        if _entropy(core) < 3.3:
+            continue
+        kinds = ["d" if c.isdigit() else "a" if c.isalpha() else "o" for c in core]
+        flips = sum(1 for a, b in zip(kinds, kinds[1:])
+                    if a != b and "o" not in (a, b))
+        if re.search(r"\d", core) and flips >= 4:
+            return tok
+        case_flips = sum(1 for a, b in zip(core, core[1:])
+                         if a.isalpha() and b.isalpha()
+                         and a.islower() != b.islower())
+        if case_flips >= 5 and re.search(r"[\d+/]", core):
+            return tok
+        letters = [c for c in core.lower() if c.isalpha()]
+        if len(letters) >= 16 and sum(c in "aeiouy" for c in letters) < 0.2 * len(letters):
+            return tok
+    return None
+
+
+def url_payload_reason(url: str) -> Optional[str]:
+    """Why ``url`` carries data rather than a lookup, or None.
+
+    Input: an http(s) URL a request nobody can be asked about would send.
+    Looked at: the query (decoded) and the host name's labels; the
+    fragment is never sent and is ignored. Data: a query longer than
+    ``_MAX_UNATTENDED_QUERY_CHARS`` characters, or a run that looks like
+    encoded data (``_random_token``). The path is not looked at: commit
+    hashes and identifiers are ordinary there, and the host decision
+    (``egress_proxy``) already limits whom an unattended path reaches.
+    """
+    try:
+        parts = urllib.parse.urlsplit(str(url or ""))
+    except ValueError:
+        return "it is not a URL that can be read"
+    query = parts.query or ""
+    if len(query) > _MAX_UNATTENDED_QUERY_CHARS:
+        return (f"its query string is {len(query)} characters, more than a "
+                f"lookup needs ({_MAX_UNATTENDED_QUERY_CHARS})")
+    try:
+        decoded = urllib.parse.unquote_plus(query)
+    except Exception:
+        decoded = query
+    tok = _random_token(decoded)
+    if tok:
+        return f"its query carries a run that looks like encoded data ({tok[:12]}...)"
+    for label in (parts.hostname or "").split("."):
+        tok = _random_token(label)
+        if tok:
+            return f"its host name carries a run that looks like encoded data ({tok[:12]}...)"
+    return None
+
+
+def text_payload_reason(text: str) -> Optional[str]:
+    """``url_payload_reason`` for a search query: a run that looks like
+    encoded data, or None."""
+    tok = _random_token(str(text or ""))
+    if tok:
+        return f"it carries a run that looks like encoded data ({tok[:12]}...)"
+    return None
+
+
 def _check_url(url: str) -> Optional[str]:
     """Return an error string if the URL is forbidden, else None."""
     why = outbound_secret_reason(url)
@@ -184,12 +294,34 @@ def _check_url(url: str) -> Optional[str]:
     return None
 
 
+#: Set by the caller for the length of one fetch: ``gate(url)`` returns why
+#: a redirect target must not be followed, or None. The agent's executor
+#: sets the session's egress decision here (api_client._web_egress_refusal)
+#: so a hop gets the host decision and the payload check the first URL got;
+#: unset, a hop gets the address checks only.
+REDIRECT_GATE: contextvars.ContextVar = contextvars.ContextVar(
+    "delfin_web_redirect_gate", default=None)
+
+
 class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Re-validate every redirect target through _check_url. Without this a
-    public URL could 3xx-redirect to http://169.254.169.254/… (cloud metadata)
-    or http://127.0.0.1/… — SSRF that defeats the initial host/IP deny-list."""
+    """Re-validate every redirect target: the caller's egress decision
+    (``REDIRECT_GATE``) first, before the name is resolved, then
+    _check_url. Without the address check a public URL could 3xx-redirect
+    to http://169.254.169.254/… (cloud metadata) or http://127.0.0.1/… —
+    SSRF that defeats the initial host/IP deny-list. Without the egress
+    decision a known host's open redirect, or a URL shortener, carried
+    what the first URL's path held to an unknown host."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        gate = REDIRECT_GATE.get()
+        if gate is not None:
+            try:
+                why = gate(newurl)
+            except Exception as exc:
+                why = f"the egress decision failed ({exc})"
+            if why:
+                raise urllib.error.HTTPError(
+                    newurl, code, f"blocked redirect target: {why}", headers, fp)
         err = _check_url(newurl)
         if err is not None:
             raise urllib.error.HTTPError(

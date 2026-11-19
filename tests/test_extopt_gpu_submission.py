@@ -139,9 +139,11 @@ def test_real_submission_goes_through_scheduler_client(tmp_path, monkeypatch):
     req = _request(tmp_path)
     result = submit_extopt_job(req, cfg=_gpu_cfg(), submit=True)
     assert result["submitted"] is True
-    assert len(calls) == 1
-    assert calls[0][0] == "sbatch"
-    assert str(Path(result["script"])) in calls[0][1] or calls[0][1][-1].endswith(".sbatch")
+    # Each GPU partition's MaxTime is asked first (D1), then the one sbatch.
+    sbatch = [argv for argv in calls if argv[0] == "sbatch"]
+    assert len(sbatch) == 1
+    assert str(Path(result["script"])) in sbatch[0][1] or sbatch[0][-1].endswith(".sbatch")
+    assert all(argv[:3] == ["scontrol", "show", "partition"] for argv in calls[:-1])
 
 
 def test_provider_orca_mlips_builds_mlips_input(tmp_path):

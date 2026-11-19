@@ -231,6 +231,15 @@ def test_installed_units_share_port_socket_and_pairing_directory(tmp_path):
     daemon = (tmp_path / 'units/simplex-chat-daemon.service').read_text()
     assert f'--chat-server-port {DEFAULT_PORT}' in daemon
     assert '--files-folder ' in daemon and '--auto-accept-files 0' in daemon
+    # Received files are decrypted in the temp folder and renamed to the
+    # files folder: both on one filesystem, never the unit's private /tmp
+    # (tmpfs; the rename failed with EXDEV and no voice message arrived).
+    files = daemon.split('--files-folder ', 1)[1].split()[0]
+    temp = daemon.split('--temp-folder ', 1)[1].split()[0]
+    assert temp.startswith(files.rstrip('/') + '/'), (files, temp)
+    # The daemon logs every received API command with its message text; the
+    # journal must never hold the person's messages.
+    assert 'LogFilterPatterns=~received command' in daemon.splitlines()
     assert f'Environment=DELFIN_MESSENGER_PORT={DEFAULT_PORT}' in gateway
     assert 'Environment=DELFIN_MESSENGER_SOCKET=/run/delfin-messenger-bridge/messenger.sock' in gateway
     assert 'Environment=DELFIN_MESSENGER_SOCKET=/run/delfin-messenger-bridge/messenger.sock' in bridge

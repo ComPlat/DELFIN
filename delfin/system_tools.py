@@ -39,6 +39,25 @@ _TCL_CALL_RE = re.compile(
 )
 
 
+#: Appended to the probe shell's PATH when missing. A login shell sources
+#: the distribution's profile, and that profile may call system tools by
+#: name. With a reduced PATH (a test gate's tool directory, a minimal
+#: service environment) one such tool is not found, bash calls
+#: ``command_not_found_handle``, and the handler some distributions ship
+#: prints its warning through ``$(gettext ...)``: when gettext is not
+#: found either, the handler calls itself in a new subshell, without end.
+#: Measured 2026-11-14 on a compute node: one probe, 815 nested
+#: ``bash -lc module -t avail`` within 20 s. The marker below cannot stop
+#: that, because the recursion never leaves bash.
+_SYSTEM_DIRS = ("/usr/bin", "/bin")
+
+
+def _path_with_system_dirs(path: str) -> str:
+    parts = [p for p in (path or "").split(os.pathsep) if p]
+    parts += [d for d in _SYSTEM_DIRS if d not in parts]
+    return os.pathsep.join(parts)
+
+
 def _run_login_shell(command: str, *, timeout: int = 15) -> subprocess.CompletedProcess[str] | None:
     # Depth guard: a login shell's module initialization can itself spawn
     # `bash -lc` (seen 2026-09-26 in a gate run on the login node: ~75
@@ -49,6 +68,7 @@ def _run_login_shell(command: str, *, timeout: int = 15) -> subprocess.Completed
         return None
     env = dict(os.environ)
     env["_DELFIN_LOGIN_SHELL_PROBE"] = "1"
+    env["PATH"] = _path_with_system_dirs(env.get("PATH", ""))
     try:
         # Own process group: on a timeout the whole group is killed, not
         # only bash -- whatever the module init started must not outlive

@@ -47,6 +47,9 @@ _KINDS = {
     "script_dir_unknown": ("📜", "Script in an unknown directory"),
     "self_mod":       ("🛡", "Self-modification guarded"),
     "memory_refused": ("🧠", "Instruction-shaped memory refused"),
+    # An outward call after untrusted text, the user's words not covering
+    # it (tainted_turn): asked, or refused with nobody to ask.
+    "tainted_outward": ("📤", "Outward call after untrusted text held"),
     "knowledge_write": ("🧠", "Write into shared lessons or memory asked"),
     "mcp_description_withheld": ("🔌", "MCP tool description withheld"),
     # Descriptions pinned on first use (mcp_client.pin_check): a first
@@ -81,9 +84,16 @@ _KINDS = {
     "permission_mode": ("⏵", "Bypass entered by the user"),
     # An agent's branch move in the checkout DELFIN runs from, refused.
     "shared_checkout_switch": ("⛔", "Branch switch in the shared checkout refused"),
+    # A git act the reflog cannot undo (reversibility.git_history_refusal).
+    "git_history_unrecoverable": ("⛔", "Git history change the reflog cannot undo"),
+    # scancel/qdel/bkill of a job this session did not submit.
+    "job_cancel_foreign": ("⛔", "Cancel of a job this session did not submit"),
     # A second approval of the same kind in a turn whose first one went
     # unanswered: not asked again, refused, and the panel says so.
     "approval_not_now": ("⌛", "Approval not asked again this turn (earlier one unanswered)"),
+    # A call that cannot be undone, put to the person although an allow
+    # pattern (a saved "always" included) or the cage would have answered.
+    "irreversible_asked": ("⛔", "Cannot be undone: asked, no saved always or cage answers it"),
     # AM1: an unattended session hit the three-refusal lock; it pauses and
     # leaves one message for the operator instead of waiting for nobody.
     "unattended_pause": ("⏸", "Unattended session paused after three refusals"),
@@ -102,6 +112,12 @@ _KINDS = {
     # A write to a known host with nobody to ask, refused because the
     # host is not named in agent.sandbox_network.upload_domains.
     "egress_upload_refused": ("📤", "Command upload refused (nobody to ask)"),
+    # A URL or search query carrying a run that looks like encoded data,
+    # with nobody to ask (web_tools.url_payload_reason).
+    "egress_payload_refused": ("📤", "URL carrying encoded data refused"),
+    # A session's bytes to one host crossed a reporting step
+    # (egress_proxy.note_sent): the first byte, 64 KiB, 1 MiB, ...
+    "egress_sent":    ("📤", "Bytes sent to a host this session"),
     # The audit log (audit_log.py): a write that failed, and a log that
     # was changed outside DELFIN between two writes.
     "audit_write_failed": ("📒", "Audit log could not be written"),
@@ -124,6 +140,9 @@ _KINDS = {
     # An agent session reaching for an approval: the answer command, an
     # answer function, or a write where answers and the CLI gate state live.
     "approval_self_answer": ("🚫", "Agent tried to answer an approval"),
+    # A write into the messenger's directory outside the session's own
+    # outbox (messenger.media.internal_write_refusal).
+    "messenger_internal_write": ("🚫", "Agent tried to write messenger internals"),
     # An agent session running the operator's actions (ops send, escalate,
     # pause; delfin-agent pause/resume).
     "operator_action_refused": ("🚫", "Agent tried to act as the operator"),
@@ -209,10 +228,33 @@ _KINDS = {
     "classifier_allow":  ("✅", "Action classifier allowed an unasked command (no isolation)"),
     "classifier_error":  ("⚠️", "Action classifier gave no verdict"),
     "classifier_held":   ("⏸️", "Held: watcher could not judge, nobody to ask"),
+    # Bypass with no classifier at all: a publish/upload/drop held.
+    "classifier_absent_hold": ("⏸️", "Held: no action classifier in this bypass session"),
     # Off the auto-allow list, no isolation layer, nobody to ask.
     "unisolated_refused": ("🧱", "Command refused: no isolation, nobody to ask"),
+    "unrestorable_change": ("🗑", "Command refused: it would destroy what nothing can restore"),
+    "undo_store_write": ("🗄", "Write refused: the undo store is DELFIN's"),
+    "trash_evicted": ("🧹", "Trash over its budget: oldest undo copies removed"),
     "classifier_down":   ("🔌", "Action watcher down"),
     "classifier_up":     ("🔁", "Action watcher answers again"),
+    # The phone messenger (delfin/messenger/audit.py KINDS, pinned equal by
+    # tests/test_every_person_pairs_their_own_phone.py): invitations,
+    # pairings, revocations and every refusal of a phone.
+    "messenger_invitation_issued": ("📱", "Messenger: one-time phone invitation issued"),
+    "messenger_invitation_refused": ("📱", "Messenger: phone invitation refused (limit or rate)"),
+    "messenger_invitation_expired": ("📱", "Messenger: phone invitation expired unused"),
+    "messenger_invitation_replayed": ("🚫", "Messenger: used or expired invitation presented again"),
+    "messenger_phone_connected": ("📱", "Messenger: phone connected, not yet verified"),
+    "messenger_phone_verified": ("📱", "Messenger: phone verified and bound to a person"),
+    "messenger_verification_failed": ("🚫", "Messenger: wrong phone confirmation code"),
+    "messenger_phone_revoked": ("📱", "Messenger: phone unpaired"),
+    "messenger_unverified_message": ("🚫", "Messenger: message from a phone not yet verified"),
+    "messenger_cross_person_refused": ("🚫", "Messenger: phone addressed another person's chat"),
+    "messenger_store_refused": ("🚫", "Messenger: pairing store failed its integrity check"),
+    "messenger_session_attached": ("📱", "Messenger: session brought to the phone"),
+    "messenger_session_detached": ("📱", "Messenger: session taken off the phone"),
+    "messenger_service_started": ("📱", "Messenger: a person's agent service started for their phone"),
+    "messenger_service_start_refused": ("🚫", "Messenger: start of a person's agent service refused"),
 }
 
 
@@ -310,6 +352,24 @@ def record(kind: str, tool: str, detail: str, *, blocked: bool = True) -> None:
             turn_outcome.denied(tool, kind, str(detail))
     except Exception:
         pass
+
+
+def _record_security_event(kind: str, tool: str, detail: str,
+                           *, blocked: bool = True) -> None:
+    """Surface a containment decision to the visible security-event panel.
+    Lazy + best-effort: never affects the gate's behaviour. Also counted
+    as the channel ``security:<kind>`` (channels.py), so a benchmark
+    attempt records which gate decisions it reached.
+
+    Moved here (was api_client._record_security_event) next to the labels
+    and ``record`` it calls; api_client re-exports it, so callers that
+    import it from there still get this same object."""
+    try:
+        from . import channels as _channels
+        _channels.fire(f"security:{kind}")
+    except Exception:
+        pass
+    record(kind, tool, detail, blocked=blocked)
 
 
 def recent(limit: int = 20) -> list[SecurityEvent]:

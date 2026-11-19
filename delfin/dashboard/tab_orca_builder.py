@@ -2665,7 +2665,7 @@ def create_tab(ctx):
             widgets.HBox(
                 [orca_template_name, orca_template_save_confirm_btn,
                  orca_template_save_cancel_btn],
-                layout=widgets.Layout(gap='6px', align_items='center', flex_wrap='wrap'),
+                layout=widgets.Layout(gap='6px', align_items='center', flex_flow='row wrap'),
             ),
         ],
         layout=widgets.Layout(
@@ -2851,7 +2851,7 @@ def create_tab(ctx):
                 min_width='0',
                 gap='8px',
                 align_items='center',
-                flex_wrap='wrap' if wrap else 'nowrap',
+                flex_flow='row wrap' if wrap else 'row nowrap',
             ),
         )
 

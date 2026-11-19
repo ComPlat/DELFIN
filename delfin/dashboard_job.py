@@ -495,7 +495,7 @@ def main(args, argv: Sequence[str]) -> int:
         _say(f"A dashboard already runs (job {rec['job']}) -- reconnecting. "
              "Another one: delfin-voila --job --new")
         if args.keep and not rec.get("keep"):
-            _say("  (it was started without --keep; arm 'Keep session' in its "
+            _say("  (it was started without --keep; arm 'Keep dashboard' in its "
                  "header, or start a kept one with --job --new --keep)")
         return connect(rec, port=args.port, open_browser=open_browser)
     try:

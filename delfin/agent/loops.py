@@ -60,6 +60,7 @@ import shlex
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from .state_paths import state_root
 from typing import Any, Optional
 
 __all__ = [
@@ -154,11 +155,11 @@ def project_dir(workspace: Path | str) -> Path:
 
 
 def personal_dir() -> Path:
-    return Path.home() / ".delfin" / "loops"
+    return state_root() / "loops"
 
 
 def ledger_path() -> Path:
-    return Path.home() / ".delfin" / "loops_confirmed.json"
+    return state_root() / "loops_confirmed.json"
 
 
 def _files(workspace: Path | str | None) -> dict[str, tuple[Path, str]]:

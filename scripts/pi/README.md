@@ -276,11 +276,33 @@ What only a person can do, in this order:
   A copy kept from an earlier layout (`.delfin_settings.json.before-shared-*`)
   is not applied again; merge it by hand if it is still wanted.
   `delfin-people` lists who is there; `delfin-people --attach NAME` shows that
-  person's dashboard session. They are one Unix user: everyone can read
+  person's dashboard session.
+
+  **Letting a new person in.** `pi_harden_host.sh` sets
+  `PasswordAuthentication no`, and the launcher registers a PC by appending
+  its key during the first *password* login — so on a hardened box that
+  first login cannot happen and a new person is locked out by a key that is
+  added only once they are in. One step closes it: they install the
+  launcher and press Start once, which fails but creates
+  `%USERPROFILE%\.ssh\delfin_launcher_ed25519.pub`; they send you that file;
+  you run
+
+  ```bash
+  delfin-people --add-key <name> < their-key.pub
+  ```
+
+  which appends it with the launcher's own restriction
+  (`restrict,port-forwarding,pty`: the dashboard tunnel and a terminal, no
+  agent, no X11, no `~/.ssh/rc`). Appending the line by hand is what puts an
+  **unrestricted** key in `authorized_keys`; `delfin-people --keys` shows
+  which keys carry no restriction. Revoke a PC by deleting its
+  `delfin-launcher-<name>` line.
+
+  They are one Unix user: everyone can read
   everything in the account, credentials included. Put only neutral, project
   credentials (a project KIT key, the repository deploy key, a neutral git
   identity) into it; personal ones belong in personal accounts.
-- Keep session is this box's default for the Windows launcher
+- Keep dashboard is this box's default for the Windows launcher
   (`~/.config/delfin/launcher-keep.conf`, written by `pi_install.sh`;
   `DELFIN_PI_KEEP=0` leaves the choice to the app): a disconnect leaves the
   dashboard and its agent running, the next connection returns to it.
@@ -345,17 +367,32 @@ boot".
 
 ## SimpleX messenger: forum and session chats
 
+Each person connects their own phone, no admin needed: in your session type
+`/pair`, scan the QR code in SimpleX, type the 6-digit code the phone receives
+(`/pair 123456`). Then `hol NAME` on the phone brings a running session, `neu
+NAME` starts one, `/sync` in a session connects it. A phone reaches only its
+person's sessions (people mode: one Unix user, so an application-level
+boundary). Admin: `--people` lists every person's phones, `--revoke=NAME`
+unpairs a person's, `--revoke-owner` the account owner's (lost phone: revoke,
+then `/pair` again). Details:
+[several people](../../docs/design/messenger-simplex.md#several-people-one-account-people-mode).
+
+Installing the messenger (once, by the admin):
+
 Set up in one run on the Pi (or any Linux with systemd and glibc >= 2.34),
 after a deploy, as the admin user (`pi`; the agent user has no sudo):
 
 ```bash
-sudo apt install qrencode          # optional: the pairing link as a QR code
 sudo bash ~delfin/delfin/src/scripts/pi/pi_messenger.sh --whisper --pair --name=Pi
 ```
 
+`--pair` pairs the account owner's phone (sessions outside `~/people`); it asks
+for the code the phone receives (later: `--verify`).
 `--name=` labels the bot (`DELFIN-Pi`) and every chat, for a phone paired with
 several machines; the default is the host name. The bot keeps the name of its
-first start. `--lang=en` sends every phone text in English (default German).
+first start. Each phone is answered in its person's language: English for a new
+phone (`--lang=de`: German), then German after two German messages in a row and
+back after two English ones; `language en|de|auto` (`sprache ...`) fixes it.
 
 The script waits for the SimpleX daemon, then prints the QR code and, last,
 the link (on a phone's terminal: copy the link and paste it in SimpleX under
@@ -374,7 +411,7 @@ leaves its session running: `delfin-agent tui --continue` in the same folder
 joins it again.
 
 On the phone, `neu NAME` (or `neu NAME: task`) starts a session in
-`~/DELFIN-Handy/NAME` and invites you to its chat; it asks before commands and
+`~/DELFIN-Handy/NAME` (a person: `~/people/<name>/DELFIN-Handy/NAME`) and invites you to its chat; it asks before commands and
 edits. A session started at the computer joins with `/sync` there. Reply to a
 question/approval with SimpleX's Reply gesture and `ja/nein`, an offered option or
 a text answer -- spoken or typed; a spoken sentence frees nothing. A shell

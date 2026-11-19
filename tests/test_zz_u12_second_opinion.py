@@ -13,6 +13,18 @@ from delfin.agent import api_client as A
 from delfin.agent import security_events as SE
 
 
+@pytest.fixture(autouse=True)
+def _the_model_path_without_a_cage(monkeypatch):
+    """These tests pin what the MODEL path decides (doubts, the three-
+    refusal lock, user rules reaching the model). Since 2026-11-12 a caged
+    shell command that stays in the workspace is screened without the model
+    under Bypass (tests/test_bypass_workspace_work_needs_no_watcher.py), so
+    the model path is the one a host without a cage takes. A test that
+    needs the cage sets _bash_runs_caged itself."""
+    from delfin.agent import api_client as _A
+    monkeypatch.setattr(_A, "_bash_runs_caged", lambda perms: False)
+
+
 class Runner:
     def __init__(self, *answers, delay=0.0):
         self.answers = list(answers)

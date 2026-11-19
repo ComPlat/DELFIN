@@ -64,6 +64,10 @@ MAX_SESSIONS = 512
 #: Field of the login cookie that carries the session id.
 COOKIE_FIELD = "delfin_session"
 
+#: Field of the login cookie that carries the account name (named
+#: accounts only; absent on the single-token path).
+OWNER_FIELD = "delfin_account"
+
 #: A use is written to the store at most this often (seconds): the store
 #: is a file, and every request is a use.
 _SAVE_EVERY = 60.0
@@ -100,7 +104,11 @@ class Sessions:
         self.lifetime = float(lifetime)
         self.clock = clock
         self.log = log
-        self._live: dict[str, list[float]] = {}   # digest -> [created, seen]
+        # digest -> [created, seen] or [created, seen, owner]; a login
+        # made as a named account carries its account name as owner. A
+        # two-element record loads as ownerless, so a store written by
+        # an older server still works.
+        self._live: dict[str, list] = {}
         self._saved_at = 0.0
         self._write_failed = False
         self._load()
@@ -135,9 +143,11 @@ class Sessions:
             return
         for key, value in data.items():
             if (isinstance(key, str) and len(key) == 64
-                    and isinstance(value, list) and len(value) == 2
-                    and all(isinstance(v, (int, float)) for v in value)):
-                self._live[key] = [float(value[0]), float(value[1])]
+                    and isinstance(value, list) and len(value) in (2, 3)
+                    and all(isinstance(v, (int, float)) for v in value[:2])):
+                self._live[key] = [float(value[0]), float(value[1])] + (
+                    [value[2]] if len(value) == 3 and isinstance(value[2], str)
+                    else [])
 
     def _save(self) -> None:
         if self.path is None:
@@ -165,8 +175,9 @@ class Sessions:
             self._write_failed = True
 
     def _prune(self, now: float) -> None:
-        for key in [k for k, (created, seen) in self._live.items()
-                    if now - seen > self.idle or now - created > self.lifetime]:
+        for key in [k for k, entry in self._live.items()
+                    if now - entry[1] > self.idle
+                    or now - entry[0] > self.lifetime]:
             del self._live[key]
         if len(self._live) > MAX_SESSIONS:
             # A session never used again after it was made goes first: a
@@ -179,11 +190,18 @@ class Sessions:
                 del self._live[key]
 
     # -- the answers ---------------------------------------------------------
-    def open(self) -> str:
-        """A new session; returns its id (for the cookie)."""
+    def open(self, owner: Optional[str] = None) -> str:
+        """A new session; returns its id (for the cookie).
+
+        *owner*, when given, is the named account the login was made as;
+        it is stored with the session (never a secret, never a hash).
+        """
         now = self.clock()
         sid = secrets.token_urlsafe(24)
-        self._live[_digest(sid)] = [now, now]
+        record = [now, now]
+        if owner:
+            record.append(str(owner)[:64])
+        self._live[_digest(sid)] = record
         self._prune(now)
         self._save()
         return sid
@@ -197,7 +215,7 @@ class Sessions:
         if entry is None:
             return False
         now = self.clock()
-        created, seen = entry
+        created, seen = entry[0], entry[1]
         if now - seen > self.idle or now - created > self.lifetime:
             del self._live[key]
             self._save()
@@ -206,6 +224,15 @@ class Sessions:
         if now - self._saved_at >= _SAVE_EVERY:
             self._save()
         return True
+
+    def owner(self, sid: Any) -> Optional[str]:
+        """The named account *sid* was opened as, or ``None``."""
+        if not isinstance(sid, str) or not 16 <= len(sid) <= 128:
+            return None
+        entry = self._live.get(_digest(sid))
+        if entry is None or len(entry) < 3:
+            return None
+        return entry[2]
 
     def close(self, sid: Any) -> None:
         """End *sid* (logout). Unknown ids are ignored."""
@@ -248,18 +275,34 @@ class RefusedLogins:
         self.clock = clock
         self._record = record
         self.log = log
-        self._last = None          # time of the last record
-        self._held = 0             # refusals since then, not yet recorded
+        # Per who the rate limit runs: the named account a login was
+        # attempted as, or "" for a login with no account name (the
+        # single-token path). Without this, one person's flood of wrong
+        # passphrases mutes the record for everybody else's.
+        self._last: dict = {}       # who -> time of the last record
+        self._held: dict = {}       # who -> refusals since then
 
-    def refused(self, how: str, remote_ip: str, path: str) -> bool:
-        """Note one refusal; returns True if it was recorded now."""
+    def refused(self, how: str, remote_ip: str, path: str,
+                who: str = "") -> bool:
+        """Note one refusal; returns True if it was recorded now.
+
+        *who* is the account the login was attempted as ("" when none
+        was presented); the rate limit runs per who, so a flood against
+        one account does not mute another's refusal. Never include the
+        presented passphrase, token or its hash in the record.
+        """
+        who = str(who)[:64]
         now = self.clock()
-        if self._last is not None and now - self._last < self.window:
-            self._held += 1
+        last = self._last.get(who)
+        if last is not None and now - last < self.window:
+            self._held[who] = self._held.get(who, 0) + 1
             return False
-        held, self._held, self._last = self._held, 0, now
+        held, self._held[who], self._last[who] = \
+            self._held.get(who, 0), 0, now
         where = str(path or "/").split("?", 1)[0][:120]
         detail = f"{how} from {str(remote_ip or '?')[:64]} on {where}"
+        if who:
+            detail += f" (account {who})"
         if held:
             detail += (f" (and {held} more in the {int(self.window)} s "
                        "before it)")

@@ -108,6 +108,29 @@ def get_git_commit_info() -> Optional[str]:
 # ------------------------------------------------------------------------------------
 # Metal detection
 # ------------------------------------------------------------------------------------
+# A SMILES names a metal only inside a bracket atom: outside brackets only the
+# organic subset (B C N O P S F Cl Br I, aromatic b c n o p s) may be written.
+# So "CSc1ccccc1" (thioanisole) holds no scandium and "Cn1ccnc1" no copernicium,
+# while [Pd], [Pd+2], [Pd-2], [PdH2], [106Pd], [Pd@SP1] all name palladium.
+_SMILES_BRACKET_ELEMENT = re.compile(r"\[\d*([A-Z][a-z]?|[a-z]{1,2})")
+
+
+def smiles_transition_metals(smiles: str) -> List[str]:
+    """Transition metals (d- and f-block, as in _TM_LIST) named in a SMILES.
+
+    Reads the element of every bracket atom (isotope prefix skipped), in
+    order of first appearance; the same set search_transition_metals reads
+    from a geometry, so the relativity and basis policy sees the same metals
+    whether the structure arrives as SMILES or as coordinates.
+    """
+    found: List[str] = []
+    for match in _SMILES_BRACKET_ELEMENT.finditer(str(smiles or "")):
+        sym = match.group(1)
+        if sym in _TM_LIST and sym not in found:
+            found.append(sym)
+    return found
+
+
 def search_transition_metals(inputfile: str) -> List[str]:
     """Detect transition metals in molecular geometry file.
 

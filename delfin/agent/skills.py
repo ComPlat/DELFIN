@@ -38,6 +38,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from .state_paths import state_root
 from typing import Iterable
 
 
@@ -139,7 +140,7 @@ def _skill_dirs(workspace: Path | None) -> list[Path]:
     # user-global, then project-scoped. user overrides pack; a project
     # skill only fills names nobody else has (discover_skills). Without the pack dir the 9
     # shipped chemistry skills were undiscoverable by the `skill` tool.
-    out: list[Path] = [_PACK_SKILLS_DIR, Path.home() / ".delfin" / "skills"]
+    out: list[Path] = [_PACK_SKILLS_DIR, state_root() / "skills"]
     if workspace is not None:
         out.append(Path(workspace) / ".delfin" / "skills")
     return out
@@ -192,7 +193,7 @@ def is_user_skill_dir(d: Path) -> bool:
     rooted in the home directory sees it as ``<ws>/.delfin/skills``)."""
     try:
         return (Path(d).resolve()
-                == (Path.home() / ".delfin" / "skills").resolve())
+                == (state_root() / "skills").resolve())
     except (OSError, RuntimeError):
         return False
 

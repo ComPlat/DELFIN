@@ -46,5 +46,16 @@ def test_a_path_named_in_the_task_is_not_an_invented_citation(tmp_path):
 
 
 def test_the_dashboard_hands_the_session_text_to_both_scans():
-    assert TAB.count("named_in=_session_user_text()") == 2
+    """Every citation scan is told what the user actually wrote.
+
+    The dashboard's own scan passes the session text
+    (_session_user_text). The scan that moved into the engine passes the
+    same kind of source from the engine side (_person_texts, the session's
+    user rows) -- once for the answer scan, once for the re-scan of the
+    correction, so the invariant holds on both surfaces."""
+    assert TAB.count("named_in=_session_user_text()") == 1
     assert "def _session_user_text(" in TAB
+    engine_src = Path(inspect.getfile(
+        __import__("delfin.agent.engine", fromlist=["x"]))).read_text()
+    assert engine_src.count("_person_texts()") >= 2
+    assert "def _person_texts(self)" in engine_src

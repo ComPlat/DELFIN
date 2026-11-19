@@ -1,0 +1,195 @@
+DELFIN - START HERE
+===================
+
+Everything runs on the server. Your PC needs no Python and no DELFIN
+installation. You need: Windows 10 or 11, network access to the server
+(a VPN if it is on an internal network), and the login you were given.
+
+README.md beside this file is the full reference. This is the short path
+from here to a working agent. Read it top to bottom once.
+
+
+-------------------------------------------------------------------
+0. YOU DOWNLOADED THIS FROM THE WEB - READ THIS FIRST
+-------------------------------------------------------------------
+
+Windows marks every file that came from the internet. PowerShell then
+refuses to run such a file unless it carries a digital signature, and
+this package is not signed. Without clearing that mark you get:
+
+    ... is nicht digital signiert / is not digitally signed
+    ... cannot be loaded. The file ... is not digitally signed.
+
+That is not a virus warning and nothing is broken. It means "this file
+came from somewhere else".
+
+FIRST: extract the ZIP. Right-click it, "Extract All...", and pick a new
+empty folder. Do not open the files inside the ZIP directly - Windows
+runs them from a temporary place and nothing works properly.
+
+THEN: double-click Install.cmd. It checks for the mark itself, lists the
+files that carry it, and asks:
+
+    Unblock them and continue? (y/N)
+
+Type  y  and press Enter. That clears the mark on THESE files and
+nothing else. No Windows setting and no policy is changed.
+
+IF YOU WOULD RATHER DO IT BY HAND, or the question does not appear:
+
+  1. Open the extracted "windows-launcher" folder in Explorer.
+  2. Hold Shift, right-click on empty space in the folder, and choose
+     "Open PowerShell window here" (on Windows 11: "Open in Terminal").
+  3. Type exactly this line and press Enter:
+
+         Get-ChildItem . -Recurse | Unblock-File
+
+     Nothing is printed if it worked. That is normal.
+  4. Close the window and double-click Install.cmd.
+
+ONE FILE AT A TIME, WITHOUT POWERSHELL AT ALL:
+Right-click a .ps1 file -> Properties -> at the bottom tick "Unblock"
+("Zulassen") -> OK. There are four of them: DELFIN.ps1, Install.ps1,
+Uninstall.ps1, Test-Launcher.ps1.
+
+If your antivirus warns: the package is plain text - PowerShell, batch,
+Bash and Python scripts, a README, a PNG and an icon. It compiles
+nothing and downloads nothing. A new, rarely seen, unsigned file gets
+flagged for being new and rare, not for what it does. README.md has the
+detail and the addresses for reporting a false positive.
+
+Do not override rules your organisation has set. Ask your IT first.
+
+
+-------------------------------------------------------------------
+1. INSTALL
+-------------------------------------------------------------------
+
+Double-click Install.cmd in the extracted folder. The window stays open
+so you can read the result. Administrator rights are not needed.
+
+A DELFIN icon appears on your desktop and in the Start menu.
+
+Updating later: extract the new ZIP into a new folder and run Install.cmd
+again. Do NOT uninstall first - your saved connections would be lost.
+
+
+-------------------------------------------------------------------
+2. CONNECT
+-------------------------------------------------------------------
+
+Open DELFIN from the desktop.
+
+In the field "SSH server / user@host" enter what you were given, for
+example:
+
+    delfin@192.0.2.10
+
+That is the only field you have to fill in. Click "Start / Reconnect".
+
+A black window appears and asks for the password. Three things about it:
+
+  * You may be asked up to THREE times. That is normal - it is one
+    question per connection, not a refusal.
+  * TYPE the password. Ctrl+V does not paste in that window; it sends a
+    control character and the server then reports a wrong password even
+    when you typed the right one. To paste, use a RIGHT-CLICK.
+  * After this one time, this PC is known to the server and no password
+    is asked again.
+
+Then your browser opens with your dashboard.
+
+Leave the black window open while you work. Closing the browser tab does
+not disconnect anything.
+
+YOUR OWN AREA: your first connection creates a home of your own on the
+server - your own sessions, your own chats, your own working folder.
+Nothing you do lands in someone else's session.
+
+IF IT SAYS "Permission denied" AND YOU WERE GIVEN NO PASSWORD:
+the server takes keys only. The failed attempt has put a file on your
+desktop:
+
+    DELFIN-key-for-the-server-owner.txt
+
+Send that file to whoever runs the server. It is the public half of this
+PC's key - it is not secret and it is not a password. They add it with
+one command, you press "Start / Reconnect" again, and you are in.
+
+
+-------------------------------------------------------------------
+3. YOUR API KEY
+-------------------------------------------------------------------
+
+The agent needs a key for the service it talks to.
+
+In the dashboard: the "Settings" tab, then the section
+"Diagnosis & API key".
+
+  1. Pick the key name you were told (for a KIT box:
+     KIT_TOOLBOX_API_KEY).
+  2. Paste your key into the field next to it.
+  3. Press "Store key".
+
+The line below then says the key is set, and the field clears itself.
+The key is never shown again and never written into a message or a log.
+It takes effect immediately - no restart, no reconnect.
+
+Without a key of your own the agent may still work, on whatever key the
+machine already holds. Your own key is about your own quota.
+
+BEFORE YOU PASTE A PERSONAL KEY: a shared box is ONE operating-system
+account. Everyone who can log in to it can read a key stored there. For
+a key that must be yours alone, use an account of your own.
+
+
+-------------------------------------------------------------------
+4. USE IT
+-------------------------------------------------------------------
+
+The "Agent" tab, then "New Cycle". Type in the box at the bottom and
+press Enter.
+
+A line that starts with  !  is a shell command instead of a message:
+
+    ! ls
+
+It runs through the same checks as the agent's own commands.
+
+
+-------------------------------------------------------------------
+5. STOP AND COME BACK
+-------------------------------------------------------------------
+
+Press "Disconnect" in the DELFIN window. On a machine that keeps
+sessions, yours stays alive and the next "Start / Reconnect" puts you
+back into it.
+
+Ctrl+C in the black window is an explicit stop and ends the session even
+then.
+
+
+-------------------------------------------------------------------
+6. IF SOMETHING DOES NOT WORK
+-------------------------------------------------------------------
+
+"... is not digitally signed"
+    Section 0 above. The files still carry the download mark.
+
+The password is refused although it is correct
+    You used Ctrl+V. Type it, or paste with a right-click.
+
+"Too many authentication failures"
+    Tell whoever runs the server - too many keys were offered before
+    your password could be tried.
+
+"Not found" for the environment
+    The server installation is not where the app looks. Ask whoever runs
+    the server; do not go hunting.
+
+Nothing happens at all, no error
+    Are you on the network or VPN the server needs?
+
+Anything else
+    The "Settings" tab has a diagnosis at the bottom. Send a screenshot
+    of it - that one picture usually contains the answer.

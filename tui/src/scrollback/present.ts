@@ -106,7 +106,7 @@ export class Presenter {
         }
         break
       case "user.message":
-        this.add("user", { text: this.options.shownAs?.(String(e.text ?? "")) ?? e.text, source: e.source })
+        this.add("user", { text: this.options.shownAs?.(String(e.text ?? "")) ?? e.text, source: e.source, via: e.via })
         break
       case "text.started":
         this.part(String(e.partId ?? ""))

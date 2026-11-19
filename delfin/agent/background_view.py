@@ -72,11 +72,16 @@ def collect(workspace: Any, *, now: Optional[float] = None,
                 # A running bash job already has its shell row; a finished
                 # one is reported to the agent, not waited for.
                 continue
+            state = str(entry.get("last_state") or "")
+            if not state and entry.get("kind") == "cluster":
+                # Followed by the service's watcher, which saw it last.
+                from delfin.remote import watch as _remote_watch
+                state = _remote_watch.seen_state(entry.get("cluster"), entry.get("remote_id"))
             view["watches"].append({
                 "id": str(jid),
                 "kind": str(entry.get("kind") or "job"),
                 "label": str(entry.get("description") or "")[:90],
-                "state": str(entry.get("last_state") or "waiting"),
+                "state": state or "waiting",
                 "since": float(entry.get("added_at") or now),
             })
     except Exception as _exc:

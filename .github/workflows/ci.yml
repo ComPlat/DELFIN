@@ -369,7 +369,9 @@ jobs:
 
   reference-env:
     name: reference environment (py3.12, numpy 2.2)
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest became Ubuntu 26.04, which has no CPython
+    # 3.12.11 build for actions/setup-python (2026-11-15).
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     # The environment the published MANTA structures are built in: CPython
     # 3.12.11 with numpy 2.2.2, rdkit 2025.9.3, openbabel-wheel 3.1.1.22,

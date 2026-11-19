@@ -313,6 +313,9 @@ _EXPECTED_READ_ONLY = {
     "geometry_replace_ligand", "geometry_mirror", "geometry_align_rmsd",
     "geometry_merge", "geometry_freeze", "geometry_constraints_block",
     "geometry_build_smiles", "geometry_write_orca_block",
+    # XE1: text in, text out -- the expert writes the NEW file through
+    # write_file, whose gate refuses overwriting.
+    "geometry_renumber", "geometry_fix_hydrogens", "geometry_diff",
     # trajectory_xyz (2026-11-03): ORCA output -> multi-frame xyz text;
     # pure parse, no write.
     "trajectory_xyz",

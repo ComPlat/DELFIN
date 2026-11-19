@@ -177,11 +177,15 @@ export interface AppState {
    *  and an event that crossed on the socket -- the newer one stays. -1
    *  until the service of this connection has said one. */
   attentionVersion: number
+  /** What the service does beyond its protocol (its hello's
+   *  serviceVersion): 5 and later answer /clusters and /jobs, 6 and later
+   *  their entries' details (space). */
+  serviceVersion: number
 }
 
 export function emptyState(): AppState {
   return { connection: "connecting", mayAct: true, host: "", sessions: {}, order: [],
-           current: null, elsewhere: [], starting: false, attention: [], attentionVersion: -1 }
+           current: null, elsewhere: [], starting: false, attention: [], attentionVersion: -1, serviceVersion: 0 }
 }
 
 /** The attention items a service sent (attention.list, attention.updated),
@@ -199,6 +203,8 @@ export function attentionItems(raw: unknown): AttentionItem[] {
       createdAt: Number(r.createdAt ?? 0) || 0,
       options: Array.isArray(r.options) ? r.options.map(str) : [],
       job: r.job && typeof r.job === "object" ? r.job as Record<string, unknown> : null,
+      cluster: str(r.cluster),
+      proposal: proposalOf(r.proposal),
     })
   }
   return out
@@ -219,6 +225,23 @@ function str(value: unknown): string {
   return typeof value === "string" ? value : value == null ? "" : String(value)
 }
 
+/** The fields an agent proposed for a cluster (a cluster_add item). */
+export type ItemProposal = {
+  name: string
+  preset: string
+  user: string
+  host: string
+  partition: string
+}
+
+/** A cluster_add item's fields (an agent's proposal), as plain short lines. */
+function proposalOf(raw: unknown): ItemProposal | null {
+  if (!raw || typeof raw !== "object") return null
+  const r = raw as Record<string, unknown>
+  const one = (v: unknown) => oneLine(str(v), 120)
+  return { name: one(r.name), preset: one(r.preset), user: one(r.user), host: one(r.host), partition: one(r.partition) }
+}
+
 export function applyInfo(s: SessionState, info: Record<string, unknown>): void {
   // "" is a rename back to the default name (the summary's `name`).
   if ("title" in info && info.title != null) s.title = str(info.title)
@@ -236,10 +259,10 @@ export function applyInfo(s: SessionState, info: Record<string, unknown>): void 
 }
 
 /** The session's text as one plain line: control and invisible characters
- *  made spaces, runs of space one, at most 160 characters. */
-function oneLine(text: string): string {
+ *  made spaces, runs of space one, at most `max` characters. */
+export function oneLine(text: string, max = 160): string {
   return text.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/g, " ")
-    .replace(/\s+/g, " ").trim().slice(0, 160)
+    .replace(/\s+/g, " ").trim().slice(0, max)
 }
 
 /** Register a session (create, attach, a summary for one not seen yet). */
