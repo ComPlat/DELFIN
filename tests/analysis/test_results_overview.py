@@ -599,8 +599,10 @@ def test_skeleton_keeps_heteroatom_protons(tmp_path):
     calc = tmp_path / "meoh"
     calc.mkdir()
     (calc / "initial.xyz").write_text(xyz, encoding="utf-8")
+    # Skeleton policy (task 1): the skeleton NEVER shows aliphatic
+    # C-H protons; it always draws only heteroatom protons (here the
+    # one O-H).  The show_h toggle drives ONLY the ball-and-stick
+    # column, so both skeleton renders are byte-identical.
     off = ro.initial_xyz_png_bytes(str(calc), show_h=False)
     on = ro.initial_xyz_png_bytes(str(calc), show_h=True)
-    assert off and on and off != on
-    # The O-H proton survives the H-off filter: only the 3 CH3 protons
-    # are dropped, so with-H has 6 atoms, without-H has 3 (C,O,H_on_O).
+    assert off and on and off == on
