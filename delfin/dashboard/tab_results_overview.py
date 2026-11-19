@@ -784,9 +784,9 @@ class ResultsOverviewPanel:
             if want_2d and smiles:
                 # The calc's own SMILES.png, unchanged (raster): the
                 # redrawn vector variant is dropped - user request.
-                _smp = _os.path.join(row["path"], "SMILES.png")
+                _smp = os.path.join(row["path"], "SMILES.png")
                 png = (open(_smp, "rb").read()
-                       if _os.path.exists(_smp) else None)
+                       if os.path.exists(_smp) else None)
                 if png:
                     struct_blocks.append(
                         rf"\includegraphics[width={width}\textwidth]"
