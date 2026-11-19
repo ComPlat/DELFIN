@@ -155,3 +155,47 @@ def test_keep_typed_in_the_window_is_the_same_switch(service):
     window.close()
     assert _gone(watcher, sid)
 
+
+
+def test_continue_finds_the_running_session_before_the_store_has_it(service):
+    """The store is a file, written after the turn that made the session.
+
+    Asked inside that window -- which is what "continue right after
+    starting" is -- ``past_sessions`` comes back empty, and ``continue``
+    used to start a SECOND session for a folder that already had one
+    running. Rare in a test, and from the outside it reads as the agent
+    having forgotten everything.
+
+    Driven deterministically here by NOT asking for a store record at
+    all (no ``fakeSave``): the listing is then empty for certain, which
+    is the same state the race produces. Measured 2026-11-19 -- the
+    flake was seen twice in over twenty runs and never reproduced on
+    demand, so this is the only way to hold it.
+    """
+    a = service.client()
+    sid = service.session(a)                     # no fakeSave: store stays empty
+    turn(a, sid, "hello")
+
+    b = service.client()
+    got = b.request("session.create",
+                    {"cwd": str(service.workspace()), "continue": True,
+                     "fake": True}, timeout=60)
+
+    assert got["sessionId"] == sid, (
+        "continue started a second session for a folder that already had "
+        "one running here; the store had not caught up yet")
+    a.close()
+    b.close()
+
+
+def test_continue_in_a_folder_with_nothing_running_still_starts_fresh(service):
+    """The fallback must not turn every continue into an attach. A folder
+    this service hosts nothing for has nothing to continue."""
+    a = service.client()
+    other = service.workspace("elsewhere")
+    got = a.request("session.create",
+                    {"cwd": str(other), "continue": True, "fake": True},
+                    timeout=60)
+
+    assert got["sessionId"], "a fresh session is still created"
+    a.close()
