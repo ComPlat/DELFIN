@@ -951,14 +951,57 @@ class AgentEngine:
         (`!`, /git) shows it to a person, who has no context window to
         protect. The gate decides exactly as before.
         """
-        perms = self.kit_permissions
+        perms = self.kit_permissions or self._gate_of_an_external_backend()
         if perms is None:
             raise RuntimeError(
-                "this backend has no permission gate, so it has no shell")
+                "this backend has no permission gate, so it has no shell "
+                f"({type(getattr(self, 'client', None)).__name__}); "
+                "the OpenAI-compatible backend (provider kit or ollama) "
+                "and the CLI backend both have one")
         from .api_client import _doc_executor, output_for_a_person
         with output_for_a_person():
             return _doc_executor.execute(
                 "bash", {"command": str(command or "")}, perms)
+
+    def _gate_of_an_external_backend(self):
+        """The policy to run `!cmd` under when the client holds none.
+
+        Output: a ``KitToolPermissions``, or None when this backend has no
+        gate at all.
+
+        ``kit_permissions`` reads ``client._permissions``, which only the
+        OpenAI-compatible client carries. The CLI backend gates the model's
+        own tools too, but through ``cli_gate``: a PreToolUse hook that
+        reads its policy from a state file keyed by the client's token. So
+        `!` was unavailable on that backend although a gate was running --
+        and on the factory default at that, which is the CLI backend.
+
+        The policy is fetched from that state file rather than built here,
+        so the shell escape is bound by exactly what the model's own tool
+        calls are bound by. The command still goes through DELFIN's bash
+        executor, whose deny-list and secret scan the hook does not apply
+        to the external process, so `!` is gated at least as tightly as
+        that backend's own shell -- never more loosely.
+
+        None when no token, no written state or an unreadable one: each
+        means no boundary can be established, and the caller refuses.
+        """
+        client = getattr(self, "client", None)
+        token = str(getattr(client, "_gate_token", "") or "")
+        if not token:
+            return None
+        # The state is written when the confirm callback is set; a session
+        # that never set one has no file yet, and the workspace is what the
+        # boundary is made of.
+        try:
+            client._write_gate_state()
+        except Exception:
+            pass
+        try:
+            from . import cli_gate
+            return cli_gate.permissions_for(token)
+        except Exception:
+            return None
 
     # -- what a turn delegated ---------------------------------------------
 
