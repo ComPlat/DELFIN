@@ -264,3 +264,58 @@ def test_one_persons_key_does_not_replace_the_accounts(tmp_path,
         "one person setting a key in Settings replaced the key the whole "
         "account uses")
     assert json.loads(link.read_text())[KEY] == SECRET
+
+
+# ------------------- what the person is told when there is no key yet
+
+def test_a_session_without_a_key_says_so_and_says_where():
+    """The symptom a person met instead was a 401 from the endpoint or a
+    model list quietly falling back. Neither says "you have not entered a
+    key", and the hint that existed sent them to a notebook cell."""
+    from delfin.dashboard.tab_agent import missing_key_notice
+
+    said = missing_key_notice("kit", lambda _name: "")
+
+    assert "No API key yet" in said
+    assert KEY in said, "name the key the Settings dropdown is on"
+    assert "Settings tab" in said and "Store key" in said
+    assert "New Cycle" in said, "say how to start once it is stored"
+    assert "notebook" not in said and "os.environ" not in said, (
+        "a credential typed into a notebook cell lands in the notebook "
+        "and in the kernel history")
+
+
+def test_nothing_is_said_once_a_key_is_there():
+    from delfin.dashboard.tab_agent import missing_key_notice
+
+    assert missing_key_notice("kit", lambda _name: "a-key") == ""
+
+
+def test_a_provider_that_needs_no_key_is_not_nagged():
+    """The CLI backend signs in through its own OAuth."""
+    from delfin.dashboard.tab_agent import missing_key_notice
+
+    assert missing_key_notice("claude", lambda _name: "") == ""
+    assert missing_key_notice("", lambda _name: "") == ""
+
+
+def test_a_lookup_that_fails_does_not_cry_wolf():
+    """Telling someone their key is missing when the lookup merely broke
+    sends them to re-enter a key that is already there."""
+    from delfin.dashboard.tab_agent import missing_key_notice
+
+    def boom(_name):
+        raise RuntimeError("store unreadable")
+
+    assert missing_key_notice("kit", boom) == ""
+
+
+def test_the_settings_tab_offers_every_provider_the_agent_asks_for():
+    """The notice names a key and tells the person to go and set it. If
+    the Settings dropdown has no such entry, that is a dead end."""
+    from delfin.dashboard.tab_agent import PROVIDER_KEY_NAMES
+
+    offered = {n for n, _label in tab_settings.API_KEY_NAMES}
+
+    assert set(PROVIDER_KEY_NAMES.values()) <= offered, (
+        "the agent asks for a key the Settings tab cannot store")

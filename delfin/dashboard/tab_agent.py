@@ -942,6 +942,49 @@ def _finalize_plan_decision(
     return messages
 
 
+#: The key each provider cannot start without. A provider absent from this
+#: map needs none (the CLI backend signs in through its own OAuth).
+PROVIDER_KEY_NAMES: dict[str, str] = {
+    "kit": "KIT_TOOLBOX_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "api": "ANTHROPIC_API_KEY",
+}
+
+
+def missing_key_notice(provider: str, lookup) -> str:
+    """The first message of a session that cannot start, or "".
+
+    Input: the chosen provider and the key lookup to ask (normally
+    ``_provider_key``). Output: what to put in the chat, or "" when a key
+    is there or the provider needs none.
+
+    What a person met instead was a symptom: a 401 from the model endpoint,
+    or the model list quietly falling back to nine hard-coded entries. Both
+    are true and neither says "you have not entered a key yet", let alone
+    where to enter one -- the older hint sent them to type
+    ``os.environ[...]`` into a notebook cell, which puts a credential in
+    the notebook and in the kernel's history.
+
+    Numbered, and in the first message of the session, because the person
+    reading it has just arrived and is not going to go looking.
+    """
+    name = PROVIDER_KEY_NAMES.get(str(provider or ""))
+    if not name:
+        return ""
+    try:
+        if lookup(name):
+            return ""
+    except Exception:
+        return ""
+    return (
+        "No API key yet, so the agent cannot start.\n"
+        "   1. Open the Settings tab.\n"
+        f"   2. Section API keys, with {name} selected.\n"
+        "   3. Paste your key, press Store key.\n"
+        "   4. Come back here and press New Cycle.\n"
+        "Nothing has to be installed and nothing has to be restarted.")
+
+
 def _provider_key(name: str) -> str:
     """Resolve an API key: env-var first, then ~/.delfin/credentials.json.
 
@@ -8573,10 +8616,9 @@ def create_tab(ctx):
                 "KIT_TOOLBOX_API_KEY", ""
             ):
                 hint = (
-                    " → KIT_TOOLBOX_API_KEY is not set in the dashboard "
-                    "process. Set it before startup or via "
-                    "`os.environ['KIT_TOOLBOX_API_KEY']='…'` in a "
-                    "notebook cell and press ↻ again."
+                    " → no KIT key yet. Open the Settings tab, section "
+                    "API keys, paste your key and press Store key. Then "
+                    "come back and press ↻."
                 )
             elif provider == "openai" and not os.environ.get(
                 "OPENAI_API_KEY", ""
@@ -25328,6 +25370,16 @@ def create_tab(ctx):
     # Note: claude has no /models endpoint — its list is intentionally
     # hard-coded (CLI manages the actual model selection), so we don't
     # call that a "failure".
+    # Before anything about models: the agent does not run at all without a
+    # key, and what a person saw instead was a 401 from the endpoint or a
+    # models list quietly falling back. Both describe a symptom.
+    try:
+        _notice = missing_key_notice(provider_dropdown.value, _provider_key)
+        if _notice:
+            _append_system_message(_notice)
+    except Exception:
+        pass
+
     _LIVE_FETCH_PROVIDERS = {"kit", "openai"}
     try:
         _mst = state.get("_models_init_status") or {}
@@ -25348,10 +25400,8 @@ def create_tab(ctx):
                     else "OPENAI_API_KEY"
                 )
                 _hint = (
-                    f" — {_key_name} is not set in the dashboard "
-                    f"process. Set it before startup or via a notebook "
-                    f"cell (`import os; "
-                    f"os.environ['{_key_name}']='…'`) and press ↻."
+                    " — no key yet. Settings tab → API keys → paste it "
+                    "→ Store key. Then press ↻ here."
                 )
             else:
                 _hint = (
