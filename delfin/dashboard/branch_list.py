@@ -341,12 +341,38 @@ def _prefs_path() -> Path:
     return Path.home() / ".delfin" / "branch_list.json"
 
 
-def _load_all() -> dict:
+def _load_all(*, for_write: bool = False) -> dict:
+    """The store, or ``{}`` where it is absent or -- only for a display --
+    unreadable. A caller that writes the store back must ask for
+    ``for_write=True``: a damaged file is then moved aside (a copy the
+    person can look at) instead of being overwritten with an empty
+    answer, and :func:`unreadable_note` says where it went.
+    """
+    from delfin.agent import state_file
+    if for_write:
+        data, moved = state_file.read_json_for_write(_prefs_path(),
+                                                     default={})
+        if moved:
+            _unreadable_note = (f"{_prefs_path()} was not readable JSON "
+                                f"and was moved to {moved}; your pinned "
+                                "and hidden lists start empty.")
+            _unreadable_messages.append(_unreadable_note)
+        return data if isinstance(data, dict) else {}
     try:
         data = json.loads(_prefs_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+#: What the last strict load found, so the panel can say it instead of
+#: losing the file quietly.
+_unreadable_messages: list[str] = []
+
+
+def unreadable_note() -> str:
+    """The message about a store moved aside, for the panel to show."""
+    return "\n".join(_unreadable_messages)
 
 
 def _save_all(data: dict) -> None:
@@ -362,7 +388,7 @@ def load_prefs(repo) -> dict:
 
 
 def _update(repo, *, add: tuple = (), remove: tuple = ()) -> dict:
-    data = _load_all()
+    data = _load_all(for_write=True)   # a damaged store is moved aside, not lost
     repos = data.setdefault("repos", {})
     row = repos.setdefault(repo_key(repo), {"pinned": [], "hidden": []})
     for kind, ref in remove:

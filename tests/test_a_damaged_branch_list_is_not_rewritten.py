@@ -32,7 +32,9 @@ def test_pin_after_damage_keeps_the_old_lists(prefs_file, monkeypatch):
     assert kept, "the damaged file was overwritten with no copy anywhere"
     assert "not json" in kept[0].read_text(encoding="utf-8")
     data = json.loads(prefs_file.read_text(encoding="utf-8"))
-    row = data["repos"]["r1"]
+    key = BL.repo_key("r1")
+    assert key in data["repos"]
+    row = data["repos"][key]
     assert row["pinned"] == ["feature-c"]
 
 
