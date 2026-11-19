@@ -677,12 +677,22 @@ def _rdkit_bond_orders(sym, bonds, positions):
     conf.SetId(0)
     rw.AddConformer(conf, assignId=True)
     mol = rw.GetMol()
-    try:
-        rdDetermineBonds.DetermineBondOrders(
-            mol, charge=0, allowChargedFragments=True)
-        Chem.SanitizeMol(mol)
-        Chem.Kekulize(mol)
-    except Exception:
+    # The complex may be an anion/cation (e.g. 428: Co complex -1):
+    # try small charges until one fits, else fall back.
+    orders_ok = False
+    for charge in (+1, -1, 0, +2, -2):
+        try:
+            probe = Chem.Mol(mol)
+            rdDetermineBonds.DetermineBondOrders(
+                probe, charge=charge, allowChargedFragments=True)
+            Chem.SanitizeMol(probe)
+            Chem.Kekulize(probe)
+            mol = probe
+            orders_ok = True
+            break
+        except Exception:
+            continue
+    if not orders_ok:
         return _infer_bond_orders(sym, bonds)
     upgrades = {}
     for b in range(mol.GetNumBonds()):
@@ -693,7 +703,51 @@ def _rdkit_bond_orders(sym, bonds, positions):
         i = keep[bond.GetBeginAtomIdx()]
         j = keep[bond.GetEndAtomIdx()]
         upgrades[(i, j)] = 2 if name == "DOUBLE" else 3
-    return upgrades or _infer_bond_orders(sym, bonds)
+    # Deprotonated pyrrole-type N (bonded to a metal plus exactly two
+    # ring carbons, no H): the metal bond consumes its lone pair, so
+    # its ring double bonds sit BETWEEN CARBONS - never C=N (user,
+    # 428 pyrrole ligand).  Drop N doubles at such N; the adjacent C
+    # keeps the alternation from its other ring edge.
+    _METALS = set(_XYZ_MASS) - {"H", "B", "C", "N", "O", "F", "Si",
+                                "P", "S", "Cl", "Br", "I"}
+    _neigh = {}
+    for a, b in bonds:
+        _neigh.setdefault(a, []).append(b)
+        _neigh.setdefault(b, []).append(a)
+    drop = set()
+    for atom, ns in _neigh.items():
+        # Target the metal-coordinated deprotonated N: it must have a
+        # metal neighbour, no H, and exactly two ring-carbon neighbours.
+        if sym[atom] != "N" or not any(sym[k] in _METALS for k in ns):
+            continue
+        hs = [k for k in ns if sym[k] == "H"]
+        cs = [k for k in ns if sym[k] == "C"]
+        if len(hs) == 0 and len(cs) == 2:
+            for k in ns:
+                if sym[k] != "H":
+                    drop.add(tuple(sorted((atom, k))))
+    upgrades = {pair: o for pair, o in upgrades.items()
+                if pair not in drop}
+    # DetermineBondOrders can hand a coordinating heteroatom TWO double
+    # bonds (pyridine N drawn as an N+ fragment: N= and =N).  A valid
+    # kekule structure is a MATCHING: every atom sits in at most one
+    # double bond.  Greedy shortest-first matching: accept a candidate
+    # if neither endpoint is taken yet; this keeps the true C=N/C=C
+    # (shorter) bonds and repairs the alternation (user report 428).
+    import numpy as _np
+    def _len(pair):
+        d = positions[pair[0]] - positions[pair[1]]
+        return float(_np.sqrt(d @ d))
+    taken = set()
+    matched = {}
+    for pair in sorted(upgrades, key=_len):
+        i, j = pair
+        if i in taken or j in taken:
+            continue
+        matched[pair] = upgrades[pair]
+        taken.add(i)
+        taken.add(j)
+    return matched or _infer_bond_orders(sym, bonds)
 
 
 def _infer_bond_orders(sym, bonds, rotated_pos=None):
