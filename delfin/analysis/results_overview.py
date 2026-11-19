@@ -262,12 +262,42 @@ def smiles_png_bytes(smiles: str, size: int = 260, fmt: str = "png"):
         drawer.FinishDrawing()
         return drawer.GetDrawingText()
     import numpy
-    # Vector path: the ORIGINAL SMILES.png look (as drawn before the
-    # pipeline experiments - plain RDKit depiction).  RemoveHs only,
-    # then Compute2DCoords: no Normalizer, no CoordGen, no straighten.
-    # Coordinates feed the colored matplotlib vector renderer.
+    # Vector path: EXACTLY the SMILES.png pipeline of
+    # delfin_docx_report.py (RemoveHs -> Normalizer -> CoordGen 1.5 /
+    # 1e-4, fallback Compute2DCoords + StraightenDepiction), only the
+    # RENDERER differs: the same coordinates go into the colored
+    # matplotlib vector renderer (SVG-style look, vector PDF bytes).
     mol = Chem.RemoveHs(mol, updateExplicitCount=True)
-    AllChem.Compute2DCoords(mol)
+    try:
+        from rdkit.Chem.MolStandardize import rdMolStandardize
+        mol = rdMolStandardize.Normalizer().normalize(mol)
+    except Exception:
+        pass
+    coordgen_done = False
+    try:
+        from rdkit.Chem import rdCoordGen
+        params = rdCoordGen.CoordGenParams()
+        params.SetCoordgenScaling(1.5)
+        params.SetMinimizerPrecision(1e-4)
+        coordgen_done = rdCoordGen.AddCoords(mol, params)
+    except Exception:
+        coordgen_done = False
+    if not coordgen_done:
+        AllChem.Compute2DCoords(
+            mol, canonOrient=True, clearConfs=True, coordMap={},
+            nFlipsPerSample=3, nSample=100, sampleSeed=42,
+            permuteDeg4Nodes=True, bondLength=1.5)
+        try:
+            from rdkit.Chem import rdDepictor
+            rdDepictor.StraightenDepiction(mol)
+        except Exception:
+            pass
+    # SMILES.png kekulizes (Draw.MolToImage(..., kekulize=True)): the
+    # alternating double bonds of the aromatic rings must appear.
+    try:
+        Chem.Kekulize(mol, clearAromaticFlags=True)
+    except Exception:
+        pass
     conf = mol.GetConformer()
     pos = numpy.array([[conf.GetAtomPosition(i).x,
                         conf.GetAtomPosition(i).y]
