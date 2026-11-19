@@ -125,7 +125,27 @@ The host around it (`pi_harden_host.sh`, run by the first boot; run it again
 as root any time, it is idempotent):
 
 - SSH by key only for every user, no root login, no X11 forwarding, 3 tries,
-  only the login and the agent user. fail2ban bans repeated failures.
+  only the login and the agent user. fail2ban bans repeated failures: 10 of
+  them within 10 minutes, then 5 minutes, lengthening with each further ban
+  of the same address.
+
+  **A ban looks exactly like a wrong password.** The person typing sees
+  "Permission denied" either way, so they try again, which extends it. When
+  someone cannot get in and is sure of their password, check this before
+  anything else:
+
+  ```bash
+  sudo fail2ban-client status sshd        # Banned IP list
+  sudo fail2ban-client set sshd unbanip <their address>   # must return 1
+  ```
+
+  Note the count: one click in the Windows launcher makes up to **three**
+  SSH connections, each asking once, so one attempt with a wrong password
+  costs three failures. At the earlier `maxretry = 5` a newcomer was banned
+  on their second click, for an hour. Measured on 2026-11-19, where it cost
+  an afternoon: the password had been changed, the person was given the old
+  one, and after two clicks nothing worked at all for a reason nothing on
+  screen named.
 - nftables: inbound default deny. SSH only from private IPv4 nets (LAN, VPN)
   and link-local IPv6; add trusted IPv6 prefixes with `SSH_V6="..."` (a Pi
   on a routed IPv6 network is otherwise reachable from far beyond the LAN).

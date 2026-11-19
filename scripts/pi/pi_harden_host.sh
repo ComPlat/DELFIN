@@ -153,13 +153,31 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get install -y -q fail2ban python3-systemd unattended-upgrades apt-listchanges >/dev/null
 cat > /etc/fail2ban/jail.d/delfin-sshd.local <<'EOF'
 # DELFIN agent box (pi_harden_host.sh)
+#
+# maxretry counts SSH authentication failures, and one click in the Windows
+# launcher makes up to THREE connections -- the script check, the copy, and
+# the dashboard -- each asking for the password once. So a single attempt
+# with a wrong password costs three failures, and at maxretry = 5 a person
+# was banned on their SECOND click.
+#
+# What that looked like from the outside: the password was refused, then
+# refused again, and then nothing worked at all, with the same message. A
+# ban is indistinguishable from a wrong password to whoever is typing, so
+# the person retries, which extends it. Measured on the lab Pi on
+# 2026-11-19, where it cost an afternoon and 21 failed attempts before the
+# jail was looked at.
+#
+# 10 allows three launcher attempts. 5m is enough to slow a brute-force
+# attempt to nothing -- it needs millions of guesses, and bantime.increment
+# lengthens every further ban of the same address -- while being a pause a
+# person waits out rather than a wall they report as broken.
 [sshd]
 enabled  = true
 backend  = systemd
 banaction = nftables-multiport
-maxretry = 5
+maxretry = 10
 findtime = 10m
-bantime  = 1h
+bantime  = 5m
 bantime.increment = true
 EOF
 systemctl enable fail2ban >/dev/null 2>&1
