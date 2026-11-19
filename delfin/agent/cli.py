@@ -4952,7 +4952,7 @@ def _add_boundary_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--supervised", action="store_true",
                    help="As chat --supervised")
     p.add_argument("--provider", default="",
-                   help="kit, openai or ollama (default: the configured "
+                   help="kit, blablador, openai or ollama (default: the configured "
                         "provider)")
 
 
@@ -5297,7 +5297,7 @@ def _add_agent_flags(p: argparse.ArgumentParser, *,
     p.add_argument("--backend", default="", choices=["", "api", "cli"],
                    help="api (direct Anthropic) or cli (subprocess)")
     p.add_argument("--provider", default="",
-                   help="claude / openai / kit / ollama (not given: the "
+                   help="claude / openai / kit / blablador / ollama (not given: the "
                         "configured one for chat, else the one the model "
                         "id names)")
     p.add_argument("--model", default="",
@@ -5572,7 +5572,7 @@ def build_parser() -> argparse.ArgumentParser:
                            help="Model name (e.g. kit.deepseek-v4-flash, opus)")
     bench_run.add_argument("--backend", default="", choices=["", "api", "cli"])
     bench_run.add_argument("--provider", default="",
-                           help="claude / openai / kit")
+                           help="claude / openai / kit / blablador")
     # Repeatable AND comma-separated. It used to be a plain single-value
     # option, so `--task a --task b` silently kept only the last one:
     # asking for six tasks ran one, and the run announced "on 1 tasks"
