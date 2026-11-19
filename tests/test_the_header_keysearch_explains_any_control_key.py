@@ -30,7 +30,9 @@ def test_a_picked_suggestion_shows_an_explanation_card():
     _style, search, dropdown, card = wrapper.children
 
     search.value = 'reduction'
-    dropdown.children[0].click()  # first suggestion button
+    btns = list(dropdown.children)
+    pick = next(b for b in btns if 'reduction_steps' in b.description)
+    pick.click()
     html = card.value
     assert 'reduction_steps' in html
     assert 'default' in html.lower()
@@ -45,7 +47,7 @@ def test_no_matches_close_cleanly_and_empty_query_hides_everything():
     _style, search, dropdown, card = wrapper.children
 
     search.value = 'zzz_no_such_key'
-    assert dropdown.children and 'no key matches' in dropdown.children[0].value
+    assert dropdown.children and 'no key or tab matches' in dropdown.children[0].value
     search.value = ''
     assert dropdown.layout.display == 'none'
     assert card.layout.display == 'none'
