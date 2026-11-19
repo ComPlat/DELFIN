@@ -49,8 +49,20 @@ if ! grep -qE '^(ssh|ecdsa|sk-)' "$login_home/.ssh/authorized_keys" 2>/dev/null;
     exit 1
 fi
 # Loaded before cloud-init's 50-* file; sshd keeps the first value it reads.
+#
+# `Match all` first, and it is load-bearing. sshd reads the drop-ins in
+# sorted order and CONCATENATES them: a `Match` in a file that sorts
+# earlier (30-temp-password.conf, which a person-onboarding setup writes
+# to let a new PC register its key with the account password) stays open
+# across the file boundary, and every directive below would then apply to
+# that one user instead of globally. Measured on a live box on
+# 2026-11-18: the whole block below, AllowUsers included, was scoped to
+# the agent account, so every other account on the machine kept the
+# OpenSSH defaults -- six auth tries, a two-minute grace, and no
+# allow-list at all. `Match all` closes any such block before these lines.
 cat > /etc/ssh/sshd_config.d/40-delfin-hardening.conf <<EOF
 # DELFIN agent box (pi_harden_host.sh): key only, no root, few tries.
+Match all
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 PermitRootLogin no
@@ -62,6 +74,24 @@ EOF
 chmod 644 /etc/ssh/sshd_config.d/40-delfin-hardening.conf
 # A password exception from earlier manual setups would undo the above.
 rm -f /etc/ssh/sshd_config.d/60-delfin-password.conf
+# An exception that sorts BEFORE this file is not removed: it is how a new
+# person's PC registers its key (the launcher sends the key on the first
+# password login). It is named instead, because an exception nobody can
+# see is an exception nobody withdraws.
+for earlier in /etc/ssh/sshd_config.d/*.conf; do
+    case "$(basename "$earlier")" in
+        [0-3]*) : ;;
+        *) continue ;;
+    esac
+    [ -e "$earlier" ] || continue
+    if grep -qsE '^[[:space:]]*Match[[:space:]]' "$earlier"; then
+        echo "note: $earlier opens a Match block and keeps a password" >&2
+        echo "      exception for the accounts it names. The hardening" >&2
+        echo "      above is global (Match all) and unaffected." >&2
+        echo "      Remove that file once every PC has registered its key:" >&2
+        echo "      sudo rm $earlier && sudo sshd -t && sudo systemctl reload ssh" >&2
+    fi
+done
 sshd -t
 systemctl reload ssh
 
@@ -123,13 +153,31 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get install -y -q fail2ban python3-systemd unattended-upgrades apt-listchanges >/dev/null
 cat > /etc/fail2ban/jail.d/delfin-sshd.local <<'EOF'
 # DELFIN agent box (pi_harden_host.sh)
+#
+# maxretry counts SSH authentication failures, and one click in the Windows
+# launcher makes up to THREE connections -- the script check, the copy, and
+# the dashboard -- each asking for the password once. So a single attempt
+# with a wrong password costs three failures, and at maxretry = 5 a person
+# was banned on their SECOND click.
+#
+# What that looked like from the outside: the password was refused, then
+# refused again, and then nothing worked at all, with the same message. A
+# ban is indistinguishable from a wrong password to whoever is typing, so
+# the person retries, which extends it. Measured on the lab Pi on
+# 2026-11-19, where it cost an afternoon and 21 failed attempts before the
+# jail was looked at.
+#
+# 10 allows three launcher attempts. 5m is enough to slow a brute-force
+# attempt to nothing -- it needs millions of guesses, and bantime.increment
+# lengthens every further ban of the same address -- while being a pause a
+# person waits out rather than a wall they report as broken.
 [sshd]
 enabled  = true
 backend  = systemd
 banaction = nftables-multiport
-maxretry = 5
+maxretry = 10
 findtime = 10m
-bantime  = 1h
+bantime  = 5m
 bantime.increment = true
 EOF
 systemctl enable fail2ban >/dev/null 2>&1

@@ -14,14 +14,28 @@ foreach ($old in @('DELFIN.exe','Starter.cs','Build-Starter.ps1','Taskbar.cs')) 
     if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
 }
 # A standard Windows shortcut (WScript.Shell) starts Windows PowerShell on the
-# installed DELFIN.ps1. Window style 7 starts its console minimized; the
-# DELFIN window is the app.
+# installed DELFIN.ps1.
+#
+# -WindowStyle Hidden, and only here: the app is a window of its own, and the
+# PowerShell console hosting it carried nothing a person could read or use.
+# Started minimized it was still an empty black entry in the taskbar that
+# people took for a second, broken application. A .lnk cannot express
+# "hidden" (its WindowStyle is normal/minimized/maximized only), so the
+# switch goes on the command line, and WindowStyle 7 stays as what Windows
+# falls back to if the switch is ever dropped.
+#
+# The package otherwise forbids this switch, and the test enforcing that now
+# makes this one exception by name: a hidden PowerShell window is a shape
+# reputation scanners weigh against a file, and it is the shape malware
+# uses. It is accepted for the app's own host process and nowhere else -- not
+# for the SSH connection, which stays visible because that is where OpenSSH
+# asks for a password.
 $app = Join-Path $destination 'DELFIN.ps1'
 if ($app.Contains('"')) { throw 'Invalid installation path.' }
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) 'DELFIN.lnk'))
 $shortcut.TargetPath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-$shortcut.Arguments = '-NoProfile -ExecutionPolicy RemoteSigned -File "' + $app + '"'
+$shortcut.Arguments = '-NoProfile -ExecutionPolicy RemoteSigned -WindowStyle Hidden -File "' + $app + '"'
 $shortcut.WorkingDirectory = $destination
 $shortcut.WindowStyle = 7
 $shortcut.IconLocation = (Join-Path $destination 'DELFIN.ico') + ',0'

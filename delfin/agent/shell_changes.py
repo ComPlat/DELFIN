@@ -19,7 +19,8 @@ are read, and one whose bytes came out identical is not a change.
 
 Bounds, each said rather than silently applied:
 
-* ``.git``, ``__pycache__`` and ``.delfin`` subdirectories are not
+* ``.git``, ``__pycache__`` and ``.delfin`` subdirectories, and the undo
+  store and layers in ``.delfin-trash`` (``overlay_workspace``), are not
   walked (git internals, bytecode, the agent's own state); a directory
   with more than ``MAX_ENTRIES_PER_DIR`` entries is not walked either.
 * a root with more than ``MAX_FILES_PER_ROOT`` files, or whose walk
@@ -49,8 +50,10 @@ journalled twice.
 
 Rejected alternatives: reading every file before every command (2 000
 files: the full read each time, where the cache reads only what moved);
-inotify (Linux only, no pre-image); an overlay mount in the cage (needs
-bubblewrap, and the journal has to hold where bubblewrap does not run).
+inotify (Linux only, no pre-image). An overlay mount in the cage is the
+mechanism where bubblewrap and unprivileged overlays work, for foreground
+bypass commands (``overlay_workspace``: no size bound, the roots it holds
+are not walked here); this journal holds everywhere else.
 """
 
 from __future__ import annotations
@@ -69,6 +72,10 @@ MAX_HELD_BYTES = 64 * 1024 * 1024        # all held pre-images together
 MAX_HASH_BYTES = 64 * 1024 * 1024        # post-image hashed for the guard
 
 _SKIP_DIR_NAMES = frozenset({".git", "__pycache__", ".delfin"})
+# DELFIN's undo store and overlay layers inside a root's trash
+# (overlay_workspace): changed by DELFIN, never a command's change.
+_TRASH = ".delfin-trash"
+_STORE_NAMES = frozenset({".undo", ".layers"})
 
 _Sig = tuple  # (size, mtime_ns, ino, ctime_ns)
 
@@ -167,7 +174,9 @@ def _walk(root: str, other_roots: tuple[str, ...], deadline: float,
             try:
                 if e.is_dir(follow_symlinks=False):
                     if (e.name in _SKIP_DIR_NAMES or e.path in other_roots
-                            or e.path in skip):
+                            or e.path in skip
+                            or (e.name in _STORE_NAMES
+                                and os.path.basename(d) == _TRASH)):
                         continue
                     stack.append(e.path)
                     continue

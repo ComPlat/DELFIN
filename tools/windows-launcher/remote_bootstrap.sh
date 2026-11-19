@@ -121,6 +121,28 @@ if [ -n "$hint" ]; then
         if [ -z "$python" ]; then printf '%s\n' 'DELFIN: The specified DELFIN location does not identify a usable Python environment.' >&2; exit 1; fi
     fi
 else
+    # The checkout install.sh set up comes first: the login shell exports
+    # DELFIN_REPO from ~/.delfin_env.sh, or the file is read (as data, the
+    # one line install.sh writes, never sourced). An older venv activated
+    # from ~/.bashrc, or a second install in a conventional place, used to
+    # win or stop the start ("Multiple installations found").
+    recorded=${DELFIN_REPO:-}
+    if [ -z "$recorded" ] && [ -f "$HOME/.delfin_env.sh" ]; then
+        recorded=$(sed -n "s/^export DELFIN_REPO=//p" "$HOME/.delfin_env.sh" | head -n 1)
+        recorded=${recorded#\'}
+        recorded=${recorded%\'}
+    fi
+    if [ -n "$recorded" ] && [ -f "$recorded/delfin/cli_voila.py" ]; then
+        scan_root "$recorded"
+        if [ -n "$python" ]; then
+            printf 'DELFIN: Using the install set up by install.sh: %s\n' "$recorded"
+            for other in "${VIRTUAL_ENV:-}" "${CONDA_PREFIX:-}"; do
+                if [ -n "$other" ] && [ "$(dirname "$(dirname "$python")")" != "$other" ]; then
+                    printf 'DELFIN: Another environment was active in the login shell and is not used: %s (a line in ~/.bashrc activates it).\n' "$other"
+                fi
+            done
+        fi
+    fi
     if [ -n "${VIRTUAL_ENV:-}" ]; then choose "$VIRTUAL_ENV/bin/python"; fi
     if [ -n "${CONDA_PREFIX:-}" ]; then choose "$CONDA_PREFIX/bin/python"; fi
     if [ -z "$python" ]; then
@@ -146,7 +168,9 @@ else
             fi
         done
         if [ ${#found_python[@]} -gt 1 ]; then
-            printf '%s\n' 'DELFIN: Multiple installations found. Set the DELFIN location in advanced settings.' >&2
+            printf '%s\n' 'DELFIN: Several DELFIN installations were found on the server:' >&2
+            for repo in "${found_repo[@]}"; do printf '  %s\n' "$repo" >&2; done
+            printf '%s\n' 'Choose one under Advanced settings > DELFIN location, or run install.sh in the one to use (the launcher then takes that one).' >&2
             exit 1
         fi
         if [ ${#found_python[@]} -eq 1 ]; then

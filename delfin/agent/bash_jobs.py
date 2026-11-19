@@ -721,6 +721,73 @@ def _unlink_job_outputs(rec: dict) -> None:
             pass
 
 
+class PipeCapture:
+    """A demoted foreground command's pipe readers, reattached to a
+    background job's output files (BG2).
+
+    ``contained_run`` runs the command with pipes and drains them with
+    two reader threads. On the demote path those threads stay alive and
+    keep filling in-memory lists; this adapter moves them to the job's
+    files: :meth:`attach` first writes what the command printed before
+    the timeout, then keeps the reader threads going until the command
+    ends, appending to the same open file handles the registry job
+    holds. After :meth:`join` the pipes are closed.
+
+    A demoted process was NOT started with its stdout/stderr on files:
+    the redirection a ``bash_background`` job gets does not exist here,
+    and this adapter is what makes ``bash_output`` see output from both
+    sides of the move.
+    """
+
+    def __init__(self, demoted, *, stdout_so_far: bytes | str = b"",
+                 stderr_so_far: bytes | str = b""):
+        self._demoted = demoted
+        if isinstance(stdout_so_far, str):
+            stdout_so_far = stdout_so_far.encode("utf-8", errors="replace")
+        if isinstance(stderr_so_far, str):
+            stderr_so_far = stderr_so_far.encode("utf-8", errors="replace")
+        self._so_far = (stdout_so_far, stderr_so_far)
+        self._drained = threading.Event()
+
+    def attach(self, sout, serr) -> None:
+        """Send what the command printed before the timeout and everything
+        it prints afterwards into the job's files, in order.
+
+        The command's own reader threads (contained_run) keep reading the
+        pipes; their sinks are redirected to the files in one locked step
+        each, so nothing is lost or written twice and no second reader
+        competes for the pipe. A demoted run without sinks (an older
+        handover) falls back to writing the so-far output it was given."""
+        def _writer(handle):
+            def _write(chunk: bytes) -> None:
+                try:
+                    handle.write(chunk.decode("utf-8", errors="replace"))
+                    handle.flush()
+                except (OSError, ValueError):
+                    pass
+            return _write
+
+        sinks = (getattr(self._demoted, "out_sink", None),
+                 getattr(self._demoted, "err_sink", None))
+        for handle, sink, pre in ((sout, sinks[0], self._so_far[0]),
+                                  (serr, sinks[1], self._so_far[1])):
+            if sink is not None and hasattr(sink, "redirect"):
+                sink.redirect(_writer(handle))
+            elif pre:
+                _writer(handle)(pre)
+        self._threads = tuple(getattr(self._demoted, "readers", ()) or ())
+
+    def join(self, timeout: float = 60.0) -> None:
+        """Wait (bounded) for the readers; they end when the command's
+        pipes close."""
+        if getattr(self, "_joined", False):
+            return
+        self._joined = True
+        for t in getattr(self, "_threads", ()):
+            t.join(timeout=timeout)
+        self._drained.set()
+
+
 def _record_deadline(rec: dict) -> float:
     """Absolute epoch moment this job's wall-clock cap expires.
 
@@ -1366,6 +1433,129 @@ class _Registry:
             text=True,
         ))
 
+        return self._register(
+            command=command, description=description, cwd=cwd,
+            timeout_s=timeout_s, workspace=workspace,
+            session_id=session_id, cpu_set=cpu_set, argv=argv,
+            on_finish=on_finish, proc=proc,
+            sout=sout, serr=serr,
+            stdout_path=Path(stdout_path), stderr_path=Path(stderr_path))
+
+    def adopt(
+        self,
+        command: str,
+        cwd: str,
+        proc: subprocess.Popen,
+        description: str = "",
+        timeout_s: int = _DEFAULT_BG_TIMEOUT_S,
+        workspace: str | Path | None = None,
+        session_id: str = "",
+        argv: Optional[list[str]] = None,
+        on_finish: Optional[Callable[[], Optional[list]]] = None,
+        capture=None,
+        foreground_elapsed_s: Optional[float] = None,
+        env_source: str = "",
+        cpu_set: Optional[list[int]] = None,
+    ) -> BashJob:
+        """Register an ALREADY-RUNNING process as a background job.
+
+        This is the demote path: a foreground ``bash`` command that
+        reached its timeout keeps running instead of being ended, and
+        joins the registry exactly like a ``bash_background`` job -- same
+        record fields, same deadline cap, same completion event. The
+        process is NOT restarted and NOT re-forked: ``proc`` is the live
+        child the foreground call started, with the argv, environment and
+        cwd the gate approved.
+
+        ``capture``: the foreground run's pipe readers. On adoption the
+        caller attaches them to this job's stdout/stderr files
+        (``capture.attach(sout, serr)``), which first writes what the
+        command already printed and then keeps the readers appending to
+        the same files, so ``bash_output`` sees output from before and
+        after the move.
+
+        ``env_source``: how the running process got its environment, for
+        the record -- the caller names it ("gate" when the gate built
+        it). The registry cannot see a process's environ; what it can do
+        is record where it came from so a later reader can trace it.
+
+        ``cpu_set`` is accepted but NOT applied, and the caller passes
+        None: the process already runs, and its CPU affinity cannot be
+        changed from outside reliably post-hoc (a re-bind of the leader
+        would not reach the children it spawned). The affinity the
+        foreground command was started with -- ``_unasked_share`` bound
+        the argv before Popen -- is still in force in the kernel; only
+        the RECORD says so. Recording the caller's cpu_set keeps that
+        honest: it describes the affinity the process runs under, not
+        one this registry set.
+
+        Unlike :meth:`start`, adoption never refuses on the job or core
+        caps: the process already runs, and refusing to register it
+        cannot undo it -- it would leave long-running work nobody can
+        name, watch or stop, the exact failure this path exists to rule
+        out. The moved job still counts toward both caps through its
+        registry record, and ``timeout_s`` is capped like any background
+        job's.
+        """
+        if not command.strip():
+            raise ValueError("command must be non-empty")
+        if proc.poll() is not None:
+            raise ValueError(
+                "the process has already exited; nothing to adopt "
+                f"(exit code {proc.returncode})")
+        timeout_s = min(timeout_s, _DEFAULT_BG_TIMEOUT_S)
+
+        stdout_fd, stdout_path = tempfile.mkstemp(
+            prefix="kit_bg_", suffix=".stdout")
+        stderr_fd, stderr_path = tempfile.mkstemp(
+            prefix="kit_bg_", suffix=".stderr")
+        os.close(stdout_fd)
+        os.close(stderr_fd)
+        sout = open(stdout_path, "w", buffering=1)   # line-buffered
+        serr = open(stderr_path, "w", buffering=1)
+        if capture is not None:
+            # The so-far content goes in FIRST, before the watchdog's
+            # first tail read; the readers keep appending afterwards.
+            capture.attach(sout, serr)
+
+        return self._register(
+            command=command, description=description, cwd=cwd,
+            timeout_s=timeout_s, workspace=workspace,
+            session_id=session_id, cpu_set=cpu_set, argv=argv,
+            on_finish=on_finish, proc=proc,
+            sout=sout, serr=serr,
+            stdout_path=Path(stdout_path), stderr_path=Path(stderr_path),
+            capture=capture, foreground_elapsed_s=foreground_elapsed_s,
+            env_source=env_source)
+
+    def _register(
+        self,
+        command: str,
+        cwd: str,
+        proc: subprocess.Popen,
+        description: str = "",
+        timeout_s: int = _DEFAULT_BG_TIMEOUT_S,
+        workspace: str | Path | None = None,
+        session_id: str = "",
+        argv: Optional[list[str]] = None,
+        on_finish: Optional[Callable[[], Optional[list]]] = None,
+        cpu_set: Optional[list[int]] = None,
+        sout=None,
+        serr=None,
+        stdout_path: Optional[Path] = None,
+        stderr_path: Optional[Path] = None,
+        capture=None,
+        foreground_elapsed_s: Optional[float] = None,
+        env_source: str = "",
+    ) -> BashJob:
+        """Bookkeeping shared by :meth:`start` and :meth:`adopt`: registry
+        entry, lifeline record, persistent record, budget guard and the
+        watchdog thread that records the exit and serves the completion
+        event. The caller owns the process and the output files."""
+        wanted = _requested_cores(command)
+        # Its own session keeps a restart from taking it down; the lifeline
+        # ledger is what still ends it with delfin-voila's terminal.
+        from . import lifeline as _lifeline
         with self._lock:
             jid = self._new_job_id()
             job = BashJob(
@@ -1387,6 +1577,10 @@ class _Registry:
             _lifeline.record_child(proc.pid, "shell")
         except Exception:
             pass
+        # An adopted (demoted) command started BEFORE this call: the
+        # runtime it reports counts the foreground part too.
+        if foreground_elapsed_s:
+            job.started_at = time.monotonic() - float(foreground_elapsed_s)
 
         # Persist the job BEFORE the watchdog starts, so its exit update can
         # never race the initial write. After a restart this record is the
@@ -1414,6 +1608,18 @@ class _Registry:
             "exit_code": None,
             "finished_at": None,
             "acknowledged": False,
+            # How the job came into the registry: started (a
+            # bash_background call) or adopted (a foreground command that
+            # reached its timeout and was moved here, BG2). Downstream
+            # consumers (bash_status, the completion notice) say which.
+            "origin": "adopted" if foreground_elapsed_s is not None
+                      else "started",
+            **({"foreground_s": round(float(foreground_elapsed_s), 3)}
+               if foreground_elapsed_s else {}),
+            # Where the running process's environment came from (the
+            # caller names it, e.g. "gate"). The registry cannot read a
+            # process's environ; it records the provenance instead.
+            **({"env_source": env_source} if env_source else {}),
             # The conversation that started it: several sessions can share
             # a workspace, and each lists and stops only its own shells.
             **({"session_id": session_id} if session_id else {}),
@@ -1574,6 +1780,24 @@ class _Registry:
         t = threading.Thread(target=_watch, daemon=True, name=f"bashjob-{jid}")
         t.start()
         job._watchdog = t
+        # BG2: an adopted job's pipe readers finish on their own once the
+        # command ends; the watchdog's sout/serr close above is the
+        # durable side. `capture.join` waits for the readers (bounded by
+        # the capture object itself) and drops the pipe handles.
+        if capture is not None:
+            def _drain_capture():
+                try:
+                    capture.join()
+                except (OSError, ValueError) as exc:
+                    try:
+                        serr.write(
+                            f"[pipe capture] reader drain failed: {exc}\n")
+                        serr.flush()
+                    except Exception:
+                        pass
+            threading.Thread(
+                target=_drain_capture, daemon=True,
+                name=f"bashjob-capture-{jid}").start()
         return job
 
     def get(
@@ -2031,22 +2255,32 @@ def _descendants(root: int) -> set:
 
 def _listening_ports_of(pids: set) -> set:
     """The TCP ports the processes ``pids`` listen on (Linux /proc)."""
+    return set(_listening_of(pids).values())
+
+
+#: Read through one name so a test can drive these from a recorded tree.
+_PROC = "/proc"
+
+
+def _listening_of(pids: set) -> dict:
+    """``{inode: port}`` of the listening TCP sockets the processes
+    ``pids`` hold (Linux /proc)."""
     inodes: set[str] = set()
     for pid in pids:
         try:
-            for fd in os.listdir(f"/proc/{pid}/fd"):
+            for fd in os.listdir(f"{_PROC}/{pid}/fd"):
                 try:
-                    link = os.readlink(f"/proc/{pid}/fd/{fd}")
+                    link = os.readlink(f"{_PROC}/{pid}/fd/{fd}")
                 except OSError:
                     continue
                 if link.startswith("socket:["):
                     inodes.add(link[8:-1])
         except OSError:
             continue
-    ports: set[int] = set()
+    found: dict[str, int] = {}
     if not inodes:
-        return ports
-    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        return found
+    for table in (f"{_PROC}/net/tcp", f"{_PROC}/net/tcp6"):
         try:
             with open(table, encoding="latin-1") as fh:
                 next(fh, None)
@@ -2054,10 +2288,10 @@ def _listening_ports_of(pids: set) -> set:
                     cols = line.split()
                     # local_address, state 0A = LISTEN, inode at index 9
                     if len(cols) > 9 and cols[3] == "0A" and cols[9] in inodes:
-                        ports.add(int(cols[1].rsplit(":", 1)[1], 16))
+                        found[cols[9]] = int(cols[1].rsplit(":", 1)[1], 16)
         except (OSError, ValueError):
             continue
-    return ports
+    return found
 
 
 def job_listening_ports(job) -> set:
@@ -2094,16 +2328,21 @@ def open_ports(session_id: str = "") -> list[dict]:
     return out
 
 
-def own_listening_ports(session_id: str) -> set:
-    """The ports this session's running background jobs listen on.
+def own_listening_sockets(session_id: str) -> set:
+    """Inodes of the listening TCP sockets this session's running
+    background jobs hold: what a caged command and the egress proxy treat
+    as the session's own servers on the loopback
+    (``socket_guard.owns_loopback``). Empty off Linux, for a job of another
+    session and when nothing is read. Never raises."""
+    try:
+        return set(_listening_of(_own_job_pids(session_id)))
+    except Exception:
+        return set()
 
-    What the egress proxy lets a caged command reach on the loopback:
-    the agent checking the server it started (python -m http.server,
-    vite, flask, node) and nothing else on this machine. Measured
-    2026-10-19: `curl http://127.0.0.1:8324/` from the cage was refused
-    ("port 8324 is not allowed") -- the agent could not see its own game.
-    Read from /proc, so it holds whatever the server is; empty off Linux,
-    for a job of another session, and when nothing is read. Never raises."""
+
+def _own_job_pids(session_id: str) -> set:
+    """``session_id``'s running background jobs and every process below
+    them; empty without a session id or a readable registry."""
     sid = str(session_id or "")
     if not sid:
         return set()
@@ -2121,8 +2360,21 @@ def own_listening_ports(session_id: str) -> set:
             pid = 0
         if pid > 0:
             pids |= _descendants(pid)
+    return pids
+
+
+def own_listening_ports(session_id: str) -> set:
+    """The ports this session's running background jobs listen on.
+
+    What the egress proxy lets a caged command reach on the loopback:
+    the agent checking the server it started (python -m http.server,
+    vite, flask, node) and nothing else on this machine. Measured
+    2026-10-19: `curl http://127.0.0.1:8324/` from the cage was refused
+    ("port 8324 is not allowed") -- the agent could not see its own game.
+    Read from /proc, so it holds whatever the server is; empty off Linux,
+    for a job of another session, and when nothing is read. Never raises."""
     try:
-        return _listening_ports_of(pids)
+        return _listening_ports_of(_own_job_pids(session_id))
     except Exception:
         return set()
 

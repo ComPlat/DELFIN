@@ -89,6 +89,18 @@ ATTENTION_KINDS = (
     # Filterable in /attention <kind> (tab_agent.py matches _sub against
     # ATTENTION_KINDS).
     "session_state",
+    # A cluster tool found no live tunnel (delfin.remote.attention): the
+    # window opens its masked login field for the record's "cluster". It is
+    # never answered with text -- what a person types is a password, and an
+    # answer goes to the model -- and a successful login resolves it
+    # without one (answer_item refuses it).
+    "cluster_login",
+    # An agent proposed a cluster for DELFIN (cluster_propose,
+    # delfin.remote.setup): the window opens its add form filled in with the
+    # record's "proposal", for the person to check and send. Never answered
+    # with text -- only the window's form writes a cluster -- and resolved
+    # without an answer once that cluster is added.
+    "cluster_add",
 )
 
 # Kinds that mean "the agent is BLOCKED on the user right now" — a turn
@@ -521,6 +533,8 @@ def emit_attention(
     options: Optional[list] = None,
     workspace: Optional[str | Path] = None,
     delivered_by_caller: Optional[dict[str, bool]] = None,
+    cluster: str = "",
+    proposal: Optional[dict] = None,
 ) -> str:
     """Record a durable attention event and fan it out out-of-band.
 
@@ -559,6 +573,12 @@ def emit_attention(
         "acknowledged": False,
         "delivered": [name for name, ok in by_caller.items() if ok],
     }
+    if cluster:
+        event["cluster"] = str(cluster)[:64]
+    if proposal:
+        # A cluster_add item's form fields: plain short strings only.
+        event["proposal"] = {k: str(proposal.get(k) or "")[:120]
+                             for k in ("name", "preset", "user", "host", "partition")}
     with _inbox_locked():
         events = _load_events()
         events.append(event)
@@ -866,6 +886,16 @@ def answer_item(item_id: str, text: str) -> dict:
         target, err = _match_pending(item_id)
         if target is None:
             return {"ok": False, "error": err}
+        if target.get("kind") == "cluster_login":
+            # What a person types here is a password; an answer reaches the
+            # model. The window's masked field logs in instead.
+            return {"ok": False, "error": "a login is not answered with text; log in "
+                                         "through the window's login field (/clusters)"}
+        if target.get("kind") == "cluster_add":
+            # Only the window's add form writes a cluster; a text answer
+            # would reach the model, not DELFIN's settings.
+            return {"ok": False, "error": "a proposed cluster is added in the window's form "
+                                         "(enter on the item, or a in /clusters), not with text"}
         if not resolve(target["id"], answer=answer):
             return {"ok": False,
                     "error": f"item {target['id']} is no longer pending"}

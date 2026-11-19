@@ -368,7 +368,7 @@ EOF
             > "$HOME/.config/delfin/launcher-people.conf"
         echo "==> launcher people mode on (~/people/<name>; overview: delfin-people)"
     fi
-    # Keep session is this box's default for the Windows launcher: a
+    # Keep dashboard is this box's default for the Windows launcher: a
     # dashboard (and the agent working in it) survives a disconnect, whatever
     # the app's checkbox says; Ctrl+C in the SSH window still stops it.
     # DELFIN_PI_KEEP=0 leaves the choice to the app.
@@ -430,6 +430,15 @@ restart_dashboard() {
     for unit in delfin-agent-service delfin-messenger-bridge delfin-messenger-gateway delfin-dashboard; do
         if ! systemctl cat "$unit" >/dev/null 2>&1; then
             continue
+        elif [[ "$(systemctl is-active "$unit" 2>/dev/null)" == "activating" ]]; then
+            # A unit in its own auto-restart is NOT stopped, and
+            # `is-active --quiet` says false for it. Measured 2026-11-17:
+            # restarting the agent service made the messenger bridge exit,
+            # systemd was already bringing it back, and this loop reported
+            # it as "left stopped" -- which reads as "the phone is off" and
+            # cost real time to disprove. It comes back with the new code by
+            # itself, because the unit file is what systemd restarts from.
+            echo "==> $unit restarting itself: left to systemd"
         elif ! systemctl is-active --quiet "$unit" 2>/dev/null; then
             echo "==> $unit not running: left stopped"
         elif sudo -n systemctl restart "$unit" 2>/dev/null; then

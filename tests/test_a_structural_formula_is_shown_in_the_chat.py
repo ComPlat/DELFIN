@@ -93,7 +93,7 @@ def test_the_chat_draws_it_as_an_image_not_inline_markup(tmp_path):
 
 
 def test_the_tool_says_it_draws_formulas():
-    from delfin.agent import api_client as A
+    from delfin.agent import tool_catalog as A
     src = open(A.__file__, encoding="utf-8").read()
     at = src.index('"name": "show_molecule"')
     description = src[at:at + 600]

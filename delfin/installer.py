@@ -59,6 +59,11 @@ class Tool:
     interpreter the package lives in, for a tool that cannot live in DELFIN's
     own environment (epic-MACE needs Python 3.7): its installer builds that
     environment, and ``modules`` are looked for there, not here.
+    ``dist`` is the distribution that proves the tool is in that environment
+    when it is not the environment's own (an extra stack added to an
+    environment that already exists, like orca-mlips' MACE). ``notice`` is
+    said before the tool is installed: the licence a licensed tool comes
+    under and what its user has to do.
     """
 
     name: str
@@ -70,6 +75,8 @@ class Tool:
     licensed: bool = False
     size: str = ""
     own_env: str = ""
+    dist: str = ""
+    notice: str = ""
 
 
 _TORCH = "it brings PyTorch with it, which is a large download"
@@ -147,6 +154,35 @@ TOOLS: Tuple[Tool, ...] = (
     Tool("orca_mlips", "ai", "orca-mlips (ORCA ExtOpt MLIPs: AIMNet2, ORB)",
          switch="INSTALL_ORCA_MLIPS", modules=("orca_mlips_plugins",),
          aliases=("orca-mlips",), own_env="orca_mlips",
+         size="it brings a CUDA build of PyTorch with it, several GB"),
+    # The two orca-mlips plugins whose weights are not licence-clean for any
+    # use: installed only when named (licensed), each saying its terms first.
+    # MACE's stack goes into the environment above (mace-torch beside the
+    # torch there); UMA's has one of its own (fairchem-core pins torch~=2.13.0
+    # and e3nn>=0.5, which that torch and MACE's e3nn==0.4.4 exclude).
+    Tool("orca_mlips_mace", "ai", "orca-mlips MACE plugin (mace-torch)",
+         switch="INSTALL_ORCA_MLIPS_MACE", modules=("mace",), aliases=("orca-mlips-mace",),
+         licensed=True, own_env="orca_mlips", dist="mace-torch",
+         size="mace-torch and its dependencies, into the orca-mlips environment",
+         notice="MACE foundation-model weights (MACE-OMOL-0, MACE-OFF, MACE-MP) are under "
+                "the Academic Software License: non-commercial (academic) use only. "
+                "https://mace-docs.readthedocs.io/en/latest/guide/foundation_models.html"),
+    Tool("orca_mlips_uma", "ai", "orca-mlips UMA plugin (fairchem-core)",
+         switch="INSTALL_ORCA_MLIPS_UMA", modules=("fairchem",), aliases=("orca-mlips-uma",),
+         licensed=True, own_env="orca_mlips_uma",
+         size="an environment of its own with a CUDA PyTorch and fairchem-core, several GB",
+         notice="UMA weights are under the FAIR Chemistry licence and gated on HuggingFace: "
+                "they download only with your own HuggingFace login after you accept the "
+                "model terms at https://huggingface.co/facebook/UMA. Log in once with "
+                "'hf auth login' (older huggingface_hub: 'huggingface-cli login'); "
+                "DELFIN never handles the token."),
+    # orca-external-tools (FACCTs, GPL-3.0), the faster ExtOpt provider: one
+    # long-lived model server per job and a slim client as ProgExt
+    # (delfin.mlp_tools.oet). Its own environment with a CUDA PyTorch and the
+    # aimnet2 extra; a separately installed program DELFIN starts, never vendored.
+    Tool("orca_external_tools", "ai", "orca-external-tools (ORCA ExtOpt server: AIMNet2)",
+         switch="INSTALL_ORCA_EXTERNAL_TOOLS", modules=("oet",),
+         aliases=("orca-external-tools", "oet"), own_env="oet",
          size="it brings a CUDA build of PyTorch with it, several GB"),
     Tool("plotly", "ai", "plotly", switch="INSTALL_PLOTLY", modules=("plotly",)),
     # Python packages DELFIN needs to do its own work, installed with pip
@@ -441,6 +477,9 @@ def install(requested: Iterable[str], *, on_line: Optional[Callable[[str], None]
     """
     results: List[Dict[str, object]] = []
     for group, tools in plan(requested).items():
+        for tool in tools:
+            if tool.notice:
+                _say(on_line, f"{tool.label}: {tool.notice}")
         if group == "ketcher":
             ok, lines = _install_ketcher(on_line, force or update, timeout)
         elif group == "py":
@@ -500,13 +539,27 @@ def _own_env_has(tool: Tool, python: str) -> bool:
     prefix = Path(python).resolve().parent.parent
     from delfin.common import external_builders
 
-    dist = external_builders.own_env(tool.own_env).get("dist")
+    dist = tool.dist or external_builders.own_env(tool.own_env).get("dist")
     if dist:
-        import importlib.metadata
+        # By the *.dist-info directory names, normalised (PEP 503): a listing,
+        # never importlib.metadata, whose path lookups are cached by the
+        # directory's mtime and missed a stack added within the same tick.
+        import re
 
-        sites = [str(site) for site in prefix.glob("lib/python*/site-packages")]
-        return bool(sites) and any(True for _ in importlib.metadata.distributions(
-            name=dist, path=sites))
+        def norm(name: str) -> str:
+            return re.sub(r"[-_.]+", "_", name).lower()
+
+        wanted = norm(dist)
+        for site in prefix.glob("lib/python*/site-packages"):
+            try:
+                names = [entry.name for entry in site.iterdir()]
+            except OSError:
+                continue
+            if any(name.endswith(".dist-info")
+                   and norm(name[:-len(".dist-info")].partition("-")[0]) == wanted
+                   for name in names):
+                return True
+        return False
     for module in tool.modules:
         for site in prefix.glob("lib/python*/site-packages"):
             if (site / module / "__init__.py").is_file() or (site / f"{module}.py").is_file():

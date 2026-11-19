@@ -125,7 +125,27 @@ The host around it (`pi_harden_host.sh`, run by the first boot; run it again
 as root any time, it is idempotent):
 
 - SSH by key only for every user, no root login, no X11 forwarding, 3 tries,
-  only the login and the agent user. fail2ban bans repeated failures.
+  only the login and the agent user. fail2ban bans repeated failures: 10 of
+  them within 10 minutes, then 5 minutes, lengthening with each further ban
+  of the same address.
+
+  **A ban looks exactly like a wrong password.** The person typing sees
+  "Permission denied" either way, so they try again, which extends it. When
+  someone cannot get in and is sure of their password, check this before
+  anything else:
+
+  ```bash
+  sudo fail2ban-client status sshd        # Banned IP list
+  sudo fail2ban-client set sshd unbanip <their address>   # must return 1
+  ```
+
+  Note the count: one click in the Windows launcher makes up to **three**
+  SSH connections, each asking once, so one attempt with a wrong password
+  costs three failures. At the earlier `maxretry = 5` a newcomer was banned
+  on their second click, for an hour. Measured on 2026-11-19, where it cost
+  an afternoon: the password had been changed, the person was given the old
+  one, and after two clicks nothing worked at all for a reason nothing on
+  screen named.
 - nftables: inbound default deny. SSH only from private IPv4 nets (LAN, VPN)
   and link-local IPv6; add trusted IPv6 prefixes with `SSH_V6="..."` (a Pi
   on a routed IPv6 network is otherwise reachable from far beyond the LAN).
@@ -276,11 +296,33 @@ What only a person can do, in this order:
   A copy kept from an earlier layout (`.delfin_settings.json.before-shared-*`)
   is not applied again; merge it by hand if it is still wanted.
   `delfin-people` lists who is there; `delfin-people --attach NAME` shows that
-  person's dashboard session. They are one Unix user: everyone can read
+  person's dashboard session.
+
+  **Letting a new person in.** `pi_harden_host.sh` sets
+  `PasswordAuthentication no`, and the launcher registers a PC by appending
+  its key during the first *password* login — so on a hardened box that
+  first login cannot happen and a new person is locked out by a key that is
+  added only once they are in. One step closes it: they install the
+  launcher and press Start once, which fails but creates
+  `%USERPROFILE%\.ssh\delfin_launcher_ed25519.pub`; they send you that file;
+  you run
+
+  ```bash
+  delfin-people --add-key <name> < their-key.pub
+  ```
+
+  which appends it with the launcher's own restriction
+  (`restrict,port-forwarding,pty`: the dashboard tunnel and a terminal, no
+  agent, no X11, no `~/.ssh/rc`). Appending the line by hand is what puts an
+  **unrestricted** key in `authorized_keys`; `delfin-people --keys` shows
+  which keys carry no restriction. Revoke a PC by deleting its
+  `delfin-launcher-<name>` line.
+
+  They are one Unix user: everyone can read
   everything in the account, credentials included. Put only neutral, project
   credentials (a project KIT key, the repository deploy key, a neutral git
   identity) into it; personal ones belong in personal accounts.
-- Keep session is this box's default for the Windows launcher
+- Keep dashboard is this box's default for the Windows launcher
   (`~/.config/delfin/launcher-keep.conf`, written by `pi_install.sh`;
   `DELFIN_PI_KEEP=0` leaves the choice to the app): a disconnect leaves the
   dashboard and its agent running, the next connection returns to it.

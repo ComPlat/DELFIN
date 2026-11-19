@@ -56,6 +56,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from ..agent.state_paths import state_root
 
 from . import pairing
 from .people import OWNER, valid as valid_person
@@ -79,7 +80,7 @@ class PairingRefused(ValueError):
 
 def state_dir() -> Path:
     return Path(os.environ.get("DELFIN_MESSENGER_DIR", "")
-                or (Path.home() / ".delfin" / "messenger"))
+                or (state_root() / "messenger"))
 
 
 def pair_file() -> Path:

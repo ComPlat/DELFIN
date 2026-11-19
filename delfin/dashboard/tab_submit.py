@@ -40,6 +40,7 @@ def _input_processing():
 from .constants import COMMON_LAYOUT, COMMON_STYLE
 from .helpers import resolve_time_limit, create_time_limit_widgets, disable_spellcheck, parse_time_to_seconds
 from . import gfn_optimize as _gfn
+from . import goat_method as _goat_method
 from . import mopac_optimize as _mopac
 from . import solvents as _solvents
 from . import structure_editor as _structure_editor
@@ -169,6 +170,36 @@ def create_tab(ctx):
     )
     control_widget.add_class('delfin-nospell')
     disable_spellcheck(ctx)
+
+    # GOAT method: xTB (the xTB_method) or an orca-mlips MLIP, written into the
+    # CONTROL text as global_opt_method= and read back from it. The text is
+    # what is submitted; the selector only edits the lines it owns.
+    # Availability is read from environment metadata (no torch import) and
+    # kept for a minute, so building the tab costs a few directory listings.
+    _goat_status = _goat_method.availability()
+    _goat_initial, _goat_raw = _goat_method.read_method(ctx.default_control)
+    # The labels stand beside the controls rather than in their description:
+    # a Dropdown or Text with a description puts its tooltip nowhere
+    # (@jupyter-widgets/controls 5 sets the title only when the description
+    # is empty), and the tooltip is where each choice is explained.
+    _goat_tip = _goat_method.tooltip()
+    _model_tip = ('global_opt_mlip_model: the model the MLIP loads (--model); '
+                  'empty = its default.')
+    goat_method_label = widgets.Label('GOAT method:', tooltip=_goat_tip)
+    goat_method_widget = widgets.Dropdown(
+        options=_goat_method.options(
+            _goat_status, _goat_raw if _goat_initial == _goat_method.UNKNOWN else None),
+        value=_goat_initial, tooltip=_goat_tip,
+        style=COMMON_STYLE, layout=widgets.Layout(width='300px'),
+    )
+    goat_model_label = widgets.Label('Model:', tooltip=_model_tip)
+    goat_model_widget = widgets.Text(
+        value=_goat_method.read_model(ctx.default_control), placeholder='default model',
+        continuous_update=False, tooltip=_model_tip,
+        style=COMMON_STYLE, layout=widgets.Layout(width='220px'),
+    )
+    goat_method_status = widgets.HTML(value='', layout=widgets.Layout(width='100%'))
+    goat_sync = {'busy': False}
 
     submit_button = widgets.Button(
         description='SUBMIT JOB', button_style='primary',
@@ -1551,6 +1582,55 @@ def create_tab(ctx):
             if any_success:
                 reset_form()
 
+    def _goat_refresh_from_text(change=None, *, refresh=False):
+        """Selector, model field and status line from the CONTROL text."""
+        text = control_widget.value or ''
+        value, raw = _goat_method.read_method(text)
+        model = _goat_method.read_model(text)
+        status = _goat_method.availability(refresh=refresh)
+        goat_sync['busy'] = True
+        try:
+            wanted = _goat_method.options(
+                status, raw if value == _goat_method.UNKNOWN else None)
+            if list(goat_method_widget.options) != wanted:
+                goat_method_widget.options = wanted
+            if goat_method_widget.value != value:
+                goat_method_widget.value = value
+            if goat_model_widget.value != model:
+                goat_model_widget.value = model
+            plugin = value.split(':', 1)[1] if value.startswith('mlip:') else ''
+            goat_model_widget.disabled = not plugin
+            default_model = (status.get(plugin) or {}).get('default_model', '') if plugin else ''
+            goat_model_widget.placeholder = (
+                f'default: {default_model}' if default_model else 'default model')
+            goat_method_status.value = _goat_method.status_html(
+                value, status, raw,
+                _goat_method.model_error(model) if plugin else '')
+        finally:
+            goat_sync['busy'] = False
+
+    def _goat_on_method(change):
+        if goat_sync['busy'] or change.get('name') != 'value':
+            return
+        value = change['new']
+        if value == _goat_method.UNKNOWN:
+            return  # the text keeps what it holds
+        _goat_method.availability(refresh=True)  # a choice reads it afresh
+        new_text = _goat_method.write_method(control_widget.value or '', value)
+        if new_text != control_widget.value:
+            control_widget.value = new_text  # observed: refreshes the rest
+        else:
+            _goat_refresh_from_text()
+
+    def _goat_on_model(change):
+        if goat_sync['busy'] or change.get('name') != 'value':
+            return
+        new_text = _goat_method.write_model(control_widget.value or '', change['new'])
+        if new_text != control_widget.value:
+            control_widget.value = new_text
+        else:
+            _goat_refresh_from_text()
+
     def reset_form():
         _cancel_batch_preview_timer()
         job_name_widget.value = ''
@@ -2039,6 +2119,10 @@ def create_tab(ctx):
         preview_smiles_at_index(0, delay=0.35)
 
     smiles_batch_widget.observe(on_batch_change, names='value')
+    control_widget.observe(_goat_refresh_from_text, names='value')
+    goat_method_widget.observe(_goat_on_method, names='value')
+    goat_model_widget.observe(_goat_on_model, names='value')
+    _goat_refresh_from_text()
     only_goat_submit_button.on_click(handle_only_goat_submit)
     co2_submit_button.on_click(handle_co2_chain_submit)
     validate_button.on_click(handle_validate_control)
@@ -2059,30 +2143,35 @@ def create_tab(ctx):
         # arrives after the drawing rather than before it.
         widgets.HBox([submit_draw_open_btn, submit_draw_get_btn,
                       submit_draw_update_btn],
-                     layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
+                     layout=widgets.Layout(gap='10px', flex_flow='row wrap')),
         submit_draw_frame, submit_draw_sync, submit_draw_tools,
         widgets.HBox([convert_smiles_button, convert_smiles_uff_button,
                       convert_smiles_quick_button],
-                     layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
+                     layout=widgets.Layout(gap='10px', flex_flow='row wrap')),
         widgets.HBox([build_complex_button],
-                     layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
+                     layout=widgets.Layout(gap='10px', flex_flow='row wrap')),
         manta_settings_row,
         # MANTA button sits directly UNDER its settings; the external
         # metal-complex constructors stand beside it as equals.
         widgets.HBox([manta_button, architector_button, molsimplify_button, mace_button,
                       rxembed_button, molassembler_button, metallogen_button],
-                     layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
+                     layout=widgets.Layout(gap='10px', flex_flow='row wrap')),
         spacer_large,
         widgets.HTML('<b>Batch SMILES/XYZ:</b>'),
         smiles_batch_widget, spacer,
         widgets.HBox(
             [smiles_prev_button, smiles_preview_label, smiles_next_button],
-            layout=widgets.Layout(gap='2px', align_items='center', flex_wrap='wrap'),
+            layout=widgets.Layout(gap='2px', align_items='center', flex_flow='row wrap'),
         ),
         smiles_batch_output,
         construction_batch_panel,
         spacer_large,
-        widgets.HTML('<b>CONTROL.txt:</b>'), control_widget, spacer,
+        widgets.HTML('<b>CONTROL.txt:</b>'),
+        widgets.HBox([goat_method_label, goat_method_widget,
+                      goat_model_label, goat_model_widget],
+                     layout=widgets.Layout(gap='8px', flex_flow='row wrap', align_items='center')),
+        goat_method_status,
+        control_widget, spacer,
         widgets.HBox([validate_button, submit_button]),
         output_area, validate_output,
     ], layout=widgets.Layout(
@@ -2092,7 +2181,7 @@ def create_tab(ctx):
 
     xyz_copy_row = widgets.HBox(
         [xyz_copy_btn, xyz_copy_status],
-        layout=widgets.Layout(gap='6px', align_items='center', flex_wrap='wrap'),
+        layout=widgets.Layout(gap='6px', align_items='center', flex_flow='row wrap'),
     )
     # What travels into the overlay, and what it is once it is there. These are
     # the same names the ORCA Builder, the Calculations browser and the Archive
@@ -2131,6 +2220,17 @@ def create_tab(ctx):
     xyz_copy_row.add_class('delfin-structure-fs-toolbar')
     mol_output.add_class('delfin-structure-fs-viewer')
 
+    def _form_row(children):
+        """One row of a small job form (GOAT, CO2, GUPPY, Fukui): a grid row
+        of equal columns (submit-form-grid in the tab's CSS), so its labels,
+        fields and buttons start where those of every other form row do.
+        Sized to their own labels, the fields of neighbouring rows started
+        at different places."""
+        row = widgets.HBox(list(children),
+                           layout=widgets.Layout(gap='8px', align_items='center'))
+        row.add_class('submit-form-grid')
+        return row
+
     submit_right = widgets.VBox([
         widgets.HTML('<b>Molecule Preview:</b>'),
         submit_manip_toolbar, mol_viewer_stack, isomer_nav_row, xyz_copy_row,
@@ -2138,50 +2238,24 @@ def create_tab(ctx):
         spacer_large,
         widgets.HTML('<b>GOAT:</b>'),
         widgets.VBox([
-            widgets.HBox(
-                [
-                    only_goat_charge,
-                    only_goat_solvent,
-                    only_goat_smiles_converter,
-                ],
-                layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
-            ),
-            widgets.HBox(
-                [
-                    only_goat_pal,
-                    only_goat_maxcore,
-                    only_goat_time,
-                    only_goat_submit_button,
-                ],
-                layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
-            ),
+            _form_row([only_goat_charge, only_goat_solvent, only_goat_smiles_converter]),
+            _form_row([only_goat_pal, only_goat_maxcore, only_goat_time,
+                       only_goat_submit_button]),
         ], layout=widgets.Layout(gap='8px')),
         only_goat_output,
         spacer_large,
         widgets.HTML('<b>CO2 Coordinator:</b>'),
-        widgets.HBox(
-            [co2_species_delta, co2_submit_button],
-            layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
-        ),
+        _form_row([co2_species_delta, co2_submit_button]),
         co2_output,
         spacer_large,
         widgets.HTML('<b>GUPPY:</b>'),
-        widgets.HBox(
-            [guppy_pal, guppy_goat_topk, guppy_timeout, guppy_submit_button],
-            layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
-        ),
+        _form_row([guppy_pal, guppy_goat_topk, guppy_timeout, guppy_submit_button]),
         guppy_output,
         spacer_large,
         widgets.HTML('<b>Fukui Indices (atomic):</b>'),
         widgets.VBox([
-            widgets.HBox(
-                [fukui_skip_cubes],
-                layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
-            ),
-            widgets.HBox(
-                [fukui_pal, fukui_maxcore, fukui_time_limit, fukui_submit_button],
-                layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
-            ),
+            _form_row([fukui_skip_cubes]),
+            _form_row([fukui_pal, fukui_maxcore, fukui_time_limit, fukui_submit_button]),
         ], layout=widgets.Layout(gap='8px')),
         fukui_output,
     ], layout=widgets.Layout(
@@ -2205,6 +2279,23 @@ def create_tab(ctx):
     submit_css = widgets.HTML(
         """
         <style>
+        /* The small job forms (_form_row): equal columns, three of which fit
+           the right-hand pane at 1366 px; each field fills its cell (its
+           inline width was sized for a flex row), each label at least
+           84 px, so inputs line up from row to row. */
+        .widget-hbox.submit-form-grid { display: grid;
+            grid-template-columns: repeat(auto-fill, 190px);
+            gap: 8px 12px; align-items: center; }
+        .widget-hbox.submit-form-grid > .jupyter-widgets { width: auto !important;
+            min-width: 0; margin: 0; }
+        .widget-hbox.submit-form-grid .widget-label { min-width: 84px; }
+        /* A narrow window (a phone, a tall narrow window): form above the
+           preview, each the full width. Side by side at 390 px each pane got
+           ~170 px and the preview's panel painted over the form; at 900 px
+           the form's left pane cut its own buttons. */
+        @media (max-width: 960px) {
+            .submit-split-root.widget-hbox { flex-direction: column !important; }
+            .submit-split-root > .submit-split-pane { flex: 0 0 auto !important; width: 100% !important; max-width: 100% !important; } }
         .submit-split-root, .submit-split-root * {
             box-sizing: border-box;
         }
@@ -2301,6 +2392,10 @@ def create_tab(ctx):
         'reset_form': reset_form,
         'mol_output': mol_output,
         'control_widget': control_widget,
+        'goat_method_label': goat_method_label,
+        'goat_method_widget': goat_method_widget,
+        'goat_model_widget': goat_model_widget,
+        'goat_method_status': goat_method_status,
         'coords_widget': coords_widget,
         'submit_button': submit_button,
         'job_name_widget': job_name_widget,

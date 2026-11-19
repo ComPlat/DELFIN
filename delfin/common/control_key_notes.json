@@ -344,6 +344,24 @@
       "default": "cuda",
       "read_by": "delfin/xtb_crest.py _xtb_goat_mlip (_gpu_visible check)."
     },
+    "global_opt_mlip_provider": {
+      "meaning": "Which ExtOpt provider runs an MLIP GOAT. auto takes orca-external-tools when it is installed with the backend (one model server for the whole job, a slim client per call), else orca-mlips; oet or orca-mlips forces one. global_opt_method keeps its meaning either way.",
+      "valid_values": "auto | oet | orca-mlips (_as_global_opt_mlip_provider)",
+      "default": "auto",
+      "read_by": "delfin/xtb_crest.py _xtb_goat_mlip; delfin/mlp_tools/mlip_goat.py choose_provider."
+    },
+    "goat_max_workers": {
+      "meaning": "Number of GOAT workers of an MLIP GOAT. Empty: DELFIN's measured default (delfin/mlp_tools/mlip_goat.py). orca-mlips: %goat nworkers, capped at 8 on a large GPU because it loads one model per worker (40 workers ran a GPU out of memory); PAL is not changed. orca-external-tools: %pal nprocs, the workers and the server's model processes are this one number, because the server refuses a request for more cores than it has processes (the initial optimisation asks for all of %pal).",
+      "valid_values": "empty | a positive multiple of 4 (_as_goat_max_workers)",
+      "default": "(empty: DELFIN's measured default, delfin/mlp_tools/mlip_goat.py)",
+      "read_by": "delfin/mlp_tools/mlip_goat.py plan_goat."
+    },
+    "mlip_fast_client": {
+      "meaning": "Client of an orca-external-tools MLIP GOAT. auto: DELFIN's measured default (delfin/mlp_tools/mlip_goat.py FAST_CLIENT_DEFAULT). yes: the request oet_client sends, made with curl, so no Python interpreter starts per energy/gradient. no: the documented oet_client.",
+      "valid_values": "auto | yes | no (_as_mlip_fast_client)",
+      "default": "(empty or auto: DELFIN's measured default, FAST_CLIENT_DEFAULT)",
+      "read_by": "delfin/mlp_tools/mlip_goat.py plan_goat; delfin/mlp_tools/oet.py client_wrapper."
+    },
     "refuse_noncommercial_weights": {
       "meaning": "Refuse an MLIP whose model weights are non-commercially licensed (LICENSE_GUARD.md family 4); applies to global_opt_method (mlip:mace).",
       "valid_values": "yes | no (_as_yes_no)",

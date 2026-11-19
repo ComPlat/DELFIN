@@ -42,8 +42,11 @@ import os
 import time
 import uuid
 from pathlib import Path
+from .state_paths import state_root
 
-_DIR = Path.home() / ".delfin" / "session_inbox"
+from . import state_file as _state_file
+
+_DIR = state_root() / "session_inbox"
 _MAX_TEXT = 4000
 # At most this many messages reach one prompt; older ones are counted, not read.
 _MAX_TAKE = 20
@@ -443,11 +446,43 @@ def _receipts_path() -> Path:
 
 
 def _receipts() -> dict:
+    """The receipts store, or an empty one where it is absent OR unreadable.
+
+    Lenient on purpose: ``status`` / ``ls`` only ask what happened, and a
+    damaged store answering "nothing recorded" is a true answer for a reader.
+    A WRITER must not build on this answer (see :func:`_receipts_for_write`).
+    """
     try:
         data = json.loads(_receipts_path().read_text(encoding="utf-8"))
     except Exception:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _receipts_for_write() -> tuple[dict, "Path | None"]:
+    """The receipts to modify, and where an unreadable store was moved to.
+
+    Each writer saves the WHOLE store back, so a writer must not build on
+    :func:`_receipts`'s empty answer for a DAMAGED file -- that would put the
+    new delivery over every earlier delivery/read record, which are not
+    reconstructable. The damaged bytes go aside, not under the new write.
+    """
+    data, moved = _state_file.read_json_for_write(
+        _receipts_path(), default=None)
+    if not isinstance(data, dict):
+        data = {}
+    return data, moved
+
+
+def _note_receipts_moved(moved) -> None:
+    """Report that a damaged receipts store was kept aside, so it is not silent."""
+    if moved is None:
+        return
+    import logging
+    logging.getLogger(__name__).warning(
+        "the session-message receipts could not be read and were moved to "
+        "%s; the new receipts were stored, and whatever that store still "
+        "held is in the file kept aside", moved.name)
 
 
 def _receipts_save(receipts: dict) -> None:
@@ -476,7 +511,7 @@ def _receipts_deliver(messages: list[dict]) -> None:
     """Record that each ``message`` was handed to its recipient (delivered)."""
     if not messages:
         return
-    receipts = _receipts()
+    receipts, moved = _receipts_for_write()
     now = time.time()
     for m in messages:
         mid = str(m.get("id") or "")
@@ -493,6 +528,7 @@ def _receipts_deliver(messages: list[dict]) -> None:
         rec["read_at"] = rec.get("read_at")
         receipts[mid] = rec
     _receipts_save(receipts)
+    _note_receipts_moved(moved)
 
 
 def _receipts_dropped(messages: list[dict]) -> None:
@@ -506,7 +542,7 @@ def _receipts_dropped(messages: list[dict]) -> None:
     """
     if not messages:
         return
-    receipts = _receipts()
+    receipts, moved = _receipts_for_write()
     now = time.time()
     for m in messages:
         mid = str(m.get("id") or "")
@@ -519,6 +555,7 @@ def _receipts_dropped(messages: list[dict]) -> None:
         rec["dropped_at"] = now
         receipts[mid] = rec
     _receipts_save(receipts)
+    _note_receipts_moved(moved)
 
 
 def mark_read(message_id: str) -> None:
@@ -526,11 +563,12 @@ def mark_read(message_id: str) -> None:
     mid = str(message_id or "")
     if not mid:
         return
-    receipts = _receipts()
+    receipts, moved = _receipts_for_write()
     if mid not in receipts:
         return
     receipts[mid]["read_at"] = time.time()
     _receipts_save(receipts)
+    _note_receipts_moved(moved)
 
 
 def _queued_sender_of(message_id: str) -> "str | None":

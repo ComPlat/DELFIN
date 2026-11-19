@@ -51,6 +51,7 @@ import stat
 import threading
 import time
 from pathlib import Path
+from ..agent.state_paths import state_root
 
 #: How long an invitation link is valid.
 INVITATION_TTL_S = 600
@@ -73,7 +74,7 @@ KINDS = frozenset({"pair", "verify", "phones", "revoke", "cancel"})
 FINAL_STATES = frozenset({"verified", "refused", "expired", "failed", "done", "cancelled"})
 MAX_FILE_BYTES = 16384
 
-_DIR = Path.home() / ".delfin" / "messenger_pairing"
+_DIR = state_root() / "messenger_pairing"
 _ID = re.compile(r"[0-9a-f]{32}")
 _HEX = re.compile(r"[0-9a-f]{64}")
 
@@ -477,6 +478,14 @@ def _spawn(fn) -> None:
     threading.Thread(target=fn, name="messenger-pair", daemon=True).start()
 
 
+def _unavailable() -> str:
+    """Why no messenger can answer a pairing request from here, or ''
+    (activation.pairing_unavailable). Asked before a request is written:
+    without a bridge nobody collects it."""
+    from .activation import pairing_unavailable
+    return pairing_unavailable()
+
+
 def session_command(args: str, *, requester: str, show, spawn=_spawn,
                     directory: Path | None = None, timeout: float = 30.0) -> str:
     """``/pair [CODE | status | phones | revoke LABEL|all | cancel]`` in a session.
@@ -484,13 +493,19 @@ def session_command(args: str, *, requester: str, show, spawn=_spawn,
     Returns the immediate answer; ``show(text)`` is called later from a
     background thread with what the gateway answered (the invitation, the
     connection, the verification). The invitation text is meant for a
-    display that is not kept (a live notice), never for a transcript."""
+    display that is not kept (a live notice), never for a transcript.
+    Where no messenger bridge runs, every subcommand that needs the gateway
+    returns the reason at once (activation.pairing_unavailable) and writes
+    no request; ``cancel`` and the usage line work anywhere."""
     words = str(args or "").strip()
     head, _, rest = words.partition(" ")
     head = head.lower()
     if not requester:
         return "Start a session first, then /pair."
     if re.fullmatch(r"[\d\s-]+", words) and digits(words):
+        why = _unavailable()
+        if why:
+            return why
         rid = confirm(requester, words, directory=directory)
         if rid is None:
             return "This session started no pairing. Start with /pair."
@@ -504,6 +519,9 @@ def session_command(args: str, *, requester: str, show, spawn=_spawn,
         spawn(after_verify)
         return "Code sent to the gateway; the answer follows in a few seconds."
     if head in {"phones", "status", "list"}:
+        why = _unavailable()
+        if why:
+            return why
         rid = submit("phones", {}, directory=directory)
         spawn(lambda: show(state_text(wait(rid, lambda r: True, timeout=timeout,
                                             directory=directory))))
@@ -512,6 +530,9 @@ def session_command(args: str, *, requester: str, show, spawn=_spawn,
         label = rest.strip()
         if not label:
             return "/pair revoke LABEL (from /pair phones) or /pair revoke all"
+        why = _unavailable()
+        if why:
+            return why
         rid = submit("revoke", {"label": label[:64]}, directory=directory)
         spawn(lambda: show(state_text(wait(rid, lambda r: True, timeout=timeout,
                                             directory=directory))))
@@ -525,6 +546,9 @@ def session_command(args: str, *, requester: str, show, spawn=_spawn,
         return "Pairing cancelled."
     if head and head not in {"new", "neu", "start"}:
         return ("/pair · /pair CODE · /pair phones · /pair revoke LABEL|all · /pair cancel")
+    why = _unavailable()
+    if why:
+        return why
     rid = begin(requester, directory=directory)
 
     def after_pair():
@@ -586,6 +610,10 @@ def cli_main(argv: list[str], *, ask=input, out=print, timeout: float = 30.0) ->
         return 2
     if _from_an_agent():
         out("Refused: an agent session cannot pair, list or unpair phones.")
+        return 2
+    why = _unavailable()
+    if why:
+        out(why)
         return 2
     if head == "phones":
         rid = submit("phones", {})

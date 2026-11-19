@@ -13,9 +13,11 @@ import re
 import time
 import zipfile
 from pathlib import Path
+from .state_paths import state_root
 from typing import Any
 
 from . import proc_identity
+from . import state_file as _state_file
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +168,7 @@ def _migrate_mode(mode: str) -> str:
     return _LEGACY_MODE_MAP.get(mode, mode)
 
 
-_SESSIONS_DIR = Path.home() / ".delfin" / "agent_sessions"
+_SESSIONS_DIR = state_root() / "agent_sessions"
 
 
 # The three directories below stay resolved per call, through
@@ -179,15 +181,15 @@ _SESSIONS_DIR = Path.home() / ".delfin" / "agent_sessions"
 # something went looking for one.
 
 def _transcript_archive_path() -> Path:
-    return Path.home() / ".delfin" / "transcript_archive"
+    return state_root() / "transcript_archive"
 
 
 def _handoffs_path() -> Path:
-    return Path.home() / ".delfin" / "handoffs"
+    return state_root() / "handoffs"
 
 
 def _bundles_path() -> Path:
-    return Path.home() / ".delfin" / "bundles"
+    return state_root() / "bundles"
 
 
 def _ensure_dir() -> Path:
@@ -698,9 +700,6 @@ def consume_crash_recovery_note(session_id: str) -> str | None:
     recover.
     """
     ck = load_turn_checkpoint(session_id)
-    if not ck:
-        return None
-    clear_turn_checkpoint(session_id)
     saved_at = 0.0
     saved = load_session(session_id)
     if saved:
@@ -708,12 +707,43 @@ def consume_crash_recovery_note(session_id: str) -> str | None:
             saved_at = float(saved.get("updated_at", 0) or 0)
         except (TypeError, ValueError):
             saved_at = 0.0
+
+    # The chain offer is NOT checkpoint-dependent (live run 2, operator,
+    # 2026-11-15): a crash before the first turn checkpoint, or a session
+    # closed normally whose chain a SLURM kill later hit, must still get
+    # the offer on resume.  It is built once per resume, here — with or
+    # without a crash note (never twice).
+    try:
+        chains = _render_chain_offer(
+            session_id,
+            workspace=_session_record_workspace(session_id) or os.getcwd(),
+        )
+    except Exception as exc:
+        import logging as _logging
+        # The session id is not logged: it is a credential-like handle
+        # (anyone holding it can resume the session).
+        _logging.getLogger(__name__).warning(
+            "chain offer skipped on resume: %s", exc)
+        chains = None
+
+    if not ck:
+        # Live run 2: no surviving checkpoint does NOT mean nothing to
+        # recover — the chain offer alone is the note (or None when the
+        # session has no unfinished chains: no chain text at all, JC2
+        # target 3).
+        return chains
+
+    clear_turn_checkpoint(session_id)
     try:
         ck_ts = float(ck.get("ts", 0) or 0)
     except (TypeError, ValueError):
         ck_ts = 0.0
     if ck_ts <= saved_at:
-        return None   # stale — a full save landed after this checkpoint
+        # Stale — a full save landed after this checkpoint: no
+        # "[recovered]" note, but the chain offer was already built and
+        # is checkpoint-independent (live run 2/3, operator 2026-11-15)
+        # — a stale checkpoint with an unfinished chain still offers.
+        return chains
     user_msg = str(ck.get("user_message", "") or "").strip()
     n_tools = int(ck.get("tool_calls", 0) or 0)
     partial = str(ck.get("partial_response", "") or "").strip()
@@ -735,7 +765,162 @@ def consume_crash_recovery_note(session_id: str) -> str | None:
         steps = None
     if steps:
         note += "\n\n" + steps
+    # The chain offer was already built above (checkpoint-independent).
+    if chains:
+        note += "\n\n" + chains
     return note
+
+
+def _session_record_workspace(session_id: str) -> str | None:
+    """The workspace the session record holds ("" / None when absent).
+
+    The agent-service restore runs in a service process whose cwd is
+    the service dir, not the workspace — the session file is the only
+    place the workspace survives the original process (live-run A,
+    operator A review of ee05dc9e1).
+    """
+    try:
+        rec = load_session(session_id) or {}
+    except Exception:
+        return None
+    ws = rec.get("workspace") or ""
+    return str(ws) or None
+
+
+def _render_chain_offer(session_id: str, workspace: str | Path | None = None) -> str | None:
+    """The unfinished-chains offer for ONE agent session, or None.
+
+    Facts only (JC2 target 3): only chains the index records for THIS
+    session id (a chain started outside an agent session is never
+    offered to one); a chain whose state file is gone or fully finished
+    is not offered; per chain the name, work dir, one status line per
+    unfinished step and the exact resume command; the text says the
+    chain is NOT resumed automatically and the agent must ask the user
+    first.  The index is a pointer: every state comes from the chain's
+    own chain_state.json.  A session with no unfinished chains gets no
+    chain text at all.
+
+    Live-run A finding (operator, 2026-11-14): a chain started through
+    bash inside the agent sandbox cannot write the per-user index (HOME
+    is read-only there), so the offer ALSO scans *workspace* — the
+    workspace root and its DIRECT subdirectories only, never a tree
+    walk — for chain_state.json with unfinished steps.  A chain in this
+    session's workspace belongs to this session's offer; the index
+    stays the source for chains outside the workspace.  The scan dedupes
+    against the index by work dir.
+    """
+    from delfin.tools import chain_index
+
+    entries = chain_index.load(agent_session_id=session_id)
+    scanned = _scan_workspace_chains(workspace)
+    # dedupe: an indexed chain whose work dir the scan also finds appears
+    # once (the index entry wins — it carries the session binding)
+    seen_dirs = {str(Path(e.get("work_dir") or "").resolve())
+                 for e in entries if e.get("work_dir")}
+    for wd, ch in scanned:
+        if str(Path(wd).resolve()) in seen_dirs:
+            continue
+        entries.append({"work_dir": str(wd)})
+
+    lines: list[str] = []
+    for e in entries:
+        wd = e.get("work_dir") or ""
+        state_file = Path(wd) / "chain_state.json" if wd else None
+        if not state_file or not state_file.is_file():
+            continue  # gone — a fact that offers nothing
+        try:
+            from delfin.tools import chain_state
+            chain = chain_state.ChainState.load(state_file)
+        except Exception as exc:  # noqa: BLE001 - a fact, reported small
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "chain offer: state file %s unreadable (%s)", state_file, exc)
+            continue
+        if chain.steps and all(s.state == "finished" for s in chain.steps):
+            continue  # fully finished — nothing to resume
+        unfinished = [s for s in chain.steps if s.state != "finished"]
+        if not unfinished:
+            continue
+        lines.append(f"  chain '{chain.name}' — work dir: {wd}")
+        still_running = False
+        for s in unfinished:
+            line = f"    step '{s.name}' ({s.tool}): {s.state}"
+            # JC3: say whether the step's process still runs.  Live run 4
+            # of JC2: the restarted agent read an interrupted ORCA run's
+            # temporary files as "actively running".
+            from delfin.tools import chain_liveness
+
+            alive, why = chain_liveness.runner_liveness(s)
+            if why:
+                line += f" — {why}"
+            still_running = still_running or alive == chain_liveness.RUNNING
+            if s.error:
+                line += f" — {s.error}"
+            lines.append(line)
+        if still_running:
+            lines.append(
+                "    still running — do NOT resume it while it runs; "
+                "check again later")
+        else:
+            lines.append(
+                f"    resume with: delfin chain resume {wd}  (NOT resumed "
+                "automatically — ask the user first)")
+    if not lines:
+        return None
+    return (
+        "[unfinished chains] This session started calculation chains "
+        "that are not finished (files an interrupted step left behind, "
+        "such as ORCA temporary files or a partial output, do not mean "
+        "it is still running — the lines below say whether it is):"
+        "\n" + "\n".join(lines)
+    )
+
+
+def _scan_workspace_chains(
+    workspace: str | Path | None,
+) -> list[tuple[Path, Any]]:
+    """Unfinished chains found in the session workspace — bounded scan.
+
+    Only the workspace root and its DIRECT subdirectories are stat'ed
+    (live-run A: the sandbox makes HOME read-only, so a chain started
+    through bash is never indexed; it lives in the workspace).  This is
+    NOT a tree walk: a chain_state.json deeper than one level down is
+    not found here (pinned by test).  Symlinks are not followed.  Any
+    error yields nothing — the offer is best-effort by design.
+    """
+    if not workspace:
+        return []
+    results: list[tuple[Path, "chain_state.ChainState"]] = []
+    try:
+        root = Path(workspace).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError) as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "chain offer: workspace %s unusable (%s)", workspace, exc)
+        return []
+    if not root.is_dir():
+        return []
+    for candidate in [root, *sorted(root.iterdir())]:
+        if candidate.is_symlink() or not candidate.is_dir():
+            continue
+        state_file = candidate / "chain_state.json"
+        if not state_file.is_file():
+            continue
+        try:
+            from delfin.tools import chain_state
+            chain = chain_state.ChainState.load(state_file)
+        except Exception as exc:  # noqa: BLE001 - a fact, reported small
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "chain offer: state file %s unreadable (%s)", state_file, exc)
+            continue
+        unfinished = [s for s in chain.steps if s.state != "finished"]
+        if chain.steps and not unfinished:
+            continue  # fully finished — nothing to resume
+        if not chain.steps:
+            continue
+        results.append((candidate, chain))
+    return results
 
 
 def _transcript_archive_dir() -> Path:
@@ -1122,6 +1307,13 @@ def save_session(
     token_usage: dict[str, int] | None = None,
     cost_usd: float = 0.0,
     title: str = "",
+    # Which person this session belongs to (people mode: one workspace,
+    # one person). A label, not a boundary: nothing enforces or trusts it
+    # yet — per-person isolation is enforced in later steps of the plan,
+    # and a reader must not mistake this field for that protection. The
+    # API key that proves the person is attached by the egress proxy and
+    # never reaches the record.
+    person: str = "",
     # Long-session extras (all optional, ignored if backend doesn't pass)
     perm_profile: str = "",
     provider: str = "",
@@ -1190,6 +1382,10 @@ def save_session(
         Accumulated cost.
     title : str
         Short description (auto-generated from first user message if empty).
+    person : str
+        The person this session belongs to; ``""`` when there is none
+        (the default, and what every pre-existing record reads back as).
+        A label, not a boundary — enforcement is a later step.
 
     Returns
     -------
@@ -1266,6 +1462,7 @@ def save_session(
         "perm_profile": perm_profile or "",
         "provider": provider or "",
         "model": model or "",
+        "person": person or "",
         # Identity of the process that wrote this record: pid, the
         # start fingerprint that keeps the number honest (a pid alone
         # names nothing, the system hands it out again), the host it
@@ -1296,23 +1493,46 @@ def save_session(
         "compaction_summaries": compaction_summaries or {},
     }
 
-    # Set created_at only on first save
+    # Set created_at only on first save. The read that feeds it is a WRITER
+    # read: its result lands straight back on this same file, so a torn
+    # record must not be read as 'empty' and written over. ``read_json_for_write``
+    # keeps a damaged file aside and names it; the new session is still stored,
+    # and the loss is reported rather than silent.
     filepath = d / f"{session_id}.json"
-    if filepath.exists():
-        try:
-            existing = json.loads(filepath.read_text())
-            data["created_at"] = existing.get("created_at", data["updated_at"])
-            # The "already announced" mark of a pending plan survives a
-            # save of the same plan, and only that.
-            mark = existing.get("pending_plan_noticed")
-            if mark and mark == _plan_mark(data.get("pending_plan_body")):
-                data["pending_plan_noticed"] = mark
-        except (json.JSONDecodeError, OSError):
-            data["created_at"] = data["updated_at"]
+    existing, moved = _state_file.read_json_for_write(filepath, default=None)
+    if isinstance(existing, dict):
+        data["created_at"] = existing.get("created_at", data["updated_at"])
+        # The "already announced" mark of a pending plan survives a
+        # save of the same plan, and only that.
+        mark = existing.get("pending_plan_noticed")
+        if mark and mark == _plan_mark(data.get("pending_plan_body")):
+            data["pending_plan_noticed"] = mark
     else:
         data["created_at"] = data["updated_at"]
 
     _atomic_write_text(filepath, json.dumps(data, ensure_ascii=False, indent=1))
+    if moved is not None:
+        import logging
+        # Deliberately names NO file. Both names carry the session id, and
+        # a session id resumes a session -- CodeQL traces it from a source
+        # it classifies as a secret and reports this as clear-text logging
+        # of sensitive data (py/clear-text-logging-sensitive-data, two high
+        # alerts on the pull request that introduced this line). A log is
+        # read by more people, and kept longer, than the directory it talks
+        # about.
+        #
+        # The DIRECTORY is named instead, which holds no id and is what a
+        # reader of a log can act on: the kept file is in there, beside the
+        # record, under its own name. (An earlier version of this line
+        # pointed at the Settings diagnosis instead. That was wrong: the
+        # doctor's scan for *.unreadable-* files is not recursive and this
+        # directory is a level below the state root, so it would have
+        # promised a listing that does not happen.)
+        logging.getLogger(__name__).warning(
+            "a session record in %s could not be read; it was moved aside "
+            "there under a dated name and a fresh session was stored. "
+            "Whatever that record still held is in the file kept aside",
+            _SESSIONS_DIR)
     return filepath
 
 
@@ -1424,6 +1644,9 @@ def list_sessions(
                 # (2026-09-18).
                 "model": data.get("model", ""),
                 "provider": data.get("provider", ""),
+                # The person this session belongs to; "" when the record
+                # predates the field. Data only: nothing filters on it.
+                "person": data.get("person", ""),
                 # Whether that process still lives, judged through the
                 # one reader of that fact (pid AND start fingerprint
                 # AND host). None means it cannot be asked here: a

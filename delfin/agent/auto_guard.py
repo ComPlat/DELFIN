@@ -75,6 +75,12 @@ _OUTWARD_TOOLS = {
     "cron_create": "schedules a turn outside this loop's budget",
     "schedule_wakeup": "schedules a turn outside this loop's budget",
     "worktree_merge": "merges a worktree and deletes its branch",
+    # DELFIN's HPC clusters (cluster_tools.py): each acts on the user's
+    # account at a computing centre, which a person approves every time.
+    "cluster_submit": "submits jobs to an HPC cluster",
+    "cluster_cancel": "cancels jobs on an HPC cluster",
+    "cluster_upload": "copies files to an HPC cluster",
+    "cluster_run": "runs a command on an HPC cluster's login node",
 }
 _WIDEN_TOOLS = {
     "remember_permission": "adds a permanent permission",
@@ -86,7 +92,7 @@ _WRITE_TOOLS = frozenset({"write_file", "edit_file", "multi_edit",
                           "notebook_edit", "apply_patch", "edit_sheet",
                           "fill_docx_template", "fill_pdf_form",
                           "create_docx", "create_pdf", "make_plot",
-                          "undo_changes"})
+                          "undo_changes", "cluster_fetch"})
 _PATH_KEYS = ("path", "file_path", "notebook_path", "output_path", "target")
 _MCP_SENDING = re.compile(
     r"(send|post|create|merge|delete|remove|publish|comment|reply|push|"
@@ -354,6 +360,10 @@ def _covers(prefix: str, rel: str) -> bool:
 
 
 def _write_paths(name: str, args: dict, workspace: str) -> list[str]:
+    if name == "cluster_fetch":
+        # Its path is on the cluster; it writes where dest says (default
+        # cluster/<name>/...).
+        return [p for p in [_norm(args.get("dest") or "cluster", workspace)] if p]
     out = []
     for k in _PATH_KEYS:
         if isinstance(args.get(k), str):

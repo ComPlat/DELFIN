@@ -140,10 +140,11 @@ def test_format_action_summaries():
 
 def test_background_flag_in_subagent_schema():
     from pathlib import Path
-    src = (Path(__file__).resolve().parent.parent
-           / "delfin" / "agent" / "api_client.py").read_text(encoding="utf-8")
-    i = src.find('"name": "subagent"')
-    assert '"background"' in src[i:i + 3000], "background param missing"
+    agent = Path(__file__).resolve().parent.parent / "delfin" / "agent"
+    schema = (agent / "tool_catalog.py").read_text(encoding="utf-8")
+    i = schema.find('"name": "subagent"')
+    assert '"background"' in schema[i:i + 3000], "background param missing"
+    src = (agent / "api_client.py").read_text(encoding="utf-8")
     assert "started_in_background" in src
 
 
@@ -290,7 +291,7 @@ def test_resume_unknown_id_is_contained(tmp_path, monkeypatch):
 def test_resume_id_in_subagent_schema():
     from pathlib import Path
     src = (Path(__file__).resolve().parent.parent
-           / "delfin" / "agent" / "api_client.py").read_text(encoding="utf-8")
+           / "delfin" / "agent" / "tool_catalog.py").read_text(encoding="utf-8")
     i = src.find('"name": "subagent"')
     assert '"resume_id"' in src[i:i + 4000], "resume_id param missing"
 

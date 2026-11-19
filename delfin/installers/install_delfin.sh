@@ -52,13 +52,52 @@
 # ORCA cannot be downloaded for you (license). Pass --orca with an installed
 # ORCA directory or the tarball from https://orcaforum.kofo.mpg.de, or leave
 # either in $HOME or the prefix directory, where it is found.
+#
+# Before anything is changed, what the run needs is checked (curl or wget,
+# tar, git when DELFIN has to be fetched, a writable prefix and HOME, free
+# disk space, a compiler where something is built). A real run keeps its
+# whole output in PREFIX/logs/; a step that fails names itself, and running
+# the same command again continues from what is already in place.
 # ============================================================================
+# Started with sh (dash on Debian and Ubuntu) or zsh, the bash below stops at
+# its first line ("Illegal option -o pipefail"); bash takes over instead.
+if [ -z "${BASH_VERSION:-}" ]; then exec bash "$0" "$@"; fi
 set -euo pipefail
 
 log()  { printf '[delfin-install] %s\n' "$*"; }
 warn() { printf '[delfin-install] WARNING: %s\n' "$*" >&2; }
-die()  { printf '[delfin-install] ERROR: %s\n' "$*" >&2; exit 1; }
+die()  { printf '[delfin-install] ERROR: %s\n' "$*" >&2; EXPECTED_EXIT=1; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# What the run is doing, for the message when it stops: a failed command under
+# set -e ends the script with no word of where it was.
+STEP="reading the options"
+LOG_FILE=""
+EXPECTED_EXIT=0
+TEE_PIDS=()
+# The tee processes of the log (start_log) are waited for, so nothing they
+# still hold is printed after the shell prompt has come back.
+end_log() {
+  [ ${#TEE_PIDS[@]} -gt 0 ] || return 0
+  exec >&- 2>&-
+  wait "${TEE_PIDS[@]}" 2>/dev/null || true
+}
+on_exit() {
+  local status="$1"
+  if [ "$status" -ne 0 ] && [ "$EXPECTED_EXIT" != 1 ]; then
+    if [ "$status" -ge 128 ]; then
+      printf '[delfin-install] ERROR: stopped (signal %s) while %s.\n' "$((status - 128))" "$STEP" >&2
+    else
+      printf '[delfin-install] ERROR: %s failed (exit %s); the steps after it were not run.\n' "$STEP" "$status" >&2
+    fi
+    printf '[delfin-install] What finished is kept. Fix the cause shown above, then run the same command again: it continues from there.\n' >&2
+  fi
+  if [ "$status" -ne 0 ] && [ -n "$LOG_FILE" ]; then
+    printf '[delfin-install] full log: %s\n' "$LOG_FILE" >&2
+  fi
+  end_log
+}
+trap 'on_exit $?' EXIT
 
 usage() {
   awk 'NR > 2 && /^# =+$/ { exit } NR > 2 { sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"
@@ -195,6 +234,121 @@ fetch() {
   fi
 }
 
+# ---- Before anything changes: what this run needs ------------------------------
+# The nearest existing directory at or above $1.
+existing_parent() {
+  local dir="$1"
+  while [ ! -e "$dir" ] && [ "$dir" != / ]; do dir="$(dirname "$dir")"; done
+  printf '%s\n' "$dir"
+}
+
+# Whole GB free on the file system holding $1; empty when df cannot say. A
+# quota (usual for HOME on a cluster) is not seen by df.
+free_gb() {
+  { df -Pk "$1" 2>/dev/null || true; } | awk 'NR == 2 && $4 ~ /^[0-9]+$/ { printf "%d\n", $4 / 1048576 }'
+}
+
+# A path as a person reads it: ~/x for one under HOME (printed, not expanded).
+shown_path() {
+  # shellcheck disable=SC2088
+  case "$1" in "$HOME"/*) printf '~/%s\n' "${1#"$HOME"/}" ;; *) printf '%s\n' "$1" ;; esac
+}
+
+reachable() {
+  if have curl; then
+    curl -fsSI --max-time 20 -o /dev/null "$1" >/dev/null 2>&1
+  else
+    wget -q --spider --timeout=20 "$1" >/dev/null 2>&1
+  fi
+}
+
+preflight() {
+  local missing=() dir parent free need where tool absent=()
+  if ! have curl && ! have wget; then
+    missing+=("curl or wget (downloads micromamba, OpenMPI, Ketcher and the QM tools)")
+  fi
+  have tar || missing+=("tar (unpacks OpenMPI, ORCA and the tools)")
+  if ! grep -qs 'name = "delfin-complat"' "$DELFIN_REPO/pyproject.toml" \
+      || { [ "$MODE" = update ] && [ -d "$DELFIN_REPO/.git" ]; }; then
+    have git || missing+=("git (fetches and updates DELFIN)")
+  fi
+  if [ ${#missing[@]} -gt 0 ]; then
+    for tool in "${missing[@]}"; do warn "missing: $tool"; done
+    die "nothing was changed. Install what is missing (on a shared machine: ask its administrators, or load it as a module), then run the same command again."
+  fi
+
+  for dir in "$PREFIX" "$HOME"; do
+    parent="$(existing_parent "$dir")"
+    if [ ! -d "$parent" ] || [ ! -w "$parent" ]; then
+      if [ "$dir" = "$PREFIX" ]; then
+        die "$PREFIX cannot be created: $parent is not a writable directory. Nothing was changed; choose another place with --prefix DIR."
+      fi
+      die "HOME ($HOME) is not writable; DELFIN keeps its settings and tools there. Nothing was changed."
+    fi
+  done
+
+  # Measured for a fresh install (2026-11-13): core 2.5 GB, standard 4.3 GB
+  # (venv 1.6, micromamba packages 1.1, ~/.delfin 0.8, pip cache 0.4).
+  case "$MODE:$PROFILE" in
+    install:core) need=3 ;;
+    install:all) need=20 ;;
+    install:*) need=6 ;;
+    *) need=2 ;;
+  esac
+  for dir in "$PREFIX" "$HOME"; do
+    where="$(existing_parent "$dir")"
+    free="$(free_gb "$where")"
+    if [ -n "$free" ] && [ "$free" -lt "$need" ]; then
+      warn "only $free GB free on the file system of $(shown_path "$dir"); this run needs about $need GB (the venv in the checkout, micromamba packages under the prefix, tools in ~/.delfin, the pip cache in ~/.cache). On a cluster, put the checkout and --prefix into a workspace."
+    fi
+  done
+
+  if [ "$WANT_OPENMPI" = 1 ] && { ! { have gcc || have cc; } || ! have make; }; then
+    warn "no C compiler (gcc or cc) or no make on PATH: if OpenMPI has to be built, that step will fail. Load a compiler first (on a cluster usually a module), or pass --no-openmpi and set OPENMPI_PREFIX to an existing build later."
+  fi
+  # std2 has no binary release: one on PATH or from an earlier run is linked,
+  # otherwise it is built.
+  if printf '%s\n' "$PLAN" | grep -q -E '^qm:.*(^| )std2( |$)' \
+      && ! have std2 && [ ! -x "$HOME/.delfin/qm_tools/bin/std2" ]; then
+    for tool in meson ninja gfortran gcc; do have "$tool" || absent+=("$tool"); done
+    if [ ${#absent[@]} -gt 0 ]; then
+      warn "std2 is built from source and needs meson, ninja, gfortran and gcc; missing: ${absent[*]}. Everything else installs; std2 will be reported as failed."
+    fi
+  fi
+
+  if [ "$DRY_RUN" != 1 ]; then
+    where="${PIP_INDEX_URL:-https://pypi.org/simple/}"
+    if ! reachable "$where"; then
+      warn "$where cannot be reached. Without a connection nothing can be installed; if this machine goes out through a proxy, export https_proxy=http://HOST:PORT (and http_proxy) first."
+    fi
+  fi
+}
+
+# A real run keeps everything it prints, so a failure can be read afterwards.
+start_log() {
+  [ "$DRY_RUN" != 1 ] || return 0
+  mkdir -p "$PREFIX/logs"
+  LOG_FILE="$PREFIX/logs/delfin-install-$(date +%Y%m%d-%H%M%S).log"
+  exec > >(tee -a "$LOG_FILE")
+  TEE_PIDS+=("$!")
+  exec 2> >(tee -a "$LOG_FILE" >&2)
+  TEE_PIDS+=("$!")
+}
+
+# Lines in the login files that activate another venv. They run before the
+# line that loads ~/.delfin_env.sh, which then keeps that venv instead of
+# activating DELFIN's.
+other_activations() {
+  local rc line
+  for rc in "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile"; do
+    [ -f "$rc" ] || continue
+    while IFS= read -r line; do
+      case "$line" in *"$VENV_DIR/bin/activate"*) continue ;; esac
+      printf '%s:%s\n' "$(shown_path "$rc")" "$line"
+    done < <(grep -n -E '^[[:space:]]*(source|\.)[[:space:]]+[^#]*bin/activate' "$rc" 2>/dev/null || true)
+  done
+}
+
 # ---- DELFIN checkout -----------------------------------------------------------
 resolve_repo() {
   if [ -z "$DELFIN_REPO" ]; then
@@ -260,7 +414,7 @@ bootstrap_python() {
     [ -f "$fetcher" ] || die "no Python 3.10/3.11 here and no fetch_micromamba.sh to fetch one with; pass --python PATH"
     log "no Python 3.10/3.11 here; fetching micromamba"
     bash "$fetcher" "$PREFIX/micromamba/bin/micromamba" \
-      || die "micromamba could not be fetched and verified; pass --python PATH"
+      || die "micromamba could not be downloaded and verified (the [micromamba] line above says why), and this machine has no Python 3.10 or 3.11 for DELFIN's venv. Either fix the download -- no connection, or a proxy this shell does not know: export https_proxy=http://HOST:PORT -- and run the same command again; or name an existing Python 3.10/3.11 with --python PATH (on a cluster often provided as a module)."
     mamba="$PREFIX/micromamba/bin/micromamba"
   fi
   log "creating Python 3.11 at $env_dir"
@@ -298,6 +452,7 @@ ensure_venv() {
   fi
 
   if [ "$reuse" != 1 ]; then
+    STEP="creating the Python for DELFIN's venv"
     [ -n "$BASE_PYTHON" ] || bootstrap_python
     if [ -e "$VENV_DIR" ]; then
       aside="$VENV_DIR.before-$(date +%Y%m%d-%H%M%S)"
@@ -315,6 +470,7 @@ ensure_venv() {
     fi
   fi
   VENV_PY="$VENV_DIR/bin/python"
+  STEP="installing DELFIN into $VENV_DIR (pip)"
   log "installing DELFIN into $VENV_DIR"
   "$VENV_PY" -m pip install --upgrade pip wheel
   "$VENV_PY" -m pip install -e "$spec"
@@ -351,24 +507,16 @@ extract_orca_tarball() {
   fi
 }
 
-settings_orca() {
-  local py="$VENV_PY"
+# delfin.qm_runtime.find_orca_dir, asked of DELFIN's venv (or any python3 that
+# can import this checkout's delfin). Status 1 when no Python could answer.
+delfin_orca_dir() {
+  local py="$VENV_PY" answer
   if [ -z "$py" ] || [ ! -x "$py" ]; then py="$(command -v python3 2>/dev/null || true)"; fi
-  [ -n "$py" ] || return 0
-  "$py" - <<'PY' 2>/dev/null || true
-import json
-import pathlib
-
-try:
-    runtime = json.loads((pathlib.Path.home() / ".delfin_settings.json").read_text()).get("runtime") or {}
-except Exception:
-    runtime = {}
-for value in (runtime.get("orca_base"), (runtime.get("slurm") or {}).get("orca_base"),
-              (runtime.get("local") or {}).get("orca_base")):
-    if value:
-        print(pathlib.Path(value).expanduser())
-        break
-PY
+  [ -n "$py" ] || return 1
+  answer="$(PYTHONPATH="$PACKAGE_PARENT${PYTHONPATH:+:$PYTHONPATH}" in_script_dir "$py" -c \
+    'import sys; from delfin.qm_runtime import find_orca_dir; print(find_orca_dir(sys.argv[1:]))' \
+    "$PREFIX" 2>/dev/null)" || return 1
+  printf '%s\n' "$answer" | tail -n 1
 }
 
 find_orca() {
@@ -388,26 +536,24 @@ find_orca() {
       warn "$ORCA_SOURCE is neither an ORCA directory nor an ORCA tarball"
     fi
   fi
-  candidate="$(settings_orca)"
-  if [ -n "$candidate" ] && is_orca_dir "$candidate"; then
-    ORCA_FOUND="$candidate"
-    return 0
-  fi
-  candidate="$(command -v orca 2>/dev/null || true)"
-  if [ -n "$candidate" ]; then
-    candidate="$(dirname "$(readlink -f "$candidate")")"
-    if is_orca_dir "$candidate"; then
+  # DELFIN's own answer, the one `delfin doctor` reports: settings, the tool
+  # resolver (ORCA_BINARY/ORCA_PATH, PATH, system directories, modules) and
+  # orca_* directories unpacked in the prefix, ~/software or ~.
+  if candidate="$(delfin_orca_dir)"; then
+    if [ -n "$candidate" ] && is_orca_dir "$candidate"; then
       ORCA_FOUND="$candidate"
       return 0
     fi
+  else
+    # Only where no Python can import DELFIN yet (a dry run on a machine
+    # without one): the unpacked directories, newest version first.
+    while IFS= read -r candidate; do
+      if is_orca_dir "$candidate"; then
+        ORCA_FOUND="$candidate"
+        return 0
+      fi
+    done < <(ls -d "$PREFIX"/orca_*/ "$HOME"/orca_*/ 2>/dev/null | sed 's:/$::' | sort -V -r)
   fi
-  # Unpacked beside the other software or in HOME, newest version first.
-  while IFS= read -r candidate; do
-    if is_orca_dir "$candidate"; then
-      ORCA_FOUND="$candidate"
-      return 0
-    fi
-  done < <(ls -d "$PREFIX"/orca_*/ "$HOME"/orca_*/ 2>/dev/null | sed 's:/$::' | sort -V -r)
   while IFS= read -r candidate; do
     if extract_orca_tarball "$candidate"; then return 0; fi
   done < <(ls -1 "$HOME"/orca_*.tar.xz "$PREFIX"/orca_*.tar.xz 2>/dev/null | sort -V -r)
@@ -489,8 +635,8 @@ build_openmpi() {
     warn "no SHA-256 is pinned for OpenMPI $want, so its source is not downloaded; set OPENMPI_SHA256 to the digest www.open-mpi.org publishes for openmpi-$want.tar.gz, or OPENMPI_PREFIX to an existing $want build"
     return 1
   fi
-  if ! have gcc && ! have cc; then
-    warn "no C compiler on PATH, so OpenMPI $want cannot be built; set OPENMPI_PREFIX to an existing $want build"
+  if { ! have gcc && ! have cc; } || ! have make; then
+    warn "no C compiler or no make on PATH, so OpenMPI $want cannot be built; load a compiler and run again, or set OPENMPI_PREFIX to an existing $want build"
     return 1
   fi
   log "building OpenMPI $want into $target; this takes a while (log: $build/openmpi-$want.log)"
@@ -664,12 +810,12 @@ PY
 }
 
 summary() {
-  local item
+  local item line others
   log "==================== summary ===================="
   if [ -n "$VENV_PY" ] && [ -x "$VENV_PY" ]; then
     log "DELFIN   $(in_script_dir "$VENV_PY" -c 'import delfin; print(getattr(delfin, "__version__", "?"))' 2>/dev/null || echo '?') in $VENV_DIR"
   fi
-  log "ORCA     ${ORCA_FOUND:-not found; pass --orca DIR|TARBALL (https://orcaforum.kofo.mpg.de)}"
+  log "ORCA     ${ORCA_FOUND:-not found: download it from https://orcaforum.kofo.mpg.de (free for academic use), then run this again with --orca TARBALL}"
   log "OpenMPI  ${OMPI_FOUND:-not set up}"
   for item in "${DONE[@]+"${DONE[@]}"}"; do log "ok       $item"; done
   for item in "${FAILED[@]+"${FAILED[@]}"}"; do log "FAILED   $item"; done
@@ -677,7 +823,39 @@ summary() {
     log "dry run: nothing was changed"
     return 0
   fi
-  log "next: open a new shell (or source ~/.delfin_env.sh), then run delfin-voila"
+  log "settings ~/.delfin_settings.json; environment ~/.delfin_env.sh, loaded by ~/.bashrc and ~/.profile"
+  log "log      $LOG_FILE"
+  others="$(other_activations)"
+  if [ -n "$others" ]; then
+    while IFS= read -r line; do
+      warn "$line activates another Python environment, so new shells keep that one instead of DELFIN's. Remove the line, or move it below the line that sources ~/.delfin_env.sh."
+    done <<< "$others"
+  fi
+  if [ ${#FAILED[@]} -gt 0 ]; then
+    warn "what is marked FAILED above did not install; DELFIN itself is installed. Fix the cause in the lines above and run the same command again (or: bash $DELFIN_REPO/install.sh --repair)."
+  fi
+  cat <<EOF
+
+Start DELFIN (a new shell loads its environment by itself):
+  source ~/.delfin_env.sh        load it into this shell now
+  delfin-voila                   the dashboard: open the URL it prints
+  cd $(shown_path "$DELFIN_CALC_DIR") && delfin-agent      the agent in a terminal; it works in the folder it is started in
+  delfin doctor                  check ORCA, xTB, OpenMPI and the rest
+  (in a VS Code terminal also: source $VENV_DIR/bin/activate)
+
+The agent needs a language model: store an API key with
+  delfin-agent credentials set KIT_TOOLBOX_API_KEY   (or OPENAI_API_KEY)
+or run a local OpenAI-compatible server; then choose the provider and the model
+in the dashboard's DELFIN Agent tab (the terminal uses the same choice).
+
+On a remote machine such as a cluster login node the dashboard listens on
+127.0.0.1 only. From your own computer:
+  ssh -L 8866:127.0.0.1:8866 ${USER:-$(id -un)}@$(hostname 2>/dev/null || echo HOST)
+then open the URL delfin-voila printed.
+
+Update DELFIN and its tools:  bash $DELFIN_REPO/install.sh --update
+Add a tool:                   bash $DELFIN_REPO/install.sh --only crest   (what exists: --list)
+EOF
 }
 
 main() {
@@ -685,9 +863,11 @@ main() {
     catalog --list
     return 0
   fi
+  STEP="checking this machine"
   [ "$(uname -s)" = Linux ] || die "this installer supports Linux"
   [ "$(uname -m)" = x86_64 ] || warn "the prebuilt tools are x86_64 builds; on $(uname -m) some will not install"
   resolve_repo
+  STEP="reading DELFIN's list of tools"
   select_tools
   local scheduler="none" scope
   if have sbatch; then scheduler="SLURM"; fi
@@ -697,17 +877,31 @@ main() {
   esac
   if [ -n "$ONLY" ]; then scope="$scope, only $ONLY"; fi
   log "plan: $scope | prefix $PREFIX | checkout $DELFIN_REPO | scheduler $scheduler"
+  STEP="checking what this run needs"
+  preflight
   confirm_all
+  start_log
+  STEP="fetching DELFIN"
   ensure_repo
+  STEP="updating the checkout"
   if [ "$MODE" = update ]; then pull_checkout; fi
+  STEP="setting up DELFIN's venv"
   ensure_venv
   if [ "$DRY_RUN" != 1 ]; then mkdir -p "$DELFIN_CALC_DIR" "$DELFIN_ARCHIVE_DIR"; fi
+  STEP="looking for ORCA"
   find_orca
+  STEP="setting up OpenMPI"
   if ! ensure_openmpi; then FAILED+=("openmpi"); fi
+  STEP="installing the tools"
   run_tools
+  STEP="writing the settings and ~/.delfin_env.sh"
   write_settings_and_env
+  STEP="printing the summary"
   summary
-  [ ${#FAILED[@]} -eq 0 ]
+  if [ ${#FAILED[@]} -gt 0 ]; then
+    EXPECTED_EXIT=1
+    exit 1
+  fi
 }
 
 main

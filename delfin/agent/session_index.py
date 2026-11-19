@@ -32,6 +32,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from .state_paths import state_root
 
 from . import session_store
 
@@ -55,7 +56,7 @@ _write_lock = threading.Lock()
 def _index_path() -> Path:
     """``~/.delfin/session_index.sqlite``. A function (not a constant) so
     the state-path redirect tables and tests can point it elsewhere."""
-    return Path.home() / ".delfin" / "session_index.sqlite"
+    return state_root() / "session_index.sqlite"
 
 
 @dataclass

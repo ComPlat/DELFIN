@@ -320,6 +320,38 @@ def _flat(text: str) -> str:
     return " / ".join(str(text or "").splitlines())
 
 
+def task_state_path(workspace) -> "Path | None":
+    """Where one workspace's task state lives, OUTSIDE that workspace.
+
+    Input: a workspace path. Output:
+    ``state_paths.workspace_state_dir(workspace) / DEFAULT_FILENAME``, or
+    None when no workspace is given.
+
+    Both the writer and the reader go through this, so the two cannot
+    disagree about where the file is -- and neither puts it in the
+    person's checkout. ``<workspace>/task_state.json`` is what the reader
+    used while nothing wrote it; the first writer (cap1/g2) made the
+    consequence visible in CI, where a repo-wide guard reported
+    task_state.json appearing in the checkout during the run. A file the
+    agent keeps for itself does not belong in the repository it is
+    working on: it shows up in `git status`, it reaches a commit by
+    accident, and under a gitignore rule it does the same invisibly --
+    which is what that guard says in its own message.
+
+    ``workspace_state_dir`` is the designated place and says so: its
+    docstring records that resolving a relative workspace against the
+    process CWD "is how state files came to sit in the repository
+    checkout".
+    """
+    if workspace is None:
+        return None
+    try:
+        from . import state_paths as _sp
+        return _sp.workspace_state_dir(workspace) / DEFAULT_FILENAME
+    except Exception:
+        return None
+
+
 def open(path: str | Path) -> TaskState:
     """Return a NEW empty :class:`TaskState` bound to ``path``.
 
