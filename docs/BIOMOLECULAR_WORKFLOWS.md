@@ -28,7 +28,7 @@ requests cannot be inferred from a placeholder such as an empty dictionary.
 
 ## Catalog coverage and status
 
-The catalog has 46 backend/operation contracts, of which 25 have execution
+The catalog has 46 backend/operation contracts, of which 26 have execution
 bindings. Additional registered adapters handle prediction import and workflow
 execution. Catalog coverage is not a claim that every engine runs in DELFIN.
 
@@ -63,6 +63,7 @@ therefore never claim `execution_ready=true`.
 | Docking | Vina, GNINA, smina adapters with exact version banner, explicit seed/box/CPU count, timeout, checked outputs | Vina 1.2.5 synthetic live I/O smoke passed; GNINA/smina not installed/tested live; no scientific benchmark |
 | Preparation/export | Meeko ligand/receptor PDBQT and pose SDF export in a selected Python environment | Implemented optional adapters; Meeko absent locally. Receptor subset: one prepared canonical PDB model, no unresolved altlocs/cofactors/metals |
 | Validation | PoseBusters redocking checks retaining raw per-pose CSV values | Mocked boundary tests; package absent locally; failed checks remain visible even when report execution succeeds |
+| Simulation setup | OpenMM ff14SB protein-only vacuum parameterization with an explicit constraints/charge policy | Checked system/topology/coordinates/force-field bundle; mocked engine boundary, no real parameterization validated here |
 | Prediction | ESMFold v1 single-protein inference, verified local weights, explicit device and runtime versions | Mocked engine boundary; no inference or GPU validation performed here |
 | Interactions | ProLIF fingerprints with molecule sidecars, atom mapping and parent contact indices | Canonical hydrogenated PDB subset; mocked engine boundary; chemistry/coordinates/completeness checked |
 | Interactions | PLIP XML report for an explicitly assembled PDB complex | Implemented optional adapter; package absent locally |
@@ -101,8 +102,8 @@ DAG itself is not a generic DELFIN pipeline spec.
 
 Predictor execution (AlphaFold family, ColabFold, Boltz, Chai and
 RoseTTAFold), automatic model asset acquisition, GPU scheduling, richer receptor chemistry support,
-Molscrub, MD parameterization and
-OpenMM/GROMACS/Amber/NAMD/MDAnalysis execution remain unimplemented bindings.
+Molscrub, ligand/solvent/periodic MD parameterization and
+OpenMM/GROMACS/Amber/NAMD/MDAnalysis simulation/analysis execution remain unimplemented bindings.
 The same applies to DiffDock, HADDOCK3, licensed docking, protein design and
 QM/MM-region construction. Existing native predictor input generation does not
 remove these blockers. Scientific reference datasets and installed-engine tests
@@ -387,3 +388,37 @@ Tests simulate module discovery and launches, and exercise a real temporary
 Python venv without installing packages. Actual cluster module stacks still need
 acceptance testing. Module identity and exact distribution versions are recorded;
 this is not a complete snapshot of modulefiles, shared libraries or GPU drivers.
+
+### OpenMM system foundation
+
+The `parameterize` DAG backend now binds to `bio_openmm_parameterize`. Its first
+supported subset is an already hydrogenated canonical single-model protein PDB
+with `forcefield="amber14/protein.ff14SB.xml"`, `environment="vacuum"`, explicit
+`constraints` (`none` or `HBonds`) and integer `expected_charge` in elementary
+charge units. `expected_version` pins OpenMM; the shared environment resolver and
+managed installer apply. There is no implicit protonation change, solvation,
+ligand parameter assignment or switch from periodic to vacuum conditions.
+Nonstandard residues, waters, ligands, alternate locations and CRYST1 boxes are
+refused. OpenMM must match all residue templates; unmatched atoms fail the run.
+
+The worker uses OpenMM's `ForceField.createSystem` with `NoCutoff`, stores the
+actual packaged ff14SB XML and round-trips the serialized `System`. It exports
+indexed topology atoms/bonds and positions with explicit nanometer units.
+`simulation_system.json` hashes these files and the unchanged input structure,
+and records runtime, expected charge, constraints and boundary-condition policy.
+Native artifact validation checks all checksums, atom ordering/identity, coordinate
+conversion from PDB angstroms, particle counts/masses, net charge and constraint
+pairs. Missing or modified nested files invalidate the bundle. Virtual sites and
+force-field includes are outside this first schema. The checks do not establish
+scientific accuracy or complete validation of every force parameter.
+
+This is system construction only. No minimization, dynamics, integrator,
+trajectory or restart-state claim follows from successful parameterization.
+Protein-only vacuum construction is an explicit technical subset, not a recommended
+production protocol for a solvated protein or a protein-ligand complex. Cluster
+acceptance must exercise actual OpenMM template matching and compare the resulting
+system with a trusted reference before adding dynamics.
+
+References: [OpenMM simulation setup](https://docs.openmm.org/latest/userguide/application/02_running_sims.html),
+[system serialization](https://openmm.github.io/openmm-cookbook/latest/notebooks/cookbook/Saving%20Systems%20to%20XML%20Files.html)
+and [packaged ff14SB definition](https://github.com/openmm/openmm/blob/8.4.0/wrappers/python/openmm/app/data/amber14/protein.ff14SB.xml).

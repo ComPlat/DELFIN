@@ -21,6 +21,7 @@ class Binding:
 
 
 BINDINGS = {
+    "parameterize": Binding("bio_openmm_parameterize", {"complex": "structure_file"}, {"system": "simulation_system"}),
     "prolif": Binding("prolif_analyze", {"poses": "poses_file", "receptor": "receptor_file"}, {"interactions": "interaction_report"}),
     "esmfold": Binding("esmfold_predict", {"request": "request_file"}, {"models": "prediction_bundle"}),
     "receptor_prepare": Binding("bio_receptor_prepare", {"structure": "structure_file"}, {"receptor": "prepared_receptor"}),

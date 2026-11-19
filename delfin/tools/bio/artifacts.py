@@ -71,6 +71,9 @@ def validate_artifact(path: Path, kind: str) -> dict:
     elif kind == "assay_table":
         from delfin.tools.bio.assays import validate_assays
         details["measurements"] = len(validate_assays(read_json(path)))
+    elif kind == "simulation_system":
+        from delfin.tools.bio.simulation import validate_system
+        details.update(validate_system(path))
     elif kind == "prediction_bundle":
         bundle = read_json(path)
         if bundle.get("schema_version") != 1 or not isinstance(bundle.get("models"), list) or not bundle["models"]:
