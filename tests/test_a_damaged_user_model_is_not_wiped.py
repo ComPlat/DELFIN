@@ -25,8 +25,6 @@ precedent:
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from delfin.agent import state_file as SF
@@ -68,10 +66,10 @@ def test_a_damaged_model_is_quarantined_not_wiped(tmp_path):
     # The damaged file is preserved aside, named as unreadable.
     asides = _aside(p)
     assert asides, "the damaged store must be preserved, not overwritten"
-    kept = json.loads(asides[0].read_text(encoding="utf-8"))
-    prefs = kept["fields"]["preferences"]
-    assert prefs and prefs[0]["value"] == "the user prefers minimal diffs", (
-        "the original facts must survive")
+    kept = asides[0].read_text(encoding="utf-8")
+    assert "the user prefers minimal diffs" in kept, (
+        "the original facts must survive"
+    )
     # The message names the file the person must look at.
     assert "user_model.json" in str(exc.value)
 
