@@ -1189,11 +1189,61 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     # The right-hand group: what the dashboard is holding. What it is doing
     # (the busy spinner, the agent's working line) sits just left of it, in
     # the spacer, where its changing text cannot wrap the bar (top_bar).
-    _status_group = widgets.HBox(
-        [home_usage_label]
-        + ([_dashboards.wrap] if _dashboards is not None else [])
-        + ([_session_strip] if _session_strip is not None else [])
-        + [_logout])
+    # The key search box sits left of the home chip: helpful first, status
+    # second. Its build is defensive -- a failure must never break startup.
+    # Picking a key routes to the Help tab: the callback is wired lazily --
+    # the Help tab builds later in this function, so the callback closes
+    # over ctx and resolves the tab's filter state at click time.
+    def _open_key_from_header(name: str) -> None:
+        """Switch to the Help tab, pre-filtered to the picked key."""
+        try:
+            state = getattr(ctx, "_help_key_state", None)
+            if state is not None:
+                state["query"] = name
+                state["rerender"]()
+            tabs = getattr(ctx, "tabs_widget", None)
+            if tabs is not None:
+                for idx in range(len(tabs.children)):
+                    if str(getattr(tabs, "titles", ("",))[idx]) == "Help":
+                        tabs.selected_index = idx
+                        break
+        except Exception:
+            pass
+
+    _key_search = None
+    try:
+        from delfin.dashboard.header_keysearch import build_and_register
+
+        def _open_tab_from_header(name: str) -> None:
+            """Route to the Help tab's guide section for this tab name."""
+            try:
+                state = getattr(ctx, "_help_tab_state", None)
+                if state is None:
+                    return
+                state["open_tab_guide"](name)
+                tabs = getattr(ctx, "tabs_widget", None)
+                if tabs is None:
+                    return
+                titles = [str(t) for t in getattr(tabs, "titles", ())]
+                if "Help" in titles:
+                    tabs.selected_index = titles.index("Help")
+            except Exception:
+                pass
+
+        _key_search = build_and_register(
+            on_open_key=_open_key_from_header,
+            on_open_tab=_open_tab_from_header,
+        )
+    except Exception:  # pragma: no cover - widget must not break startup
+        _key_search = None
+    _status_items = [home_usage_label]
+    if _key_search is not None:
+        _status_items.insert(0, _key_search)
+    _status_items += (
+        [_dashboards.wrap] if _dashboards is not None else []) \
+        + ([_session_strip] if _session_strip is not None else []) \
+        + [_logout]
+    _status_group = widgets.HBox(_status_items)
     # Wrap rather than shrink: the session strip carries an address, and a
     # row that squeezes its items renders it unreadable before it overflows.
     _bar = _hu.top_bar(
