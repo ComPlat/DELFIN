@@ -178,6 +178,65 @@ def get_smiles(calc_dir: str):
     return str(value) if value else None
 
 
+def smiles_svg_bytes(smiles: str, size: int = 260):
+    """Column-2 drawing as VECTOR SVG, drawn exactly like the calc's
+    SMILES.png (delfin_docx_report.py: RemoveHs, Normalizer, CoordGen
+    with scaling 1.5, bondLineWidth 3, multipleBondOffset 0.15,
+    stereo annotations, kekulize).  None on failure.
+    """
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+        from rdkit.Chem.Draw import rdMolDraw2D, rdMolDraw2DDrawer
+    except ImportError:
+        return None
+    try:
+        from rdkit.Chem import rdCoordGen
+    except ImportError:
+        rdCoordGen = None
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None
+    try:
+        mol = Chem.RemoveHs(mol, updateExplicitCount=True)
+        try:
+            from rdkit.Chem.MolStandardize import rdMolStandardize
+            mol = rdMolStandardize.Normalizer().normalize(mol)
+        except Exception:
+            pass
+        done = False
+        if rdCoordGen is not None:
+            try:
+                params = rdCoordGen.CoordGenParams()
+                params.SetCoordgenScaling(1.5)
+                params.SetMinimizerPrecision(1e-4)
+                done = rdCoordGen.AddCoords(mol, params)
+            except Exception:
+                done = False
+        if not done:
+            AllChem.Compute2DCoords(
+                mol, canonOrient=True, clearConfs=True, coordMap={},
+                nFlipsPerSample=3, nSample=100, sampleSeed=42,
+                permuteDeg4Nodes=True, bondLength=1.5)
+            try:
+                from rdkit.Chem import rdDepictor
+                rdDepictor.StraightenDepiction(mol)
+            except Exception:
+                pass
+        drawer = rdMolDraw2D.MolDraw2DSVG(size, size)
+        opts = drawer.drawOptions()
+        opts.clearBackground = True
+        opts.bondLineWidth = 3
+        opts.multipleBondOffset = 0.15
+        opts.addStereoAnnotation = True
+        opts.addAtomIndices = False
+        rdMolDraw2D.PrepareAndDrawMolecule(drawer, mol, kekulize=True)
+        drawer.FinishDrawing()
+        return drawer.GetDrawingText().encode("utf-8")
+    except Exception:
+        return None
+
+
 def smiles_png_bytes(smiles: str, size: int = 260, fmt: str = "png"):
     """2D structure image via RDKit (PNG or vector PDF bytes); None if
     RDKit is absent or the SMILES cannot be parsed."""
@@ -203,12 +262,29 @@ def smiles_png_bytes(smiles: str, size: int = 260, fmt: str = "png"):
         drawer.FinishDrawing()
         return drawer.GetDrawingText()
     import numpy
-    # Vector path: RDKit MolDraw2DSVG -> write temp svg -> let
-    # matplotlib render it as a vector PDF is NOT possible without a
-    # converter.  Instead re-draw from RDKit 2D coordinates with
-    # matplotlib (bonds as lines, atom labels), which emits a real
-    # vector PDF.  Double bonds come from RDKit's bond orders.
-    AllChem.Compute2DCoords(mol)
+    # Vector path: the vector PDF is drawn by matplotlib from the RDKit
+    # 2D coordinates (bonds as lines, atom labels).  The coordinates
+    # come from the SAME pipeline as the calc's SMILES.png
+    # (delfin_docx_report.py): RemoveHs, Normalizer, CoordGen scaling
+    # 1.5 - or Compute2DCoords + StraightenDepiction when CoordGen is
+    # unavailable - so the column-2 picture matches SMILES.png.
+    mol = Chem.RemoveHs(mol, updateExplicitCount=True)
+    try:
+        from rdkit.Chem.MolStandardize import rdMolStandardize
+        mol = rdMolStandardize.Normalizer().normalize(mol)
+    except Exception:
+        pass
+    coordgen_done = False
+    try:
+        from rdkit.Chem import rdCoordGen
+        params = rdCoordGen.CoordGenParams()
+        params.SetCoordgenScaling(1.5)
+        params.SetMinimizerPrecision(1e-4)
+        coordgen_done = rdCoordGen.AddCoords(mol, params)
+    except Exception:
+        coordgen_done = False
+    if not coordgen_done:
+        AllChem.Compute2DCoords(mol)
     conf = mol.GetConformer()
     pos = numpy.array([[conf.GetAtomPosition(i).x,
                         conf.GetAtomPosition(i).y]
@@ -219,25 +295,19 @@ def smiles_png_bytes(smiles: str, size: int = 260, fmt: str = "png"):
     # bond orders list like the xyz renderer expects: (i, j) -> order
     orders = {(i, j): o for i, j, o in bonds if o >= 2}
     pairs = [(i, j) for i, j, _ in bonds]
-    return _render_skeleton(sym, pos, pairs, size, show_h=False,
+    try:
+        from rdkit.Chem import rdDepictor
+        rdDepictor.StraightenDepiction(mol)
+        conf = mol.GetConformer()
+        pos = numpy.array([[conf.GetAtomPosition(i).x,
+                            conf.GetAtomPosition(i).y]
+                           for i in range(mol.GetNumAtoms())])
+    except Exception:
+        pass
+    return _render_skeleton(sym, pos, pairs, size,
                             bond_orders=orders, fmt=fmt)
 
 
-def smiles_svg_bytes(smiles: str, size: int = 260):
-    """2D structure as SVG (vector) via RDKit MolDraw2DSVG; None on
-    failure.  Same depiction as smiles_png_bytes (original drawing)."""
-    try:
-        from rdkit import Chem
-        from rdkit.Chem.Draw import rdMolDraw2D
-    except ImportError:
-        return None
-    mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
-        return None
-    drawer = rdMolDraw2D.MolDraw2DSVG(size, size)
-    rdMolDraw2D.PrepareAndDrawMolecule(drawer, mol)
-    drawer.FinishDrawing()
-    return drawer.GetDrawingText().encode("utf-8")
 
 
 # Covalent radii (Angstrom, Cordero 2008) for bond detection.
