@@ -59,10 +59,22 @@ def test_save_session_keeps_a_torn_record_and_reports(tmp_path, monkeypatch, cap
     assert "the earlier conversation" in kept[0].read_text(), (
         "what the damaged record still held must be recoverable from the aside")
 
-    # The loss is reported, not swallowed: the warning names the file.
-    assert any("s1.json.unreadable-" in r.message for r in caplog.records), (
+    # The loss is reported, not swallowed. The warning deliberately names
+    # NO file: both names carry the session id, which resumes a session,
+    # and a log is read by more people and kept longer than the directory
+    # it talks about. It says that it happened and where the file IS named
+    # -- the diagnosis, which reads the directory rather than a log.
+    said = " ".join(r.message for r in caplog.records)
+    assert "moved aside" in said, (
         "the save must say that a damaged record was kept aside, "
         "so the person can act on it")
+    assert str(SS._SESSIONS_DIR) in said, (
+        "and name the directory the kept file is in -- a directory holds "
+        "no id, and it is what a reader of a log can act on")
+    assert "s1.json" not in said, (
+        "the session id must not reach the log: CodeQL reports it as "
+        "clear-text logging of sensitive data, and it is how a session "
+        "is resumed")
 
     # The live session still carries the new turn --- a save is not refused.
     live = SS.load_session("s1")
