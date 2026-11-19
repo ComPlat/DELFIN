@@ -374,7 +374,7 @@ def initial_xyz_png_bytes(calc_dir: str, size: int = 320, show_h=True,
     cov = [_XYZ_COVALENT.get(s, _XYZ_COVALENT_DEFAULT) for s in sym]
     bonds = _detect_bonds(sym, cov, rotated)
     bond_orders = bond_orders if bond_orders is not None \
-        else _infer_bond_orders(sym, bonds)
+        else _infer_bond_orders(sym, bonds, rotated)
 
     # Skeletal convention: aliphatic H (C-H) are NEVER drawn in the
     # skeleton, regardless of the checkbox.  Protons on heteroatoms
@@ -569,7 +569,7 @@ def formula_to_richtext(formula: str):
     return parts or [(formula, None)]
 
 
-def _infer_bond_orders(sym, bonds):
+def _infer_bond_orders(sym, bonds, rotated_pos=None):
     """Assign bond orders from valence deficits (heuristic, no charges).
 
     Each heavy atom gets its typical valence (C 4, N 3, O 2, S 2, ...);
@@ -604,21 +604,35 @@ def _infer_bond_orders(sym, bonds):
     # Aromatic/ring alternating bonds leave BOTH partners one short
     # (pyridine C=N, benzene C=C, fluorenyl), so single-deficit pairs
     # upgrade to double as well; higher deficits stay greedy.
-    pair_done = set()
-    for i, j in bonds:
-        if i in need and j in need and (i, j) not in pair_done:
-            k = min(need[i], need[j])
-            if k >= 3:
-                upgrades[(i, j)] = 3
-                need[i] -= 3; need[j] -= 3
-            elif k >= 2:
-                upgrades[(i, j)] = 2
-                need[i] -= 2; need[j] -= 2
-            elif k == 1:
-                upgrades[(i, j)] = 2
-                need[i] -= 1; need[j] -= 1
-            pair_done.add((i, j))
-            pair_done.add((j, i))
+    def bond_length(i, j):
+        if rotated_pos is None:
+            return 0.0
+        import numpy
+        di = rotated_pos[i] - rotated_pos[j]
+        return float(numpy.sqrt(di @ di))
+
+    # At most ONE double bond per atom: in a pyridine ring every C is
+    # one bond short, and the greedy all-pairs pass drew double lines
+    # on adjacent ring bonds (wrong alternation, user report 406).
+    # One double bond per atom, preferring larger deficits and shorter
+    # bonds (true C=N/C=C are shorter than their single neighbours),
+    # reproduces the alternating pattern.
+    atom_upgraded = set()
+    candidates = sorted(
+        ((min(need[i], need[j]), -bond_length(i, j), i, j)
+         for i, j in bonds
+         if i in need and j in need and i not in atom_upgraded
+         and j not in atom_upgraded),
+        reverse=True)
+    for deficit, _neglen, i, j in candidates:
+        if deficit >= 3:
+            upgrades[(i, j)] = 3
+            need[i] -= 3; need[j] -= 3
+        elif deficit >= 1:
+            upgrades[(i, j)] = 2
+            need[i] -= 1; need[j] -= 1
+        atom_upgraded.add(i)
+        atom_upgraded.add(j)
     return upgrades
 
 
@@ -681,11 +695,20 @@ def _render_skeleton(sym, rotated, bonds, size, show_h=False,
     # heteroatoms (+ metals) get a white gap and a symbol.  H labelled
     # only when show_h is on.
     _implicit = {"C"}
+    # A terminal, single-bonded O carries its proton in these
+    # complexes (acid OH / ester O-alkyl chain end): label it "OH"
+    # instead of a bare "O" (user request, 406).
+    _degree = [0] * len(sym)
+    for i, j in bonds:
+        _degree[i] += 1
+        _degree[j] += 1
     zcol = rotated[:, 2] if rotated.shape[1] > 2 else numpy.zeros(len(sym))
     for idx in numpy.argsort(zcol):
         s = sym[idx]
         if s == "H" and not show_h:
             continue
+        if s == "O" and _degree[idx] <= 1:
+            s = "OH"
         if s in _implicit:
             continue
         x, y = rotated[idx][0], rotated[idx][1]
