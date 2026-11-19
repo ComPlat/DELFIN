@@ -57,7 +57,17 @@ def load_prefs() -> dict:
 def save_prefs(**changes) -> None:
     try:
         from delfin.agent.state_paths import write_text_atomic
-        data = load_prefs()
+        # The whole store is written back, so the read is the writer's:
+        # a damaged file is moved aside (its bytes kept) rather than
+        # answered with an empty dict that would drop every key. Said
+        # where the person can see it, not silent.
+        from delfin.agent import state_file
+        data, moved = state_file.read_json_for_write(_prefs_path(),
+                                                     default={})
+        if moved:
+            print(f"dashboard_header.json was not readable JSON and was "
+                  f"moved to {moved}; the header's remembered state "
+                  "starts over.")
         data.update(changes)
         write_text_atomic(_prefs_path(), json.dumps(data, indent=1, sort_keys=True))
     except Exception:
