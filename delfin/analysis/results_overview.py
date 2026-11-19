@@ -451,15 +451,22 @@ def initial_xyz_png_bytes(calc_dir: str, size: int = 320, show_h=True,
     # (OH, NH2, COOH, SH...) always are.  The "Show hydrogen atoms"
     # checkbox steers only the ball-stick view (optimized 3D column).
     _hetero = {"O", "N", "S", "P", "Se", "B", "Si", "F", "Cl", "Br", "I"}
-    hetero_h = set()
+    hetero_h_count = {}
     for i, j in bonds:
         for h, other in ((i, j), (j, i)):
             if sym[h] == "H" and sym[other] in _hetero:
-                hetero_h.add(h)
-    keep = [i for i, s in enumerate(sym) if s != "H" or i in hetero_h]
+                hetero_h_count[other] = hetero_h_count.get(other, 0) + 1
+    # All H atoms drop out of the geometry; their count merges into the
+    # heteroatom LABEL ("NH2", "OH", "SH").  This avoids dangling H
+    # bonds to nowhere and the wrong "proton on the carbonyl O" look.
+    _h_suffix = {0: "", 1: "H", 2: "H2", 3: "H3"}
+    label = {i: (s + _h_suffix.get(hetero_h_count.get(i, 0), "")
+                 if s in _hetero else s)
+             for i, s in enumerate(sym)}
+    keep = [i for i, s in enumerate(sym) if s != "H"]
     keepset = set(keep)
     remap = {old_i: new_i for new_i, old_i in enumerate(keep)}
-    sym_vis = [sym[i] for i in keep]
+    sym_vis = [label[i] for i in keep]
     rotated = rotated[keep]
     bonds_vis = [(remap[i], remap[j]) for i, j in bonds
                  if i in keepset and j in keepset]
