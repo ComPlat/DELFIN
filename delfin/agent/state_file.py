@@ -130,7 +130,8 @@ def read_json_for_write(path: str | Path, *,
 
 
 def write_json_atomic(path: str | Path, data: Any, *,
-                      mode: int = 0o600, indent: int = 2) -> None:
+                      mode: int = 0o600, indent: int = 2,
+                      default: Any = None) -> None:
     """Write *data* as JSON so the file is never seen half-written.
 
     A temporary file in the same directory, then a rename: a reader
@@ -141,6 +142,8 @@ def write_json_atomic(path: str | Path, data: Any, *,
 
     *mode* is applied to the temporary file before any content is
     written, so a store holding secrets is never briefly world-readable.
+    *default* is passed through to ``json.dumps`` for values JSON cannot
+    represent (e.g. ``datetime`` objects); ``str`` is the usual choice.
     """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -151,7 +154,8 @@ def write_json_atomic(path: str | Path, data: Any, *,
         pass
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
     try:
-        payload = json.dumps(data, indent=indent, ensure_ascii=False)
+        payload = json.dumps(data, indent=indent, ensure_ascii=False,
+                             default=default)
         os.write(fd, payload.encode("utf-8"))
         os.fsync(fd)
     finally:
