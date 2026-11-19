@@ -31753,6 +31753,35 @@ _INFRA_EXHAUSTION_MARKERS: tuple[str, ...] = (
 )
 
 
+#: The two spellings of the reasoning channel seen on OpenAI-compatible
+#: endpoints. ``reasoning_content`` is what Ollama (qwen3, gpt-oss) and
+#: vLLM (r1) send. ``reasoning`` is what the Helmholtz Blablador gateway
+#: sends -- measured 2026-11-19 against alias-fast (GPT-OSS-120b): 24 of
+#: 28 stream chunks carried `reasoning` and exactly one carried
+#: `content`, so a reader that knows only the first spelling sees nothing
+#: at all in 24 of them and drops the model's thinking on the floor.
+#:
+#: Order matters only for a backend that sent both, which none does; the
+#: first non-empty one is taken.
+_REASONING_FIELDS: tuple[str, ...] = ("reasoning_content", "reasoning")
+
+
+def _reasoning_delta(delta) -> str:
+    """The thinking text in a stream delta, whichever field carries it.
+
+    Returns "" when the delta has none, so the caller can treat the
+    answer as a plain truthiness test. Never raises: a delta is whatever
+    the SDK handed back, including None.
+    """
+    if delta is None:
+        return ""
+    for name in _REASONING_FIELDS:
+        value = getattr(delta, name, None)
+        if value:
+            return str(value)
+    return ""
+
+
 def _is_transient_api_error(exc: Exception) -> bool:
     """Whether an API/streaming error is a transient hiccup worth retrying
     (timeout, dropped connection, rate-limit, 5xx) rather than a deterministic
@@ -33991,16 +34020,17 @@ class OpenAIClient(_BaseClient):
                         delta = choice.delta
                         # The first token of any kind ends the prefill.
                         if _round_ttft is None and delta is not None and (
-                                getattr(delta, "reasoning_content", None)
+                                _reasoning_delta(delta)
                                 or delta.content or delta.tool_calls):
                             _round_ttft = time.monotonic()
 
                         # Reasoning channel: some backends (Ollama for qwen3/
                         # gpt-oss, vLLM for r1) stream the model's thinking in a
-                        # separate ``reasoning_content`` field, NOT in content.
-                        # Surface it as thinking (visible-but-separate) instead
-                        # of losing it; it never pollutes the answer text.
-                        _rc = getattr(delta, "reasoning_content", None) if delta else None
+                        # separate field, NOT in content. Surface it as thinking
+                        # (visible-but-separate) instead of losing it; it never
+                        # pollutes the answer text. The field has two spellings
+                        # in the wild -- see _reasoning_delta.
+                        _rc = _reasoning_delta(delta)
                         if _rc:
                             # Forwarded and not remembered. It used to be
                             # remembered, to keep the empty-round retry
@@ -36687,6 +36717,24 @@ def create_client(
             key_env_var="KIT_TOOLBOX_API_KEY",
             permissions=kit_perms,
             provider="kit",
+            effort=effort,
+        )
+    if provider == "blablador":
+        # Helmholtz Blablador (Forschungszentrum Jülich). OpenAI-compatible,
+        # so it is the same client and the same sandbox as the other chat
+        # APIs -- a second implementation would be a second place for the
+        # tool gate to be forgotten. Only the endpoint and the key differ.
+        from .credentials import load_credential as _load_cred_bla
+        from .model_capabilities import _BLABLADOR_BASE_URL as _bla_base_url
+        bla_key = api_key or _load_cred_bla("BLABLADOR_API_KEY")
+        return OpenAIClient(
+            api_key=bla_key, model=model,
+            base_url=_bla_base_url,
+            key_env_var="BLABLADOR_API_KEY",
+            permissions=_kit_sandbox(
+                cwd, permission_mode, kit_confirm_callback, extra_dirs,
+                read_only_dirs, confirm_write_dirs),
+            provider="blablador",
             effort=effort,
         )
     if provider == "openai":

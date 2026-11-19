@@ -117,6 +117,13 @@ _KIT_MIN_WINDOW = 32_000
 # it has one; this is the default the rest of the code already hardcodes.
 _KIT_BASE_URL = "https://ki-toolbox.scc.kit.edu/api/v1"
 
+# Helmholtz Blablador (Forschungszentrum Jülich), OpenAI-compatible. Its
+# model ids are server-side aliases (alias-fast, alias-code, ...) that
+# point at changing concrete models, so the alias is what DELFIN stores
+# and what the user picks; the list is read from /models rather than
+# shipped, because a hardcoded concrete name goes stale silently.
+_BLABLADOR_BASE_URL = "https://api.blablador.fz-juelich.de/v1"
+
 # Network timeouts (seconds). Tags is a cheap liveness probe; show parses
 # metadata; models is the OpenAI-compatible list. The hosted KIT Toolbox
 # /v1/models takes ~5s to answer, so the models probe gets a generous budget —
