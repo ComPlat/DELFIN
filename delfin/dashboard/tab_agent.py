@@ -273,6 +273,73 @@ def _shell_run_for_chat(run: dict, directory) -> dict:
     return out
 
 
+def shell_escape_engine(current, build):
+    """The engine a `!cmd` runs through: the session's, else a new one.
+
+    Input: the engine the session already holds (None before the first
+    message on this surface) and the callable that builds one. Output: an
+    engine, or None when none could be had.
+
+    The gate `!` runs through is reached as ``engine.run_gated_bash``, so
+    without an engine the escape is answered "not available on this
+    backend" -- a sentence about the backend for a session that had simply
+    not started. The terminal never had this: it constructs the session
+    before its input loop reads a line.
+
+    Module level, with the builder passed in, because the caller is a
+    closure inside ``create_tab`` built around live widgets: the branch
+    could only be checked by reading the source for a string, and it was.
+    """
+    if current is not None:
+        return current
+    try:
+        return build()
+    except Exception:
+        return None
+
+
+def shell_escape_entry(engine, command: str, fallback_dir) -> dict:
+    """One `!cmd`, run and rendered as the chat entry for its result.
+
+    Input: the engine carrying the gate, the command after the `!`, and
+    the directory to save over-long output in when the engine names none.
+    Output: a chat message dict with ``role``, ``content`` (plain text for
+    what reads content: search, export, a mode handoff), ``role_label``
+    and ``shell`` (the fields the chat renders).
+
+    Everything here is what used to sit inside the sending closure, where
+    no test could reach it without a browser. The gate itself is
+    ``repl.shell_escape_result``, shared with the terminal; this adds only
+    the saving of long output and the plain-text rendering.
+    """
+    from delfin.agent.repl import shell_escape_result
+
+    run = shell_escape_result(engine, command)
+    directory = None
+    try:
+        perms = getattr(engine, "kit_permissions", None)
+        directory = getattr(perms, "agent_workspace_dir", None)
+    except Exception:
+        directory = None
+    try:
+        run = _shell_run_for_chat(run, Path(directory or fallback_dir)
+                                  / "shell_output")
+    except Exception:
+        run = _shell_run_for_chat(run, Path.cwd() / "shell_output")
+
+    plain = [f"! {command}"]
+    if run.get("refused"):
+        plain.append(f"  refused: {run['refused']}")
+    if run.get("error"):
+        plain.append(f"  [error] {run['error']}")
+    body = "\n".join(s for s in (run.get("stdout"), run.get("stderr")) if s)
+    plain += ["  " + ln for ln in body.splitlines()[:200]]
+    if run.get("exit_code") not in (0, None):
+        plain.append(f"  (exit {run['exit_code']})")
+    return {"role": "system", "content": "\n".join(plain),
+            "role_label": "", "shell": run}
+
+
 def input_placeholder(steps, default: str, proposed=None) -> str:
     """The line waiting in the message box: an offer, a task, or the hint.
 
@@ -21123,7 +21190,14 @@ def create_tab(ctx):
         if _shell_text.startswith(_SHELL_PREFIX) and len(_shell_text) > 1:
             _cmd = _shell_text[len(_SHELL_PREFIX):].strip()
             input_textarea.value = ""
-            _eng = state.get("engine")
+            # The gate lives on the engine, and on this surface the engine
+            # is built by the first message (`_ensure_engine`, called below
+            # for an ordinary one). Reading state["engine"] here meant a `!`
+            # typed before any message had been sent found None and was
+            # answered "! is not available on this backend", which names the
+            # wrong cause: the backend carried the gate, the session had
+            # simply not started. Measured on the agent tab 2026-11-19.
+            _eng = shell_escape_engine(state.get("engine"), _ensure_engine)
 
             # The offer was the previous answer's, as for any message; left
             # standing, the command just sent would wait to be sent again.
@@ -21140,33 +21214,15 @@ def create_tab(ctx):
             _live_system_message(f"! {_cmd}\n  running …", _key)
 
             def _run_escape():
-                from delfin.agent.repl import shell_escape_result as _escape
-                run = _escape(_eng, _cmd)
                 try:
-                    _kp = getattr(_eng, "kit_permissions", None)
-                    _dir = (getattr(_kp, "agent_workspace_dir", None)
-                            or Path(_agent_workspace_path()) / "agent_workspace")
-                    run = _shell_run_for_chat(run, Path(_dir) / "shell_output")
+                    _fallback = Path(_agent_workspace_path()) / "agent_workspace"
                 except Exception:
-                    run = _shell_run_for_chat(run, Path.cwd() / "shell_output")
-                # Plain text for what reads content (search, export, a
-                # mode handoff); the chat renders the fields.
-                plain = [f"! {_cmd}"]
-                if run.get("refused"):
-                    plain.append(f"  refused: {run['refused']}")
-                if run.get("error"):
-                    plain.append(f"  [error] {run['error']}")
-                body = "\n".join(s for s in (run.get("stdout"),
-                                             run.get("stderr")) if s)
-                plain += ["  " + ln for ln in body.splitlines()[:200]]
-                if run.get("exit_code") not in (0, None):
-                    plain.append(f"  (exit {run['exit_code']})")
+                    _fallback = Path.cwd()
+                entry = shell_escape_entry(_eng, _cmd, _fallback)
                 msgs = state["chat_messages"]
                 live = state.setdefault("_live_messages", {})
                 index = _live_message_slot(msgs, live, _key)
                 live.pop(_key, None)
-                entry = {"role": "system", "content": "\n".join(plain),
-                         "role_label": "", "shell": run}
                 if index is None:
                     msgs.append(entry)
                 else:
