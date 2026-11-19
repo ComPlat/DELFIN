@@ -73,6 +73,7 @@ _WELL_KNOWN_KEYS: tuple[str, ...] = (
     "KIT_TOOLBOX_API_KEY",
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
+    "BLABLADOR_API_KEY",
     # A GitHub token opens the repository this agent pushes to.
     "GITHUB_TOKEN",
     "GH_TOKEN",

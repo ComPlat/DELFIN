@@ -443,7 +443,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     jobmon_provider_input = widgets.Dropdown(
         options=[('Agent default', ''), ('KIT Toolbox', 'kit'),
                  ('Anthropic', 'claude'), ('OpenAI', 'openai'),
-                 ('Ollama', 'ollama')],
+                 ('Helmholtz Blablador', 'blablador'), ('Ollama', 'ollama')],
         value='', description='Provider',
         layout=widgets.Layout(width='240px', height='28px'),
     )
