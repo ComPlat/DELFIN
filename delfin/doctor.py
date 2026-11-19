@@ -463,6 +463,60 @@ def check_docs_index() -> CheckResult:
     return CheckResult("docs_index", OK, f"index present at {idx}")
 
 
+def _cluster_modules():
+    """The delfin.remote pieces the cluster check needs, or ImportError.
+
+    One named seam instead of four import statements inside the check, for
+    two reasons. It is the only thing that may raise ImportError for an
+    absent optional package, so the handler cannot silently swallow an
+    ImportError raised deeper in. And it is patchable: a test that has to
+    behave the same on a machine WITH the cluster tunnel and one without
+    replaces this function, where patching sys.modules does not work --
+    once delfin.remote.clusters has been imported, ``from delfin.remote
+    import clusters`` reads the attribute off the parent package and never
+    consults sys.modules again. Measured on CI 2026-11-19, where the
+    package is installed and a sys.modules-based test passed locally and
+    failed there.
+    """
+    from delfin.remote import clusters as _clusters
+    from delfin.remote import connection as _connection
+    from delfin.remote.errors import RemoteError, RemoteRefused
+    return _clusters, _connection, RemoteError, RemoteRefused
+
+
+def _clusters_without_the_tunnel(settings: dict | None,
+                                 exc: ImportError) -> list[CheckResult]:
+    """What to report when the cluster tunnel is not installed.
+
+    Nothing, unless ``remote.clusters`` names a cluster: a machine that does
+    not submit to one is complete without the package, and a report it
+    cannot act on is noise. Where a cluster IS configured the package is
+    needed, so the row says which package and how to get it -- never that
+    DELFIN crashed.
+
+    The settings are read here rather than through ``delfin.remote``, whose
+    import is the one that just failed.
+    """
+    if settings is None:
+        try:
+            from delfin.user_settings import load_settings
+            settings = load_settings()
+        except Exception:
+            settings = {}
+    remote = settings.get("remote") if isinstance(settings, dict) else None
+    block = remote.get("clusters") if isinstance(remote, dict) else None
+    if not isinstance(block, dict) or not block:
+        return []
+    named = ", ".join(sorted(str(k) for k in block))
+    return [CheckResult(
+        "clusters", MISSING,
+        f"{len(block)} cluster(s) configured ({named}), and the cluster "
+        f"tunnel is not installed: {exc}",
+        "install the cluster tunnel package, or remove remote.clusters from "
+        "~/.delfin_settings.json if you do not submit to a cluster",
+    )]
+
+
 def check_clusters(*, budget: bool = False, settings: dict | None = None,
                    ctun_config: str | os.PathLike | None = None) -> list[CheckResult]:
     """One result per cluster in ``remote.clusters`` (delfin.remote).
@@ -473,10 +527,20 @@ def check_clusters(*, budget: bool = False, settings: dict | None = None,
     "ok": logged in. Whether it is logged in is asked of the local control
     socket only; ``budget=True`` also runs the budget script over the open
     tunnel and reports what is left. No cluster configured: no results.
+
+    The cluster tunnel is an optional dependency. Where it is not installed
+    these imports raise, and before this was handled ``run_all`` caught the
+    ImportError and reported "clusters: check crashed ... report this as a
+    DELFIN bug" -- a machine that simply does not submit to a cluster was
+    told it had found a defect, and the three count assertions of
+    ``tests/test_delfin_doctor.py`` failed on every such machine. A missing
+    optional package is reported as missing, and only where the settings
+    actually name a cluster; otherwise there is nothing to say.
     """
-    from delfin.remote import clusters as _clusters
-    from delfin.remote import connection as _connection
-    from delfin.remote.errors import RemoteError, RemoteRefused
+    try:
+        _clusters, _connection, RemoteError, RemoteRefused = _cluster_modules()
+    except ImportError as exc:
+        return _clusters_without_the_tunnel(settings, exc)
 
     results: list[CheckResult] = []
     for name, cluster in _clusters.load(settings=settings,
@@ -522,11 +586,19 @@ def check_clusters(*, budget: bool = False, settings: dict | None = None,
 
 
 def run_all(scratch_dir: str | os.PathLike | None = None, *,
-            cluster_budget: bool = False) -> list[CheckResult]:
+            cluster_budget: bool = False, settings: dict | None = None,
+            ctun_config: str | os.PathLike | None = None) -> list[CheckResult]:
     """Run every check and return the results in a stable order.
 
     Never raises: a check that explodes is reported as "broken".
     ``cluster_budget`` also probes each logged-in cluster's budget.
+
+    ``settings`` and ``ctun_config`` are passed to :func:`check_clusters`,
+    which otherwise reads the live machine's configuration. A test that
+    asserts anything about the result set supplies them: without that seam
+    the number of rows, and whether they all pass, depended on whether the
+    person running the tests happens to have a cluster configured and
+    logged in.
     """
     checks = [
         check_orca,
@@ -550,7 +622,8 @@ def run_all(scratch_dir: str | os.PathLike | None = None, *,
                 f"check crashed: {exc}", "report this as a DELFIN bug",
             ))
     try:
-        results += check_clusters(budget=cluster_budget)
+        results += check_clusters(budget=cluster_budget, settings=settings,
+                                  ctun_config=ctun_config)
     except Exception as exc:  # defensive: the doctor must complete
         results.append(CheckResult(
             "clusters", BROKEN, f"check crashed: {exc}", "report this as a DELFIN bug"))
