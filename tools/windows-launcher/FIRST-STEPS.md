@@ -33,6 +33,20 @@ detail and the reporting addresses.
    given, for example `delfin@192.0.2.10` or a name from your
    `~/.ssh/config`. This is the only field that has to be filled in.
 3. Click **Start / Reconnect** and complete the login.
+
+   **If the server takes no passwords** — many hardened boxes do not — the
+   first attempt fails, and that is expected. It has created a key for this
+   PC on the way:
+
+   ```
+   %USERPROFILE%\.ssh\delfin_launcher_ed25519.pub
+   ```
+
+   Send that file (it is the **public** half; the one without `.pub` is
+   yours and stays on this PC) to whoever runs the box. They add it in one
+   command. Then press **Start / Reconnect** again and you are in, without
+   a password from then on.
+
    To paste a password or one-time code into the black SSH window,
    **right-click**. Ctrl+V does not paste at that prompt; it sends a
    control character and the server answers "Permission denied" for a
@@ -108,6 +122,7 @@ then.
 | The password is refused although it is right | Ctrl+V in the SSH window. Right-click instead. |
 | "Not found" for the environment | The server installation is not where discovery looks. Ask the account owner; do not go hunting. |
 | Nothing opens, no error | Are you on the network or VPN the server needs? |
+| "Permission denied" and you were given no password | The server takes keys only. Step 2 above: send your `.pub` file. |
 | The agent says a key is missing | Section 3 above. |
 | Anything else | **Settings** tab, the diagnosis at the bottom. Send that. |
 

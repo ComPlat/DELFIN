@@ -276,7 +276,29 @@ What only a person can do, in this order:
   A copy kept from an earlier layout (`.delfin_settings.json.before-shared-*`)
   is not applied again; merge it by hand if it is still wanted.
   `delfin-people` lists who is there; `delfin-people --attach NAME` shows that
-  person's dashboard session. They are one Unix user: everyone can read
+  person's dashboard session.
+
+  **Letting a new person in.** `pi_harden_host.sh` sets
+  `PasswordAuthentication no`, and the launcher registers a PC by appending
+  its key during the first *password* login — so on a hardened box that
+  first login cannot happen and a new person is locked out by a key that is
+  added only once they are in. One step closes it: they install the
+  launcher and press Start once, which fails but creates
+  `%USERPROFILE%\.ssh\delfin_launcher_ed25519.pub`; they send you that file;
+  you run
+
+  ```bash
+  delfin-people --add-key <name> < their-key.pub
+  ```
+
+  which appends it with the launcher's own restriction
+  (`restrict,port-forwarding,pty`: the dashboard tunnel and a terminal, no
+  agent, no X11, no `~/.ssh/rc`). Appending the line by hand is what puts an
+  **unrestricted** key in `authorized_keys`; `delfin-people --keys` shows
+  which keys carry no restriction. Revoke a PC by deleting its
+  `delfin-launcher-<name>` line.
+
+  They are one Unix user: everyone can read
   everything in the account, credentials included. Put only neutral, project
   credentials (a project KIT key, the repository deploy key, a neutral git
   identity) into it; personal ones belong in personal accounts.
