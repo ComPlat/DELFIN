@@ -70,6 +70,25 @@ def h_catalog(by: str = "category") -> str:
     return _dumps({k: [c.name for c in v] for k, v in grouped.items()})
 
 
+def h_bio_backends(task: Optional[str] = None) -> str:
+    from delfin.tools.bio.workflows import backend_catalog
+    try:
+        return _dumps(backend_catalog(task=task))
+    except ValueError as exc:
+        return _dumps({"error": str(exc)})
+
+
+def h_bio_plan(plan: Optional[dict] = None, template: Optional[str] = None) -> str:
+    from delfin.tools.bio.workflows import validate_plan, workflow_template
+    try:
+        if (plan is None) == (template is None):
+            raise ValueError("exactly one of plan or template is required")
+        selected = plan if template is None else workflow_template(template)
+        return _dumps({"plan": selected, "validation": validate_plan(selected)})
+    except (ValueError, TypeError) as exc:
+        return _dumps({"error": str(exc)})
+
+
 def h_compatible_successors(name: str) -> str:
     if platform.describe_capability(name) is None:
         return _dumps({"error": f"unknown capability {name!r}"})
@@ -334,6 +353,18 @@ def run_server(argv: Optional[list[str]] = None) -> None:
     def catalog(by: str = "category") -> str:
         """Capabilities grouped by 'category', 'produces', or 'consumes'."""
         return h_catalog(by)
+
+    @mcp.tool()
+    def bio_backends(task: Optional[str] = None) -> str:
+        """Read biomolecular tool contracts, including AlphaFold and docking.
+        Planned backends are not executable integrations. Does no probing."""
+        return h_bio_backends(task)
+
+    @mcp.tool()
+    def bio_plan(plan: Optional[dict] = None, template: Optional[str] = None) -> str:
+        """Read a docking/medchem/md/predictor template or validate a typed
+        biomolecular plan. Returns missing integrations; never runs a job."""
+        return h_bio_plan(plan, template)
 
     @mcp.tool()
     def compatible_successors(name: str) -> str:

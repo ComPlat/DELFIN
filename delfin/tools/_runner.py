@@ -90,6 +90,14 @@ def run_step(
             adapter.contract().produces, result,
         )
         report_result(result, step_name, missing)
+        from delfin.tools._products import invalid_required_artifacts
+        from delfin.tools._types import ErrorKind
+        invalid = invalid_required_artifacts(adapter.contract().required_artifacts, result)
+        if invalid:
+            result.status = StepStatus.FAILED
+            result.error_kind = ErrorKind.TOOL_FAILED
+            result.error = f"Required output artifacts failed validation: {invalid}"
+            result.data["_invalid_required_artifacts"] = invalid
 
     return result
 

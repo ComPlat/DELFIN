@@ -78,7 +78,8 @@ def test_a_missing_engine_is_reported_by_its_command(tmp_path):
     assert [e["name"] for e in report] == list(ENGINES)
     for entry in report:
         assert entry["detected"] is False
-        assert "command" in entry and entry["command"]
+        assert "command" in entry
+        assert bool(entry["command"]) != entry["input_conversion_required"]
         assert "licence" in entry and entry["licence"]
 
 
@@ -94,15 +95,15 @@ def test_a_detected_engine_carries_the_path_found(tmp_path):
 
 def test_the_command_names_the_input_and_the_output(tmp_path):
     from delfin.tools.bio import prediction_engines
-    _standin(tmp_path, "boltz")
+    _standin(tmp_path, "esm-fold")
     env = _env(tmp_path)
     fasta = tmp_path / "query.fasta"
     fasta.write_text(FASTA, encoding="utf-8")
     report = prediction_engines(env=env, fasta=str(fasta))
-    command = {e["name"]: e for e in report}["boltz"]["command"]
+    command = {e["name"]: e for e in report}["esmfold"]["command"]
     assert command
     assert str(fasta) in command
-    assert "boltz" in command
+    assert command[0] == "esm-fold"
 
 
 def test_detection_never_runs_a_program(tmp_path):
@@ -124,6 +125,15 @@ def test_detection_reads_no_environment_it_was_not_given(tmp_path):
     env = {"PATH": str(tmp_path)}          # no os.environ at all
     report = prediction_engines(env=env)
     assert [e["detected"] for e in report] == [False] * 4
+
+
+def test_af3_and_boltz_do_not_advertise_fabricated_generic_fasta_commands():
+    from delfin.tools.bio import prediction_engines
+    entries = {e["name"]: e for e in prediction_engines(env={}, fasta="input.fasta")}
+    for name in ("alphafold3", "boltz"):
+        assert entries[name]["command"] == []
+        assert entries[name]["input_conversion_required"]
+        assert not entries[name]["execution_ready"]
 
 
 def test_the_block_reports_the_engines_and_the_fasta(tmp_path):

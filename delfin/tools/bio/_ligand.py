@@ -101,6 +101,12 @@ def _read_sdf_record(lines: List[str], start: int, source: str
         bonds.append((first - 1, second - 1, order))
         index += 1
 
+    block_end = next((i for i in range(index, len(lines))
+                      if lines[i].strip() == "M  END"), None)
+    if block_end is None or any(lines[i].strip() == "$$$$"
+                                for i in range(index, block_end)):
+        raise StructureFormatError(f"{source}: record has no M  END")
+    molblock = "\n".join(lines[start:block_end + 1]) + "\n"
     properties: Dict[str, str] = {}
     while index < len(lines):
         line = lines[index]
@@ -121,7 +127,7 @@ def _read_sdf_record(lines: List[str], start: int, source: str
 
     return SmallMolecule(name=name, atoms=tuple(atoms), bonds=tuple(bonds),
                          properties=properties, source_format="sdf",
-                         source_name=source), index
+                         source_name=source, molblock=molblock), index
 
 
 def parse_sdf(text: str, *, source_name: str = "<sdf>") -> Tuple[SmallMolecule, ...]:

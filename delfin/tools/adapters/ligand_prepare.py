@@ -24,6 +24,7 @@ it.  RDKit is BSD-3-licensed.
 from __future__ import annotations
 
 import time
+import json
 from pathlib import Path
 from typing import Any, Optional
 
@@ -64,6 +65,7 @@ class LigandPrepareAdapter(StepAdapter):
     produces_geometry = False
     consumes = ()
     produces = ("ligand",)
+    required_artifacts = produces
     params = (
         ParamSpec("smiles", "str",
                   description="SMILES of the ligand (exactly one of "
@@ -84,6 +86,7 @@ class LigandPrepareAdapter(StepAdapter):
     data_keys = (
         DataKeySpec("n_atoms", "int", description="Atoms of the prepared "
                     "ligand, hydrogens included"),
+        DataKeySpec("identity", "dict", description="Chemical state ID and output-to-input atom mapping for this preparation"),
         DataKeySpec("n_heavy_atoms", "int"),
         DataKeySpec("n_hydrogens", "int"),
         DataKeySpec("method", "str", description="ETDGv3 (embedded from a "
@@ -158,6 +161,7 @@ class LigandPrepareAdapter(StepAdapter):
 
         molecule = prepared.molecule
         data = {
+            "identity": json.loads(molecule.properties["DELFIN_IDENTITY"]),
             "n_atoms": molecule.n_atoms,
             "n_heavy_atoms": sum(1 for a in molecule.atoms
                                  if not a.is_hydrogen),

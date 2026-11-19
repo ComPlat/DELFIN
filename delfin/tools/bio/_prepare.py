@@ -23,6 +23,9 @@ coordinates (a SMILES).
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
+import math
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
@@ -122,6 +125,8 @@ def prepare_ligand(
         mol = _from_small_molecule(small)
         embed = not mol.GetConformer().Is3D()
 
+    for atom in mol.GetAtoms():
+        atom.SetIntProp("_delfin_input_index", atom.GetIdx())
     if embed:
         mol = _embed(mol, seed=seed)
     mol = _add_hydrogens(mol, embed=embed, seed=seed)
@@ -169,6 +174,15 @@ def _from_small_molecule(small: SmallMolecule):
     :mod:`delfin.tools.bio._ligand` passes it through as it stands.
     """
     rdkit = _rdkit()
+    if small.molblock:
+        mol = rdkit.Chem.MolFromMolBlock(small.molblock, removeHs=False)
+        if mol is None or mol.GetNumAtoms() != small.n_atoms:
+            raise StructureFormatError(f"{small.source_name}: invalid molecular graph")
+        conformer = mol.GetConformer()
+        conformer.Set3D(True)
+        for k, atom in enumerate(small.atoms):
+            conformer.SetAtomPosition(k, atom.position)
+        return mol
     rw = rdkit.Chem.RWMol()
     for atom in small.atoms:
         try:
@@ -274,7 +288,7 @@ def _to_small_molecule(mol, *, name: str) -> SmallMolecule:
     charges: List[float] = []
     for atom in mol.GetAtoms():
         value = float(atom.GetDoubleProp("_GasteigerCharge"))
-        if value != value:  # NaN
+        if not math.isfinite(value):
             raise StructureFormatError(
                 f"atom {atom.GetIdx()} ({atom.GetSymbol()}) has no Gasteiger "
                 "charge; the element may be unsupported"
@@ -300,27 +314,50 @@ def _to_small_molecule(mol, *, name: str) -> SmallMolecule:
                      rdkit.Chem.BondType.TRIPLE: 3}.get(bond.GetBondType(), 1)
         bonds.append((int(bond.GetBeginAtomIdx()),
                       int(bond.GetEndAtomIdx()), order))
+    canonical = rdkit.Chem.RemoveHs(rdkit.Chem.Mol(mol))
+    for atom in canonical.GetAtoms():
+        atom.SetAtomMapNum(0)
+    smiles = rdkit.Chem.MolToSmiles(canonical, isomericSmiles=True)
+    identity = {
+        "schema_version": 1,
+        "canonical_isomeric_smiles": smiles,
+        "chemical_state_id": hashlib.sha256(smiles.encode()).hexdigest(),
+        "identity_method": "RDKit canonical isomeric SMILES; no tautomer/protonation normalization",
+        "rdkit_version": rdkit.__version__,
+        "formal_charge": rdkit.Chem.GetFormalCharge(mol),
+        "atom_mapping": [{"output_index": atom.GetIdx(),
+                          "input_index": atom.GetIntProp("_delfin_input_index") if atom.HasProp("_delfin_input_index") else None,
+                          "element": atom.GetSymbol(),
+                          "origin": "input" if atom.HasProp("_delfin_input_index") else "added_hydrogen"}
+                         for atom in mol.GetAtoms()],
+    }
     return SmallMolecule(
         name=name,
         atoms=tuple(atoms),
         bonds=tuple(bonds),
-        properties={"GASTEIGER_CHARGES":
+        properties={"DELFIN_IDENTITY": json.dumps(identity, sort_keys=True), "GASTEIGER_CHARGES":
                     " ".join(f"{c:.6f}" for c in charges)},
         source_format="prepared",
         source_name=name,
+        molblock=rdkit.Chem.MolToMolBlock(mol),
     )
 
 
 def write_sdf(ligand: PreparedLigand, path: _PathLike) -> None:
     """Write the prepared ligand as one SDF (V2000) record.
 
-    The charges travel as one number per atom under the
-    ``GASTEIGER_CHARGES`` SD tag, so a reader that does not parse the M  CHG
-    columns still sees them; the M  CHG line is written for atoms whose
-    charge is far enough from zero to round to one, which is what the
-    format's charge column supports.
+    Formal charges and stereochemistry travel in the molecular graph;
+    Gasteiger partial charges remain a separate SD property.
     """
     molecule = ligand.molecule
+    if molecule.molblock:
+        mol = _from_small_molecule(molecule)
+        mol.SetProp("_Name", molecule.name)
+        for key, value in molecule.properties.items():
+            mol.SetProp(key, value)
+        with _rdkit().Chem.SDWriter(str(path)) as writer:
+            writer.write(mol)
+        return
     lines: List[str] = [molecule.name or "ligand",
                         "  DELFIN  prepared ligand", ""]
     n_atoms = molecule.n_atoms

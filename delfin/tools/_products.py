@@ -14,16 +14,15 @@ reported: ``geometry`` lives on ``StepResult.geometry`` and ``qc_output`` on
 ``StepResult.output_file`` (that mapping is what
 ``delfin.tools.pipeline._result_artifacts`` already relies on).
 
-Re rejected alternative: failing the run outright.  A missing declared
-product is a contract defect of the adapter, not a failure of the data —
-refusing to run would block every consumer behind a producer that is
-mis-declared only in one key.  The run stays successful and the report is
-data the caller (and the log) carries forward.
+Legacy declarations remain report-only. Adapters can additionally declare
+``required_artifacts``: missing, empty or unreadable files then fail the step.
+Parsing and chemical validity remain the producer adapter's responsibility.
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, Tuple
+from pathlib import Path
 
 # Declared keys satisfied by StepResult fields rather than the artifacts dict.
 # geometry: the adapter's output XYZ; qc_output: the engine's main log.
@@ -64,6 +63,31 @@ def report_result(result, step_name: str, missing: Tuple[str, ...]) -> None:
         "step '%s' declares product(s) %s its result does not carry",
         step_name, sorted(missing),
     )
+
+
+def invalid_required_artifacts(required, result) -> dict:
+    """Opt-in physical output contract; content semantics belong to adapters."""
+    invalid = {}
+    for key in sorted(required):
+        value = (result.artifacts or {}).get(key)
+        if value is None:
+            fields = _SATISFIED_BY_RESULT_FIELD.get(key, ())
+            value = next((getattr(result, field, None) for field in fields
+                          if getattr(result, field, None) is not None), None)
+        try:
+            if value is None:
+                raise ValueError("missing artifact")
+            path = Path(value)
+            if not path.is_absolute() and result.work_dir is not None:
+                path = Path(result.work_dir) / path
+            if not path.is_file():
+                raise ValueError("artifact is not a regular file")
+            with path.open("rb") as handle:
+                if not handle.read(1):
+                    raise ValueError("artifact is empty")
+        except (OSError, ValueError, TypeError) as exc:
+            invalid[key] = str(exc)
+    return invalid
 
 
 __all__ = ["DATA_KEY", "check_declared_products", "report_result"]

@@ -74,6 +74,8 @@ def _is_same_molecule(a: SmallMolecule, b: SmallMolecule) -> bool:
 def _canonical_smiles(molecule: SmallMolecule) -> str:
     rdkit = _rdkit()
     mol = _rdmol(molecule, heavy_only=True)
+    for atom in mol.GetAtoms():
+        atom.SetAtomMapNum(0)
     return rdkit.Chem.MolToSmiles(mol)
 
 
@@ -81,6 +83,12 @@ def _rdmol(molecule: SmallMolecule, *, heavy_only: bool):
     """An RDKit graph from a :class:`SmallMolecule`; hydrogens dropped when
     *heavy_only*.  Bond order 4 (SDF aromatic) becomes an aromatic bond."""
     rdkit = _rdkit()
+    if molecule.molblock:
+        from delfin.tools.bio._prepare import _from_small_molecule
+        mol = _from_small_molecule(molecule)
+        for atom in mol.GetAtoms():
+            atom.SetAtomMapNum(0)
+        return rdkit.Chem.RemoveAllHs(mol) if heavy_only else mol
     heavy = [(i, a) for i, a in enumerate(molecule.atoms)
              if not (heavy_only and a.is_hydrogen)]
     renumber = {old: new for new, (old, _) in enumerate(heavy)}

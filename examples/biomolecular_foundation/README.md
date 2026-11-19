@@ -26,3 +26,16 @@ reference-pose agreement are different questions.
 
 This checks file semantics, discovery, wiring and reporting. It does not validate
 a live docking engine, receptor preparation or a physical model.
+
+## Workflow scaffold demonstration
+
+From the repository root, with RDKit available:
+
+```sh
+python -m examples.biomolecular_foundation.build_workflow_inputs --output /tmp/delfin-bio-scaffold
+```
+
+Use a fresh output path. This writes the backend catalog, six typed workflow
+plans and AlphaFold 3/Boltz/Chai inputs for synthetic demonstration entities.
+No external engine is executed. See `docs/BIOMOLECULAR_WORKFLOWS.md` for the
+agent tools, supported input subset and remaining execution integration.

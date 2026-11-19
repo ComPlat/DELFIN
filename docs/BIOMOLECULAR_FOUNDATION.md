@@ -8,6 +8,10 @@ with incompatible inputs and unverifiable outputs.
 
 ## What is implemented
 
+The subsequent [workflow scaffold](BIOMOLECULAR_WORKFLOWS.md) adds agent-facing
+backend discovery and typed planning for prediction, docking, MedChem, MD and
+design. It includes native input exporters, not external-engine execution.
+
 | Surface | Present in this draft | Boundary |
 | --- | --- | --- |
 | Structure readers | PDB, mmCIF, SDF/MOL and MOL2; compressed input; models, chains, residue identity, alternate locations, waters and hetero components | Reading a structure does not prepare a receptor or repair missing chemistry. |
@@ -24,6 +28,8 @@ The shared validator accepts a consumed port when the caller supplies its wired
 input parameter explicitly. The runner also reports declared products missing
 from a successful result. That report does not make the step fail automatically;
 callers must not mistake it for proof that every declared artifact exists.
+Adapters can now opt into `required_artifacts`, which fails a step for missing,
+empty or unreadable files. The new scaffold adapters and ligand preparation do.
 
 ## Interpretation and validation boundaries
 

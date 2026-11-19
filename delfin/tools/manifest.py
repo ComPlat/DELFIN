@@ -49,6 +49,8 @@ def contract_to_dict(c) -> Dict[str, Any]:
         "params": [_paramspec_to_dict(p) for p in c.params],
         "consumes": sorted(c.consumes),
         "produces": sorted(c.produces),
+        "required_artifacts": sorted(c.required_artifacts),
+        "example_kwargs": c.example_kwargs,
         "data_keys": [_datakey_to_dict(d) for d in c.data_keys],
         "requires_binaries": sorted(c.requires_binaries),
         "requires_python": sorted(c.requires_python),
@@ -216,6 +218,17 @@ def build_guide() -> Dict[str, Any]:
             "artifacts between steps. If no building block does what you need, "
             "build one and register it. Study failures via diagnostics and iterate."
         ),
+        "biomolecular_planning": {
+            "tools": ["bio_backends", "bio_plan"],
+            "input_adapter": "bio_prediction_input",
+            "rules": [
+                "Read backend contracts before planning AlphaFold/cofolding, docking, MedChem or MD.",
+                "bio_plan is a planning DAG, not an executable pipeline spec; never submit it as one.",
+                "Use explicit named edges and native input converters; unknown chemistry requires a dedicated adapter.",
+                "Planned, command-found, adapter-implemented and scientifically validated are different states.",
+                "Input preparation success is not prediction success; read execution_ready and integration status.",
+            ],
+        },
         "rules": [
             "Specify only required params; declared defaults (method, basis, "
             "maxcore, …) and auto-wiring (e.g. gbw→moread, hessian→hess_file) "

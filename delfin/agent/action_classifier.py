@@ -71,7 +71,7 @@ READ_ONLY_TOOLS = frozenset({
     "task_list", "task_get", "cron_list", "list_changes_made",
     "check_environment", "project_introspect",
     "list_keys", "describe_key", "list_applications", "describe_application",
-    "list_capabilities", "catalog", "describe_capability",
+    "list_capabilities", "catalog", "describe_capability", "bio_backends", "bio_plan",
     "compatible_successors", "get_manifest", "get_guide",
     "run_metrics", "list_runs", "run_status",
     "list_literature_files", "list_tools", "describe_tool",

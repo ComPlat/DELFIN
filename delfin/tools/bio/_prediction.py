@@ -15,11 +15,10 @@ Semantics, and the line the interface does not cross:
   calculations, and a prediction engine is exactly the kind of program a
   caller must decide to have.  A command is *described*, built to be read —
   the whole of what this interface does.
-* **The command is described from the sequence the caller names.**  Each
-  engine's invocation is what its own documentation publishes (see the
-  table): input FASTA, output directory, the engine's own controls left at
-  their defaults.  A described command is a starting point for a caller who
-  has read the engine's docs, not a promise.
+* **Legacy FASTA examples are limited to ColabFold and ESMFold.** Boltz and
+  AlphaFold 3 need typed input conversion; this interface emits no command
+  for them. Use ``bio_backends`` and ``bio_prediction_input`` for those
+  dialects. Finding a command does not verify its version or runtime assets.
 * **The environment is read where the caller points.**  ``os.environ`` is
   the default; a caller can hand a different mapping (tests do), so the
   interface reads no environment it was not given.
@@ -72,7 +71,7 @@ class _Engine:
         *fasta* it names the file, without it it carries the ``{fasta}``
         placeholder for a caller to fill.
         """
-        path = shutil.which(self.binary, path=env.get("PATH"))
+        path = shutil.which(self.binary, path=env.get("PATH", "")) if self.binary else None
         if fasta is not None:
             command = [part.replace("{fasta}", str(fasta)) for part in self.argv]
         else:
@@ -84,11 +83,13 @@ class _Engine:
             "path": path or "",
             "licence": self.licence,
             "command": command,
+            "execution_ready": False,
+            "input_conversion_required": not bool(command),
+            "note": "Legacy detection only; use bio_backends and bio_prediction_input for typed inputs. Commands are examples, not validated execution plans.",
         }
 
 
-#: The invocation each engine's own documentation publishes.  ``{fasta}`` is
-#: the sequence file; every control is left at the engine's default.
+# Generic FASTA commands are deliberately absent for typed-input engines.
 _ENGINES = (
     _Engine(
         "colabfold", "colabfold_batch",
@@ -96,19 +97,19 @@ _ENGINES = (
         ("colabfold_batch", "{fasta}", "predictions_out"),
     ),
     _Engine(
-        "esmfold", "esmfold",
+        "esmfold", "esm-fold",
         "MIT (code and weights)",
-        ("esmfold", "--input", "{fasta}", "--output", "predictions_out"),
+        ("esm-fold", "-i", "{fasta}", "-o", "predictions_out"),
     ),
     _Engine(
         "boltz", "boltz",
         "MIT (code and weights)",
-        ("boltz", "predict", "{fasta}", "--outdir", "predictions_out"),
+        (),
     ),
     _Engine(
-        "alphafold3", "alphafold3",
+        "alphafold3", "",
         "CC BY-NC-SA 4.0 (code, non-commercial); model terms accepted before use",
-        ("alphafold3", "--fasta_path={fasta}", "--output_dir=predictions_out"),
+        (),
     ),
 )
 

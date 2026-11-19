@@ -125,6 +125,8 @@ class StepContract:
     # a parser declaring ("qc_output","filepath") gets its filepath from the
     # upstream QM .out automatically). Distinct from the global gbw→moread rule.
     wires: Tuple[Tuple[str, str], ...] = ()
+    required_artifacts: frozenset = frozenset()
+    example_kwargs: Optional[dict] = None
 
     @property
     def required_params(self) -> Tuple[str, ...]:

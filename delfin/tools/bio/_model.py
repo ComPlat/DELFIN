@@ -500,6 +500,7 @@ class SmallMolecule:
     properties: Dict[str, str] = field(default_factory=dict)
     source_format: str = ""
     source_name: str = ""
+    molblock: str = ""
 
     @property
     def n_atoms(self) -> int:
