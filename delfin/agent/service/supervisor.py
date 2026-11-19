@@ -1858,6 +1858,7 @@ class Supervisor:
         info = {k: v for k, v in (params.get("info") or {}).items()
                 if k in ("provider", "model", "effort", "mode", "approval", "title",
                          "banner", "notices", "tasks", "auto", "background",
+                         "suggestions",
                          # The session's person, when it has one. A label,
                          # not a boundary; the header carries it along with
                          # the session id. Nothing filters on it yet.

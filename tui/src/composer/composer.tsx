@@ -77,6 +77,10 @@ export interface ComposerDeps {
   /** Just before a paste goes into the prompt (a key held by an open
    *  question goes in first: approval.tsx HOLD_MS). */
   beforePaste?: () => void
+  /** What the session offers to send next (its suggestions): Tab on an
+   *  empty prompt takes the first, Tab again on a taken one the next --
+   *  as the dashboard's message box does. */
+  suggestions?: () => string[]
 }
 
 interface Popup {
@@ -547,6 +551,16 @@ export function createComposer(deps: ComposerDeps): Composer {
       if (token) {
         dismissedAt = -1
         refreshCompletion()
+        return true
+      }
+      // An empty prompt takes the session's first suggestion; a prompt that
+      // is one of them (just taken) takes the next.
+      const offered = (deps.suggestions?.() ?? []).filter((t) => t.trim())
+      const now = area.plainText
+      if (offered.length && (!now.trim() || offered.includes(now))) {
+        const next = now.trim() ? offered[(offered.indexOf(now) + 1) % offered.length]! : offered[0]!
+        setAreaText(next)
+        area.cursorOffset = next.length
       }
       return true                         // a tab never goes into the prompt
     }
