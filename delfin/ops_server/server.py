@@ -467,8 +467,12 @@ def tool_calc_status(folder: str) -> str:
 
     Returns {"folder", "state", "outcome", "method", "evidence",
     "last_activity", "last_activity_age_s"}.
-    state: succeeded | failed | finished | running | stalled | pending |
-    not started | unknown | missing. "stalled" is a run with no exit code
+    state: succeeded | failed | finished | running | interrupted | stalled |
+    pending | not started | unknown | missing. "interrupted" is a step of a
+    DELFIN calculation chain whose run verifiably ended without a result
+    (its process is gone or its heartbeat stopped, said in evidence) --
+    leftover temporary files and a fresh output do not make a run
+    "running". "stalled" is a run with no exit code
     whose files have not been written for over six hours
     (last_activity_age_s says how long); "running" is one written
     recently; "not started" is an input with no output that no scheduler
@@ -627,7 +631,7 @@ def tool_extract_energy_table(
     (succeeded / failed (exit code N) / running or crashed / unknown --
     "no_output" alone does not say which), ``state`` (one word by the
     same rule calc_status uses: succeeded / failed / finished / running /
-    stalled / pending / not started / unknown -- "running" when the
+    interrupted / stalled / pending / not started / unknown -- "running" when the
     scheduler has a job on the folder or it was written recently,
     "stalled" after six hours without a write), ``last_activity`` and
     ``last_activity_age_s`` (when the newest file in the folder was
