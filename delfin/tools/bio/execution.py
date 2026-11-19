@@ -21,6 +21,8 @@ class Binding:
 
 
 BINDINGS = {
+    "mdanalysis": Binding("bio_mdanalysis", {"trajectory": "trajectory_file", "system": "system_file"}, {"report": "trajectory_report"}),
+    "openmm": Binding("bio_openmm_run", {"system": "system_file"}, {"trajectory": "trajectory", "checkpoint": "checkpoint"}),
     "parameterize": Binding("bio_openmm_parameterize", {"complex": "structure_file"}, {"system": "simulation_system"}),
     "prolif": Binding("prolif_analyze", {"poses": "poses_file", "receptor": "receptor_file"}, {"interactions": "interaction_report"}),
     "esmfold": Binding("esmfold_predict", {"request": "request_file"}, {"models": "prediction_bundle"}),

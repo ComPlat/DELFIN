@@ -28,7 +28,7 @@ requests cannot be inferred from a placeholder such as an empty dictionary.
 
 ## Catalog coverage and status
 
-The catalog has 46 backend/operation contracts, of which 26 have execution
+The catalog has 46 backend/operation contracts, of which 28 have execution
 bindings. Additional registered adapters handle prediction import and workflow
 execution. Catalog coverage is not a claim that every engine runs in DELFIN.
 
@@ -76,8 +76,7 @@ Docking requires `expected_version` equal to the complete stripped `--version`
 banner. External calculations use DELFIN's tracked process runtime. Provisioning is a
 separate checked phase, not a fallback hidden inside an engine subprocess. Timeouts terminate the process group. Cancellation callbacks stop
 between DAG nodes; active subprocess cancellation uses DELFIN's process manager.
-Execution is sequential and accepts a CPU core count; GPU scheduling and remote
-cluster submission are not implemented by this executor.
+Execution inside a job is sequential. The shared `delfin-step --slurm` CLI can submit the entire Bio DAG with explicit CPU, total-memory, walltime and GPU/partition requests. OpenMM currently accepts CPU/Reference only; the executor does not parallelize DAG nodes or submit individual nodes.
 
 Successful resume verifies recorded files plus plan, input hashes, relevant code,
 Python dependency versions and probed executable identity. It is not an atomic
@@ -103,7 +102,7 @@ DAG itself is not a generic DELFIN pipeline spec.
 Predictor execution (AlphaFold family, ColabFold, Boltz, Chai and
 RoseTTAFold), automatic model asset acquisition, GPU scheduling, richer receptor chemistry support,
 Molscrub, ligand/solvent/periodic MD parameterization and
-OpenMM/GROMACS/Amber/NAMD/MDAnalysis simulation/analysis execution remain unimplemented bindings.
+GROMACS/Amber/NAMD execution remain unimplemented bindings. OpenMM minimization/dynamics and MDAnalysis statistics now have bounded adapters for the checked vacuum system/JSONL trajectory subset.
 The same applies to DiffDock, HADDOCK3, licensed docking, protein design and
 QM/MM-region construction. Existing native predictor input generation does not
 remove these blockers. Scientific reference datasets and installed-engine tests
@@ -412,8 +411,7 @@ pairs. Missing or modified nested files invalidate the bundle. Virtual sites and
 force-field includes are outside this first schema. The checks do not establish
 scientific accuracy or complete validation of every force parameter.
 
-This is system construction only. No minimization, dynamics, integrator,
-trajectory or restart-state claim follows from successful parameterization.
+Parameterization itself is system construction only. Minimization, dynamics and checkpoint continuation are separate explicit `bio_openmm_run` operations.
 Protein-only vacuum construction is an explicit technical subset, not a recommended
 production protocol for a solvated protein or a protein-ligand complex. Cluster
 acceptance must exercise actual OpenMM template matching and compare the resulting
@@ -422,3 +420,72 @@ system with a trusted reference before adding dynamics.
 References: [OpenMM simulation setup](https://docs.openmm.org/latest/userguide/application/02_running_sims.html),
 [system serialization](https://openmm.github.io/openmm-cookbook/latest/notebooks/cookbook/Saving%20Systems%20to%20XML%20Files.html)
 and [packaged ff14SB definition](https://github.com/openmm/openmm/blob/8.4.0/wrappers/python/openmm/app/data/amber14/protein.ff14SB.xml).
+
+### Minimization, dynamics and trajectory analysis
+
+`bio_openmm_run` / backend `openmm` consumes a checked system bundle. Set exact
+OpenMM version, `platform` (`CPU` or `Reference`), `temperature_k`,
+`friction_per_ps`, `timestep_ps`, nonzero `seed`, `constraint_tolerance`, `steps`,
+`report_interval` and `minimize` explicitly. Reference requires one CPU core.
+The integrator is LangevinMiddle; the system's chemical state and boundary
+conditions remain those of the bundle. Initial constraints are applied before
+optional bounded minimization; initial velocities are sampled at the requested
+temperature. `steps=0, minimize=True` performs minimization only. A returned
+minimizer with non-increasing finite energy is not an independent convergence
+certificate. No equilibrated-production status is inferred.
+
+The trajectory is a streamed JSONL file plus a manifest with nm/ps/kJ mol-1 units,
+full nested system identity and exact step/time coverage. Initial and final frames
+are always recorded. `max_frames` bounds the requested frame count. Checkpoints
+include the engine binary, serialized State and Integrator, protocol, final
+step/time and associated trajectory. Validation checks positions/velocities,
+serialized integrator parameters and agreement with the final trajectory frame.
+Set `checkpoint_file` to the checkpoint manifest and `minimize=False` to continue.
+Changing the system, runtime version, platform, CPU count, seed or integrator
+settings is refused. OpenMM may reject a binary checkpoint across hardware/build
+changes; there is no silent state-file fallback. Checkpoints are currently written
+on successful completion, not periodically during interrupted jobs.
+
+`bio_mdanalysis` / backend `mdanalysis` checks trajectory/system identity, then
+uses explicit zero-based `atom_indices`, `alignment` (`none` or `fit`),
+`weighting` (`uniform` or `mass`), `discard_frames` and `stride`. Fitting uses
+MDAnalysis rotation matrices against the first retained frame and requires at
+least three non-collinear selected atoms. Statistics include selected-atom RMSD,
+per-atom population RMSF and radius of gyration with the selected weighting.
+No periodic unwrapping, equilibration detection, affinity inference or convergence
+claim is made. MDAnalysis 2.9.0 has an isolated conda-forge recipe; no solver or
+installed MDAnalysis engine was run here.
+
+Tests cover mocked OpenMM boundaries, missing/corrupt outputs, protocol-mismatch
+restart refusal, streaming numerical analysis with a mocked fitting boundary,
+and the three-node parameterize/run/analyze DAG with checksum-verified resume.
+Cluster reference runs remain required.
+
+### Submit an explicit Bio plan through the existing Slurm CLI
+
+The shared CLI accepts `--params-file parameters.json`, a JSON object such as
+`{"plan": {...}}`. CLI parameters override file values. The MD plan builder
+`python -m examples.biomolecular_foundation.build_md_plan --help` lists all
+required scientific choices and writes this file without running any engine.
+Use absolute input paths on a filesystem visible to compute nodes.
+
+```sh
+delfin-step bio_workflow_execute --params-file /shared/md-parameters.json \
+  --work-dir /shared/md-review-run --cores 4 --slurm \
+  --slurm-time 01:00:00 --slurm-memory-mb 8192
+```
+
+For a compatible GPU backend (for example ESMFold configured with an allocated
+CUDA device), additionally supply `--slurm-gpus 1 --slurm-partition GPU_PARTITION`.
+GPU requests require an explicit partition; this does not add GPU support to
+CPU-only adapters. Module/tool version probes and provisioning occur within the
+compute job. Script generation snapshots nested parameters as JSON, quotes shell
+arguments, preserves the submission working directory and returns the step's
+actual exit code. Existing submission files are not overwritten. Slurm job IDs
+are printed by the existing CLI; native scheduler status/cancellation remain
+available through DELFIN's existing scheduler integration. No real job was
+submitted during development.
+
+References: [OpenMM Context/checkpoints](https://docs.openmm.org/latest/api-python/generated/openmm.openmm.Context.html),
+[OpenMM minimization](https://docs.openmm.org/latest/api-python/generated/openmm.openmm.LocalEnergyMinimizer.html),
+[MDAnalysis fitting](https://docs.mdanalysis.org/stable/documentation_pages/analysis/align.html).

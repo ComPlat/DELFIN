@@ -32,6 +32,7 @@ RECIPES = {
         Recipe('meeko', '0.7.1', modules=('meeko',), commands=('mk_prepare_ligand.py', 'mk_prepare_receptor.py', 'mk_export.py'), dependencies=('rdkit', 'gemmi', 'scipy')),
         Recipe('pdbfixer', '1.12', modules=('pdbfixer', 'openmm'), dependencies=('openmm=8.4.0',)),
         Recipe('openmm', '8.4.0', modules=('openmm',)),
+        Recipe('mdanalysis', '2.9.0', modules=('MDAnalysis', 'MDAnalysis.analysis.align', 'numpy'), dependencies=('biopython',)),
         Recipe('prolif', '2.2.3', modules=('prolif', 'MDAnalysis', 'rdkit')),
         Recipe('plip', '3.0.1', modules=('plip', 'openbabel'), commands=('plip',)),
     )
@@ -86,7 +87,7 @@ def present(name: str, version: str | None = None) -> bool:
     if item.modules:
         for python in python_candidates(item):
             sites = list((Path(python).parent.parent / 'lib').glob('python*/site-packages'))
-            if any(all((site / module / '__init__.py').is_file() or (site / (module + '.py')).is_file()
+            if any(all((site.joinpath(*module.split('.')) / '__init__.py').is_file() or site.joinpath(*module.split('.')).with_suffix('.py').is_file()
                        for module in item.modules) for site in sites):
                 return True
         return False
