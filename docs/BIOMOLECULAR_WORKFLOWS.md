@@ -363,3 +363,27 @@ and mocked engine boundaries; installed ProLIF execution remains to be validated
 
 Interfaces follow the [ESMFold implementation](https://github.com/facebookresearch/esm)
 and [ProLIF docking documentation](https://prolif.readthedocs.io/en/stable/notebooks/docking.html).
+
+### Python tools supplied by cluster modules
+
+For managed Python recipe families, runtime discovery checks compatible existing
+interpreters, then matching cluster modules, before considering automatic
+installation. Module lookup reuses DELFIN's QM discovery and honors
+`DELFIN_NO_MODULE_PROBE=1`. A bounded, tracked login-shell probe resolves Python
+from the loaded module's PATH, including dependencies loaded by that module.
+Each candidate must import the recipe's modules and match the requested package
+version. Modules exposing the same Python path are checked separately.
+
+The chosen module is recorded as `environment_module` in runtime provenance and
+used again for distribution checks, console entry points and worker execution.
+Multi-package workers check all dependencies in that same module environment.
+Module-backed Python uses `-s -P`: it excludes user-site packages and automatic
+script/current-directory imports while retaining the module's PYTHONPATH. This
+requires Python 3.11 or newer. Ordinary isolated environments retain `-I`.
+Explicit virtual-environment Python paths preserve their symlinks so that Python
+can find `pyvenv.cfg` and select the intended environment.
+
+Tests simulate module discovery and launches, and exercise a real temporary
+Python venv without installing packages. Actual cluster module stacks still need
+acceptance testing. Module identity and exact distribution versions are recorded;
+this is not a complete snapshot of modulefiles, shared libraries or GPU drivers.

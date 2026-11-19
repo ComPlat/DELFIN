@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import shlex
 import subprocess
 import sys
 
@@ -93,13 +94,48 @@ def present(name: str, version: str | None = None) -> bool:
     return any(qm_runtime.resolve_tool(command) is not None for command in item.commands)
 
 
-def check_python(item: Recipe, python: str) -> dict:
+def _module_python_on_path(module: str):
+    from delfin import qm_runtime
+    from delfin.system_tools import SystemToolCandidate
+    script = f'module load {shlex.quote(module)} >/dev/null 2>&1 && (command -v python || command -v python3)'
+    try:
+        result = qm_runtime.run_tool('bash', ['-lc', script], capture_output=True,
+                                     timeout=20, track_process=True, allow_install=False)
+        lines = (result.stdout or '').strip().splitlines()
+        if result.returncode == 0 and lines:
+            path = Path(lines[-1])
+            if path.is_absolute() and path.is_file() and os.access(path, os.X_OK):
+                return SystemToolCandidate(str(path), 'module', module)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def module_python_candidates(item: Recipe):
+    """Reuse QM discovery, preserving module identity even for a shared Python."""
+    from delfin.system_tools import discover_system_tool_candidates, matching_modules
+    patterns = (item.name, 'bio/' + item.name, 'chem/' + item.name)
+    # Search one module at a time: different modules may expose the same Python.
+    for module in matching_modules(patterns):
+        primary = _module_python_on_path(module)
+        if primary:
+            yield primary
+        for candidate in discover_system_tool_candidates(
+                ('python', 'python3'), module_patterns=(module,),
+                module_env_hints=('EBROOT' + item.name.upper(), item.name.upper() + '_HOME')):
+            if candidate.module_name == module and (not primary or candidate.path != primary.path):
+                yield candidate
+
+
+def check_python(item: Recipe, python: str, *, environment_module: str | None = None) -> dict:
     from delfin import qm_runtime
     code = ('import importlib,importlib.metadata as m,json,sys; '
             'mods=json.loads(sys.argv[2]); [importlib.import_module(x) for x in mods]; '
             'print(json.dumps({"version":m.version(sys.argv[1])}))')
-    done = qm_runtime.run_tool(python, ['-I', '-c', code, item.name, json.dumps(item.modules)],
-                               capture_output=True, timeout=60, track_process=True, allow_install=False)
+    flags = ['-s', '-P'] if environment_module else ['-I']
+    done = qm_runtime.run_tool(python, [*flags, '-c', code, item.name, json.dumps(item.modules)],
+                               capture_output=True, timeout=60, track_process=True, allow_install=False,
+                               environment_module=environment_module)
     if done.returncode:
         raise ValueError((done.stderr or done.stdout or 'import check failed')[-2000:])
     result = json.loads(done.stdout)

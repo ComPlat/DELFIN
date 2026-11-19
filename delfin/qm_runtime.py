@@ -334,6 +334,9 @@ def _validate_candidate(candidate: str) -> Optional[str]:
         return None
     if not os.access(expanded, os.X_OK):
         return None
+    # Resolving a venv's Python symlink selects the base environment instead.
+    if expanded.name.startswith('python') and (expanded.parent.parent / 'pyvenv.cfg').is_file():
+        return str(expanded.absolute())
     return str(expanded.resolve())
 
 
@@ -726,6 +729,7 @@ def run_tool(
     track_process: bool = False,
     timeout: Optional[float] = None,
     allow_install: bool = True,
+    environment_module: Optional[str] = None,
 ) -> subprocess.CompletedProcess:
     resolved = resolve_tool(name)
     if resolved is None and allow_install:
@@ -744,8 +748,8 @@ def run_tool(
     if resolved is None:
         raise FileNotFoundError(f"QM tool not found: {name}")
 
-    if resolved.source.startswith("module:"):
-        module_name = resolved.source.split(":", 1)[1]
+    if environment_module or resolved.source.startswith("module:"):
+        module_name = environment_module or resolved.source.split(":", 1)[1]
         cmd = _module_wrapped_command(module_name, resolved.path, args)
     else:
         cmd = [resolved.path, *[str(arg) for arg in args]]

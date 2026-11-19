@@ -103,7 +103,7 @@ class ReceptorPreparation(StepAdapter):
                                    expected_version=kwargs['pdbfixer_version'], work_dir=Path.cwd(),
                                    allow_install=kwargs.get('_allow_install', False))
         second = probe_distribution('openmm', python=first['python'], expected_version=kwargs['openmm_version'],
-                                    work_dir=Path.cwd(), discover=False)
+                                    work_dir=Path.cwd(), discover=False, environment_module=first.get('environment_module'))
         return {'pdbfixer': first, 'openmm': second}
 
     def execute(self, work_dir, *, geometry=None, cores=1, **kwargs):
