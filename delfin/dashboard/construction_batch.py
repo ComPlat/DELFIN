@@ -34,7 +34,8 @@ from delfin.cluster_bench.provenance import MODES, TOOLS, cbatch_effective_timeo
 
 #: Dropdown label -> ``delfin cluster`` tool name, in the order of the editor's buttons.
 CB_TOOL_CHOICES = (("MANTA", "manta"), ("ARCHITECTOR", "architector"),
-                   ("MOLSIMPLIFY", "molsimplify"), ("MACE", "mace"))
+                   ("MOLSIMPLIFY", "molsimplify"), ("MACE", "mace"), ("RXEMBED", "rxembed"),
+                   ("MOLASSEMBLER", "molassembler"), ("METALLOGEN", "metallogen"))
 CB_RUNS_SUBDIR = "construction_batch"
 
 
@@ -165,6 +166,10 @@ CB_MODE_HELP = {
     ("molsimplify", "full"): "one structure per geometry of the coordination number",
     ("mace", "paper"): "octahedral and square-planar geometries, every stereomer, ten conformers each",
     ("mace", "extended"): "as paper, plus SPY, TBP, TET and SAN geometries",
+    ("rxembed", "default"): "rx.embed(rx.isomers(smiles)): every isomer on the default polyhedron",
+    ("molassembler", "default"): "every stereoisomer, ten distance-geometry conformers each",
+    ("metallogen", "common"): "every donor arrangement on the usual polyhedra, GFN2-xTB via ORCA",
+    ("metallogen", "all"): "as common, on every geometry MetalloGen knows for the site count",
 }
 #: ``delfin cluster slurm`` defaults the panel shows instead of leaving them implicit.
 CB_DEFAULT_WALL = "72:00:00"
@@ -266,7 +271,7 @@ def create_construction_batch_panel(ctx, batch_text_widget) -> widgets.Accordion
 
     def _row(w, h):
         return widgets.HBox([w, h], layout=widgets.Layout(gap="10px", align_items="center",
-                                                          flex_wrap="wrap"))
+                                                          flex_flow="row wrap"))
 
     tool = widgets.Dropdown(options=list(CB_TOOL_CHOICES), value="manta", description="Builder:",
                             style=style, layout=half,
@@ -629,11 +634,12 @@ def create_construction_batch_panel(ctx, batch_text_widget) -> widgets.Accordion
     body = widgets.VBox([
         basic, advanced,
         widgets.HBox(list(buttons.values()) + [refresh],
-                     layout=widgets.Layout(gap="8px", flex_wrap="wrap")),
+                     layout=widgets.Layout(gap="8px", flex_flow="row wrap")),
         status_html, command, out,
     ])
     acc = widgets.Accordion(children=[body])
-    acc.set_title(0, "Construction batch (MANTA / ARCHITECTOR / MOLSIMPLIFY / MACE)")
+    acc.set_title(0, "Construction batch (MANTA / ARCHITECTOR / MOLSIMPLIFY / MACE / RXEMBED / "
+                     "MOLASSEMBLER / METALLOGEN)")
     acc.selected_index = None
     acc.construction_batch_widgets = {
         "tool": tool, "mode": mode, "run_name": run_name, "list_path": list_path,

@@ -531,7 +531,11 @@ def test_delfins_own_package_is_readable_from_any_of_its_roots(tmp_path):
     """Pinned apart from the cwd, because together they hid each other: the
     first measured failure was `No module named 'delfin'`, and starting in
     the checkout by accident would have made it look fixed."""
-    iso = mcp_isolation.delfin_roots()
+    # Its own home with one of the roots in it: the real home of a fresh
+    # runner has none, and the test then passed only where an earlier test
+    # of the same shard had made one there.
+    (tmp_path / "agent_workspace").mkdir()
+    iso = mcp_isolation.delfin_roots(settings={}, home=tmp_path)
     assert iso is not None
     argv = mcp_isolation.bwrap_argv(
         sys.executable, ["-c", "import delfin; print('IMPORTED')"], iso,

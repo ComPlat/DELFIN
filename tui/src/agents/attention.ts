@@ -14,6 +14,9 @@
  *   - anything else: a new session in its folder with the item as its
  *     brief (one row, ctrl+o shows it all), and a prompt suggested in the
  *     prompt box. Nothing is sent until enter.
+ * A login item (a cluster tool found no tunnel) is the exception: → opens
+ * the window's masked login field for its cluster (app.tsx), and it is
+ * never answered with text.
  */
 import type { AttentionItem } from "../protocol/generated"
 import type { AppState } from "../store/state"
@@ -32,7 +35,8 @@ export function ageOf(seconds: number, now: number): string {
 export type ItemMark = "asks" | "failed" | "notice"
 
 export function markOf(item: AttentionItem): ItemMark {
-  if (item.blocking) return "asks"
+  // A login waits for the user too, though nothing waits on an answer.
+  if (item.blocking || item.kind === "login" || item.kind === "addCluster") return "asks"
   if (item.kind === "failed" || item.kind === "alert") return "failed"
   return "notice"
 }
@@ -106,6 +110,8 @@ export function openingOf(item: AttentionItem): Opening {
 
 /** What → does, in words (the last line of a peek). */
 export function openingText(item: AttentionItem, thisHost: string): string {
+  if (item.kind === "login") return `→ opens the masked login field for ${item.cluster || "the cluster"}`
+  if (item.kind === "addCluster") return `→ opens the add form filled in for ${item.cluster || "the cluster"}: check it, then send it`
   const o = openingOf(item)
   if (o.how === "diagnosis") return "→ opens the job monitor's diagnosis of it"
   if (o.how === "session") {
@@ -237,6 +243,7 @@ export function attentionCounts(state: AppState, waitingHere: number): { asks: n
 /** How a new item names itself at the bottom right for a few seconds. */
 export function arrivalNote(item: AttentionItem): string {
   const mark = markOf(item)
+  if (item.kind === "login" || item.kind === "addCluster") return `◉ ${item.name}`
   if (mark === "asks") {
     const who = item.sessionTitle || item.name
     return `◉ ${who} ${item.kind === "question" ? "asks" : "waits for you"}`

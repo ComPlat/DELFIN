@@ -269,7 +269,16 @@ def _check_optional_tools(ctx: dict) -> list[dict]:
             continue
         fix = (f"{group.install}  (Raspberry Pi: {ot.pi_hint(group)}; "
                "scripts/pi/README.md)")
-        out.append(_row(f"optional: {group.name}", WARN, detail, fix))
+        # Declared, not only described: repair.plan turns a row into a
+        # fixable step ONLY from command= or setting=, so these four read
+        # as unfixable while their remedy is a single pip install. The
+        # command names this interpreter, which the prose cannot
+        # (group.install says "pip"). xtb is left prose-only on purpose:
+        # its remedy is the tool installer, which the dashboard already
+        # offers its own button for, and two routes to one install is how
+        # the two drift apart.
+        out.append(_row(f"optional: {group.name}", WARN, detail, fix,
+                        command=group.install_command()))
     return out
 
 
@@ -1100,6 +1109,105 @@ def _check_document_backends(ctx: dict) -> list[dict]:
     return out
 
 
+def _check_state_files(ctx: dict) -> list[dict]:
+    """Do the state files parse, and was a damaged one kept aside.
+
+    Why this check exists: before it, a damaged state file surfaced only
+    as the failure of whatever check happened to read it -- measured
+    2026-11-17 with a truncated settings file, which this report showed
+    as "MLIP check crashed: JSONDecodeError" and nowhere named the file
+    or the cause. The person could not act on that.
+
+    Where a writer finds a file it cannot read it moves it aside as
+    ``<name>.unreadable-<date>`` rather than overwriting it
+    (``agent/state_file.py``). Those files are the second half of this
+    check: the quarantine keeps the data, and this is what makes it
+    discoverable -- the one caller that swallows the notification (the
+    distill pass, ``except Exception: continue``) would otherwise leave
+    the loss invisible.
+
+    Deliberately prose-only, with no ``command``: "start fresh" discards
+    the person's own settings, and what to recover from a kept file is
+    their decision. A step that ran either of those on approval alone
+    would be a repair that destroys what it was asked to save.
+    """
+    import json
+
+    from .state_paths import state_root
+
+    rows: list[dict] = []
+    root = Path(state_root())
+    named = [
+        (Path.home() / ".delfin_settings.json", "settings"),
+        (root / "credentials.json", "API keys"),
+        (root / "agent_memory.json", "remembered facts"),
+        (root / "cron.json", "schedules"),
+    ]
+    broken = []
+    for path, what in named:
+        if not path.exists():
+            continue
+        try:
+            json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            broken.append((path, what, exc.__class__.__name__))
+    if broken:
+        first = broken[0]
+        rows.append(_row(
+            "state files", FAIL,
+            ", ".join(f"{_tilde(q)} ({w}) cannot be read: {e}"
+                      for q, w, e in broken),
+            f"nothing reads {first[1]} while that file is damaged. Storing "
+            "a new value moves the file aside first, so what is in it is "
+            "not lost -- open it and copy out what you need, or let the "
+            "next write quarantine it.",
+        ))
+
+    kept = []
+    for parent in {root, Path.home(), *(q.parent for q, _w in named)}:
+        # One level down as well. The stores named above sit directly in
+        # the state root, but the ones that are not named live a level
+        # below it -- session records in agent_sessions/, the service's
+        # own files in agent_service/ -- and a file quarantined there was
+        # in no report at all. Measured 2026-11-19: a writer in the
+        # session store was asked to point a person at this check and
+        # could not, because the check does not look where that writer
+        # puts the file.
+        #
+        # Deliberately not a full walk: the state root also holds
+        # workspaces and caches, and reading all of them is a different
+        # cost and a different question. Every store this project keeps
+        # is at most one level down.
+        for pattern in ("*.unreadable-*", "*/*.unreadable-*"):
+            try:
+                kept.extend(sorted(parent.glob(pattern)))
+            except OSError:
+                continue
+    # One path can be found twice -- the parent set holds both the state
+    # root and the home directory, so a file in the root matches the root's
+    # "*.unreadable-*" and the home's "*/*.unreadable-*". The listing below
+    # always deduplicated; the COUNT did not, and would have reported six
+    # damaged files where there are three.
+    kept = sorted(set(kept))
+    if kept:
+        rows.append(_row(
+            "state files", WARN,
+            f"{len(kept)} damaged state file(s) kept aside: "
+            + ", ".join(_tilde(q) for q in sorted(set(kept))[:4]),
+            "each holds what was in a store that could not be read. "
+            "Nothing uses them. Copy out what you need, then delete "
+            "them; they are kept rather than deleted because what is in "
+            "them cannot be recovered any other way.",
+        ))
+    if not rows:
+        rows.append(_row(
+            "state files", PASS,
+            f"{sum(1 for q, _w in named if q.exists())} state file(s) "
+            "parse, none kept aside",
+        ))
+    return rows
+
+
 def _check_memory_store(ctx: dict) -> list[dict]:
     """~/.delfin writable — memory/credential/session stores live there."""
     delfin_dir = Path.home() / ".delfin"
@@ -1189,6 +1297,7 @@ _CHECK_ATTRS: tuple[tuple[str, str], ...] = (
     ("attention transports", "_check_attention_transports"),
     ("benchmark truth", "_check_benchmark"),
     ("memory store", "_check_memory_store"),
+    ("state files", "_check_state_files"),
     ("disk space", "_check_disk"),
     ("bash isolation", "_check_bash_isolation"),
     ("bash cage", "_check_bash_cage"),

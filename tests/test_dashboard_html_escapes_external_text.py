@@ -175,10 +175,11 @@ def test_a_converted_document_keeps_no_script_link():
 
 
 def test_py3dmol_embeds_model_text_without_a_script_end(monkeypatch):
-    import py3Dmol
+    from delfin.dashboard import molecule_viewer
 
-    from delfin.dashboard import molecule_viewer  # noqa: F401 - installs the rule
-
+    # The rule comes with the accessor (py3Dmol loads on first use);
+    # importing the module alone installs nothing.
+    py3Dmol = molecule_viewer.py3dmol()
     view = py3Dmol.view(width=100, height=100)
     view.addModel(f"1\n{MARKER}\nH 0 0 0\n", "xyz")
     html = view._make_html()

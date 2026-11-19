@@ -77,11 +77,16 @@ def test_every_card_in_the_transcript_has_the_same_corner():
                  "border-radius") == "12px !important"
     assert _decl(".delfin-agent-root > .delfin-agent-chat-frame",
                  "border-radius") == "12px"
-    assert _decl(".delfin-agent-root .delfin-agent-input textarea",
+    # The composer is one card: its frame carries the corner, and the
+    # text inside follows it at the top.
+    assert _decl(".delfin-agent-root .delfin-agent-composer",
                  "border-radius") == "12px"
+    assert _decl(".delfin-agent-root .delfin-agent-input textarea",
+                 "border-radius") == "12px 12px 0 0"
 
 
 def test_the_input_shows_where_the_cursor_is():
-    focus = ".delfin-agent-root .delfin-agent-input textarea:focus"
+    # The whole composer shows the focus, not only its text.
+    focus = ".delfin-agent-root .delfin-agent-composer:focus-within"
     assert _decl(focus, "box-shadow")
     assert _decl(focus, "border-color")

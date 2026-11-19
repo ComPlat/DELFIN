@@ -312,8 +312,18 @@ def create_busy_css():
         ".delfin-time-limit-toggle.widget-toggle-buttons "
         ".widget-toggle-button:nth-of-type(n+4) { "
         "margin-top: 6px !important; }"
+        # The toggle's layout is 550 px with 148 px buttons; on a phone the
+        # third column ran past the pane and was cut ('36h', 'Custom').
+        ".delfin-time-limit-toggle.widget-toggle-buttons { max-width: 100% !important; }"
+        "@media (max-width: 600px) { "
+        ".delfin-time-limit-toggle.widget-toggle-buttons .widget-toggle-button "
+        "{ width: calc(33.333% - 4px) !important; min-width: 0 !important; } }"
         "</style>"
     )
+
+
+#: The class on the dashboard's top-level Tab widget (create_page_css).
+DASHBOARD_TABS_CLASS = 'delfin-dashboard-tabs'
 
 
 def create_page_css():
@@ -337,8 +347,270 @@ def create_page_css():
         "margin-top: 0 !important; margin-bottom: 0 !important; }"
         # JupyterLab puts a 4px gap above each output area.
         "#rendered_cells .jp-Cell-outputWrapper { margin-top: 0 !important; }"
-        "</style>"
+        # An inactive tab's label is the theme's primary text colour, as in
+        # JupyterLab's own tab bars. The widgets' secondary colour on the
+        # bar's grey falls below the 4.5:1 contrast WCAG AA asks of text.
+        ".jupyter-widgets.jupyter-widget-tab > .lm-TabBar "
+        ".lm-TabBar-tab:not(.lm-mod-current) { "
+        "color: var(--jp-ui-font-color1); }"
+        + DASHBOARD_TABS_CSS
+        + DASHBOARD_FORM_CSS
+        + "</style>"
     )
+
+
+#: One look for the widgets' own controls on every tab: 6 px corners like
+#: the header's (8 px there, at 30 px height), the accent border and a soft
+#: ring on focus, a visible keyboard focus on buttons. The widgets draw
+#: square fields and selects, 2 px buttons, and mark focus by a border
+#: colour only.
+#:
+#: Precedence, by construction: the selectors are the widgets' own, so the
+#: specificity is theirs (focus is added through ``:where``, which counts
+#: nothing), and nothing is ``!important``. The widgets' styles sit in the
+#: document head, before this; every tab's own CSS sits after it (this is
+#: in the header cell), so a rule written for one control -- the agent's
+#: composer and chips, the session list, the structure editor -- wins at
+#: equal specificity and keeps its look.
+#:
+#: Rejected: per-widget layouts (dozens of inline widths and radii to keep
+#: in step); one shared class added to every control (each tab would have
+#: to remember it, and the ones that forget look different again).
+_FIELDS = (".widget-text input[type='text'], .widget-text input[type='number'], "
+           ".widget-text input[type='password'], .widget-textarea textarea, "
+           ".widget-dropdown > select")
+_FOCUSED = ", ".join(s.strip() + ":where(:focus)" for s in _FIELDS.split(","))
+DASHBOARD_FORM_CSS = (
+    f"{_FIELDS} {{ border-radius: 6px; }}"
+    f"{_FOCUSED} {{ border-color: var(--delfin-accent, #3d74b6); "
+    "box-shadow: 0 0 0 2px rgba(61, 116, 182, 0.18); }"
+    ".jupyter-button { border-radius: 6px; }"
+    ".jupyter-button:where(:focus-visible) { outline: 2px solid var(--delfin-accent, #3d74b6); "
+    "outline-offset: 1px; }"
+)
+
+
+_BAR = f".jupyter-widgets.jupyter-widget-tab.{DASHBOARD_TABS_CLASS} > .lm-TabBar"
+
+#: The dashboard's own tab bar (DASHBOARD_TABS_CLASS): one flat row.
+#:
+#: * One row, every tab as wide as its name. The widgets' default shrank
+#:   the tabs and clipped the labels ("Submit Jo"); wrapping onto a second
+#:   row (2026-11-12) left "Settings" alone below the rest at 1366 px and
+#:   moved every tab body down by a row. Where the names do not fit, the
+#:   strip scrolls sideways (wheel, trackpad, keyboard focus), its
+#:   scrollbar hidden and the side that has more faded
+#:   (keep_dashboard_tab_in_view sets the two classes).
+#: * The padding follows the window: clamp(6px, 0.6vw, 14px) fits the
+#:   eighteen labels (about 1020 px of text at 13 px) in one row at
+#:   1366 px and gives them room at 1920 px.
+#: * Flat tabs as in current IDEs and web apps: no grey boxes; inactive
+#:   labels in the theme's secondary text colour (4.6:1 on the white bar,
+#:   WCAG AA -- the 2026-11-12 contrast finding was the secondary colour on
+#:   the boxes' grey), the current one in the primary colour with an accent
+#:   underline that lies on the body's top border, a light background on
+#:   hover. The current tab is not bold: a bolder label would widen it and
+#:   shift every tab after it.
+#: * 28 px high, as the old single row (26 px plus the overlap): the tab
+#:   bodies are calc(100vh - 145px) tall.
+#:
+#: Rejected: an overflow menu ("More") for the tabs that do not fit. The
+#: tab bar is Lumino's, re-rendered from its own state; hiding tabs in it
+#: and mirroring them in a menu would fight that renderer on every update.
+DASHBOARD_TABS_CSS = (
+    ":root { --delfin-accent: #3d74b6; }"
+    f"{_BAR} {{ min-height: 0; }}"
+    f"{_BAR} > .lm-TabBar-content {{ flex-wrap: nowrap; align-items: flex-end; "
+    "gap: 2px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; "
+    "overscroll-behavior-x: contain; position: relative; z-index: 1; "
+    "margin-bottom: -1px; }"
+    f"{_BAR} > .lm-TabBar-content::-webkit-scrollbar {{ display: none; }}"
+    f"{_BAR} .lm-TabBar-tab {{ flex: 0 0 auto; min-width: 0; max-width: none; "
+    "margin: 0; padding: 0 clamp(6px, 0.6vw, 14px); height: 28px; min-height: 28px; "
+    "box-sizing: border-box; border: none; border-bottom: 2px solid transparent; "
+    "border-radius: 6px 6px 0 0; background: transparent; font-size: 13px; "
+    "cursor: pointer; transition: color .12s, background-color .12s; }"
+    f"{_BAR} .lm-TabBar-tabLabel {{ overflow: visible; line-height: 26px; }}"
+    f"{_BAR} .lm-TabBar-tab:not(.lm-mod-current) {{ "
+    "color: var(--jp-ui-font-color2); }"
+    f"{_BAR} .lm-TabBar-tab:hover:not(.lm-mod-current) {{ "
+    "background: var(--jp-layout-color2); color: var(--jp-ui-font-color1); }"
+    f"{_BAR} .lm-TabBar-tab.lm-mod-current {{ color: var(--jp-ui-font-color0); "
+    "background: transparent; border-bottom-color: var(--delfin-accent, #3d74b6); "
+    "min-height: 28px; transform: none; }"
+    f"{_BAR} .lm-TabBar-tab.lm-mod-current::before {{ display: none; }}"
+    f"{_BAR} .lm-TabBar-tab:focus-visible {{ outline: 2px solid var(--delfin-accent, #3d74b6); "
+    "outline-offset: -2px; }"
+    f"{_BAR}.delfin-tabs-more-right > .lm-TabBar-content {{ "
+    "-webkit-mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent); "
+    "mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent); }"
+    f"{_BAR}.delfin-tabs-more-left > .lm-TabBar-content {{ "
+    "-webkit-mask-image: linear-gradient(to left, #000 calc(100% - 40px), transparent); "
+    "mask-image: linear-gradient(to left, #000 calc(100% - 40px), transparent); }"
+    f"{_BAR}.delfin-tabs-more-left.delfin-tabs-more-right > .lm-TabBar-content {{ "
+    "-webkit-mask-image: linear-gradient(to right, transparent, #000 40px, "
+    "#000 calc(100% - 40px), transparent); "
+    "mask-image: linear-gradient(to right, transparent, #000 40px, "
+    "#000 calc(100% - 40px), transparent); }"
+)
+
+
+def keep_dashboard_tab_in_view(ctx):
+    """The dashboard's tab strip, where it scrolls: edges, wheel, current tab.
+
+    Input: the page. Output, for each tab bar of class DASHBOARD_TABS_CLASS
+    (also one rendered later, e.g. after a session comes back):
+
+    * ``delfin-tabs-more-left`` / ``delfin-tabs-more-right`` on the bar
+      while tabs lie beyond that edge (DASHBOARD_TABS_CSS fades it);
+    * a vertical wheel over the strip scrolls it sideways, only while it
+      overflows -- otherwise the wheel stays the page's;
+    * the current tab is scrolled into view when it changes (a tab opened
+      from code, e.g. the agent switching to Calculations).
+
+    Events and observers only, no timer. Rejected: ``scrollIntoView`` --
+    it also scrolls every scrollable ancestor, the page included.
+    """
+    script = """
+    (function() {
+        if (window.__delfinTabStrip) return;
+        window.__delfinTabStrip = true;
+        var BAR = '.jupyter-widget-tab.%(cls)s > .lm-TabBar';
+        function strip(bar) { return bar.querySelector(':scope > .lm-TabBar-content'); }
+        function edges(bar) {
+            var c = strip(bar);
+            if (!c) return;
+            var max = c.scrollWidth - c.clientWidth;
+            bar.classList.toggle('delfin-tabs-more-left', max > 1 && c.scrollLeft > 1);
+            bar.classList.toggle('delfin-tabs-more-right', max > 1 && c.scrollLeft < max - 1);
+        }
+        function reveal(bar) {
+            var c = strip(bar);
+            if (!c) return;
+            var cur = c.querySelector('.lm-TabBar-tab.lm-mod-current');
+            if (cur && c.scrollWidth > c.clientWidth) {
+                var left = cur.offsetLeft - c.offsetLeft, right = left + cur.offsetWidth;
+                if (left < c.scrollLeft) c.scrollLeft = Math.max(0, left - 40);
+                else if (right > c.scrollLeft + c.clientWidth)
+                    c.scrollLeft = right - c.clientWidth + 40;
+            }
+            edges(bar);
+        }
+        var watched = new WeakSet();
+        var changes = new MutationObserver(function(records) {
+            var done = new Set();
+            records.forEach(function(r) {
+                var bar = r.target.closest && r.target.closest(BAR);
+                if (bar && !done.has(bar)) { done.add(bar); reveal(bar); }
+            });
+        });
+        function watch(bar) {
+            var c = strip(bar);
+            if (!c || watched.has(c)) return;
+            watched.add(c);
+            c.addEventListener('scroll', function() { edges(bar); }, {passive: true});
+            c.addEventListener('wheel', function(ev) {
+                if (c.scrollWidth <= c.clientWidth) return;
+                if (Math.abs(ev.deltaY) <= Math.abs(ev.deltaX)) return;
+                c.scrollLeft += ev.deltaY;
+                ev.preventDefault();
+            }, {passive: false});
+            changes.observe(c, {attributes: true, attributeFilter: ['class'],
+                                childList: true, subtree: true});
+            reveal(bar);
+        }
+        function scan(root) {
+            if (!root || root.nodeType !== 1) return;
+            if (root.matches(BAR)) watch(root);
+            root.querySelectorAll(BAR).forEach(watch);
+        }
+        scan(document.body);
+        new MutationObserver(function(records) {
+            for (var i = 0; i < records.length; i++) {
+                var added = records[i].addedNodes;
+                for (var j = 0; j < added.length; j++) scan(added[j]);
+            }
+        }).observe(document.body, {childList: true, subtree: true});
+        window.addEventListener('resize', function() {
+            document.querySelectorAll(BAR).forEach(reveal);
+        }, {passive: true});
+    })();
+    """ % {"cls": DASHBOARD_TABS_CLASS}
+    ctx.add_init_js(script)
+
+
+def name_page_controls(ctx):
+    """Give the page's unnamed controls an accessible name, and tabs a tooltip.
+
+    A widget's description is a ``<label>`` beside the control, and only the
+    dropdown links it to its ``<select>`` -- and then only when the
+    description is not empty. A slider's handle (``role="slider"``) is never
+    linked to anything. Screen readers announced them as "combo box" and
+    "slider" with no name, and an accessibility check (axe, WCAG 2 AA)
+    flagged both. Each control without an ``aria-label`` takes the words its
+    widget shows: the description, else the widget's tooltip.
+
+    A tab bar clips a long name, and the widgets give a tab no tooltip. Each
+    tab gets its full name as ``title``, as JupyterLab's tabs have; a tab
+    renamed in place gets it again when the pointer or the focus reaches it.
+
+    It works on what is added to the page as it is added (one observer, no
+    timer), so a tab built on its first open is covered like the first one.
+    """
+    script = """
+    (function() {
+        if (window.__delfinControlNames) return;
+        window.__delfinControlNames = true;
+        var CONTROLS = 'select:not([aria-label]):not([aria-labelledby]), '
+            + '.noUi-handle:not([aria-label]):not([aria-labelledby])';
+        var WIDGET = '.widget-slider, .widget-dropdown, .widget-select, .jupyter-widgets';
+        var TAB = '.lm-TabBar-tab';
+        function words(el) {
+            var widget = el.closest(WIDGET), label = null;
+            if (widget) {
+                for (var i = 0; i < widget.children.length; i++) {
+                    if (widget.children[i].classList.contains('widget-label')) {
+                        label = widget.children[i];
+                        break;
+                    }
+                }
+            }
+            var shown = label ? (label.textContent || '').trim().replace(/:$/, '') : '';
+            return shown || (label && label.title) || el.getAttribute('title')
+                || (widget && widget.getAttribute('title')) || '';
+        }
+        function nameControl(el) {
+            var name = words(el);
+            if (name) el.setAttribute('aria-label', name);
+        }
+        function titleTab(tab) {
+            var label = tab.querySelector('.lm-TabBar-tabLabel');
+            var name = label ? (label.textContent || '').trim() : '';
+            if (name && tab.getAttribute('title') !== name) tab.setAttribute('title', name);
+        }
+        function scan(root) {
+            if (!root || root.nodeType !== 1) return;
+            if (root.matches(CONTROLS)) nameControl(root);
+            if (root.matches(TAB)) titleTab(root);
+            root.querySelectorAll(CONTROLS).forEach(nameControl);
+            root.querySelectorAll(TAB).forEach(titleTab);
+        }
+        scan(document.body);
+        new MutationObserver(function(records) {
+            for (var i = 0; i < records.length; i++) {
+                var added = records[i].addedNodes;
+                for (var j = 0; j < added.length; j++) scan(added[j]);
+            }
+        }).observe(document.body, {childList: true, subtree: true});
+        function refresh(ev) {
+            var tab = ev.target && ev.target.closest && ev.target.closest(TAB);
+            if (tab) titleTab(tab);
+        }
+        document.addEventListener('pointerover', refresh, {capture: true, passive: true});
+        document.addEventListener('focusin', refresh, true);
+    })();
+    """
+    ctx.add_init_js(script)
 
 
 def create_time_limit_widgets(style=None):
@@ -411,6 +683,38 @@ def parse_time_to_seconds(time_str):
         return 48 * 3600
 
 
+def self_running_html(*scripts):
+    """HTML that runs *scripts* when the browser shows it.
+
+    Each script sits as raw text in an inert ``<script type="text/x-delfin">``
+    (raw text: no '<' in the code is read as a tag) and an <img> whose load
+    fails runs each one on its own through its onerror -- the way the agent
+    tab's chat tags run their code. One script that throws stops no other.
+
+    For a tab built after the page went out: its init scripts were sent as a
+    Javascript output into the shared JS output widget, and since tabs build
+    on first open (09.11.) those outputs were never executed -- measured: the
+    Calculations tab's resolvers stayed undefined, its splitter and explorer
+    were never bound.
+    """
+    out = []
+    for script in scripts:
+        if not script or not str(script).strip():
+            continue
+        body = str(script).replace("</script", "<\\/script")
+        out.append('<script type="text/x-delfin" class="delfin-tab-js">'
+                   + body + "</script>")
+    if not out:
+        return ""
+    out.append('<img src="" alt="" style="display:none" onerror="'
+               "this.parentNode.querySelectorAll('script.delfin-tab-js')"
+               ".forEach(function(t){try{(0,eval)(t.textContent)}"
+               "catch(e){console.error('DELFIN tab script',e)}});"
+               "this.remove();"
+               '">')
+    return "".join(out)
+
+
 def _append_js(ctx, script):
     """Append JavaScript to the shared output without clearing prior JS."""
     if not script:
@@ -437,17 +741,24 @@ def disable_spellcheck(ctx, class_name='delfin-nospell'):
             if (!el) return;
             const tag = (el.tagName || '').toUpperCase();
             if (tag !== 'TEXTAREA' && tag !== 'INPUT') return;
-            el.setAttribute('spellcheck', 'false');
-            el.spellcheck = false;
-            el.setAttribute('autocorrect', 'off');
-            el.setAttribute('autocapitalize', 'off');
-            el.setAttribute('autocomplete', 'off');
-            el.setAttribute('data-gramm', 'false');
-            el.setAttribute('data-gramm_editor', 'false');
-            el.setAttribute('data-enable-grammarly', 'false');
-            el.setAttribute('data-lt-active', 'false');
-            el.setAttribute('data-grammarly', 'false');
-            el.setAttribute('data-ms-editor', 'false');
+            // Set an attribute only when it differs: the observer below
+            // watches these attributes, and setAttribute writes a mutation
+            // record even for the value already there -- unguarded, one
+            // change elsewhere fed the observer its own writes forever and
+            // froze the page (the Calculations tab, built on first open).
+            function put(name, value) {{
+                if (el.getAttribute(name) !== value) el.setAttribute(name, value);
+            }}
+            put('spellcheck', 'false');
+            put('autocorrect', 'off');
+            put('autocapitalize', 'off');
+            put('autocomplete', 'off');
+            put('data-gramm', 'false');
+            put('data-gramm_editor', 'false');
+            put('data-enable-grammarly', 'false');
+            put('data-lt-active', 'false');
+            put('data-grammarly', 'false');
+            put('data-ms-editor', 'false');
             if (!el.hasAttribute('lang')) el.setAttribute('lang', '');
         }}
         function scan(root) {{
@@ -797,6 +1108,22 @@ def apply_branding(ctx, title='DELFIN Dashboard', favicon_data_uri=''):
                 if (!'{safe_icon}') return;
                 var head = document.head || document.getElementsByTagName('head')[0];
                 if (!head) return;
+                // Voila's own page carries <link rel="icon"
+                // href="data:;base64,="> -- a blank icon it ships so the
+                // browser asks for none -- and it sits AFTER </head>,
+                // later in the document than anything appended to the
+                // head. With two icon links the browser takes the last,
+                // so the blank one won and the tab showed no logo
+                // (voila 0.5.13; the pin allows anything below 0.6).
+                // Every foreign icon link is therefore dropped, and ours
+                // is appended last.
+                var foreign = document.querySelectorAll(
+                    "link[rel~='icon'], link[rel='shortcut icon']");
+                for (var i = 0; i < foreign.length; i++) {{
+                    if (foreign[i].getAttribute('data-delfin-favicon') !== '1') {{
+                        foreign[i].parentNode.removeChild(foreign[i]);
+                    }}
+                }}
                 var link = document.querySelector("link[rel='icon'][data-delfin-favicon='1']");
                 if (!link) {{
                     link = document.createElement('link');

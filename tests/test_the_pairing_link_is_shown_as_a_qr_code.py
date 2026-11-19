@@ -1,11 +1,11 @@
-"""The pairing invitation is shown as a QR code when qrencode is installed.
+"""The pairing invitation is shown as a QR code, on every host.
 
 Input: ``python -m delfin.messenger pair`` (delfin/messenger/__main__.py).
 The invitation is a long simplex: link that had to be carried from an SSH
-terminal to the phone by hand. With ``qrencode`` on PATH it is also drawn
-in the terminal (``-t ansiutf8``), for the SimpleX app's scanner; without
-it the link alone is printed, as before. The link goes to qrencode as an
-argument, never through a shell.
+terminal to the phone by hand. It is drawn in the terminal for the SimpleX
+app's scanner by delfin/messenger/qr.py -- no tool needed, and no program
+on PATH is ever run for it (before: qrencode when installed, else the link
+alone) -- and the link is printed after it.
 """
 from __future__ import annotations
 
@@ -60,16 +60,15 @@ def _pair(tmp_path, monkeypatch, with_qrencode):
     return log
 
 
-def test_a_qr_code_is_drawn_when_qrencode_is_there(tmp_path, monkeypatch, capsys):
-    log = _pair(tmp_path, monkeypatch, with_qrencode=True)
-    assert log.read_text().splitlines() == [
-        "-t", "ansiutf8", "simplex:/invitation#/?v=2&smp=x;y"]
-    assert "simplex:/invitation#/?v=2&smp=x;y" in capsys.readouterr().out
-
-
-def test_without_qrencode_the_link_alone_is_printed(tmp_path, monkeypatch, capsys):
-    log = _pair(tmp_path, monkeypatch, with_qrencode=False)
-    assert not os.path.exists(log)
+def test_the_code_is_drawn_without_any_tool(tmp_path, monkeypatch, capsys):
+    _pair(tmp_path, monkeypatch, with_qrencode=False)
     out = capsys.readouterr().out
-    assert "simplex:/invitation#/?v=2&smp=x;y" in out
-    assert "qrencode" in out
+    assert "▄" in out or "▀" in out
+    assert out.index("█") < out.index("simplex:/invitation#/?v=2&smp=x;y"), "the link comes last"
+    assert "qrencode" not in out
+
+
+def test_a_qrencode_on_path_is_never_run(tmp_path, monkeypatch, capsys):
+    log = _pair(tmp_path, monkeypatch, with_qrencode=True)
+    assert not os.path.exists(log)
+    assert "simplex:/invitation#/?v=2&smp=x;y" in capsys.readouterr().out

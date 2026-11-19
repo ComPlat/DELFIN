@@ -291,12 +291,34 @@ def read_record(name: str) -> Optional[dict]:
 
 def write_record(name: str, data: dict) -> bool:
     """Write a JSON record whole (temp file 0600, then rename). Refused
-    inside an agent session, like the key. True when written."""
+    inside an agent session, like the key. True when written.
+
+    A record that the writer itself could not read is never silently
+    replaced. Measured 2026-11-19 (``mcp_client``'s pin writes): a record
+    truncated the way a kill mid-write truncates it read as None -- "no
+    restriction is recorded" -- and the next write replaced it, retiring
+    every previously-pinned hash with no copy anywhere. A damaged target
+    is moved aside (kept for the person) and the write refused, so the
+    loss is never silent. An absent record is not a refusal: nothing was
+    ever stored, so nothing is lost by writing.
+    """
     if _inside_agent_session():
         return False
     path = _record_path(name)
     if path is None or ensure_store_dir() is None:
         return False
+    if path.exists():
+        try:
+            from . import state_file
+            state_file.read_json(path, strict=True)
+        except ImportError:
+            pass
+        except state_file.StateFileUnreadable as exc:
+            moved = state_file.quarantine(path)
+            detail = f"not replaced: {path} is unreadable ({exc})" \
+                + (f"; kept aside as {moved.name}" if moved else "")
+            _note_refusal(detail)
+            return False
     import tempfile
     try:
         fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp",

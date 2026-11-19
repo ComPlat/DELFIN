@@ -52,7 +52,7 @@ def answers(monkeypatch):
     asked: list = []
     replies: list = []
 
-    def ask(perms, name, args, preview):
+    def ask(perms, name, args, preview, **kw):
         asked.append((name, preview))
         return replies.pop(0) if replies else False
 
@@ -99,16 +99,29 @@ def test_an_auto_allowed_command_is_not_asked(scene, answers, monkeypatch, capsy
 
 
 def test_with_nobody_to_ask_a_command_is_refused_with_its_reason(scene, answers):
+    """The native bash gate's own refusal for a session nobody can be
+    asked in, the one every other backend gives."""
     build, ws = scene
-    reason = cli_gate.decide(build(can_ask=False), _ev("Bash", ws, command="make build"))
-    assert reason and "nobody can be asked" in reason
+    reason = cli_gate.decide(build(can_ask=False),
+                             _ev("Bash", ws, command="make build"))
+    assert reason and "not on the auto-allow list" in reason
 
 
-@pytest.mark.parametrize("mode", ["plan", "bypassPermissions"])
-def test_plan_and_bypass_do_not_ask_for_a_command(scene, answers, mode):
+def test_bypass_does_not_ask_for_a_command(scene, answers):
     build, ws = scene
     asked, _ = answers
-    assert cli_gate.decide(build(mode=mode), _ev("Bash", ws, command="make build")) is None
+    assert cli_gate.decide(build(mode="bypassPermissions"),
+                           _ev("Bash", ws, command="make build")) is None
+    assert asked == []
+
+
+def test_plan_refuses_a_command_that_writes_without_asking(scene, answers):
+    """Plan mode is refused by the hook itself, not left to the CLI."""
+    build, ws = scene
+    asked, _ = answers
+    reason = cli_gate.decide(build(mode="plan"),
+                             _ev("Bash", ws, command="make build"))
+    assert reason and reason.startswith("plan mode (read-only)")
     assert asked == []
 
 

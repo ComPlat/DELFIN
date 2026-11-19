@@ -217,6 +217,9 @@ def test_pairing_waits_prints_the_link_last_shows_the_code_and_says_hello(
             said["invited"] = (chat, contact_id)
 
     monkeypatch.setattr(cli.simplex, "Daemon", Daemon)
+    # The phone is verified at this terminal with the code it was sent.
+    monkeypatch.setattr(cli.pairing, "new_code", lambda: "424242")
+    monkeypatch.setattr(cli, "_ask_code", lambda: "424242")
     assert cli._pair() == 0
     out = capsys.readouterr().out
     assert said["wait"] and said["wait"] >= 30

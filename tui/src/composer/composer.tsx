@@ -2,7 +2,8 @@
  * The composer: the prompt the user types into, at the bottom of the
  * footer.
  *
- *   enter          send (with a completion open: take it)
+ *   enter          send (with a completion open: take it, unless what is
+ *                  typed is already a whole row -- then send it)
  *   shift/alt+enter, ctrl+j, a trailing "\" + enter    a new line
  *   ↑ / ↓          the history, from the first / last line of the prompt
  *   ctrl+r         search the history (again: older; enter takes it)
@@ -11,6 +12,7 @@
  *                  screen; not within CLICK_PAUSE_MS of the list changing)
  *   esc            close the completion list
  *   !              at the start of the prompt: shell mode (below)
+ *   ?              on an empty prompt: the keys (/keys), as in Claude Code
  *
  * Shell mode: a line that starts with "!" is not a prompt for the model --
  * the session runs it as a command, through the same deny-list, secret
@@ -467,6 +469,12 @@ export function createComposer(deps: ComposerDeps): Composer {
       setTextSignal(full())
       return true
     }
+    if (!shell() && isPlain(key) && key.sequence === "?" && !area.plainText) {
+      // "?" on an empty prompt shows the shortcuts (Claude Code); typed
+      // after anything else it is a question mark.
+      void deps.send("/keys")
+      return true
+    }
     const km = deps.keymap
     const p = popup()
     if (p) {
@@ -488,9 +496,14 @@ export function createComposer(deps: ComposerDeps): Composer {
       }
       if (km.matches("submit", key)) {
         const chosen = p.candidates[p.selected]!
-        // Already typed out in full, or only the usage shown: Enter sends,
-        // as without the list.
-        if (!chosen.hint && chosen.insert.trimEnd() !== p.token.text) {
+        // Judged by what is typed NOW, not by the list: in a quick burst
+        // ("/help" + Enter) the list may still be the one for "/hel".
+        // Typed out in full (any row), or only the usage shown: Enter
+        // sends, as without the list -- as in Claude Code.
+        const now = tokenAt(area.plainText, area.cursorOffset) ?? argumentAt(area.plainText, area.cursorOffset)
+        const typed = now ? now.text : ""
+        const typedOut = p.candidates.some((c) => !c.hint && c.insert.trimEnd() === typed)
+        if (!chosen.hint && !typedOut) {
           choose(chosen)
           return true
         }

@@ -36,6 +36,7 @@ branches of every contributor), and storing the pins in the repository
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -173,6 +174,50 @@ def ahead_of_base(repo, ref: str, base: Optional[str] = None) -> Optional[int]:
         return None
 
 
+#: Where ``git rev-parse`` looks a short name up, in its order: a tag wins
+#: over a branch of the same name, a branch over a remote-tracking one.
+_AHEAD_NAMESPACES = (("refs/tags/", 0), ("refs/heads/", 1), ("refs/remotes/", 2))
+
+
+def ahead_table(repo, base: Optional[str] = None) -> dict[str, int]:
+    """``{short ref: commits not in base}`` for every tag, local branch and
+    ``origin`` branch, from ONE ``git for-each-ref`` (``%(ahead-behind:)``).
+
+    The count is the one :func:`ahead_of_base` gives (``rev-list --count
+    base..ref``), keyed by the name it resolves the same way. One process
+    instead of one ``rev-list`` per branch: a checkout with a few hundred
+    unmerged branches spent most of the dashboard's start in those. Empty
+    when git is older than 2.41 (no ``ahead-behind`` atom) or the call
+    fails -- callers then count per ref with :func:`ahead_of_base`."""
+    base = base or base_ref(repo)
+    raw = _out(repo, "for-each-ref",
+               f"--format=%(refname)%00%(ahead-behind:{base})",
+               "refs/tags", "refs/heads", "refs/remotes/origin")
+    table: dict[str, int] = {}
+    rank: dict[str, int] = {}
+    for line in raw.splitlines():
+        full, _, counts = line.partition("\0")
+        try:
+            ahead = int(counts.split()[0])
+        except (IndexError, ValueError):
+            continue
+        for prefix, order in _AHEAD_NAMESPACES:
+            if full.startswith(prefix):
+                name = full[len(prefix):]
+                if name and order < rank.get(name, 99):
+                    table[name], rank[name] = ahead, order
+                break
+    return table
+
+
+def _ahead_from(table: dict[str, int], repo, ref: str,
+                base: str) -> Optional[int]:
+    """*ref*'s count from *table*, or one ``rev-list`` when it is not there
+    (a commit, an old git)."""
+    hit = table.get(ref)
+    return hit if hit is not None else ahead_of_base(repo, ref, base)
+
+
 def current_branch(repo) -> str:
     return _out(repo, "branch", "--show-current")
 
@@ -297,7 +342,27 @@ def _prefs_path() -> Path:
     return Path.home() / ".delfin" / "branch_list.json"
 
 
-def _load_all() -> dict:
+def _load_all(*, for_write: bool = False) -> dict:
+    """The store, or ``{}`` where it is absent or -- only for a display --
+    unreadable. A caller that writes the store back must ask for
+    ``for_write=True``: a damaged file is then moved aside (a copy the
+    person can look at) instead of being overwritten with an empty
+    answer.
+
+    The quarantine file lands beside the store, under the state root, so
+    the Settings tab's diagnosis lists it (``doctor._check_state_files``);
+    the warning below is the second record of the same event.
+    """
+    from delfin.agent import state_file
+    if for_write:
+        data, moved = state_file.read_json_for_write(_prefs_path(),
+                                                     default={})
+        if moved:
+            logging.getLogger(__name__).warning(
+                "%s could not be read and was moved to %s; the pinned and "
+                "hidden branch lists start empty, and what they held is in "
+                "the file kept aside", _prefs_path().name, moved.name)
+        return data if isinstance(data, dict) else {}
     try:
         data = json.loads(_prefs_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -318,7 +383,7 @@ def load_prefs(repo) -> dict:
 
 
 def _update(repo, *, add: tuple = (), remove: tuple = ()) -> dict:
-    data = _load_all()
+    data = _load_all(for_write=True)   # a damaged store is moved aside, not lost
     repos = data.setdefault("repos", {})
     row = repos.setdefault(repo_key(repo), {"pinned": [], "hidden": []})
     for kind, ref in remove:
@@ -427,6 +492,7 @@ def branch_entries(repo, gh: Optional[str] = "auto", *,
     if _git(repo, "rev-parse", "--git-dir").returncode != 0:
         return [main]
     base = base_ref(repo)
+    aheads = ahead_table(repo, base)
     prefs = load_prefs(repo)
     hidden = set(prefs["hidden"])
     prs = pull_requests(repo, gh, refresh=refresh) or {}
@@ -450,7 +516,7 @@ def branch_entries(repo, gh: Optional[str] = "auto", *,
         if not kind:
             continue
         _add(BranchEntry(ref=ref, kind=kind, pinned=True,
-                         ahead=ahead_of_base(repo, ref, base) or None,
+                         ahead=_ahead_from(aheads, repo, ref, base) or None,
                          current=ref == current))
     local = set(_out(repo, "for-each-ref", "--format=%(refname:short)",
                      "refs/heads").splitlines())
@@ -464,7 +530,7 @@ def branch_entries(repo, gh: Optional[str] = "auto", *,
         else:
             ref, kind = f"origin/{head}", "remote"
         _add(BranchEntry(ref=ref, kind=kind, pr=pr.number, ci=pr.ci,
-                         ahead=ahead_of_base(repo, ref, base) or None,
+                         ahead=_ahead_from(aheads, repo, ref, base) or None,
                          current=ref == current))
     for name in unmerged_local_branches(repo, base):
         if name == "main":
@@ -473,11 +539,11 @@ def branch_entries(repo, gh: Optional[str] = "auto", *,
         if pr is not None and pr.state in ("MERGED", "CLOSED") and name != current:
             continue
         _add(BranchEntry(ref=name, kind="local",
-                         ahead=ahead_of_base(repo, name, base),
+                         ahead=_ahead_from(aheads, repo, name, base),
                          current=name == current))
     if current and current not in seen:
         _add(BranchEntry(ref=current, kind="local", current=True,
-                         ahead=ahead_of_base(repo, current, base) or None))
+                         ahead=_ahead_from(aheads, repo, current, base) or None))
     return entries
 
 
@@ -649,9 +715,19 @@ def lookup_row(repo, text: str, known) -> Optional[BranchRow]:
 
 def fill_ahead(repo, rows: list[BranchRow]) -> None:
     """Count the commits not in ``origin/main`` for rows that lack it (the
-    ones about to be shown; one ``rev-list`` each)."""
+    ones about to be shown). A handful is counted one ``rev-list`` each;
+    more read :func:`ahead_table` once."""
+    todo = [r for r in rows
+            if r.ahead is None and not r.merged and r.kind in ("local", "remote",
+                                                               "tag", "commit")]
+    if not todo:
+        return
     base = base_ref(repo)
-    for r in rows:
-        if r.ahead is None and not r.merged and r.kind in ("local", "remote",
-                                                           "tag", "commit"):
-            r.ahead = ahead_of_base(repo, r.ref, base)
+    table = ahead_table(repo, base) if len(todo) > _FILL_ONE_BY_ONE else {}
+    for r in todo:
+        r.ahead = _ahead_from(table, repo, r.ref, base)
+
+
+#: Up to this many rows ``fill_ahead`` counts one by one: below it, single
+#: ``rev-list`` calls are cheaper than listing every ref once.
+_FILL_ONE_BY_ONE = 4

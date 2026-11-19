@@ -12,8 +12,9 @@ boundaries a real CONTROL.txt writer hits:
 * bracket metal SMILES with a metal the naive tokeniser could mis-split
   (e.g. "N" vs "Na", "C" vs "Cl" -- the docstring of _metals_in_smiles
   claims these are safe);
-* an empty SMILES with relativity set: the metals list is empty, which
-  is the "no transition metals" branch -- it must warn, not crash;
+* an empty SMILES with relativity set: no SMILES is no evidence (the
+  structure lives in input_file, e.g. a Pd xyz), so it must stay silent
+  and not crash;
 * both solvent and model given in different capitalisations: the check
   reads raw values, so "C-PCM" style input must not produce a false
   finding while the validator itself canonicalises to CPCM.
@@ -53,9 +54,13 @@ def test_relativity_uppercase_with_whitespace_still_warns():
     assert any("relativity" in n for n in notes), notes
 
 
-def test_relativity_set_and_no_smiles_warns_without_crashing():
-    notes = NOTES({"relativity": "ZORA"})
-    assert any("relativity" in n for n in notes), notes
+def test_relativity_set_and_no_smiles_is_silent_without_crashing():
+    # Without a SMILES the validator cannot know the metals: claiming "no
+    # transition metals" here was the false warning every run printed
+    # (the define.py TEMPLATE is validated with SMILES= empty, ZORA).
+    for config in ({"relativity": "ZORA"}, {"relativity": "ZORA", "SMILES": "  "}):
+        notes = NOTES(config)
+        assert not any("relativity" in n for n in notes), notes
 
 
 def test_sodium_and_chlorine_are_not_transition_metals():

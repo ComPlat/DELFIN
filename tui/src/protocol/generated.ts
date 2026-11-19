@@ -28,6 +28,7 @@ export interface InitializeParams {
 export interface SessionPromptParams {
   "text": string
   "how"?: string | null
+  "via"?: string | null
 }
 export interface SessionCancelParams {}
 export interface SessionSetModeParams {
@@ -165,6 +166,7 @@ export interface SessionInfoEvent {
   "banner": string[]
   "notices": string[]
   "tasks"?: Record<string, unknown>[] | null
+  "person"?: string | null
   "bypassBlocked"?: string | null
   "bypassConfirmed"?: boolean | null
   "auto"?: string | null
@@ -207,6 +209,7 @@ export interface SessionEndedEvent {
 export interface UserMessageEvent {
   "text": string
   "source": string
+  "via"?: string | null
   "type": "user.message"
   "session": string
   "ts": number
@@ -377,6 +380,16 @@ export interface ContextEvent {
   "ts": number
   "seq": number
 }
+export interface DashboardChatEvent {
+  "v": number
+  "base"?: number | null
+  "keep"?: number | null
+  "tail"?: string | null
+  "html"?: string | null
+  "type": "dashboard.chat"
+  "session": string
+  "ts": number
+}
 export interface WorkerEvents {
   "worker.ready": WorkerReadyEvent
   "session.info": SessionInfoEvent
@@ -402,6 +415,7 @@ export interface WorkerEvents {
   "permission.asked": PermissionAskedEvent
   "permission.resolved": PermissionResolvedEvent
   "context": ContextEvent
+  "dashboard.chat": DashboardChatEvent
 }
 export interface HelloParams {
   "protocolVersion": number
@@ -433,6 +447,7 @@ export interface SessionCreateParams {
   "worktree"?: boolean | null
   "initProject"?: boolean | null
   "untitled"?: boolean | null
+  "keep"?: boolean | null
 }
 export interface SessionAttachParams {
   "sessionId": string
@@ -449,6 +464,19 @@ export interface SessionPendingParams {
 }
 export interface SessionDetachParams {
   "sessionId": string
+  "release"?: boolean | null
+}
+export interface SessionHostParams {
+  "sessionId": string
+  "cwd": string
+  "title"?: string | null
+  "keep"?: boolean | null
+  "info"?: Record<string, unknown> | null
+  "fake"?: boolean | null
+}
+export interface SessionSetKeepParams {
+  "sessionId": string
+  "keep": boolean
 }
 export interface SessionMessageParams {
   "key": string
@@ -492,6 +520,47 @@ export interface AttentionAnswerParams {
 export interface AttentionDismissParams {
   "id": string
 }
+export interface ClustersListParams {}
+export interface ClusterLoginParams {
+  "name": string
+  "password"?: string | null
+  "otp"?: string | null
+}
+export interface ClusterLogoutParams {
+  "name": string
+}
+export interface JobsListParams {}
+export interface ClusterDetailParams {
+  "name": string
+}
+export interface JobDetailParams {
+  "source": string
+  "id": string
+  "cluster"?: string | null
+  "session"?: string | null
+  "group"?: string | null
+}
+export interface ClustersPresetsParams {}
+export interface ClusterAddParams {
+  "name": string
+  "user": string
+  "preset"?: string | null
+  "host"?: string | null
+  "requiresOtp"?: boolean | null
+  "partition"?: string | null
+  "workDir"?: string | null
+  "installRoot"?: string | null
+}
+export interface ClusterHostkeyParams {
+  "name": string
+}
+export interface ClusterPinParams {
+  "name": string
+  "fingerprint": string
+}
+export interface ClusterRemoveParams {
+  "name": string
+}
 export interface SwarmStatusParams {
   "spec"?: Record<string, unknown> | null
   "specYaml"?: string | null
@@ -519,6 +588,22 @@ export interface SwarmTriageAnswerParams {
   "item": Record<string, unknown>
   "answer": string
 }
+export interface SwarmMessageParams {
+  "to": string
+  "text": string
+}
+export interface SwarmPrcheckParams {
+  "pr": number
+  "worktree"?: string | null
+}
+export interface SwarmObserveOverviewParams {
+  "source"?: Record<string, unknown> | null
+  "sourcePath"?: string | null
+}
+export interface SwarmObserveFeedParams {
+  "session": string
+  "since"?: number | null
+}
 export interface ServiceRequests {
   "hello": HelloParams
   "sessions.list": SessionsListParams
@@ -528,6 +613,8 @@ export interface ServiceRequests {
   "session.merge": SessionMergeParams
   "session.pending": SessionPendingParams
   "session.detach": SessionDetachParams
+  "session.host": SessionHostParams
+  "session.setKeep": SessionSetKeepParams
   "session.message": SessionMessageParams
   "sessions.past": SessionsPastParams
   "service.status": ServiceStatusParams
@@ -539,6 +626,17 @@ export interface ServiceRequests {
   "attention.list": AttentionListParams
   "attention.answer": AttentionAnswerParams
   "attention.dismiss": AttentionDismissParams
+  "clusters.list": ClustersListParams
+  "cluster.login": ClusterLoginParams
+  "cluster.logout": ClusterLogoutParams
+  "jobs.list": JobsListParams
+  "cluster.detail": ClusterDetailParams
+  "job.detail": JobDetailParams
+  "clusters.presets": ClustersPresetsParams
+  "cluster.add": ClusterAddParams
+  "cluster.hostkey": ClusterHostkeyParams
+  "cluster.pin": ClusterPinParams
+  "cluster.remove": ClusterRemoveParams
   "swarm.status": SwarmStatusParams
   "swarm.plan": SwarmPlanParams
   "swarm.validate": SwarmValidateParams
@@ -547,6 +645,10 @@ export interface ServiceRequests {
   "swarm.resume": SwarmResumeParams
   "swarm.triage.list": SwarmTriageListParams
   "swarm.triage.answer": SwarmTriageAnswerParams
+  "swarm.message": SwarmMessageParams
+  "swarm.prcheck": SwarmPrcheckParams
+  "swarm.observe.overview": SwarmObserveOverviewParams
+  "swarm.observe.feed": SwarmObserveFeedParams
 }
 export interface HelloResult {
   "protocolVersion": number
@@ -591,6 +693,14 @@ export interface SessionPendingResult {
 export interface SessionDetachResult {
   "detached": boolean
 }
+export interface SessionHostResult {
+  "hosted": boolean
+  "keep": boolean
+  "history": boolean
+}
+export interface SessionSetKeepResult {
+  "keep": boolean
+}
 export interface SessionMessageResult {
   "sent": boolean
 }
@@ -621,6 +731,61 @@ export interface AttentionAnswerResult {
 export interface AttentionDismissResult {
   "ok": boolean
   "error"?: string | null
+}
+export interface ClustersListResult {
+  "clusters": Record<string, unknown>[]
+}
+export interface ClusterLoginResult {
+  "ok": boolean
+  "opened": boolean
+  "code"?: string | null
+  "error"?: string | null
+}
+export interface ClusterLogoutResult {
+  "ok": boolean
+  "closed": boolean
+  "code"?: string | null
+  "error"?: string | null
+}
+export interface JobsListResult {
+  "groups": Record<string, unknown>[]
+  "errors": string[]
+}
+export interface ClusterDetailResult {
+  "sections": Record<string, unknown>[]
+  "error"?: string | null
+}
+export interface JobDetailResult {
+  "sections": Record<string, unknown>[]
+  "error"?: string | null
+}
+export interface ClustersPresetsResult {
+  "presets": Record<string, unknown>[]
+  "error"?: string | null
+}
+export interface ClusterAddResult {
+  "ok": boolean
+  "code"?: string | null
+  "error"?: string | null
+  "name": string
+  "hostKey"?: Record<string, unknown> | null
+}
+export interface ClusterHostkeyResult {
+  "offered"?: string | null
+  "pinned": boolean
+  "error"?: string | null
+}
+export interface ClusterPinResult {
+  "ok": boolean
+  "code"?: string | null
+  "error"?: string | null
+}
+export interface ClusterRemoveResult {
+  "ok": boolean
+  "code"?: string | null
+  "error"?: string | null
+  "loggedOut"?: boolean | null
+  "keysRemoved"?: number | null
 }
 export interface SwarmStatusResult {
   "schema_version": number
@@ -663,6 +828,22 @@ export interface SwarmTriageAnswerResult {
   "item_id"?: string | null
   "logged"?: string | null
 }
+export interface SwarmMessageResult {
+  "sent": boolean
+  "to": string
+}
+export interface SwarmPrcheckResult {
+  "pr"?: number | null
+  "checks": Record<string, unknown>[]
+  "available": boolean
+  "reason": string
+}
+export interface SwarmObserveOverviewResult {
+  "rows": Record<string, unknown>[]
+}
+export interface SwarmObserveFeedResult {
+  "entries": Record<string, unknown>[]
+}
 export interface ServiceResults {
   "hello": HelloResult
   "sessions.list": SessionsListResult
@@ -672,6 +853,8 @@ export interface ServiceResults {
   "session.attach": SessionAttachResult
   "session.pending": SessionPendingResult
   "session.detach": SessionDetachResult
+  "session.host": SessionHostResult
+  "session.setKeep": SessionSetKeepResult
   "session.message": SessionMessageResult
   "sessions.past": SessionsPastResult
   "service.status": ServiceStatusResult
@@ -679,6 +862,17 @@ export interface ServiceResults {
   "attention.list": AttentionListResult
   "attention.answer": AttentionAnswerResult
   "attention.dismiss": AttentionDismissResult
+  "clusters.list": ClustersListResult
+  "cluster.login": ClusterLoginResult
+  "cluster.logout": ClusterLogoutResult
+  "jobs.list": JobsListResult
+  "cluster.detail": ClusterDetailResult
+  "job.detail": JobDetailResult
+  "clusters.presets": ClustersPresetsResult
+  "cluster.add": ClusterAddResult
+  "cluster.hostkey": ClusterHostkeyResult
+  "cluster.pin": ClusterPinResult
+  "cluster.remove": ClusterRemoveResult
   "swarm.status": SwarmStatusResult
   "swarm.plan": SwarmPlanResult
   "swarm.validate": SwarmValidateResult
@@ -687,6 +881,10 @@ export interface ServiceResults {
   "swarm.resume": SwarmResumeResult
   "swarm.triage.list": SwarmTriageListResult
   "swarm.triage.answer": SwarmTriageAnswerResult
+  "swarm.message": SwarmMessageResult
+  "swarm.prcheck": SwarmPrcheckResult
+  "swarm.observe.overview": SwarmObserveOverviewResult
+  "swarm.observe.feed": SwarmObserveFeedResult
 }
 export interface SessionSummaryEvent {
   "summary": Record<string, unknown>
@@ -741,6 +939,8 @@ export interface SessionSummary {
   "answer"?: string | null
   "name"?: string | null
   "lastInput"?: number | null
+  "keep"?: boolean | null
+  "host"?: string | null
 }
 
 export interface AttentionItem {
@@ -760,6 +960,8 @@ export interface AttentionItem {
   "createdAt": number
   "options": string[]
   "job"?: Record<string, unknown> | null
+  "cluster"?: string | null
+  "proposal"?: Record<string, unknown> | null
 }
 
 /** Every event a window can receive: a session's own, and the service's. */

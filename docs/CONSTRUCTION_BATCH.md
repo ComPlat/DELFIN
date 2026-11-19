@@ -1,7 +1,7 @@
-# Construction batches: MANTA, Architector, molSimplify and epic-MACE on many SMILES
+# Construction batches: MANTA, Architector, molSimplify, epic-MACE, rxembed, Molassembler and MetalloGen on many SMILES
 
 `delfin cluster` builds 3D structures for a list of `ID;SMILES` lines -- from a handful to
-hundreds of thousands -- with one of four constructors:
+hundreds of thousands -- with one of seven constructors:
 
 | Tool | What is built | Runs in |
 |---|---|---|
@@ -9,6 +9,9 @@ hundreds of thousands -- with one of four constructors:
 | `architector` | [Architector](https://github.com/lanl/Architector) (`full`: 10 symmetries x 10 conformers; `default`: its defaults) | its own environment |
 | `molsimplify` | [molSimplify](https://github.com/hjkgrp/molSimplify), one structure per geometry of the coordination number | its own environment |
 | `mace` | [epic-MACE](https://github.com/EPiCs-group/epic-mace) (`paper`: OH / SP; `extended`: + SPY, TBP, TET, SAN), every stereomer, ten conformers each | its own environment (Python 3.7) |
+| `rxembed` | [rxembed](https://github.com/aligfellow/rxembed) (`default`): `rx.embed(rx.isomers(smiles))`, every isomer on its default polyhedron, its default conformers; reads the SMILES as written | its own environment (Python 3.12, RDKit 2026.9) |
+| `molassembler` | [Molassembler](https://github.com/qcscine/molassembler) (`default`): every stereoisomer, ten seeded distance-geometry conformers each; charge-separated SMILES only (a dative `->` is `not_expressible`) | its own environment |
+| `metallogen` | [MetalloGen](https://github.com/kyunghoonlee777/MetalloGen) (`common`: SP + TET, TBP + SPY, OH, ...; `all`: every geometry it knows for the site count), every donor arrangement, generated and relaxed with GFN2-xTB through ORCA (needs ORCA on the nodes, never Gaussian) | its own environment |
 
 The list is cut into shards; one shard is one Slurm array task on one node (or one local run on a
 workstation). A task that dies keeps every finished system and continues when it is resubmitted.
@@ -38,6 +41,10 @@ The external builders (only the ones you need):
 # built with micromamba under ~/.delfin/ai_tools/.mamba_env/epic_mace -- found automatically
 delfin_env/bin/python -m delfin.installer --install epic-mace
 
+# rxembed (pinned commit 9c0ba5a6; Python 3.12 + RDKit 2026.9), Molassembler (scine-molassembler
+# 3.0.1) and MetalloGen (pinned commit fa26e2ad; GFN2-xTB through ORCA), each in its own environment
+delfin_env/bin/python -m delfin.installer --install rxembed molassembler metallogen
+
 # Architector and molSimplify: either into DELFIN's environment ...
 delfin_env/bin/pip install 'delfin-complat[ai-complex]'
 # ... or, recommended for comparisons, into an environment of their own with fixed versions:
@@ -46,12 +53,15 @@ micromamba create -y -p ./bench_env -c conda-forge python=3.11 rdkit openbabel n
 ```
 
 Which interpreter a tool runs in: `--tool-python` if given, else `DELFIN_ARCHITECTOR_PYTHON` /
-`DELFIN_MOLSIMPLIFY_PYTHON` / `DELFIN_MACE_PYTHON`, else the environment DELFIN's installer built
-for the tool (epic-MACE), else DELFIN's own interpreter. `prepare` refuses an interpreter that does
-not have the tool, before anything is written.
+`DELFIN_MOLSIMPLIFY_PYTHON` / `DELFIN_MACE_PYTHON` / `DELFIN_RXEMBED_PYTHON` /
+`DELFIN_MOLASSEMBLER_PYTHON` / `DELFIN_METALLOGEN_PYTHON`, else the environment DELFIN's installer
+built for the tool (epic-MACE, rxembed, Molassembler, MetalloGen), else DELFIN's own interpreter.
+`prepare` refuses an interpreter that does not have the tool, before anything is written.
 
 The same tools are available interactively in the dashboard (MANTA / ARCHITECTOR / MOLSIMPLIFY /
-MACE buttons) and in CONTROL (`smiles_converter=MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE`).
+MACE / RXEMBED / MOLASSEMBLER / METALLOGEN buttons) and in CONTROL
+(`smiles_converter=MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE|RXEMBED|MOLASSEMBLER|METALLOGEN`), with the
+same build (`delfin/cluster_bench/tool_workers/smiles_tools.py` for the last three).
 
 ## 2. Prepare the list
 
@@ -86,7 +96,8 @@ $PY -m delfin cluster collect runs/mace_list
 ```
 
 `prepare` options: `--mode` (MANTA `champion`/`builder`, Architector `full`/`default`, MACE
-`paper`/`extended`), `--shard-size` (MANTA 500, others 250), `--timeout` (per system, seconds,
+`paper`/`extended`, rxembed and Molassembler `default`, MetalloGen `common`/`all`), `--shard-size`
+(MANTA 500, MetalloGen 50, others 250), `--timeout` (per system, seconds,
 default 21600), `--speed-factor`, `--workers` (concurrent builds per node: MANTA 36 x 7 threads,
 others 48), `--threads`, `--repeat N`, `--specs`, `--label`. A run directory is never overwritten.
 
@@ -110,7 +121,8 @@ for k in $(seq 0 $((N_SHARDS - 1))); do $PY -m delfin cluster run-shard runs/mac
 
 ## 4. From the dashboard
 
-Submit Job tab, panel **Construction batch (MANTA / ARCHITECTOR / MOLSIMPLIFY / MACE)** under the
+Submit Job tab, panel **Construction batch (MANTA / ARCHITECTOR / MOLSIMPLIFY / MACE / RXEMBED /
+MOLASSEMBLER / METALLOGEN)** under the
 Batch SMILES field. Builder, Mode, Run name and List file are always shown; everything else sits
 in a folded **Advanced** section. Every field has a tooltip and a grey one-line explanation, and
 shows its real default (no hidden 0 or empty value):
@@ -187,6 +199,15 @@ $PY -m delfin cluster repeat-stats runs/mace_list     # identical / different / 
 
 MANTA and epic-MACE reproduce byte for byte in the same environment (epic-MACE exposes no random
 seed, so this is measured, not guaranteed); Architector and molSimplify can differ from run to run.
+Molassembler is seeded (42 + isomer index) and repeats in the same environment; rxembed uses its
+own default seed; MetalloGen's random embeddings are seeded (`random` and `numpy.random` to
+42 + m-SMILES index), but its xTB relaxations through ORCA can differ in the last digits, so a
+near-duplicate conformer may fall either side of its 0.5 A clustering cut and the frame count of an
+arrangement can still change between builds. A MetalloGen system writes each finished arrangement
+to `partial.xyz` in its work directory, which a system stopped at its limit keeps; with
+`max_arrangements` (48 per geometry) reached, `_meta/<ID>.json` says `"truncated": true`.
+Molassembler counts every stereoisomer once (each leaf canonicalised, meso forms once), the same
+enumeration as the benchmark runner.
 
 ## 6. Output
 
@@ -237,4 +258,6 @@ pass its `specs_*.jsonl` (concatenated) with `--specs`.
 
 epic-MACE is GPL-3.0, Architector is BSD-3-Clause, molSimplify is GPL-3.0. DELFIN neither bundles
 nor imports them: they are installed separately by the user and run as external programs in their
-own environments. epic-MACE is installed from the pinned upstream commit efb5778e.
+own environments. epic-MACE is installed from the pinned upstream commit efb5778e. rxembed is
+MIT (pinned commit 9c0ba5a6), Molassembler (scine-molassembler 3.0.1) and MetalloGen (pinned
+commit fa26e2ad) are BSD-3-Clause; they are installed and run the same way.

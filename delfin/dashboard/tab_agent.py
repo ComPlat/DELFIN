@@ -710,43 +710,15 @@ _build_verify_hint = turn_context.verify_hint
 
 
 def _self_verification_note(verified: bool) -> str:
-    """The line shown after a forced self-correction turn.
-
-    Two outcomes, two lines. The green check is a VERDICT — it may only
-    appear when a re-scan of the corrected answer finds the claims
-    grounded. Spending the correction budget is not the same event: a
-    correction that raised a new claim, or that only rewrote the wording
-    into hedges, is still an answer nobody checked, and printing the
-    check for it told the reader the opposite of what happened.
-    """
-    if verified:
-        return "✓ Self-verification: statements checked, answer corrected."
-    return (
-        "⚠️ Self-verification: the answer was revised, but the claims in it "
-        "are still not backed by anything looked up this turn — treat them "
-        "as unconfirmed."
-    )
+    """Moved to delfin.agent.code_citation_guard (one-line delegate)."""
+    from delfin.agent import code_citation_guard as _ccg
+    return _ccg.self_verification_note(verified)
 
 
 def _correction_verdict_note(scan, text, *, keep=None, **kwargs) -> str:
-    """Re-scan a corrected answer and return the note that matches the
-    verdict, never the fact that a retry ran.
-
-    ``keep`` filters the flags that count as "still ungrounded" (the code
-    citation scan also returns soft, non-forcing flags). A scanner that
-    raises counts as NOT verified: the check must be earned, and an
-    unreadable answer has not earned it.
-    """
-    try:
-        flags = list(scan(text, **kwargs) or ())
-    except Exception:
-        flags = ["rescan-failed"]
-    if keep is not None:
-        try:
-            flags = [f for f in flags if keep(f)]
-        except Exception:
-            pass
-    return _self_verification_note(not flags)
+    """Moved to delfin.agent.code_citation_guard (one-line delegate)."""
+    from delfin.agent import code_citation_guard as _ccg
+    return _ccg.correction_verdict_note(scan, text, keep=keep, **kwargs)
 
 
 # The stall watchdog measures PROVIDER silence. A tool call that is doing
@@ -931,7 +903,7 @@ def _finalize_plan_decision(
     repo_root: str,
     save_plan_fn=None,
 ) -> list[str]:
-    """Shared plan approve/reject logic for BOTH the 'Plan akzeptieren'
+    """Shared plan approve/reject logic for BOTH the 'Accept plan & execute'
     button (``_on_plan_accept_phase5``) and the ``/plan approve|reject``
     text fallback, so the two paths can never drift apart.
 
@@ -1031,10 +1003,12 @@ _CHAT_MORPH_JS = (
     "if(shown.getAttribute(a.name)!==a.value)shown.setAttribute(a.name,a.value);});"
     "var want=Array.from(fresh.childNodes).filter(function(n){"
     "return n.nodeType===1||(n.nodeType===3&&n.data.trim());});"
-    "var keys=want.map(function(n){"
-    "return n.nodeType===1?n.outerHTML:'#'+n.data;});"
+    "var keys=want.map(function(n){return key(n);});"
     "var have=Array.from(shown.childNodes);var p=0;"
-    "function key(n){return n.nodeType===1?n.outerHTML:'#'+n.data;}"
+    "function key(n){if(n.nodeType!==1)return '#'+n.data;"
+    "if(n.classList&&n.classList.contains('delfin-chat-turn-steps')){"
+    "var c=n.cloneNode(true);c.removeAttribute('open');return c.outerHTML;}"
+    "return n.outerHTML;}"
     "function stamp(n){n.__delfinKey=key(n);"
     "Array.from(n.childNodes).forEach(function(c){c.__delfinKey=key(c);});return n;}"
     "while(p<want.length&&p<have.length){"
@@ -1485,11 +1459,11 @@ _AGENT_CSS = """\
 }
 /* Empty (marked from Python when a send clears it): the resting height,
    over whatever the grow script last wrote inline. */
-.delfin-agent-input-empty textarea { height: 80px !important; }
+.delfin-agent-input-empty textarea { height: 56px !important; }
 .delfin-agent-input textarea {
-    min-height: 80px;
+    min-height: 56px;
     max-height: 280px;
-    height: 80px;
+    height: 56px;
     overflow-y: auto;
     resize: none;
     box-sizing: border-box;
@@ -1511,6 +1485,20 @@ _AGENT_CSS = """\
 .delfin-chat-tool + .delfin-chat-tool {
     margin-top: 4px;
 }
+/* A finished turn's folded steps: same card base as every message (the
+   element itself carries .delfin-chat-msg), only the one-line summary
+   row is styled here -- same muted tone the chat uses for its meta
+   text, same cursor affordance any expandable row has. */
+.delfin-chat-turn-steps > summary {
+    cursor: pointer;
+    color: var(--delfin-chat-muted, #64748b);
+    font-size: 12px;
+    line-height: 1.5;
+    user-select: none;
+}
+.delfin-chat-turn-steps > summary::marker {
+    color: var(--delfin-chat-muted, #64748b);
+}
 .delfin-chat-user {
     background: #e8f0fe;
     /* The background is fixed, so the text colour is too: inherited, it
@@ -1528,6 +1516,64 @@ _AGENT_CSS = """\
     border: 1px solid #e5e7eb;
     box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
 }
+/* A delegated sub-agent as one card in the transcript. The bubble is the
+   chat's own .delfin-chat-msg (its 12 px corner, padding, margin); these
+   rules only dress the card's own rows. Full width like the system line:
+   a card that is a chat message keeps the chat's flow. */
+.delfin-delegate-card {
+    background: #ffffff;
+    color: #111827;
+    margin-right: auto;
+    border: 1px solid #e5e7eb;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+    max-width: 100%;
+    width: 100%;
+    box-sizing: border-box;
+}
+.delfin-delegate-card .delegate-head {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.delfin-delegate-card .delegate-state { font-weight: 600; }
+.delfin-delegate-card .delegate-title { font-weight: 600; }
+.delfin-delegate-card .delegate-type,
+.delfin-delegate-card .delegate-model,
+.delfin-delegate-card .delegate-elapsed {
+    font-size: 10px;
+    color: #6b7280;
+}
+.delfin-delegate-card .delegate-summary {
+    margin: 4px 0 2px 0;
+    font-size: 12px;
+    color: #374151;
+    white-space: pre-wrap;
+}
+.delfin-delegate-card .delegate-more pre {
+    font-size: 11px;
+    white-space: pre-wrap;
+    max-height: 18em;
+    overflow: auto;
+}
+.delfin-delegate-card .delegate-actions {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+}
+.delfin-delegate-card .delegate-actions button {
+    font-size: 10px;
+    padding: 1px 8px;
+    cursor: pointer;
+}
+.delfin-delegate-card .delegate-state-word {
+    font-size: 10px;
+    color: #6b7280;
+}
+.delfin-delegate-running .delegate-state { color: #2563eb; }
+.delfin-delegate-done .delegate-state { color: #15803d; }
+.delfin-delegate-failed .delegate-state { color: #b91c1c; }
+.delfin-delegate-stopped .delegate-state { color: #6b7280; }
 .delfin-chat-system {
     background: #f3f4f6;
     margin: 4px 0;
@@ -2421,20 +2467,20 @@ _AGENT_CSS = """\
 .delfin-md-table { font-size: 13px; border-radius: 8px; overflow: hidden; }
 .delfin-md-table th, .delfin-md-table td { border-color: #e2e8f0; padding: 5px 10px; }
 .delfin-md-table th { background: #f1f5f9; color: #0f172a; }
+/* The text sits inside the composer's frame without a frame of its own:
+   the border, the corner and the focus ring belong to the whole box. */
 .delfin-agent-root .delfin-agent-input textarea {
     font-size: 14px;
-    padding: 10px 12px;
-    border: 1px solid #cbd5e1;
-    border-radius: 12px;
-    background: #ffffff;
+    padding: 10px 14px 4px;
+    border: none;
+    border-radius: 12px 12px 0 0;
+    background: transparent;
     color: #0f172a;
-    transition: border-color .12s ease, box-shadow .12s ease;
+    box-shadow: none;
 }
 .delfin-agent-root .delfin-agent-input textarea:focus {
     outline: none;
-    border-color: #93c5fd;
-    box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.12),
-                0 2px 8px rgba(15, 23, 42, 0.06);
+    box-shadow: none;
 }
 /* Past the 280 px cap the box scrolls: a thin rounded bar without arrow
    buttons, in the box's own colours (Chromium and Safari); Firefox takes
@@ -2459,45 +2505,99 @@ _AGENT_CSS = """\
         scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent;
     }
 }
-/* The shell, Files and Send buttons are as tall as the box beside them:
-   the rows stretch their items, and the buttons' 80 px from their widget
-   layout becomes the least height. */
-.delfin-agent-root .delfin-agent-input-area > .widget-hbox {
-    align-items: stretch !important;
-}
-.delfin-agent-root .delfin-agent-send-row {
-    align-items: stretch !important;
-}
-/* The box and Send carry the widgets' 2 px vertical margin; the shell and
-   Files buttons beside them did not, and stood 4 px taller. */
-.delfin-agent-root .delfin-agent-input-area > .widget-hbox > .jupyter-button {
-    margin-top: 2px !important; margin-bottom: 2px !important;
-}
-.delfin-agent-root .delfin-agent-input-area .jupyter-button {
-    height: auto !important; min-height: 80px;
-}
-.delfin-agent-root .delfin-agent-input textarea::placeholder { color: #94a3b8; }
-.delfin-agent-send-row .jupyter-button.mod-primary {
+/* THE COMPOSER: one rounded box. The message on top; below it one row --
+   commands and attach, the chips that shape the next message (permission,
+   model, effort), and Send as a round button at the lower right. The
+   border, the corner and the focus ring are the box's, so text, chips and
+   Send read as one piece and grow together. */
+.delfin-agent-root .delfin-agent-composer {
+    margin: 6px 0 0 0;
+    border: 1px solid #cbd5e1;
     border-radius: 12px;
-    font-weight: 600;
+    background: #ffffff;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    transition: border-color .12s ease, box-shadow .12s ease;
+    overflow: visible !important;
 }
-/* The rest of the composer and the bars around the chat take the same
-   corner: the shell and Files buttons (in the input area's row, not in
-   the Send row) keep their light grey; the Details bar is a 12 px bar;
-   the working line, task line and Background box are strips inset 8 px
-   into the rounded chat frame, so they sit inside its corners instead of
-   running under them. */
-.delfin-agent-root .delfin-agent-input-area .jupyter-button {
-    border-radius: 12px;
+.delfin-agent-root .delfin-agent-composer:focus-within {
+    border-color: #93c5fd;
+    box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.12),
+                0 2px 8px rgba(15, 23, 42, 0.06);
 }
-.delfin-agent-root .delfin-agent-input-area .jupyter-button:not(.mod-primary) {
-    background: #eeeeee; border: none; color: #334155;
-    /* The 40 px shell button holds an icon and "/": with the default
-       padding and a border its label was cut to ">_ ..." (measured). */
-    padding: 0 4px;
+.delfin-agent-root .delfin-agent-composer > .delfin-agent-input {
+    width: 100% !important; margin: 0 !important;
 }
-.delfin-agent-root .delfin-agent-input-area .jupyter-button:not(.mod-primary):hover {
-    background: #e2e5e9;
+.delfin-agent-root .delfin-agent-composer-bar {
+    align-items: center !important;
+    gap: 6px;
+    padding: 2px 8px 8px 10px;
+    flex-wrap: wrap;
+    overflow: visible !important;
+}
+.delfin-agent-root .delfin-agent-composer-gap { flex: 1 1 auto; min-width: 0; }
+/* Commands, attach and the KIT quick mode: quiet pills. */
+.delfin-agent-root .delfin-agent-composer-bar > .jupyter-button,
+.delfin-agent-root .delfin-agent-composer-bar .delfin-agent-upload {
+    height: 28px !important; min-height: 0 !important;
+    width: auto !important; margin: 0 !important;
+    padding: 0 10px !important;
+    border: 1px solid transparent; border-radius: 999px;
+    background: transparent; color: #475569;
+    font-size: 12px !important; line-height: 26px !important;
+    flex-direction: row !important;
+}
+.delfin-agent-root .delfin-agent-composer-bar > .jupyter-button:hover,
+.delfin-agent-root .delfin-agent-composer-bar .delfin-agent-upload:hover {
+    background: #f1f5f9; color: #0f172a;
+}
+.delfin-agent-root .delfin-agent-composer-bar .delfin-agent-upload i.fa {
+    margin: 0 4px 0 0 !important; font-size: 12px;
+}
+/* The chips: the header's dropdowns, without their label, as pills.
+   The label stays in the page for assistive technology and tests. */
+.delfin-agent-root .delfin-agent-chip { width: auto !important; margin: 0 !important; }
+.delfin-agent-root .delfin-agent-chip > .widget-label {
+    position: absolute !important; width: 1px !important; height: 1px !important;
+    overflow: hidden !important; clip: rect(0 0 0 0);
+}
+.delfin-agent-root .delfin-agent-chip select {
+    height: 28px; min-width: 0; max-width: 220px;
+    padding: 0 26px 0 10px;
+    border: 1px solid #e2e8f0; border-radius: 999px;
+    background-color: #ffffff; color: #334155;
+    font-size: 12px; cursor: pointer;
+}
+.delfin-agent-root .delfin-agent-chip select:hover { background-color: #f8fafc; border-color: #cbd5e1; }
+.delfin-agent-root .delfin-agent-chip select:focus {
+    outline: none; border-color: #93c5fd;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+/* The permission chip says what the next message may do: amber for the
+   widest posture, as a warning colour, not a decoration. */
+.delfin-agent-root .delfin-agent-chip-perm select { padding-left: 28px !important;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23475569' stroke-width='2'><path d='M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z'/></svg>"),
+        var(--jp-widgets-dropdown-arrow);
+    background-repeat: no-repeat, no-repeat;
+    background-position: 10px center, right center;
+    background-size: 12px 12px, 20px; }
+/* Send: a round button with an arrow; its name stays "Send" for the page
+   scripts, assistive technology and tests. */
+.delfin-agent-root .delfin-agent-send-row { margin: 0 0 0 auto !important; }
+.delfin-agent-root .delfin-agent-send-row .jupyter-button.delfin-agent-send {
+    width: 34px !important; height: 34px !important; min-height: 0 !important;
+    padding: 0 !important; margin: 0 !important;
+    border-radius: 50% !important;
+    font-size: 0 !important; color: transparent !important;
+    background: #2563eb; border: none;
+    display: flex !important; align-items: center; justify-content: center;
+}
+.delfin-agent-root .delfin-agent-send-row .jupyter-button.delfin-agent-send::before {
+    content: "\\2191"; font-size: 18px; font-weight: 700; color: #ffffff;
+    line-height: 1;
+}
+.delfin-agent-root .delfin-agent-send-row .jupyter-button.delfin-agent-send:hover { background: #1d4ed8; }
+.delfin-agent-root .delfin-agent-send-row .jupyter-button.delfin-agent-send:disabled {
+    background: #cbd5e1;
 }
 .delfin-agent-root .delfin-agent-below > .jupyter-widget-Collapse > .jupyter-widget-Collapse-header {
     border-radius: 12px; border: 1px solid #e2e8f0; background: #f8fafc;
@@ -2764,7 +2864,7 @@ def resolve_office_workspace(configured) -> Path | None:
 # a directory "always", approve every staged diff, schedule autonomous
 # loops, delete memories or write a user-wide memory.
 _USER_ONLY_SLASH_COMMANDS = frozenset({
-    "/sync", "/perms", "/perm-cycle",
+    "/sync", "/pair", "/perms", "/perm-cycle",
     "/grant", "/hooks", "/mcp", "/approve", "/reject",
     "/loop", "/auto", "/forget", "/profile", "/session", "/init",
     "/undo", "/undo-file", "/git",
@@ -2818,7 +2918,7 @@ def _awaiting_user_answer(state: dict) -> bool:
 # dispatcher. Kept at module scope so a test can drive the same routing
 # decision the send path makes.
 _BUILTIN_SLASH_PREFIXES = frozenset({
-    "/sync", "/help", "/guide", "/clear", "/cost", "/compact", "/stop", "/status",
+    "/sync", "/pair", "/help", "/guide", "/clear", "/cost", "/compact", "/stop", "/status",
     "/usage", "/export", "/search", "/retry", "/undo", "/git", "/provider",
     "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
     "/memories", "/memorize", "/tidy", "/remember", "/forget", "/plans", "/plan", "/hooks",
@@ -2832,6 +2932,7 @@ _BUILTIN_SLASH_PREFIXES = frozenset({
     "/trace", "/loop", "/auto",
     "/undo-file", "/profile", "/skill", "/tools",
     "/memory", "/share", "/unshare", "/lessons", "/swarm", "/knowledge",
+    "/delegate-open", "/delegate-stop",
 })
 
 
@@ -2986,6 +3087,120 @@ def _assistant_turn_is_wordless(msg: dict) -> bool:
     drifting apart is how an empty box ends up before every tool line.
     """
     return not str(msg.get("content") or "").strip()
+
+
+def _format_fold_time(duration_s) -> str:
+    """The fold line's wall time: ``12.4`` -> ``12s``, ``65`` -> ``1m 05s``.
+
+    Past a minute the minutes and seconds go in their own groups, seconds
+    zero-padded to two, so a minute and five seconds does not read as
+    "1m 5s" (which looks like a typo of 15s). Hours are not folded to
+    minutes: a turn that ran 1h 04m keeps the hour visible.
+    """
+    try:
+        seconds = int(round(float(duration_s)))
+    except (TypeError, ValueError, OverflowError):
+        seconds = 0
+    if seconds < 0:
+        seconds = 0
+    elif seconds == 0 and duration_s:
+        # A turn that ran at all took time: 0.5s must not read as 0s.
+        seconds = 1
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, sec = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    return f"{minutes}m {sec:02d}s"
+
+
+def _render_turn_fold_line(duration_s, outcome: str) -> str:
+    """The one-line fold summary text for a finished turn.
+
+    ``Worked for 12s`` when the turn ended well; ``Stopped after 40s``
+    when it was stopped or ended in an error -- the same wording the
+    end-of-turn summary line uses (``delfin.agent.turn_summary``), so the
+    transcript does not say success and failure in two dialects.
+    """
+    duration = _format_fold_time(duration_s)
+    outcome = str(outcome or "").strip().lower()
+    if outcome in ("ok", "success", "done", ""):
+        return f"Worked for {duration}"
+    return f"Stopped after {duration}"
+
+
+def _render_transcript(msgs, render_single):
+    """Render the transcript, folding finished turns' steps.
+
+    Input: *msgs*, the chat_messages list; *render_single*, the per-message
+    renderer (a closure over the tab's state). Output: the list of HTML
+    parts, one per top-level transcript node, in order.
+
+    Semantics: while a turn runs no message carries a ``turn_fold`` meta,
+    so every message renders on its own exactly as before. A message with
+    ``turn_fold`` ends a turn: the tool and thinking steps since the
+    turn's user message fold behind one native <details>/<summary> line
+    ("Worked for 12s"; "Stopped after 40s" for an error or stopped turn,
+    which stays unfolded). The ending answer itself stays visible below
+    the fold line. Rejected alternative: rendering the fold inside
+    _render_single_msg -- the fold spans several messages, so the grouping
+    must see the whole turn.
+
+    The fold element carries class ``delfin-chat-msg delfin-chat-turn-steps``
+    (the chat's own card base, one 12 px corner) so the chat's layout rules
+    apply unchanged.
+    """
+    def is_step(msg):
+        return msg.get("role") in ("tool", "thinking")
+
+    parts = []
+    i = 0
+    n = len(msgs)
+    while i < n:
+        msg = msgs[i]
+        if not (is_step(msg) or i + 1 < n and is_step(msg)):
+            parts.append(render_single(msg))
+            i += 1
+            continue
+        # A run of steps: check whether it ends in a turn_fold-marked
+        # message (the fold's boundary), otherwise render live as today.
+        # System notices (a retry line, a model switch) inside the turn
+        # belong to its steps; a turn that ends in an error ends on one.
+        j = i
+        while j < n and not msgs[j].get("turn_fold") and (
+                is_step(msgs[j]) or msgs[j].get("role") == "system"
+                or (msgs[j].get("role") == "assistant"
+                    and _assistant_turn_is_wordless(msgs[j]))):
+            j += 1
+        if j == i:
+            # The step itself ends the turn: nothing to fold before it.
+            parts.append(render_single(msg))
+            i += 1
+            continue
+        if j < n and msgs[j].get("turn_fold"):
+            fold = msgs[j]["turn_fold"] or {}
+            folded = [render_single(m) for m in msgs[i:j]]
+            line = _render_turn_fold_line(fold.get("duration_s"),
+                                          fold.get("outcome"))
+            stopped = str(fold.get("outcome") or "").strip().lower() not in (
+                "ok", "success", "done", "")
+            attrs = " open" if stopped else ""
+            parts.append(
+                f'<details class="delfin-chat-msg delfin-chat-turn-steps"'
+                f'{attrs}><summary>{_html.escape(line)}</summary>'
+                + "".join(folded) + "</details>")
+            parts.append(render_single(msgs[j]))
+            i = j + 1
+            continue
+        # No fold: render each message on its own, as before.
+        while i < j:
+            parts.append(render_single(msgs[i]))
+            i += 1
+        if i < n and msgs[i].get("role") == "assistant":
+            parts.append(render_single(msgs[i]))
+            i += 1
+    return parts
 
 
 # The diagram renderer. Pinned to an exact version and to the bytes of that
@@ -3161,7 +3376,7 @@ def _md_to_html(text: str) -> str:
 # - has_args: True means the command takes arguments — palette adds a trailing
 #   space so the user starts typing immediately
 _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
-    ("Session", "/sync", "SimpleX für diese Sitzung on|off|status", True),
+    ("Session", "/sync", "SimpleX for this session on|off|status", True),
     # Session
     ("Session", "/help", "Show this help", False),
     ("Session", "/guide", "Full user guide (models, /grant, monitoring, safety)", False),
@@ -3328,6 +3543,14 @@ def _kernel_lost_its_lifeline() -> None:
         _kept.drop_record(reason="kernel ended with its lifeline")
     except Exception:
         pass
+    # Sessions switched to Keep session go on in the agent service, which
+    # lives under no lifeline -- unless this is an emergency stop.
+    try:
+        from delfin.agent import lifeline as _lifeline
+        from delfin.dashboard import kept_agent_sessions as _kept_sessions
+        _kept_sessions.on_kernel_end(emergency=_lifeline._stopped())
+    except Exception:
+        pass
     os._exit(0)
 
 
@@ -3435,6 +3658,32 @@ _AGENT_PAGE_JS = """
     }
     if (window.__delfinAgentKeys) return;
     window.__delfinAgentKeys = true;
+
+    /* Enter sends what is in the box NOW. Clicking Send right away read
+       the kernel's copy, which lags behind ipywidgets' throttled value
+       updates: fast typing or a paste then Enter sent "g" of "gamma three"
+       (measured 11.11.). The text goes with the request instead, through
+       the session's submit channel; the box is cleared at once so a late
+       value update cannot bring the old text back. */
+    window.__delfinAgentSubmit = window.__delfinAgentSubmit || function(ta) {
+        var root = ta && ta.closest ? (ta.closest('.delfin-agent-root') || document) : document;
+        var ch = root.querySelector('.delfin-agent-submit input');
+        if (!ch) {
+            var sb = window.__delfinQ('.delfin-agent-send-row button');
+            if (sb) sb.click();
+            return;
+        }
+        window.__delfinAgentSubmitSeq = (window.__delfinAgentSubmitSeq || 0) + 1;
+        var text = ta.value;
+        var set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        set.call(ch, JSON.stringify({seq: window.__delfinAgentSubmitSeq, text: text}));
+        ch.dispatchEvent(new Event('input', {bubbles: true}));
+        if (text.trim()) {
+            var tset = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+            tset.call(ta, '');
+            ta.dispatchEvent(new Event('input', {bubbles: true}));
+        }
+    };
     document.addEventListener('keydown', function(e) {
         if (!window.__delfinAgentOwnsKey(e)) return;
         if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
@@ -3444,8 +3693,7 @@ _AGENT_PAGE_JS = """
                 if (container) {
                     e.preventDefault();
                     e.stopPropagation();
-                    var sendBtn = window.__delfinQ('.delfin-agent-send-row button');
-                    if (sendBtn) sendBtn.click();
+                    window.__delfinAgentSubmit(e.target);
                     return;
                 }
             }
@@ -3459,23 +3707,9 @@ _AGENT_PAGE_JS = """
                 }
             }
         }
-        if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
-            var a = window.__delfinQ('.delfin-agent-chat');
-            if (a) {
-                e.preventDefault();
-                var ta = window.__delfinQ('.delfin-agent-input textarea');
-                if (ta) {
-                    var ns = Object.getOwnPropertyDescriptor(
-                        window.HTMLTextAreaElement.prototype, 'value').set;
-                    ns.call(ta, '/clear');
-                    ta.dispatchEvent(new Event('input', {bubbles: true}));
-                    setTimeout(function() {
-                        var sb = window.__delfinQ('.delfin-agent-send-row button');
-                        if (sb) sb.click();
-                    }, 50);
-                }
-            }
-        }
+        /* Ctrl+L stays the browser's (focus the address bar). It used to
+           send /clear -- a fresh conversation and a lost draft, from any
+           focus; neither the TUI nor Claude Code clears a session on it. */
         if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
             var a = window.__delfinQ('.delfin-agent-chat');
             if (a) {
@@ -6466,22 +6700,22 @@ def _render_eml_summary(path) -> str | None:
             return str(raw)
 
     rows = [(label, _field(key)) for label, key in
-            (("An", "To"), ("Cc", "Cc"), ("Betreff", "Subject"))]
+            (("To", "To"), ("Cc", "Cc"), ("Subject", "Subject"))]
     rows = [(label, value) for label, value in rows if value]
     if not rows:
         return None
     attachments = sum(
         1 for part in msg.walk() if part.get_filename())
     if attachments:
-        rows.append(("Anhänge", str(attachments)))
+        rows.append(("Attachments", str(attachments)))
     body = "".join(
         f'<div style="font-size:11px;color:#374151;">'
         f'<span style="color:#6b7280;">{_html.escape(label)}:</span> '
         f'{_html.escape(value)}</div>'
         for label, value in rows)
     return (body + '<div style="font-size:11px;color:#6b7280;'
-            'margin-top:4px;">Wird nicht versendet — öffnen und selbst '
-            'senden.</div>')
+            'margin-top:4px;">Not sent — open it and send it '
+            'yourself.</div>')
 
 
 # Which write a tool performs, under every name it is served by. The
@@ -7022,6 +7256,402 @@ def _render_subagent_pane_html(calls: list[dict]) -> str:
     )
 
 
+#: The tool names a delegation reaches the tab under: ``Agent`` on the
+#: Anthropic path, ``subagent`` on DELFIN's own (KIT/OpenAI) path, the
+#: namespace already stripped.
+_DELEGATE_TOOLS = frozenset({"Agent", "subagent"})
+
+
+def _delegate_state_for(status: str) -> str:
+    """One of the four card states the transcript shows: running, done,
+    failed, stopped. Anything unknown runs as running — a card that shows
+    no state shows motion."""
+    s = str(status or "").strip().lower()
+    if s in ("done", "completed", "ok"):
+        return "done"
+    if s in ("failed", "error"):
+        return "failed"
+    if s in ("stopped", "cancelled", "canceled", "stopping"):
+        return "stopped"
+    return "running"
+
+
+_DELEGATE_STATE_META = {
+    "running": ("↻", "delfin-delegate-running", "running"),
+    "done": ("✓", "delfin-delegate-done", "done"),
+    "failed": ("✗", "delfin-delegate-failed", "failed"),
+    "stopped": ("⏹", "delfin-delegate-stopped", "stopped"),
+}
+
+
+def _delegate_elapsed_text(call: dict, now: float | None = None) -> str:
+    """How long the delegate has run, as seconds text.
+
+    The payload's own ``elapsed_s`` (round(self.elapsed_s, 2) in
+    subagents.py) wins once it is there; before that the card counts
+    from ``started_at``, so a running card shows live progress.
+    """
+    elapsed = call.get("elapsed_s")
+    if elapsed is None:
+        started = call.get("started_at")
+        try:
+            elapsed = (now if now is not None else time.time()) - float(started)
+        except (TypeError, ValueError):
+            elapsed = None
+    try:
+        elapsed = float(elapsed)
+    except (TypeError, ValueError):
+        return ""
+    if elapsed < 0 or elapsed != elapsed:       # a stale/absurd stamp
+        return ""
+    if elapsed >= 3600:
+        return f"{int(elapsed // 3600)}h{int((elapsed % 3600) // 60):02d}m"
+    return f"{int(elapsed + 0.5)}s"
+
+
+def _delegate_summary_lines(call: dict, *, max_lines: int = 3) -> str:
+    """The first lines of a delegate's report, for the card face.
+
+    The tool result is the payload the parent model gets (see
+    ``_subagent_report_text``); the first lines are the answer's head,
+    the rest goes behind "more" in the card's details fold. Nothing
+    shown here is a promise about what the report is worth — the
+    verification notice, when the payload carries one, stays in view.
+    """
+    output = call.get("output") or ""
+    status = _delegate_state_for(call.get("status"))
+    if not output or status == "running":
+        # A running delegate has no report yet; what came back so far is
+        # the start notice ("started_in_background"), not a summary.
+        return ""
+    text = _subagent_report_text(str(output))
+    if status == "failed":
+        return text.strip() or "the run failed"
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    return "\n".join(lines[:max_lines])
+
+
+def _render_delegate_card_html(call: dict, now: float | None = None) -> str:
+    """One delegated task as a card in the parent's transcript.
+
+    ``call`` is one entry of the same list the subagent pane renders
+    (``state["subagent_calls"]``), extended with ``sa_id``, ``model``,
+    ``started_at`` and ``elapsed_s`` from the delegate's payload. The
+    card reuses the chat bubble's own class (and through it the 12 px
+    corner the chat shows) — the layout of this chat is the layout of
+    the tab, and a second, simpler one is not wanted. Open and Stop
+    reach the page script through data attributes, the way the chat's
+    jump button does; the handlers live in _AGENT_PAGE_JS.
+    """
+    if not isinstance(call, dict):
+        return ""
+    sa_id = _html.escape(str(call.get("sa_id") or ""))
+    sub_type = _html.escape(str(call.get("subagent_type") or "agent"))
+    desc = _html.escape(str(call.get("description") or "")[:120])
+    model = _html.escape(str(call.get("model") or "")[:60])
+    state = _delegate_state_for(call.get("status"))
+    if state == "running" and call.get("background") and sa_id:
+        # A background delegate reports through a later turn, not this
+        # card's call; once it is no longer in the running register the
+        # card stops offering Stop.
+        try:
+            from delfin.agent import subagents as _sa
+            if str(call.get("sa_id")) not in (_sa.read_running() or {}):
+                state = "done"
+        except Exception:
+            pass
+    glyph, state_cls, state_word = _DELEGATE_STATE_META[state]
+    elapsed = _delegate_elapsed_text(call, now)
+
+    meta = [f'<span class="delegate-type">{sub_type}</span>']
+    if model:
+        meta.append(f'<span class="delegate-model">{model}</span>')
+    if elapsed:
+        meta.append(f'<span class="delegate-elapsed">{elapsed}</span>')
+    meta_html = "".join(f" {m}" for m in meta)
+
+    summary = _delegate_summary_lines(call)
+    if summary and state in ("done", "failed"):
+        esc = _html.escape(summary)
+        head, rest = summary.split("\n", 1) if "\n" in summary else (
+            summary, "")
+        face = f'<div class="delegate-summary">{_html.escape(head)}</div>'
+        if rest.strip():
+            face += (
+                '<details class="delegate-more">'
+                f'<summary>more</summary>'
+                f'<pre class="delegate-report">{_html.escape(summary)}</pre>'
+                '</details>'
+            )
+    elif summary:
+        face = (f'<div class="delegate-summary">'
+                f'{_html.escape(summary.splitlines()[0])}</div>')
+    else:
+        face = ""
+
+    # Open/Stop only where they mean something: a finished delegate has
+    # its transcript (Open), a running one has a Stop. The buttons are
+    # inert without the page script, which is also what the tests of the
+    # bridge assert on.
+    open_attr = f' data-delfin-delegate-open="{sa_id}"' if sa_id else ""
+    stop_attr = f' data-delfin-delegate-stop="{sa_id}"' if sa_id else ""
+    buttons = (
+        f'<button type="button" class="delegate-open"'
+        f'{open_attr}>Open</button>'
+        + (f'<button type="button" class="delegate-stop"'
+           f'{stop_attr}>Stop</button>' if state == "running" else "")
+    )
+    return (
+        f'<div class="delfin-chat-msg delfin-delegate-card '
+        f'{state_cls}">'
+        f'<div class="delegate-head">'
+        f'<span class="delegate-state">{_html.escape(glyph)}</span>'
+        f'<span class="delegate-title">{desc}</span>'
+        f'{meta_html}</div>'
+        f'{face}'
+        f'<div class="delegate-actions">{buttons}'
+        f'<span class="delegate-state-word">{_html.escape(state_word)}'
+        f'</span></div>'
+        f'</div>'
+    )
+
+
+def _delegate_payload_state(payload: dict, current: str) -> str:
+    """The card state a finished delegate's payload carries.
+
+    ``result`` and ``error`` are the payload's own fields (see
+    subagents.py's to_dict); an error is a failed run unless the entry
+    was already stopped, and a report is done.
+    """
+    if str(current) == "stopped":
+        return "stopped"
+    if str(payload.get("error") or "").strip():
+        return "failed"
+    if str(payload.get("result") or "").strip() or "result" in payload:
+        return "done"
+    return _delegate_state_for(current)
+
+
+def _emit_delegate_card(state: dict, call: dict) -> None:
+    """Put one delegate card in the transcript, in place.
+
+    The card is keyed by ``sa_id`` in ``state["chat_messages"]`` with
+    role ``delegate``: the first event for a delegate appends the card,
+    every later event for the SAME delegate rewrites that dict — no
+    second card per state refresh. A delegate without an id (the call
+    path before the engine answers) gets its own entry still: the id is
+    stitched in when the result arrives only when one unmatched card is
+    waiting, otherwise the entry stays the call's.
+
+    The pane's own list (``state["subagent_calls"]``) is NOT touched
+    here: the call and result paths append to it themselves, and the
+    Details-fold log keeps its current behaviour.
+    """
+    if not isinstance(state, dict) or not isinstance(call, dict):
+        return
+    msgs = state.setdefault("chat_messages", [])
+    sa_id = str(call.get("sa_id") or "")
+    if sa_id:
+        for m in msgs:
+            if (isinstance(m, dict) and m.get("role") == "delegate"
+                    and str(m.get("sa_id") or "") == sa_id):
+                m.update(call)
+                _refresh_chat_html_state(state)
+                return
+        # The call's card has no id yet (the id comes with the result):
+        # the result takes over the oldest id-less running card -- the
+        # calls of one round finish in the order they were made.
+        for m in msgs:
+            if (isinstance(m, dict) and m.get("role") == "delegate"
+                    and not str(m.get("sa_id") or "")
+                    and _delegate_state_for(m.get("status")) == "running"):
+                m.update(call)
+                _refresh_chat_html_state(state)
+                return
+    elif "sa_id" not in call:
+        # No id yet: an unmatched id-less call reuses the newest id-less
+        # running card rather than stacking a duplicate of itself.
+        for m in reversed(msgs):
+            if (isinstance(m, dict) and m.get("role") == "delegate"
+                    and not str(m.get("sa_id") or "")
+                    and _delegate_state_for(m.get("status")) == "running"):
+                m.update(call)
+                _refresh_chat_html_state(state)
+                return
+    entry = dict(call)
+    msgs.append({"role": "delegate", **entry})
+    _refresh_chat_html_state(state)
+
+
+def _agent_payload_of(tool_output) -> dict | None:
+    """The delegate result payload, if the output is a JSON object."""
+    if isinstance(tool_output, dict):
+        return tool_output
+    if not isinstance(tool_output, str):
+        return None
+    try:
+        import json as _json
+        parsed = _json.loads(tool_output)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _on_tool_call_card(state: dict, tool_name, payload):
+    """The 'Agent' tool-call path, shared by the stream and the card API.
+
+    Appends the pane's own entry (the Details-fold log keeps it) and puts
+    the running card in the transcript. Returns the parsed call, or None
+    when this is not an Agent call.
+    """
+    if str(tool_name) not in _DELEGATE_TOOLS:
+        return None
+    parsed = payload if isinstance(payload, dict) else (
+        _agent_payload_of(payload) or {})
+    desc = str(parsed.get("description") or "")
+    prompt = str(parsed.get("prompt") or "")
+    sub_type = str(parsed.get("subagent_type") or "general-purpose")
+    state["subagent_calls"].append({
+        "subagent_type": sub_type,
+        "description": desc,
+        "prompt": prompt,
+        "status": "running",
+        "output": "",
+    })
+    # One card in the transcript where the delegation started; updated
+    # in place by later events.
+    _emit_delegate_card(state, {
+        "subagent_type": sub_type,
+        "description": desc,
+        "model": str(parsed.get("model") or ""),
+        "status": "running",
+        "started_at": time.time(),
+        "output": "",
+    })
+    return parsed
+
+
+def _on_tool_result_card(state: dict, tool_name, payload):
+    """The 'Agent' tool-result path, shared by the stream and the card API.
+
+    Marks the pane entry and the card of THAT delegate done/failed —
+    keyed by the ``sa_id`` the payload carries; two parallel delegates
+    must not collide into "first running wins". A non-JSON payload still
+    falls back to the first running entry (the historical behaviour).
+    """
+    if str(tool_name) == "subagent_result":
+        # A background delegate's report, collected later: it updates the
+        # card that already carries the id and never adds one.
+        parsed = _agent_payload_of(payload)
+        sa = str((parsed or {}).get("sa_id") or "")
+        if parsed is not None and sa and any(
+                isinstance(m, dict) and m.get("role") == "delegate"
+                and str(m.get("sa_id") or "") == sa
+                for m in state.get("chat_messages", [])):
+            _emit_delegate_card(state, {
+                "sa_id": sa,
+                "status": _delegate_payload_state(parsed, "running"),
+                "elapsed_s": parsed.get("elapsed_s"),
+                "output": payload if isinstance(payload, str) else ""})
+        return parsed
+    if str(tool_name) not in _DELEGATE_TOOLS:
+        return None
+    text = payload if isinstance(payload, str) else ""
+    parsed = _agent_payload_of(payload)
+    if parsed is not None:
+        for entry in state["subagent_calls"]:
+            if entry.get("status") == "running":
+                entry["status"] = _delegate_payload_state(
+                    parsed, entry.get("status"))
+                entry["output"] = text
+                entry["elapsed_s"] = parsed.get("elapsed_s")
+                break
+        _emit_delegate_card(state, {
+            "sa_id": str(parsed.get("sa_id") or ""),
+            "status": _delegate_payload_state(parsed, "running"),
+            "background": parsed.get("status") == "started_in_background",
+            "elapsed_s": parsed.get("elapsed_s"),
+            "output": text,
+        })
+    else:
+        for entry in state["subagent_calls"]:
+            if entry.get("status") == "running":
+                entry["status"] = "done"
+                entry["output"] = text
+                break
+        # A report that is not one JSON object (a verification note
+        # ahead of it, a plain-text runner) still finished the call.
+        _emit_delegate_card(state, {"output": text, "status": "done"})
+    return parsed
+
+
+def _refresh_chat_html_state(state: dict) -> None:
+    """Refresh the chat from a module-level helper.
+
+    ``create_tab``'s own refresh reads the tab's widgets; the state
+    carries the widget so a helper outside the closure can ask for the
+    same repaint. Absent (a test state) it repaints nothing.
+    """
+    widget = state.get("_chat_html_widget")
+    render = state.get("_chat_html_render")
+    if render is not None:
+        render()
+    elif widget is not None:
+        try:
+            widget.value = _chat_value(
+                "\n".join(_msg_html(m) for m in _transcript_msgs(state)))
+        except Exception:
+            pass
+
+
+def _transcript_msgs(state: dict) -> list:
+    return [m for m in state.get("chat_messages", [])
+            if isinstance(m, dict)]
+
+
+def _msg_html(msg: dict) -> str:
+    """Standalone single-message render for the state-level refresh."""
+    role = str(msg.get("role") or "")
+    if role == "delegate":
+        return _render_delegate_card_html(msg)
+    content = str(msg.get("content") or "")
+    cls = "delfin-chat-system" if role == "system" else "delfin-chat-tool"
+    return (f'<div class="delfin-chat-msg {cls}">'
+            f'{_html.escape(content)}</div>')
+
+
+def _delegate_stop(state: dict, sa_id: str, workspace: str) -> str:
+    """Stop one running delegate, through the same path as the panel.
+
+    ``background_view.cancel(workspace, "agents", sa_id)`` is what the
+    Background panel's × runs; the card's Stop runs it unchanged, and
+    marks the card stopped so no refresh resurrects it as running.
+    """
+    from delfin.agent import background_view as _bgv
+    result = _bgv.cancel(workspace, "agents", str(sa_id or ""))
+    msgs = state.setdefault("chat_messages", [])
+    for m in msgs:
+        if (isinstance(m, dict) and m.get("role") == "delegate"
+                and str(m.get("sa_id") or "") == str(sa_id or "")):
+            if _delegate_state_for(m.get("status")) == "running":
+                m["status"] = "stopped"
+                _refresh_chat_html_state(state)
+            break
+    return result
+
+
+def _delegate_open(state: dict, sa_id: str, workspace: str) -> str:
+    """Open one delegate's own transcript, as the panel's ▸ does.
+
+    ``background_view.peek`` is the existing drill-in; its last lines
+    land in the chat as a system line, the way the panel shows them.
+    """
+    from delfin.agent import background_view as _bgv
+    return _bgv.peek(workspace, "agents", str(sa_id or ""))
+
+
 def _render_todo_pane_html(todos: list[dict]) -> str:
     """Render the TodoWrite plan as a persistent sidebar HTML block.
 
@@ -7481,7 +8111,14 @@ def create_tab(ctx):
 
     # Detect which providers are actually usable
     _available_providers: list[tuple[str, str]] = []
-    if _cli_available or _provider_key("ANTHROPIC_API_KEY"):
+    # A CLI program counts only when it runs DELFIN's command line; an
+    # older one answers "unknown option" (model_setup.cli_program_problem,
+    # from its files: building the tab starts no program).
+    _cli_problem = ""
+    if not _provider_key("ANTHROPIC_API_KEY") and _cli_available:
+        from delfin.agent.model_setup import cli_program_problem as _cli_prog_problem
+        _cli_problem = _cli_prog_problem(run_help=False)
+    if (_cli_available and not _cli_problem) or _provider_key("ANTHROPIC_API_KEY"):
         _available_providers.append(("Anthropic", "claude"))
     if _codex_cli_available or _provider_key("OPENAI_API_KEY"):
         _available_providers.append(("OpenAI", "openai"))
@@ -7519,9 +8156,18 @@ def create_tab(ctx):
                     _available_providers.append(("Ollama (local)", "ollama"))
         except Exception:
             pass
-    # Fallback: always show at least the Anthropic provider (will error with helpful message)
+    # Nothing connected: the empty chat shows how to connect a model
+    # (_empty_chat_html) and the selector keeps one entry. In the chat, not
+    # a row of its own: above the chat it pushed the input row below the
+    # fold at 1366x768.
+    _no_model_html = ""
     if not _available_providers:
+        from delfin.agent.model_setup import no_model_card_html
+        _no_model_html = no_model_card_html(_cli_problem)
         _available_providers.append(("Anthropic", "claude"))
+
+    def _empty_chat_html():
+        return _no_model_html or "<i>Start a conversation...</i>"
 
     # -- state -------------------------------------------------------------
     state = {
@@ -7741,7 +8387,8 @@ def create_tab(ctx):
                 key = _provider_key("KIT_TOOLBOX_API_KEY")
                 if not key:
                     return None
-                url = "https://ki-toolbox.scc.kit.edu/api/v1/models"
+                from delfin.agent.model_capabilities import _KIT_BASE_URL as _kit_base
+                url = _kit_base + "/models"
                 import urllib.request
                 req = urllib.request.Request(
                     url, headers={"Authorization": f"Bearer {key}"}
@@ -8040,7 +8687,7 @@ def create_tab(ctx):
     stop_btn = widgets.Button(
         description="Stop",
         button_style="",
-        layout=widgets.Layout(width="80px"),
+        layout=widgets.Layout(width="auto", flex="0 0 auto"),
     )
     stop_btn.disabled = True
 
@@ -8367,9 +9014,11 @@ def create_tab(ctx):
         layout=widgets.Layout(width="90px"))
     auto_box = widgets.HBox([loop_panel_html, auto_stop_btn],
                             layout=widgets.Layout(display="none"))
+    # Model, effort and permission live in the composer as chips (one
+    # place for what shapes the next message); the header keeps the mode,
+    # the provider, auto, stop and the git and report groups.
     _controls_hbox = widgets.HBox(
-        [mode_dropdown, provider_dropdown, model_dropdown,
-         effort_dropdown, perm_dropdown, auto_toggle_btn, stop_btn,
+        [mode_dropdown, provider_dropdown, auto_toggle_btn, stop_btn,
          git_group, bug_group, model_refresh_btn],
         layout=widgets.Layout(flex_flow="row wrap"),
     )
@@ -8479,7 +9128,7 @@ def create_tab(ctx):
     question_hint_html = widgets.HTML(value="")
     question_buttons_box = widgets.HBox(
         [],
-        layout=widgets.Layout(gap="4px", flex_wrap="wrap"),
+        layout=widgets.Layout(gap="4px", flex_flow="row wrap"),
     )
     question_row = widgets.HBox(
         [question_hint_html, question_buttons_box],
@@ -8693,8 +9342,7 @@ def create_tab(ctx):
     kit_mode_quick_btn = widgets.Button(
         description="Plan",
         tooltip="Cycle KIT mode (next: Default)",
-        layout=widgets.Layout(width="80px", height="80px",
-                              margin="0 0 0 4px", display="none"),
+        layout=widgets.Layout(width="auto", height="28px", display="none"),
     )
 
     def _refresh_kit_mode_chip():
@@ -8934,24 +9582,14 @@ def create_tab(ctx):
 
     def _settle_isolation_posture(engine):
         """The CLI's start check (isolation_posture.apply_at_start) for
-        this tab: bypass without isolation is asked in the approval panel,
-        on a thread of its own, and the session runs in default until the
-        answer. Called after an engine is built and after a live switch of
-        its mode; a mode other than bypass, or an isolated host, is left
+        this tab: bypass without isolation runs in default, with a note.
+        Called after an engine is built and after a live switch of its
+        mode; a mode other than bypass, or an isolated host, is left
         alone. Never raises."""
         try:
             from delfin.agent.isolation_posture import apply_at_start
-            broker = _ensure_kit_broker()
-
-            def _ask_in_panel(question):
-                return broker.callback(
-                    "bypassPermissions", {"isolation": "none"},
-                    "[NO ISOLATION]\n" + question)
-
-            ask = _ask_in_panel if broker is not None else None
             notes = apply_at_start(
-                engine, can_ask=ask is not None, ask=ask, background=True,
-                on_confirmed=_refresh_kit_mode_chip)
+                engine, can_ask=_ensure_kit_broker() is not None)
             for note in notes:
                 _append_system_message(note)
             if notes:
@@ -8985,7 +9623,7 @@ def create_tab(ctx):
 
     # Chat display
     chat_html = widgets.HTML(
-        value=_chat_value(_CHAT_OPEN + '<i>Start a conversation...</i></div>'),
+        value=_chat_value(_CHAT_OPEN + _empty_chat_html() + '</div>'),
         layout=widgets.Layout(min_height="200px"),
     )
     chat_html.add_class("delfin-agent-chat-host")
@@ -9138,7 +9776,7 @@ def create_tab(ctx):
     # ----- Slash-command palette (discoverable command browser) -----
     palette_toggle_btn = widgets.Button(
         description="/", icon="terminal",
-        layout=widgets.Layout(width="40px", height="32px"),
+        layout=widgets.Layout(width="auto", height="28px"),
         tooltip="Show / browse slash commands",
     )
     palette_search = widgets.Text(
@@ -9229,12 +9867,11 @@ def create_tab(ctx):
     # One calm line. The KIT write-access tip it used to carry stays in the
     # write-access line of the Details fold (kit_dirs_status), where it is
     # read when wanted rather than on every empty input.
-    _INPUT_HINT = "Message DELFIN\u2026  (Enter to send, Shift+Enter for a new line)"
+    _INPUT_HINT = ("Ask anything, / for commands  "
+                   "(Enter sends, Shift+Enter starts a new line)")
     input_textarea = widgets.Textarea(
         placeholder=_INPUT_HINT,
-        layout=widgets.Layout(
-            flex="1 1 auto", width="auto", height="80px",
-        ),
+        layout=widgets.Layout(width="100%", height="56px"),
     )
     input_textarea.add_class("delfin-agent-input")
 
@@ -9255,19 +9892,41 @@ def create_tab(ctx):
     send_btn = widgets.Button(
         description="Send",
         button_style="primary",
-        layout=widgets.Layout(width="80px", height="80px"),
+        tooltip="Send (Enter)",
+        layout=widgets.Layout(width="34px", height="34px"),
     )
-    # image_upload is created later (line ~2240) but inserted here so
-    # the whole row [📎 | textarea | Send | quick-mode] is one strip.
-    input_row = widgets.HBox(
-        [input_textarea, send_btn, kit_mode_quick_btn],
-        layout=widgets.Layout(
-            margin="0 0 0 4px",
-            flex="1 1 auto", width="auto",
-            align_items="flex-start",
-        ),
-    )
-    input_row.add_class("delfin-agent-send-row")
+    send_btn.add_class("delfin-agent-send")
+    # Send alone in the row the page scripts look in: they find it as the
+    # row's first button (Enter, follow-to-bottom, the grow reset).
+    # Enter's request carries the text that was in the box (the page script
+    # __delfinAgentSubmit): the kernel's copy of the box lags behind
+    # ipywidgets' throttled value updates, and Send read "g" of a quickly
+    # typed "gamma three". A hidden field per session, found from the box.
+    submit_channel = widgets.Text(value="", layout=widgets.Layout(display="none"))
+    submit_channel.add_class("delfin-agent-submit")
+    _submit_seen = {"seq": 0}
+
+    def _on_submit_channel(change):
+        try:
+            import json as _sjson
+            data = _sjson.loads(change.get("new") or "{}")
+        except (TypeError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        seq = int(data.get("seq") or 0)
+        if seq <= _submit_seen["seq"]:
+            return
+        _submit_seen["seq"] = seq
+        text = str(data.get("text") or "")
+        if not text.strip():
+            return
+        input_textarea.value = text
+        _on_send(None)
+
+    submit_channel.observe(_on_submit_channel, names="value")
+    send_row = widgets.HBox([send_btn, submit_channel])
+    send_row.add_class("delfin-agent-send-row")
 
     # What could come next, under the box you type in. Drawn from the
     # tasks the agent itself left open -- not a second call to the model
@@ -10250,6 +10909,7 @@ def create_tab(ctx):
             state["_ask_user_args"] = dict(args or {})
             state["_ask_user_deadline"] = time.monotonic() + 300
         from html import escape as _esc
+        from delfin.agent.approval_answers import answer_hint as _answer_hint
         header_html = (f"<span style='background:#0a84ff;color:white;"
                        f"padding:2px 6px;border-radius:3px;font-size:11px;"
                        f"margin-right:6px;'>{_esc(header)}</span>"
@@ -10258,7 +10918,7 @@ def create_tab(ctx):
             f"<div style='font-size:14px;'>{header_html}"
             f"<b>{_esc(question)}</b></div>"
             "<div style='color:#888;font-size:11px;margin-top:2px;'>"
-            "Pick an option, or type your own answer in the chat.</div>"
+            + _esc(_answer_hint(len(options), multi)) + "</div>"
         )
         chosen: set[str] = set()
         button_widgets: list = []
@@ -10389,7 +11049,8 @@ def create_tab(ctx):
             ev.wait(timeout=300)
         _close_ask_user_modal(ev)
         if not result["answers"]:
-            return {"answers": [], "timed_out": True}
+            return {"answers": [], "timed_out": True,
+                    "unanswered": "no answer (timed out after 300 s)"}
         return result
 
     @_serialized_gate(state)
@@ -10427,7 +11088,13 @@ def create_tab(ctx):
         result = state.get("_ask_user_result")
         if ev is None or result is None or ev.is_set() or not text:
             return False
-        from delfin.agent.approval_answers import typed_answer
+        from delfin.agent.approval_answers import range_problem, typed_answer
+        problem = range_problem(text, state.get("_ask_user_args") or {})
+        if problem:
+            # Taken by the question (not sent to the model), refused with
+            # the real range.
+            _append_system_message(problem)
+            return True
         answer = typed_answer(text, state.get("_ask_user_args") or {})
         if not answer.get("answers"):
             return False
@@ -10508,8 +11175,9 @@ def create_tab(ctx):
     # and the agent picks them up via read_file / notebook_read.
     image_upload = widgets.FileUpload(
         multiple=True,
-        description="📎 Files",
-        layout=widgets.Layout(width="90px", height="80px"),
+        description="Files",
+        tooltip="Attach files (they land in the workspace's .delfin/uploads)",
+        layout=widgets.Layout(width="auto", height="28px"),
     )
     image_upload.add_class("delfin-agent-upload")
     state["_pending_uploads"] = []
@@ -10920,16 +11588,38 @@ def create_tab(ctx):
     # chat by the height of the list, and closing it moved everything back.
     _palette_pop = widgets.VBox([palette_search, palette_select])
     _palette_pop.add_class("delfin-agent-palette-pop")
-    _input_area = widgets.VBox(
-        [_palette_pop,
-         widgets.HBox(
-             [palette_toggle_btn, image_upload, input_row],
-             layout=widgets.Layout(
-                 width="100%",
-                 align_items="flex-start",
-                 margin="6px 0 0 0",
-             ),
-         )])
+    # The phone pairing panel (/pair, or the Phone button): the one-time
+    # invitation shown here, never in the chat transcript or the saved
+    # session; once the phone connected, a field for the code it got.
+    messenger_pair_html = widgets.HTML(value="", layout=widgets.Layout(display="none"))
+    messenger_code_input = widgets.Text(
+        placeholder="6-digit code from your phone",
+        layout=widgets.Layout(width="200px"))
+    messenger_code_btn = widgets.Button(description="Confirm", button_style="primary",
+                                        layout=widgets.Layout(width="auto"))
+    messenger_cancel_btn = widgets.Button(description="Cancel", layout=widgets.Layout(width="auto"))
+    messenger_code_row = widgets.HBox(
+        [messenger_code_input, messenger_code_btn, messenger_cancel_btn],
+        layout=widgets.Layout(display="none", gap="6px", margin="2px 0 4px 0"))
+    # The composer is one rounded box: the message on top; below it the
+    # commands and attach buttons, the chips that shape the next message
+    # (permission, model, effort), the KIT quick mode, and the round Send.
+    # The chips are the header's own dropdowns, moved -- every handler
+    # stays bound to the same widget.
+    for _chip, _kind in ((perm_dropdown, "perm"), (model_dropdown, "model"),
+                         (effort_dropdown, "effort")):
+        _chip.add_class("delfin-agent-chip")
+        _chip.add_class(f"delfin-agent-chip-{_kind}")
+        _chip.layout.width = "auto"
+    _composer_gap = widgets.HTML("")
+    _composer_gap.add_class("delfin-agent-composer-gap")
+    composer_bar = widgets.HBox(
+        [palette_toggle_btn, image_upload, perm_dropdown, model_dropdown,
+         effort_dropdown, _composer_gap, kit_mode_quick_btn, send_row])
+    composer_bar.add_class("delfin-agent-composer-bar")
+    composer = widgets.VBox([input_textarea, composer_bar])
+    composer.add_class("delfin-agent-composer")
+    _input_area = widgets.VBox([_palette_pop, messenger_pair_html, messenger_code_row, composer])
     _input_area.add_class("delfin-agent-input-area")
     # The terminal panel beside the chat (delfin-voila --agent-terminal
     # only): the one program the launcher was given. The page script
@@ -10970,6 +11660,34 @@ def create_tab(ctx):
         _chat_area = widgets.HBox([chat_frame, agent_term_panel])
         _chat_area.add_class("delfin-agent-chat-row")
         ctx.add_init_js(_agent_term.init_js())
+    # Connect a phone: the same as typing /pair; the code goes the same way.
+    # An icon like the report beetle beside it: with a word the row did not
+    # fit 1366 px and the beetle wrapped onto a line of its own. The tooltip
+    # is the button's title, its accessible name.
+    messenger_phone_btn = widgets.Button(
+        description="", icon="mobile",
+        tooltip=("Connect your phone (SimpleX): scan the code shown above the input, "
+                 "then type the 6-digit code your phone gets."),
+        layout=widgets.Layout(width="44px", flex="0 0 auto"))
+
+    def _messenger_send_code(_b=None):
+        code = "".join(ch for ch in str(messenger_code_input.value or "") if ch.isdigit())
+        if len(code) != 6:
+            _append_system_message("The code has 6 digits; it is in the first message on your phone.")
+            return
+        messenger_code_input.value = ""
+        _handle_slash_command("/pair " + code)
+
+    messenger_phone_btn.on_click(lambda _b: _handle_slash_command("/pair"))
+    messenger_code_btn.on_click(_messenger_send_code)
+    messenger_cancel_btn.on_click(lambda _b: _handle_slash_command("/pair cancel"))
+    # Only where a phone can be paired from: a messenger bridge runs here or
+    # one is set up (stopped for now). On a host without one (an HPC login
+    # node) the button led to 30 s of waiting and "No answer"; /pair typed
+    # there says why at once (delfin.messenger.activation.UNAVAILABLE).
+    from delfin.messenger import activation as _messenger_activation
+    if _messenger_activation.messenger_here():
+        git_group.children = tuple(git_group.children) + (messenger_phone_btn,)
     agent_content = widgets.VBox(
         [css_widget, _enter_js_output, controls_row, search_row,
          cycle_inspector_html, inspector_actions_row,
@@ -13014,6 +13732,11 @@ def create_tab(ctx):
                 f'<div class="delfin-chat-msg delfin-chat-tool">'
                 f'{msg["content"]}</div>'
             )
+        elif role == "delegate":
+            # One delegated sub-agent as a card. The card is a chat bubble
+            # of the same class every message renders as; the dict is the
+            # pane's own entry, so the Details-fold log stays untouched.
+            return _render_delegate_card_html(msg)
         elif role == "system":
             if isinstance(msg.get("shell"), dict):
                 # `!` output: preformatted and escaped, never markdown.
@@ -13134,7 +13857,7 @@ def create_tab(ctx):
         if not msgs:
             chat_html.value = _chat_value(
                 _CHAT_OPEN
-                + "<i>Start a conversation...</i>"
+                + _empty_chat_html()
                 + _SCROLL_RESET_TAG + "</div>"
             )
             _html_cache["prefix"] = ""
@@ -13145,7 +13868,10 @@ def create_tab(ctx):
 
         # Fast path: during streaming, only re-render the last message.
         # The prefix (all messages before the last) is cached.
-        if streaming and n > 1 and _html_cache["prefix_count"] == n - 1:
+        # Not for a turn's last message: it carries the fold, which spans
+        # the messages before it, so the cached prefix is stale.
+        if (streaming and n > 1 and _html_cache["prefix_count"] == n - 1
+                and not msgs[-1].get("turn_fold")):
             last_html = _render_single_msg(msgs[-1])
             chat_html.value = _chat_value(
                 _CHAT_OPEN
@@ -13156,10 +13882,13 @@ def create_tab(ctx):
             )
             return
 
-        # Full rebuild: render all messages and cache the prefix
-        parts = []
-        for msg in msgs:
-            parts.append(_render_single_msg(msg))
+        # Full rebuild: render all messages and cache the prefix.
+        # A message that carries a ``turn_fold`` meta ends a turn: the
+        # tool and thinking steps between the turn's user message and it
+        # fold behind one summary line (see _render_turn_fold_line).
+        # While a turn runs no message carries the meta, so the steps
+        # render live exactly as before.
+        parts = _render_transcript(msgs, _render_single_msg)
 
         # Cache everything except the last message
         if n > 1:
@@ -13902,17 +14631,25 @@ def create_tab(ctx):
         engine = _ensure_engine()
         sid = str(getattr(engine, "session_id", "") or state.get("active_session_id") or "")
         if not sid:
-            return "Zuerst eine Sitzung starten, dann /sync eingeben."
+            return "Start a session first, then type /sync."
         adapters = state.setdefault("_messenger_adapters", {})
-        if args.strip().lower() in {"off", "status"}:
+        action, name = activation.parse_sync(args)
+        if action in {"off", "status", "usage"}:
             return activation.configure(sid, args)
-        if args.strip().lower() not in {"", "on"}:
-            return activation.configure(sid, args)
+        if name:
+            # /sync name NAME: the session's title too -- what the save
+            # writes as title and the messenger adapter answers as the name.
+            state.setdefault("_messenger_titles", {})[sid] = name
+            try:
+                _auto_save_session()
+            except Exception:
+                pass
+        # "", "on" and "/sync NAME" all switch on, with the live adapter.
         if sid not in adapters:
             def answer_detected_question(text):
                 if input_textarea.value.strip() or not state.get("_pending_question"):
                     return False
-                input_textarea.value = "Antwort auf deine Rückfrage: " + text
+                input_textarea.value = "Answer to your question: " + text
                 _on_send(None)
                 return not state.get("_pending_question")
             def send(text):
@@ -13936,7 +14673,7 @@ def create_tab(ctx):
         cmd = text.lower().strip()
         if cmd == "/sync" or cmd.startswith("/sync "):
             if state.get("_on_its_own"):
-                _append_system_message("SimpleX kann nur von dir in dieser Sitzung aktiviert werden.")
+                _append_system_message("Only you can turn SimpleX on for this session.")
             else:
                 _append_system_message(_messenger_command(text[5:].strip()))
             return True
@@ -14003,7 +14740,6 @@ def create_tab(ctx):
                     "  Enter            \u2014 Send message\n"
                     "  Shift+Enter      \u2014 New line\n"
                     "  Escape           \u2014 Stop generation\n"
-                    "  Ctrl+L           \u2014 Clear chat\n"
                     "  Ctrl+K           \u2014 Toggle search\n"
                     "  Shift+Tab        \u2014 Cycle permission mode")
             _append_system_message(_help_text)
@@ -15220,7 +15956,7 @@ def create_tab(ctx):
                         "Switch to /mode plan and ask the agent to draft a plan."
                     )
                     return True
-                # Same shared logic as the 'Plan akzeptieren' button so the
+                # Same shared logic as the 'Accept plan & execute' button so the
                 # two paths are functionally identical (persist + perm flip).
                 for _m in _finalize_plan_decision(
                     state,
@@ -15639,6 +16375,36 @@ def create_tab(ctx):
                 _append_system_message("\n".join(lines))
             return True
 
+        if cmd == "/pair" or cmd.startswith("/pair "):
+            # Phone pairing (delfin.messenger.pairing). The invitation and
+            # the code step go to the pairing panel above the input (not the
+            # chat, not the saved session); the rest to the chat.
+            if state.get("_on_its_own"):
+                _append_system_message("Only you pair a phone, in a session of your own.")
+                return True
+            from delfin.messenger import pairing as _pairing
+            from delfin.messenger.dashboard import PairPanel as _PairPanel
+            _panel = state.get("_messenger_pair_panel")
+            if _panel is None:
+                def _render(value):
+                    messenger_pair_html.value = value
+                    messenger_pair_html.layout.display = "" if value else "none"
+
+                def _stage(stage):
+                    # The code field only while the gateway waits for it.
+                    messenger_code_row.layout.display = "" if stage == "code" else "none"
+                    if stage != "code":
+                        messenger_code_input.value = ""
+                _panel = state["_messenger_pair_panel"] = _PairPanel(
+                    render=_render, say=_append_system_message, on_stage=_stage)
+            if text[5:].strip().lower() == "cancel":
+                _panel.clear()
+            _sid = str(getattr(state.get("engine"), "session_id", "")
+                       or state.get("active_session_id") or "")
+            _append_system_message(_pairing.session_command(
+                text[5:].strip(), requester="dashboard:" + _sid if _sid else "",
+                show=_panel.show))
+            return True
         if cmd == "/plans" or cmd.startswith("/plans "):
             from delfin.agent.memory_store import (
                 list_plans, get_plan, delete_plan,
@@ -16022,6 +16788,24 @@ def create_tab(ctx):
                 "\nType `/agents stats` for lifetime cost/duration aggregates."
             )
             _append_system_message("\n".join(lines))
+            return True
+
+        # The delegate cards in the chat speak through the input line: a
+        # click on their Open / Stop lands here as a command, and runs
+        # the same paths the view chips and the Background panel use.
+        if cmd.startswith("/delegate-open ") or cmd.startswith("/delegate-stop "):
+            _verb, _sa = cmd.split(" ", 1)
+            _sa = _sa.strip()
+            if not _sa:
+                return True
+            if _verb == "/delegate-stop":
+                _result = _delegate_stop(state, _sa, _agent_workspace_path())
+                _append_system_message(f"⏹ {_result}" if _result else "⏹")
+                _refresh_subagent_panel()
+            else:
+                state["_view_agent"] = _sa
+                _refresh_chat_html()
+                _refresh_agent_view_chips()
             return True
 
         if cmd == "/skills" or cmd.startswith("/skills "):
@@ -21220,18 +22004,11 @@ def create_tab(ctx):
                             f'<span class="tool-name">$</span> {_e(cmd)}'
                         )
 
-                    elif tool_name == "Agent":
+                    elif tool_name in _DELEGATE_TOOLS:
+                        _on_tool_call_card(state, tool_name, parsed)
                         desc = parsed.get("description", "")
                         prompt = parsed.get("prompt", "")[:80]
                         sub_type = parsed.get("subagent_type", "general-purpose")
-                        # Append to subagent panel state and refresh widget.
-                        state["subagent_calls"].append({
-                            "subagent_type": sub_type,
-                            "description": desc,
-                            "prompt": parsed.get("prompt", ""),
-                            "status": "running",
-                            "output": "",
-                        })
                         _pane_html = _render_subagent_pane_html(state["subagent_calls"])
                         if _pane_html:
                             subagent_pane_html.value = _pane_html
@@ -21446,12 +22223,12 @@ def create_tab(ctx):
                         return
                     tool_name = _bare
                     # Subagent panel: mark the next running call as done.
-                    if tool_name == "Agent":
-                        for entry in state["subagent_calls"]:
-                            if entry.get("status") == "running":
-                                entry["status"] = "done"
-                                entry["output"] = tool_output
-                                break
+                    if tool_name == "subagent_result":
+                        _on_tool_result_card(state, tool_name, tool_output)
+                    if tool_name in _DELEGATE_TOOLS:
+                        # Mark the pane entry and the card of THAT delegate
+                        # (the shared path updates both, keyed by sa_id).
+                        _on_tool_result_card(state, tool_name, tool_output)
                         _pane_html = _render_subagent_pane_html(state["subagent_calls"])
                         if _pane_html:
                             subagent_pane_html.value = _pane_html
@@ -22067,11 +22844,12 @@ def create_tab(ctx):
                         _rj = len(_bj.running_jobs_for_workspace(_ws))
                         _outcome = ("stopped" if getattr(
                             engine, "_stop_requested", False) else "ok")
+                        _dur = (time.monotonic()
+                                - float(state.get(
+                                    "_turn_started_monotonic")
+                                or time.monotonic()))
                         _summary_line = format_turn_summary(
-                            duration_s=(time.monotonic()
-                                        - float(state.get(
-                                            "_turn_started_monotonic")
-                                        or time.monotonic())),
+                            duration_s=_dur,
                             ended_at=_datetime.datetime.now().astimezone(),
                             outcome=_outcome,
                             running_jobs=_rj,
@@ -22082,12 +22860,20 @@ def create_tab(ctx):
                                 == "assistant"):
                             _meta = dict(state["chat_messages"][-1])
                             _meta["turn_summary"] = _summary_line
+                            _meta["turn_fold"] = {"duration_s": _dur,
+                                                  "outcome": _outcome}
                             state["chat_messages"][-1] = _meta
                         else:
                             _meta = {"role": "assistant", "content": "",
                                      "role_label": role_label,
-                                     "turn_summary": _summary_line}
+                                     "turn_summary": _summary_line,
+                                     "turn_fold": {"duration_s": _dur,
+                                                   "outcome": _outcome}}
                             state["chat_messages"].append(_meta)
+                        # The fold spans the turn's earlier messages: draw
+                        # it now, not on the next event (a finished turn
+                        # has none).
+                        _refresh_chat_html()
                     except Exception:
                         pass
 
@@ -22362,83 +23148,37 @@ def create_tab(ctx):
                             )
                         except Exception:
                             _vflags = []
-                        # Code-claim citation check: cited paths that
-                        # don't exist force a
-                        # correction turn via the same machinery; existing-
-                        # but-unread paths only soft-warn (injected context
-                        # legitimately surfaces paths).
-                        _cflags = []
+                        # Cited-but-unread paths: a SOFT hint, kept
+                        # here. The hard case (a path that does not
+                        # exist) moved into the engine's grounding
+                        # guard, so every surface forces the one
+                        # correction turn; this hint forces nothing and
+                        # would otherwise have been lost with that
+                        # block. It stays quiet unless nothing else is
+                        # going on.
                         try:
-                            _cflags = _vg.scan_for_ungrounded_code_claims(
-                                "".join(chunks),
-                                repo_root=getattr(engine, "repo_dir", None),
-                                observed_files=getattr(
-                                    engine, "_last_observed_files", None),
-                                named_in=_session_user_text(),
-                            )
-                        except Exception:
-                            _cflags = []
-                        _c_hard = [c for c in _cflags
-                                   if c.kind == "nonexistent"]
-                        _c_soft = [c for c in _cflags
-                                   if c.kind != "nonexistent"]
-                        # One compact line instead of per-flag chat spam;
-                        # soft (unread-path) hints stay quiet unless there
-                        # is nothing else going on.
-                        if _c_soft and not _c_hard:
-                            _refs = ", ".join(
-                                f.path for f in _c_soft[:3])
-                            _more = (f" (+{len(_c_soft) - 3})"
-                                     if len(_c_soft) > 3 else "")
-                            _append_system_message(
-                                f"🔎 Note: cited but not read this turn: "
-                                f"{_refs}{_more}")
-                        if _c_hard and not _vflags:
-                            _refs = ", ".join(
-                                f.path for f in _c_hard[:3])
-                            _append_system_message(
-                                f"🔎 Automatic check: {len(_c_hard)} cited "
-                                f"path(s) not found as written ({_refs}) — "
-                                f"asking the agent to verify them …")
-                            _cfeedback = (
-                                "[Verify] " + _vg.code_claim_feedback(
-                                    _c_hard,
-                                    observed=getattr(
-                                        engine, "_last_observed_files", None))
-                            )
-                            engine.messages.append(
-                                {"role": "user", "content": _cfeedback, "_harness": True}
-                            )
-                            chunks.clear()
-                            thinking_chunks.clear()
-                            engine.stream_response(
-                                user_message=_cfeedback,
-                                on_token=_on_token,
-                                on_tool_use=_on_tool_use,
-                                on_tool_result=_on_tool_result,
-                                on_permission_denied=_on_permission_denied,
-                                on_thinking=_on_thinking,
-                                thinking_budget=_budget,
-                                memory_context=_memory,
-                            )
-                            _flush_held_previews()   # as after the first call
-                            if chunks:
-                                _update_last_assistant(
-                                    "".join(chunks), role_label,
-                                    finalize=True,
-                                )
-                                _append_system_message(
-                                    _correction_verdict_note(
-                                        _vg.scan_for_ungrounded_code_claims,
+                            _c_soft = [
+                                c for c in (
+                                    _vg.scan_for_ungrounded_code_claims(
                                         "".join(chunks),
-                                        keep=lambda f: f.kind == "nonexistent",
                                         repo_root=getattr(
                                             engine, "repo_dir", None),
                                         observed_files=getattr(
                                             engine, "_last_observed_files",
                                             None),
                                         named_in=_session_user_text(),
-                                    ))
+                                    ) or ())
+                                if c.kind != "nonexistent"]
+                        except Exception:
+                            _c_soft = []
+                        if _c_soft and not _vflags:
+                            _refs = ", ".join(
+                                f.path for f in _c_soft[:3])
+                            _more = (f" (+{len(_c_soft) - 3})"
+                                     if len(_c_soft) > 3 else "")
+                            _append_system_message(
+                                f"\U0001F50E Note: cited but not read this "
+                                f"turn: {_refs}{_more}")
                         if _vflags:
                             _kws = ", ".join(
                                 getattr(f, "keyword", str(f))
@@ -22501,7 +23241,7 @@ def create_tab(ctx):
                             _append_system_message(
                                 f"🔎 Verifying {len(_qflags)} "
                                 f"unsourced numeric claim(s) …")
-                        if _qflags and not _vflags and not _c_hard:
+                        if _qflags and not _vflags:
                             _qgrounded = any(
                                 re.search(r"(?i)search|read|grep|fetch|docs",
                                           _t or "")
@@ -23163,6 +23903,24 @@ def create_tab(ctx):
                     )
                 else:
                     _append_system_message(f"Error: {error_text}")
+                # The turn ended in an error: its steps fold too, but
+                # stay unfolded and say so ("Stopped after Ns"), the
+                # same wording the summary line uses.
+                try:
+                    _emsgs = state["chat_messages"]
+                    if _emsgs:
+                        _emsgs[-1] = dict(_emsgs[-1])
+                        _emsgs[-1]["turn_fold"] = {
+                            "duration_s": (
+                                time.monotonic()
+                                - float(state.get(
+                                    "_turn_started_monotonic")
+                                    or time.monotonic())),
+                            "outcome": "error",
+                        }
+                        _refresh_chat_html()
+                except Exception:
+                    pass
             finally:
                 # Restore the user's model after a routed turn so the
                 # dropdown stays the source of truth for the next send.
@@ -24384,6 +25142,32 @@ def create_tab(ctx):
 (function() {
     if (window.__delfinAgentKeys) return;
     window.__delfinAgentKeys = true;
+
+    /* Enter sends what is in the box NOW. Clicking Send right away read
+       the kernel's copy, which lags behind ipywidgets' throttled value
+       updates: fast typing or a paste then Enter sent "g" of "gamma three"
+       (measured 11.11.). The text goes with the request instead, through
+       the session's submit channel; the box is cleared at once so a late
+       value update cannot bring the old text back. */
+    window.__delfinAgentSubmit = window.__delfinAgentSubmit || function(ta) {
+        var root = ta && ta.closest ? (ta.closest('.delfin-agent-root') || document) : document;
+        var ch = root.querySelector('.delfin-agent-submit input');
+        if (!ch) {
+            var sb = window.__delfinQ('.delfin-agent-send-row button');
+            if (sb) sb.click();
+            return;
+        }
+        window.__delfinAgentSubmitSeq = (window.__delfinAgentSubmitSeq || 0) + 1;
+        var text = ta.value;
+        var set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        set.call(ch, JSON.stringify({seq: window.__delfinAgentSubmitSeq, text: text}));
+        ch.dispatchEvent(new Event('input', {bubbles: true}));
+        if (text.trim()) {
+            var tset = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+            tset.call(ta, '');
+            ta.dispatchEvent(new Event('input', {bubbles: true}));
+        }
+    };
     document.addEventListener('keydown', function(e) {
         if (!window.__delfinAgentOwnsKey(e)) return;
         /* Enter = Approve (if approval pending) or Send */
@@ -24402,8 +25186,7 @@ def create_tab(ctx):
                 if (container) {
                     e.preventDefault();
                     e.stopPropagation();
-                    var sendBtn = window.__delfinQ('.delfin-agent-send-row button');
-                    if (sendBtn) sendBtn.click();
+                    window.__delfinAgentSubmit(e.target);
                     return;
                 }
             }
@@ -24430,26 +25213,7 @@ def create_tab(ctx):
                 }
             }
         }
-        /* Ctrl+L = Clear chat */
-        if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
-            /* Only if focus is in the agent area */
-            var agentArea = window.__delfinQ('.delfin-agent-chat');
-            if (agentArea) {
-                e.preventDefault();
-                /* Trigger /clear by setting textarea and clicking send */
-                var ta = window.__delfinQ('.delfin-agent-input textarea');
-                if (ta) {
-                    var nativeSet = Object.getOwnPropertyDescriptor(
-                        window.HTMLTextAreaElement.prototype, 'value').set;
-                    nativeSet.call(ta, '/clear');
-                    ta.dispatchEvent(new Event('input', {bubbles: true}));
-                    setTimeout(function() {
-                        var sendBtn = window.__delfinQ('.delfin-agent-send-row button');
-                        if (sendBtn) sendBtn.click();
-                    }, 50);
-                }
-            }
-        }
+        /* Ctrl+L stays the browser's (see the other key handler). */
         /* Ctrl+K = Toggle search */
         if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
             var agentArea = window.__delfinQ('.delfin-agent-chat');
@@ -24508,6 +25272,52 @@ def create_tab(ctx):
         );
         if (refresh) refresh.click();
     }, true);
+})();
+"""
+
+    # Delegate cards in the chat: their Open / Stop buttons are plain HTML
+    # inside the transcript. One delegated click listener routes the card's
+    # data attributes through the input line (the same bridge the Ctrl+L
+    # /clear shortcut uses), where _handle_slash_command runs the same
+    # handlers the view chips (Open) and the Background panel (Stop) run.
+    _delegate_card_init_js = """
+(function() {
+  if (window.__delfinDelegateCards) return;
+  window.__delfinDelegateCards = true;
+  // The press decides, not the click: the composer gives up its focus on
+  // mousedown and shrinks, the transcript moves under the pointer, and the
+  // mouseup lands on the card's title -- the click event then targets the
+  // card, not the button (measured in the real page). A keyboard
+  // activation has no press and arrives as a click with detail 0.
+  function act(e) {
+      var card = e.target.closest ? e.target.closest('.delfin-delegate-card') : null;
+      if (!card) return;
+      var sa = null;
+      var open = e.target.closest('[data-delfin-delegate-open]');
+      if (open) sa = open.getAttribute('data-delfin-delegate-open');
+      var stop = e.target.closest('[data-delfin-delegate-stop]');
+      if (!sa && stop) sa = stop.getAttribute('data-delfin-delegate-stop');
+      if (!sa) return;
+      e.preventDefault();
+      e.stopPropagation();
+      var verb = open ? '/delegate-open ' : '/delegate-stop ';
+      var ta = window.__delfinQ('.delfin-agent-input textarea');
+      if (!ta) return;
+      var nativeSet = Object.getOwnPropertyDescriptor(
+          window.HTMLTextAreaElement.prototype, 'value').set;
+      nativeSet.call(ta, verb + sa);
+      ta.dispatchEvent(new Event('input', {bubbles: true}));
+      setTimeout(function() {
+          var sendBtn = window.__delfinQ('.delfin-agent-send-row button');
+          if (sendBtn) sendBtn.click();
+      }, 50);
+  }
+  document.addEventListener('mousedown', function(e) {
+      if (e.button === 0) act(e);
+  }, true);
+  document.addEventListener('click', function(e) {
+      if (e.detail === 0) act(e);
+  }, true);
 })();
 """
 
@@ -24687,6 +25497,7 @@ def create_tab(ctx):
         .replace("__DELFIN_MERMAID_SRI__", _MERMAID_SRI))
     ctx.add_init_js(_mermaid_init_js)
     ctx.add_init_js(_enter_key_init_js)
+    ctx.add_init_js(_delegate_card_init_js)
 
     def _shutdown_tab(save: bool = True) -> None:
         """Close this session: save it, end its turn, stop its timers and
@@ -24774,6 +25585,79 @@ def create_tab(ctx):
         except Exception:
             pass
 
+    # -- hosted in the agent service (delfin/dashboard/hosted_sessions.py) --
+    # Another dashboard, the terminal and the phone reach this session
+    # through the agent service; what they send runs through the tab's own
+    # callbacks, as if done here. Nothing below changes how the tab works.
+    _host_send_lock = threading.Lock()
+
+    def _host_send(text: str) -> bool:
+        """A line from another window, run as if typed here -- slash
+        commands, queueing and steering included. What the person has in
+        the box stays there."""
+        with _host_send_lock:
+            draft = input_textarea.value
+            input_textarea.value = text
+            try:
+                _on_send(None)
+            finally:
+                if draft.strip() and not input_textarea.value.strip():
+                    input_textarea.value = draft
+        return True
+
+    def _host_answer_detected(text: str) -> bool:
+        if not state.get("_pending_question"):
+            return False
+        _host_send("Answer to your question: " + text)
+        return not state.get("_pending_question")
+
+    _HOST_APPROVAL = {"plan": "plan", "ask_all": "default", "repo_free": "acceptEdits",
+                      "all_free": "bypassPermissions"}
+
+    def _host_set_permission(profile: str, confirmed: bool) -> str:
+        """The permission selector, moved from another window. Bypass needs
+        the window's own confirmation (its second step), as here."""
+        if profile not in set(_dropdown_values(perm_dropdown.options)):
+            return str(perm_dropdown.value)
+        if profile == "all_free" and not confirmed:
+            return str(perm_dropdown.value)
+        if perm_dropdown.value != profile:
+            perm_dropdown.value = profile
+        return str(perm_dropdown.value)
+
+    def _host_choices(what: str) -> dict:
+        dd = {"model": model_dropdown, "effort": effort_dropdown,
+              "mode": mode_dropdown}.get(str(what or ""))
+        if dd is None:
+            return {"current": "", "choices": []}
+        return {"current": str(dd.value or ""),
+                "choices": [{"value": v} for v in _dropdown_values(dd.options)]}
+
+    def _host_info() -> dict:
+        profile = str(state.get("_perm_profile") or perm_dropdown.value or "ask_all")
+        return {"provider": str(provider_dropdown.value or ""),
+                "model": str(model_dropdown.value or ""),
+                "effort": str(effort_dropdown.value or ""),
+                "mode": str(mode_dropdown.value or ""),
+                "approval": _HOST_APPROVAL.get(profile, "default")}
+
+    def _host_status() -> dict:
+        engine = state.get("engine")
+        try:
+            return dict(engine.get_status()) if engine is not None else {}
+        except Exception:
+            return {}
+
+    def _host_adapter() -> dict:
+        return {"state": state, "send": _host_send, "stop": lambda: _on_stop(None),
+                "answer": _answer_ask_from_chat,
+                "plan": lambda yes: _handle_slash_command(
+                    "/plan approve" if yes else "/plan reject"),
+                "approval": lambda yes: _on_approve(None) if yes else _on_deny(None),
+                "question": _host_answer_detected, "set_permission": _host_set_permission,
+                "choices": _host_choices, "info": _host_info, "chat_html": chat_html,
+                "status": _host_status, "input": input_textarea}
+
     # The kernel ending is the session ending, and nothing it started may
     # outlive it. The server ends an unkept kernel with its last window and
     # a kept one once it is no longer kept; this is what makes that the end
@@ -24786,6 +25670,10 @@ def create_tab(ctx):
 
     return tab_widget, {
         "state": state,
+        # The session list puts its Keep session switch into this row,
+        # right after the Stop button.
+        "control_row": _controls_hbox,
+        "stop_button": stop_btn,
         "shutdown": _shutdown_tab,
         "workspace": _agent_workspace_path,
         "load_session": _load_saved_session,
@@ -24802,6 +25690,18 @@ def create_tab(ctx):
         "refresh_chat": _refresh_chat_html,
         "chat_html": chat_html,
         "question_gate": _question_gate,
+        # Delegate cards in the parent's chat: thin accessors over the
+        # same state-pure helpers the tool-event paths call.
+        "emit_delegate_card": lambda call: _emit_delegate_card(state, call),
+        "on_tool_call": lambda tool_name, payload: _on_tool_call_card(
+            state, tool_name, payload),
+        "on_tool_result": lambda tool_name, payload: _on_tool_result_card(
+            state, tool_name, payload),
+        "stop_delegate_card": lambda sa_id: _delegate_stop(
+            state, sa_id, _agent_workspace_path()),
+        # The tab's own callbacks for a session hosted in the agent
+        # service (hosted_sessions.TabHost).
+        "host_adapter": _host_adapter,
     }
 
 

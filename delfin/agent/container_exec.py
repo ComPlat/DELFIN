@@ -335,14 +335,12 @@ def session_argv(cmd: str, run_cwd, perms, extra_write=()) -> list[str] | None:
     bound = writable + read_only
     mask_dirs, mask_files = [], []
     try:
-        from .sandbox import _HOME_SECRET_DIRS
+        from .sandbox import home_secret_paths
+        secrets_ = home_secret_paths()
     except Exception:
-        _HOME_SECRET_DIRS = ()
-    for rel in _HOME_SECRET_DIRS:
-        try:
-            p = (Path.home() / rel).resolve()
-        except (OSError, RuntimeError):
-            continue
+        secrets_ = []
+    for raw in secrets_:
+        p = Path(raw)
         if not _inside(p, bound):
             continue
         if p.is_dir():

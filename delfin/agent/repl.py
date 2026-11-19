@@ -696,7 +696,20 @@ def prepare_fresh_turn(engine, prompt: str, *, workspace=None,
     for the person watching. Nothing is refused: the turn proceeds.
     The check runs BEFORE the budget branch, so it fires on every
     dashboard/cli turn, not only on fresh starts.
+
+    Task-state capture (cap1/g2): the FIRST real user message of the
+    session writes the persistent TaskState store here, so every
+    reduction path (compaction, fresh restart, in-turn compaction)
+    reads a task -- and a stated success criterion -- back verbatim.
+    Only the first message writes; a store that already holds a task
+    (a person's /state edit, a restored session) is never demoted.
     """
+    try:
+        from .task_state_capture import capture_from_first_message
+        capture_from_first_message(
+            engine=engine, workspace=workspace, prompt=prompt)
+    except Exception:
+        pass
     try:
         from . import task_presence as _tp
         _history = list(getattr(engine, "messages", None) or [])
@@ -775,7 +788,22 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
     ``sink`` is called from whatever thread ``stream_response`` runs on.
     It must not touch the terminal; in the REPL it is a queue put, and the
     main thread does the writing.
+
+    Task-state capture (cap1/g2): the FIRST real user message of the
+    session writes the persistent TaskState store here (the terminal's
+    attended path), the same one write ``prepare_fresh_turn`` performs
+    on the headless paths. Best-effort: a failed capture never delays a
+    turn.
     """
+    try:
+        if not isinstance(prompt, HarnessText):
+            _capture_ws = getattr(getattr(engine, "kit_permissions", None),
+                                  "workspace", None)
+            from .task_state_capture import capture_from_first_message
+            capture_from_first_message(
+                engine=engine, workspace=_capture_ws, prompt=prompt)
+    except Exception:
+        pass
     chunks: list[str] = []
     tool_calls: list[dict] = []
     tool_inputs: list[tuple[str, dict]] = []
@@ -1579,6 +1607,20 @@ class TerminalAgent:
     def turn(self, prompt: str) -> TurnResult:
         if not self.first_task and not isinstance(prompt, HarnessText):
             self.first_task = str(prompt)
+        # Task-state capture (cap1/g2) BEFORE the working-state recap is
+        # built below: the one-shot path captures inside
+        # prepare_fresh_turn before its block, so the terminal must
+        # capture before _working_state_block() too -- otherwise the two
+        # surfaces send different fresh turns (the parity test pins
+        # them equal).
+        try:
+            if not isinstance(prompt, HarnessText):
+                from .task_state_capture import capture_from_first_message
+                capture_from_first_message(
+                    engine=self.engine, workspace=getattr(
+                        self.opts, "cwd", None), prompt=prompt)
+        except Exception:
+            pass
         # The fresh-start decision lives in run_turn (the public turn path),
         # which both the interactive and the headless route share: it judges
         # the CURRENT context, ARCHIVES the history it drops, arms the
@@ -2029,6 +2071,9 @@ class TerminalAgent:
             self._start_fresh()
         if result.quit:
             self._quit = True
+        if result.title:
+            # The title the saves carry (the worker's setTitle sets the same).
+            self.session_title = result.title
         return result.prompt
 
     def _ctx(self):
@@ -2334,6 +2379,12 @@ class TerminalAgent:
             options=options))
 
         allowed = {o.key for o in options}
+        # What cannot be undone has a default, and it is no: Enter refuses.
+        # Everywhere else Enter stays unclaimed (_read_key): a default yes
+        # would turn approval into a rhythm.
+        enter_refuses = req.kind == tc.CONFIRM and req.is_irreversible
+        if enter_refuses:
+            allowed |= {"\r", "\n"}
         while True:
             # Answered from outside (approvals approve/deny) while the
             # dialog was waiting: it is OVER. Reading on would take the
@@ -2348,7 +2399,7 @@ class TerminalAgent:
                                  stop=lambda: getattr(req, "resolved", False))
             if not key:
                 continue                # answered while waiting: see above
-            if key in ("\x1b", "n"):
+            if key in ("\x1b", "n") or (enter_refuses and key in ("\r", "\n")):
                 if self._apply(req, self._refuse(req)):
                     self.transcript.chrome(
                         self.transcript.theme.dim("  refused"))
@@ -2533,9 +2584,10 @@ class TerminalAgent:
         if not options:
             self._apply(req, {"answers": []})
             return
+        from .approval_answers import answer_hint
         self.transcript.chrome(self.transcript.theme.dim(
-            f"  1-{len(options)} picks · or type your own answer and press "
-            "Enter · esc skips"))
+            "  " + answer_hint(len(options), bool(payload.get("multiSelect")))
+            + " Enter sends, Esc skips."))
         allowed = {str(i) for i in range(1, len(options) + 1)} | {"\x1b"}
         while True:
             # Same as _answer_request: an answer from outside ends the
@@ -2548,6 +2600,11 @@ class TerminalAgent:
             if not key:
                 continue                # answered while waiting
             if isinstance(key, tuple):  # ("text", line)
+                from .approval_answers import range_problem
+                problem = range_problem(key[1], payload)
+                if problem:
+                    self.transcript.chrome(self.transcript.theme.yellow("  " + problem))
+                    continue
                 if self._apply(req, typed_answer(key[1], payload)):
                     self.transcript.chrome(
                         f"  → {rr.strip_control(key[1])}")
@@ -3339,7 +3396,8 @@ class TerminalAgent:
             if engine is None:
                 return
             from .cli import _save_session
-            _save_session(engine, Path(self.opts.cwd))
+            _save_session(engine, Path(self.opts.cwd),
+                          title=str(getattr(self, "session_title", "") or ""))
         except Exception:
             pass
 
@@ -4467,6 +4525,19 @@ class TerminalAgent:
                 self._watch_last_look = _now
                 done = done + job_wake.finished_watched_jobs(
                     _ws, seen, session_id=sid)
+            # This session's own wake-ups (schedule_wakeup): the dashboard
+            # registers a fire listener; here the idle prompt pulls them,
+            # or they waited "due" forever and their row never left.
+            if sid:
+                try:
+                    from . import scheduler as _sch_mod
+                    _woken = _sch_mod.get_scheduler().take_due(lambda owner: owner == sid)
+                except Exception:
+                    _woken = []
+                if _woken:
+                    self._wake_kind = "schedule"
+                    return HarnessText("\n\n".join(
+                        f"[scheduled] {e.reason or e.prompt}\n\n{e.prompt}" for e in _woken))
             # A turn that ended blocked leaves its note here, so the
             # next prompt opens on the state and not on a task list
             # with no sentence about it (wave-10: an hour at a

@@ -26,6 +26,7 @@ cached; only the message still streaming is rendered again.
 from __future__ import annotations
 
 import html
+import json
 import threading
 import time
 from typing import Any, Callable, Optional
@@ -41,6 +42,36 @@ RENDER_DELAY_S = 0.12
 #: Agent modes a service session cannot run: they need this kernel's page.
 _KERNEL_ONLY_MODES = frozenset({"dashboard"})
 
+#: The mode picker's words, as the full chat names its modes.
+_MODE_LABELS = {"dashboard": "Dashboard", "solo": "Code", "office": "Office",
+                "research": "Research"}
+
+#: The provider's name, as the full chat's Provider picker says it.
+_PROVIDER_LABELS = {"kit": "KIT Toolbox", "claude": "Anthropic", "anthropic": "Anthropic",
+                    "openai": "OpenAI"}
+
+_MODEL_PREFIXES = {"kit": "KIT", "azure": "Azure", "google": "Google"}
+
+
+def _model_label(value: str) -> str:
+    """A model as the full chat's picker shows it: "kit.mistral-…" reads
+    "KIT mistral-…"."""
+    head, dot, rest = str(value or "").partition(".")
+    if dot and head in _MODEL_PREFIXES and rest:
+        return f"{_MODEL_PREFIXES[head]} {rest}"
+    return str(value or "")
+
+
+def _label(what: str, value: str) -> str:
+    if what == "mode":
+        return _MODE_LABELS.get(value, value)
+    if what == "model":
+        return _model_label(value)
+    if what == "effort":
+        return _EFFORT_LABELS.get(value, value)
+    return value
+
+
 #: The effort picker's words (the in-kernel tab's labels).
 _EFFORT_LABELS = {"": "Default", "low": "Low", "medium": "Medium", "high": "High",
                   "xhigh": "Extra High"}
@@ -54,6 +85,13 @@ PERMISSIONS = (("Plan", "plan"), ("Ask All", "default"),
                ("Accept Edits", "acceptEdits"), ("Bypass", "bypassPermissions"))
 
 _LIVE_CSS = """<style>
+.delfin-live-transit-line { display: flex; align-items: center; gap: 8px;
+  margin: 6px 0 2px; padding: 6px 10px; border-radius: 8px; font-size: 13px;
+  background: #eff6ff; color: #1e3a8a; border: 1px solid #bfdbfe; }
+.delfin-live-spin { width: 12px; height: 12px; flex: 0 0 auto; border-radius: 50%;
+  border: 2px solid #93c5fd; border-top-color: #1d4ed8;
+  animation: delfin-live-spin 0.9s linear infinite; }
+@keyframes delfin-live-spin { to { transform: rotate(360deg); } }
 .delfin-live-head { align-items: center; gap: 6px; padding: 2px 2px 4px; }
 .delfin-live-name { font-size: 14px; font-weight: 600; color: #0f172a; }
 .delfin-live-where { font-size: 12px; color: #64748b; }
@@ -125,7 +163,9 @@ def _render_entry(T, entry: dict) -> str:
         body = T._md_to_html(text)
         if entry.get("source") == "harness":
             return f'<div class="delfin-chat-msg delfin-chat-system">{body}</div>'
-        return f'<div class="delfin-chat-msg delfin-chat-user">{body}</div>'
+        badge = ('<span class="delfin-chat-via" style="font-size:11px;opacity:.7">via phone</span>'
+                 if entry.get("via") == "phone" else "")
+        return f'<div class="delfin-chat-msg delfin-chat-user">{badge}{body}</div>'
     if role == "agent":
         if not text.strip() and not entry.get("streaming"):
             return ""
@@ -218,8 +258,18 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
                             "lock": threading.Lock(), "unsubscribe": None}
 
     css = widgets.HTML(T._AGENT_CSS + _LIVE_CSS)
-    name_html = _classed(widgets.HTML(""), "delfin-live-name")
-    rename_btn = _classed(widgets.Button(description="✎", tooltip="Rename this session"),
+    # Laid out as the agent tab's full chat is (tab_agent.create_tab): the
+    # header row with the mode, the provider and Stop; the chat frame; the
+    # composer with the message box, the permission, model and effort chips
+    # and the round Send -- same widgets in the same places, same classes,
+    # so the page's own scripts and stylesheet treat it as they treat the
+    # full chat (the person, 2026-11-16: "identical, not a second layout").
+    # The session's name lives in the session list, as for the full chat;
+    # renaming and ending it for every window stay at the end of the row.
+    name_html = _classed(widgets.HTML("", layout=widgets.Layout(display="none")),
+                         "delfin-live-name")
+    rename_btn = _classed(widgets.Button(description="✎", tooltip="Rename this session",
+                                         layout=widgets.Layout(width="auto", flex="0 0 auto")),
                           "delfin-live-iconbtn")
     rename_input = widgets.Text(placeholder="Name (empty: folder and short id)",
                                 continuous_update=False, layout=widgets.Layout(width="260px"))
@@ -231,31 +281,61 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
     where_html = _classed(widgets.HTML(""), "delfin-live-where")
     stop_btn = _classed(widgets.Button(description="End session…", tooltip=(
         "End this session for every window (dashboard, terminal, phone). It is "
-        "saved and can be resumed. Closing this view does not end it.")), "delfin-live-stop")
+        "saved and can be resumed. Closing this view does not end it."),
+        layout=widgets.Layout(width="auto", flex="0 0 auto")), "delfin-live-stop")
     stop_yes = widgets.Button(description="End it", button_style="danger",
                               layout=widgets.Layout(width="auto"))
     stop_no = widgets.Button(description="Keep it running", layout=widgets.Layout(width="auto"))
     stop_confirm = _classed(widgets.HBox([
         widgets.HTML("End this session for every window? It is saved and can be resumed."),
         stop_yes, stop_no], layout=widgets.Layout(display="none")), "delfin-live-confirm")
-    head = _classed(widgets.HBox([name_html, rename_btn, rename_box, where_html, stop_btn]),
-                    "delfin-live-head")
 
-    mode_dd = widgets.Dropdown(description="Mode", options=[("…", "")], value="",
-                               layout=widgets.Layout(width="170px"))
-    model_dd = widgets.Dropdown(description="Model", options=[("…", "")], value="",
-                                layout=widgets.Layout(width="300px"))
-    effort_dd = widgets.Dropdown(description="Effort", options=[
-        ("Default", ""), ("Low", "low"), ("Medium", "medium"), ("High", "high"),
-        ("Extra High", "xhigh")], value="", layout=widgets.Layout(width="170px"))
-    perm_dd = widgets.Dropdown(description="Permissions", options=list(PERMISSIONS),
-                               value="default", layout=widgets.Layout(width="230px"))
+    mode_dd = widgets.Dropdown(description="Mode:", options=[("…", "")], value="",
+                               layout=widgets.Layout(width="160px"),
+                               style={"description_width": "45px"})
+    provider_dd = widgets.Dropdown(description="Provider:", options=[("…", "")], value="",
+                                   disabled=True, layout=widgets.Layout(width="160px"),
+                                   style={"description_width": "55px"})
     provider_html = _classed(widgets.HTML(""), "delfin-live-where")
-    for dd in (mode_dd, model_dd, effort_dd, perm_dd):
-        dd.style.description_width = "initial"
-    controls = _classed(widgets.HBox([mode_dd, model_dd, effort_dd, perm_dd, provider_html]),
+    # Stop ends the running turn (Esc), where the full chat has it.
+    cancel_btn = widgets.Button(description="Stop", tooltip="End the running turn (Esc)",
+                                layout=widgets.Layout(width="auto", flex="0 0 auto"))
+    cancel_btn.disabled = True
+    # Auto mode, as the full chat's toggle: the session's own /auto.
+    auto_btn = widgets.Button(description="Auto: off", layout=widgets.Layout(width="90px"),
+                              tooltip=("Auto mode: when nobody types, start the next item of "
+                                       "work in scope by itself. Never pushes, opens pull "
+                                       "requests or merges; never widens the posture."))
+    # The report beetle: a report is sent from the chat that runs the
+    # session, so here it says where (the full chat takes over in a moment).
+    bug_btn = widgets.Button(description="🐞", layout=widgets.Layout(width="44px", flex="0 0 auto"),
+                             tooltip=("A bug report is sent from the chat that runs this "
+                                      "session -- here once it has moved into this dashboard."))
+    controls = _classed(widgets.HBox([mode_dd, provider_dd, auto_btn, cancel_btn, bug_btn,
+                                      name_html],
+                                     layout=widgets.Layout(flex_flow="row wrap")),
                         "delfin-live-controls")
+    head = _classed(widgets.VBox([controls], layout=widgets.Layout(margin="0 0 6px 0")),
+                    "delfin-live-head")
     notice_html = _classed(widgets.HTML(""), "delfin-live-notice")
+    # Said while the session is on its way into this dashboard's full chat
+    # (agent_sessions sets it): what is happening and that typing works --
+    # so a wait never reads as a hang.
+    transit_html = _classed(widgets.HTML(""), "delfin-live-transit")
+
+    model_dd = widgets.Dropdown(description="Model:", options=[("…", "")], value="",
+                                layout=widgets.Layout(width="auto"),
+                                style={"description_width": "45px"})
+    effort_dd = widgets.Dropdown(description="Effort:", options=[
+        ("Default", ""), ("Low", "low"), ("Medium", "medium"), ("High", "high"),
+        ("Extra High", "xhigh")], value="", layout=widgets.Layout(width="auto"),
+        style={"description_width": "42px"})
+    perm_dd = widgets.Dropdown(description="Perms:", options=list(PERMISSIONS),
+                               value="default", layout=widgets.Layout(width="auto"),
+                               style={"description_width": "48px"})
+    for dd, kind in ((perm_dd, "perm"), (model_dd, "model"), (effort_dd, "effort")):
+        dd.add_class("delfin-agent-chip")
+        dd.add_class(f"delfin-agent-chip-{kind}")
 
     chat = _classed(widgets.HTML(""), "delfin-agent-chat-host")
     approval_box = widgets.VBox([])
@@ -267,20 +347,31 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
     change_box = _classed(widgets.HBox([change_input, change_run, change_cancel],
                                        layout=widgets.Layout(display="none")), "delfin-live-change")
     wait_html = _classed(widgets.HTML(""), "delfin-live-where")
-    frame = _classed(widgets.VBox([chat, approval_box, change_box, wait_html]),
+    frame = _classed(widgets.VBox([chat, transit_html, approval_box, change_box, wait_html]),
                      "delfin-agent-chat-frame")
 
     input_box = _classed(widgets.Textarea(placeholder=(
         "Message this session. Enter sends; while it works the message waits "
-        "for the turn to end."), layout=widgets.Layout(width="100%")), "delfin-live-input")
-    send_btn = _classed(widgets.Button(description="Send", button_style="primary"),
-                        "delfin-live-send")
+        "for the turn to end."), layout=widgets.Layout(width="100%", height="56px")),
+        "delfin-agent-input")
+    send_btn = _classed(widgets.Button(description="Send", button_style="primary",
+                                       tooltip="Send (Enter)",
+                                       layout=widgets.Layout(width="34px", height="34px")),
+                        "delfin-agent-send", "delfin-live-send")
+    # Enter sends what is in the box now, through this channel (the page
+    # script __delfinAgentSubmit, as in the full chat).
+    submit_channel = _classed(widgets.Text(value="", layout=widgets.Layout(display="none")),
+                              "delfin-agent-submit")
     steer_btn = widgets.Button(description="Send into the turn", tooltip=(
         "The model reads it at its next step of the running turn"),
         layout=widgets.Layout(display="none", width="auto"))
-    cancel_btn = widgets.Button(description="Stop", tooltip="End the running turn (Esc)",
-                                layout=widgets.Layout(display="none", width="auto"))
-    send_row = _classed(widgets.HBox([send_btn, steer_btn, cancel_btn]), "delfin-live-send-row")
+    send_row = _classed(widgets.HBox([send_btn, submit_channel]),
+                        "delfin-agent-send-row", "delfin-live-send-row")
+    gap = _classed(widgets.HTML(""), "delfin-agent-composer-gap")
+    composer_bar = _classed(widgets.HBox([perm_dd, model_dd, effort_dd, gap, steer_btn,
+                                          send_row]), "delfin-agent-composer-bar")
+    composer = _classed(widgets.VBox([input_box, composer_bar]), "delfin-agent-composer")
+    input_area = _classed(widgets.VBox([composer]), "delfin-agent-input-area")
 
     scripts = widgets.Output()
     if page_scripts:
@@ -289,8 +380,18 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
             display(Javascript(T._VISIBLE_LOOKUP_JS + T._AGENT_PAGE_JS + LIVE_KEYS_JS
                                + T._MEASURE_AGENT_TOP_JS))
 
-    root = _classed(widgets.VBox([css, scripts, head, stop_confirm, controls, notice_html, frame,
-                                  input_box, send_row]),
+    # The folded "Details" at the foot, as in the full chat: where the
+    # session works, its model and state, what runs in the background.
+    # Renaming and ending it for every window: here, not in the header
+    # (the full chat's header has neither).
+    session_row = widgets.HBox([stop_btn, rename_btn, rename_box],
+                               layout=widgets.Layout(flex_flow="row wrap", gap="4px"))
+    details_body = _classed(widgets.VBox([where_html, provider_html, session_row]),
+                            "delfin-agent-below-body")
+    details = _classed(widgets.Accordion(children=[details_body], titles=("Details",),
+                                         selected_index=None), "delfin-agent-below")
+    root = _classed(widgets.VBox([css, scripts, head, stop_confirm, notice_html, frame,
+                                  input_area, details]),
                     "delfin-agent-root", "delfin-live-root")
 
     # -- saying things ---------------------------------------------------------------
@@ -317,7 +418,7 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
                 value = str(info.get(key) or "")
                 values = [v for _, v in dd.options]
                 if value not in values:
-                    dd.options = [*dd.options, (value or "Default", value)]
+                    dd.options = [*dd.options, (_label(key, value) or "Default", value)]
                 if dd.value != value:
                     dd.value = value
             approval = str(info.get("approval") or "default")
@@ -326,6 +427,10 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
             provider = str(info.get("provider") or "")
             provider_html.value = (f"provider {html.escape(provider)} (set when it started)"
                                    if provider else "")
+            if provider and provider_dd.value != provider:
+                provider_dd.options = [(_PROVIDER_LABELS.get(provider, provider), provider)]
+                provider_dd.value = provider
+            provider_dd.tooltip = "Set when the session started"
         finally:
             view["syncing"] = False
 
@@ -344,8 +449,14 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
         if transcript.ended:
             bits.append(f"ended: {html.escape(transcript.ended)}")
         where_html.value = " · ".join(b for b in bits if b)
+        auto_line = str(info.get("auto") or "").strip()
+        auto_on = bool(auto_line) and not auto_line.lower().startswith(("off", "auto: off"))
+        label = "Auto: on" if auto_on else "Auto: off"
+        if auto_btn.description != label:
+            auto_btn.description = label
+        auto_btn.button_style = "info" if auto_on else ""
         running = transcript.state == "running"
-        cancel_btn.layout.display = "" if running else "none"
+        cancel_btn.disabled = not running
         steer_btn.layout.display = "" if running else "none"
         ended = transcript.state == "ended"
         send_btn.disabled = ended
@@ -384,6 +495,10 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
                 b.on_click(lambda _b, _l=label: call(
                     lambda: client.reply(sid, rid, answers=[_l]), "Not answered"))
                 picks.append(b)
+            from delfin.agent.approval_answers import answer_hint
+            # The real range, how to pick several, free text allowed: the
+            # same line every other surface shows.
+            hint = widgets.HTML(f"<small>{html.escape(answer_hint(len(labels), bool(asked.get('multiSelect'))))}</small>")
             typed = widgets.Text(placeholder="or type the answer")
             send = widgets.Button(description="Answer")
             send.on_click(lambda _b: typed.value.strip() and call(
@@ -391,7 +506,7 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
             dismiss = widgets.Button(description="Dismiss")
             dismiss.on_click(lambda _b: call(lambda: client.reply(sid, rid, answers=[]),
                                              "Not dismissed"))
-            return _classed(widgets.VBox([text, widgets.HBox(picks), widgets.HBox([typed, send, dismiss])]),
+            return _classed(widgets.VBox([text, widgets.HBox(picks), hint, widgets.HBox([typed, send, dismiss])]),
                             "delfin-live-asked")
         buttons = []
         for option in asked.get("options") or []:
@@ -455,7 +570,11 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
             version = transcript.version
             if version != view["shown"]:
                 view["shown"] = version
-                value = render(transcript)
+                with transcript.lock:
+                    mirrored = transcript.chat_html
+                # A session another dashboard hosts: that dashboard's chat,
+                # as it shows it -- same markup, same page scripts.
+                value = mirrored or render(transcript)
                 if chat.value != value:
                     chat.value = value
             _sync_head()
@@ -493,12 +612,10 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
         rename_input.value = str(transcript.info.get("title") or "")
         rename_box.layout.display = ""
         rename_btn.layout.display = "none"
-        name_html.layout.display = "none"
 
     def on_rename_close(_b=None) -> None:
         rename_box.layout.display = "none"
         rename_btn.layout.display = ""
-        name_html.layout.display = ""
 
     def on_rename_save(_b=None) -> None:
         got = call(lambda: client.rename(sid, rename_input.value), "Not renamed")
@@ -564,6 +681,46 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
         view["change_rid"] = ""
         change_box.layout.display = "none"
 
+    def on_auto(_b=None) -> None:
+        on = auto_btn.description == "Auto: on"
+        answer = call(lambda: client.prompt(sid, "/auto off" if on else "/auto on"),
+                      "Auto mode not switched")
+        if answer and answer.get("queued"):
+            say("/auto waits for the running turn to end")
+
+    def on_bug(_b=None) -> None:
+        say("A bug report is sent from the chat that runs this session; "
+            "it is here once the session has moved into this dashboard.")
+
+    auto_btn.on_click(on_auto)
+    bug_btn.on_click(on_bug)
+    submitted = {"seq": 0}
+
+    def on_submit_channel(change) -> None:
+        try:
+            data = json.loads(change.get("new") or "{}")
+        except (TypeError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        seq = int(data.get("seq") or 0)
+        if seq <= submitted["seq"]:
+            return
+        submitted["seq"] = seq
+        text = str(data.get("text") or "")
+        if text.strip():
+            input_box.value = text
+            send()
+
+    submit_channel.observe(on_submit_channel, names="value")
+
+    def transit(text: str = "") -> None:
+        """The hand-over line: empty hides it."""
+        value = (f'<div class="delfin-live-transit-line"><span class="delfin-live-spin">'
+                 f'</span>{html.escape(text)}</div>') if text else ""
+        if transit_html.value != value:
+            transit_html.value = value
+
     change_run.on_click(on_change_run)
     change_cancel.on_click(on_change_cancel)
     send_btn.on_click(send)
@@ -589,10 +746,8 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
                 got = client.choices(sid, what)
             except Exception:
                 continue
-            labels = _EFFORT_LABELS if what == "effort" else {}
-            options = [(labels.get(str(c.get("value") or ""), str(c.get("value") or "")),
-                        str(c.get("value") or "")) for c in got.get("choices") or []
-                       if c.get("value") or what == "effort"]
+            options = [(_label(what, str(c.get("value") or "")), str(c.get("value") or ""))
+                       for c in got.get("choices") or [] if c.get("value") or what == "effort"]
             if what == "mode":
                 # Dashboard mode drives a dashboard's own tabs, which a
                 # session in the agent service does not have: not offered.
@@ -601,7 +756,7 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
             # picker says is current.
             current = str(transcript.info.get(what) or got.get("current") or "")
             if current and current not in {v for _, v in options}:
-                options.insert(0, (current, current))
+                options.insert(0, (_label(what, current), current))
             if not options:
                 continue
             view["syncing"] = True
@@ -666,8 +821,15 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
             "effort": effort_dd, "chat": chat, "notice": notice_html, "close": close,
             "render_now": render_now, "opened": opened, "say": say,
             "change_box": change_box, "change_input": change_input, "change_run": change_run,
-            "change_cancel": change_cancel,
+            "change_cancel": change_cancel, "submit": submit_channel,
+            "transit": transit, "transit_html": transit_html,
+            "draft": lambda: str(input_box.value or ""),
+            "provider": provider_dd, "auto_btn": auto_btn, "bug_btn": bug_btn,
+            "details": details,
             "show": attach, "hide": hide, "attached": lambda: bool(view.get("attached")),
             "name": lambda: transcript.name, "busy": lambda: transcript.busy,
-            "needs": lambda: transcript.needs_you, "sid": sid}
+            "needs": lambda: transcript.needs_you, "sid": sid,
+            # The control row: the session list puts its Keep session
+            # switch here, as it does in the in-kernel tab's row.
+            "controls": controls}
     return root, refs

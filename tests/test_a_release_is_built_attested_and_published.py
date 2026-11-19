@@ -95,3 +95,29 @@ def test_there_is_one_distribution_checker():
         assert "check_dists" not in text, path.name
     packaging = (ROOT / ".github" / "workflows" / "packaging.yml").read_text(encoding="utf-8")
     assert "scripts/check_distribution.py" in packaging
+
+
+def test_the_release_notes_need_no_clone_and_no_annotated_tag():
+    """The job that creates the GitHub release downloads the built files
+    and checks nothing out.
+
+    ``--notes-from-tag`` reads an annotated tag's message from a local
+    clone, so in a job without a checkout it fails however the tag was
+    made. Measured on the v1.4.0 run: "cannot generate release notes from
+    tag v1.4.0 as it does not exist locally", after build, SBOM and both
+    attestations had succeeded. A lightweight tag carries no message to
+    read either, and this project's tags are created with `git tag <v>`.
+    """
+    jobs = _wf()["jobs"]
+    job = jobs["github"]
+    assert not [s for s in job["steps"] if "checkout" in str(s.get("uses", ""))], (
+        "this job has no checkout, so the notes must not need one")
+    # Comment lines are dropped: this very step carries a comment naming
+    # the old flag and why it went, and a guard must read what runs.
+    runs = "\n".join(
+        line for s in job["steps"]
+        for line in s.get("run", "").splitlines()
+        if not line.lstrip().startswith("#"))
+    assert "--generate-notes" in runs
+    assert "--notes-from-tag" not in runs, (
+        "reading the tag message needs a clone this job does not have")

@@ -24,7 +24,20 @@ not assumed):
   most 5 requests per second, at most 400 requests per minute
   (https://pubchem.ncbi.nlm.nih.gov/docs/pug-rest#section=Access-Statistics).
 - **OpenAlex** (already used by ``web_tools.web_search``): scholarly
-  work search. No key; a mailto address joins the polite pool.
+  work search. Data CC0 (https://help.openalex.org/how-to-use-the-api/
+  api-overview). Terms re-checked 2026-11-11
+  (https://help.openalex.org/how-to-use-the-api/rate-limits-and-authentication):
+  the API key is optional (``api_key`` parameter or an ``Authorization:
+  Bearer`` header; DELFIN sends it as the header, never in a URL);
+  keyless use is 10 requests/s with a small daily USD budget (measured:
+  ``x-ratelimit-limit-usd: 0.1`` per day, a search costs $0.001), a free
+  key gives 30/s and 10x the budget. The docs no longer mention a polite
+  pool; a ``mailto`` contact is sent only when the person configured one.
+
+The federated literature search (OpenAlex, Crossref, Semantic Scholar,
+arXiv, Europe PMC, Unpaywall) lives in ``delfin.agent.scholarly_sources``
+and is re-exported here (``federated_search``, ``find_method_reference``)
+so the agent and the dashboard use one implementation.
 
 Behaviour rules enforced below, not just documented:
 
@@ -49,7 +62,8 @@ import urllib.parse
 from . import web_tools
 
 __all__ = ["verify_doi", "lookup_compound", "search_works", "clear_cache",
-           "host_for_action"]
+           "host_for_action", "fetch_bytes", "federated_search",
+           "find_method_reference"]
 
 
 # --- the fixed host per action -----------------------------------------------
@@ -78,14 +92,65 @@ _FETCH_LOCK = threading.Lock()
 _LAST_REQUEST: dict[str, float] = {}
 _MIN_DELAY_S = 0.3  # per host: ~3 req/s, inside both APIs' stated limits
 
+#: Per-host spacing where a service states a stricter limit than the
+#: default (each value from that service's own terms, see
+#: delfin.agent.scholarly_sources): arXiv one request every three
+#: seconds; Semantic Scholar 1 request/s with a key, a shared pool
+#: without; Crossref's public pool 5/s with concurrency 1.
+_HOST_MIN_DELAY_S = {
+    "export.arxiv.org": 3.0,
+    "api.semanticscholar.org": 1.0,
+    "api.crossref.org": 0.25,
+    "api.openalex.org": 0.15,
+    "www.ebi.ac.uk": 0.15,
+    "api.unpaywall.org": 0.1,
+}
+
+#: Hosts whose terms allow only this many connections at once.
+_HOST_CONCURRENCY = {"export.arxiv.org": 1, "api.crossref.org": 1}
+_HOST_SLOTS: dict[str, threading.BoundedSemaphore] = {}
+
 
 def _rate_limit(host: str) -> None:
+    """Wait for this host's next request slot.
+
+    The slot is reserved under the lock and the wait happens outside it,
+    so a slow host (arXiv: 3 s) never holds up requests to another host
+    that run concurrently in the federated search.
+    """
+    delay = _HOST_MIN_DELAY_S.get(host, _MIN_DELAY_S)
     with _FETCH_LOCK:
         now = time.monotonic()
         last = _LAST_REQUEST.get(host)
-        if last is not None and now - last < _MIN_DELAY_S:
-            time.sleep(_MIN_DELAY_S - (now - last))
-        _LAST_REQUEST[host] = time.monotonic()
+        slot = now if last is None else max(now, last + delay)
+        _LAST_REQUEST[host] = slot
+    if slot > now:
+        time.sleep(slot - now)
+
+
+class _HostSlot:
+    """At most ``_HOST_CONCURRENCY[host]`` requests to ``host`` at once."""
+
+    def __init__(self, host: str, timeout_s: float):
+        self.sem = None
+        limit = _HOST_CONCURRENCY.get(host)
+        if limit:
+            with _FETCH_LOCK:
+                self.sem = _HOST_SLOTS.setdefault(
+                    host, threading.BoundedSemaphore(limit))
+        self.host = host
+        self.timeout_s = timeout_s
+
+    def __enter__(self):
+        if self.sem is not None and not self.sem.acquire(
+                timeout=max(0.1, float(self.timeout_s))):
+            raise TimeoutError(f"{self.host} is busy with another request")
+        return self
+
+    def __exit__(self, *exc):
+        if self.sem is not None:
+            self.sem.release()
+        return False
 
 
 def _fallback_fetch(url: str, *, timeout_s: int = 30) -> bytes:
@@ -119,9 +184,10 @@ def fetch_json(url: str, *, timeout_s: int = 30) -> dict:
     why = web_tools._check_url(url)
     if why:
         raise ValueError(f"refused to ask {host!r}: {why}")
-    _rate_limit(host)
     try:
-        data = _GUARDED_FETCH(url, timeout_s=timeout_s)
+        with _HostSlot(host, timeout_s):
+            _rate_limit(host)
+            data = _GUARDED_FETCH(url, timeout_s=timeout_s)
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             raise
@@ -136,6 +202,32 @@ def fetch_json(url: str, *, timeout_s: int = 30) -> dict:
                           else data.decode("utf-8", errors="replace"))
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ValueError(f"{host} answered with non-JSON body: {exc}") from exc
+
+
+def fetch_bytes(url: str, *, timeout_s: float = 15,
+                headers: "dict | None" = None) -> bytes:
+    """GET ``url`` through web_tools' guarded stack; the raw body.
+
+    The same deny-list, SSRF checks, per-host rate limit and connection
+    cap as :func:`fetch_json`, for the services that answer in another
+    format (arXiv's Atom) or need a request header (an optional API key
+    travels in a header, never in a URL). An HTTP error is re-raised as
+    ``urllib.error.HTTPError`` so a caller can tell 404 from 429; a body
+    larger than web_tools' cap is an error, never a silently cut record.
+    """
+    parsed = urllib.parse.urlsplit(url)
+    host = parsed.hostname or ""
+    why = web_tools._check_url(url)
+    if why:
+        raise ValueError(f"refused to ask {host!r}: {why}")
+    with _HostSlot(host, timeout_s):
+        _rate_limit(host)
+        got = web_tools._fetch_bytes(url, timeout_s, headers=headers)
+    body = got[0]
+    if len(body) > web_tools._MAX_BYTES:
+        raise ValueError(f"{host} answered with more than "
+                         f"{web_tools._MAX_BYTES} bytes")
+    return body
 
 
 # --- cache -------------------------------------------------------------------
@@ -314,3 +406,17 @@ def search_works(query: str, max_results: int = 5) -> list[dict]:
     reachable) results.
     """
     return web_tools.web_search(query, max_results=max_results)
+
+
+# --- federated literature search (delfin.agent.scholarly_sources) -------------
+
+def federated_search(query: str, **kwargs) -> dict:
+    """Search several scholarly APIs at once; see scholarly_sources."""
+    from . import scholarly_sources
+    return scholarly_sources.federated_search(query, **kwargs)
+
+
+def find_method_reference(name: str, **kwargs) -> dict:
+    """Original-paper candidates for a method/basis/functional name."""
+    from . import scholarly_sources
+    return scholarly_sources.find_method_reference(name, **kwargs)

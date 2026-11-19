@@ -173,7 +173,11 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
                         for o in options],
             "flags": {"shell": req.is_shell, "write": req.is_write,
                       "protected": req.is_protected,
-                      "outsideRead": req.is_outside_read},
+                      "outsideRead": req.is_outside_read,
+                      # The preview opens with what cannot be undone; the
+                      # options above offer nothing that outlives it.
+                      "irreversible": (req.kind == tc.CONFIRM
+                                       and req.is_irreversible)},
         }
         if suggestion:
             fields["suggestion"] = suggestion
@@ -326,7 +330,12 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
                 if answers:
                     raise InvalidAnswer("a question is answered with "
                                         "'answers' or 'text', not both")
-                from delfin.agent.approval_answers import typed_answer
+                from delfin.agent.approval_answers import range_problem, typed_answer
+                problem = range_problem(text, payload)
+                if problem:
+                    # A number that is no option is refused with the real
+                    # range, never taken as free text.
+                    raise InvalidAnswer(problem)
                 return self.resolve(req, typed_answer(text, payload)), "answered"
             offered = [label for label, _ in _choices(payload)]
             if any(a not in offered for a in answers):

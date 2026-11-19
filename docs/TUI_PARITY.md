@@ -30,7 +30,8 @@ for some, and runs three itself.
 | `/doctor`, `/fix`, `/init`, `/mcp`, `/trust`, `/tools`, `/hooks`, `/agents`, `/skills`, `/commands` | as in chat |
 | `/session`, `/rewind`, `/tasks`, `/memories`, `/forget`, `/plans` | as in chat. To open a past session in the window: `/resume` or the palette's **resume picker** (the sessions running in the service first, then the workspace's saved ones) |
 | `/undo-file`, `/pending`, `/approve`, `/reject` | as in chat |
-| `/git`, `/bash`, `/jobs`, `/attention` | as in chat |
+| `/git`, `/bash`, `/attention` | as in chat |
+| `/jobs` | the window's own screen: the agents' monitors, DELFIN's job monitor and each logged-in cluster's jobs, grouped (`jobs.list`); `/clusters` is its screen for the clusters and their login |
 | user commands, skills, `/explore` `/review` `/plan` `/delegate` | as in chat (the order a typed line tries them in); all are completed as you type and listed in the palette |
 | `!command`, `# note` | as in chat; a `!` at the start of the prompt shows shell mode (the marker `!` in its own colour, the box's border says so, no completion; backspace at the line's start or esc leaves it), and the line goes out as typed. A shell line is never steered into a turn: it runs when the turn ends. In the rows it reads `$ command` |
 

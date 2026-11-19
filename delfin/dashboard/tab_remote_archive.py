@@ -58,6 +58,7 @@ from .helpers import (
     disable_spellcheck, image_data_uri, neutralise_link_targets,
 )
 from . import text_view as _text_view
+from .select_state import replace_options as _replace_options
 from .input_processing import is_smiles, smiles_to_xyz_quick
 from .molecule_viewer import (
     DEFAULT_3DMOL_ZOOM,
@@ -111,6 +112,8 @@ def create_tab(ctx):
     state = {
         "config": None,
         "current_relative_path": "",
+        "delete_targets": [],
+        "delete_dir": "",
         "entries": [],
         "filtered_entries": [],
         "selected_entry": None,
@@ -184,6 +187,7 @@ def create_tab(ctx):
     sort_dropdown = widgets.Dropdown(
         options=[("A-Z", "name"), ("Newest", "date_desc"), ("Oldest", "date_asc")],
         value="name",
+        tooltip="Sort files",
         layout=widgets.Layout(width="98px", height="28px"),
     )
     file_list = widgets.SelectMultiple(
@@ -2374,14 +2378,38 @@ def create_tab(ctx):
         except Exception as exc:
             ops_status_html.value = f'<span style="color:#d32f2f;">Duplicate failed: {html.escape(str(exc))}</span>'
 
+    def _delete_targets(entries):
+        """Relative paths of *entries* that may be deleted from this folder.
+
+        Never the folder being shown, nor one above it: an empty path is the
+        archive root, and a path the current folder lives under would take
+        the current folder with it.
+        """
+        current = normalize_remote_relative_path(state.get("current_relative_path", ""))
+        targets = []
+        for entry in entries:
+            try:
+                rel = normalize_remote_relative_path(entry.get("relative_path", ""))
+            except ValueError:
+                continue
+            if not rel or rel == current or current.startswith(rel + "/"):
+                continue
+            targets.append((rel, str(entry.get("name") or rel)))
+        return targets
+
     def _on_delete_click(_button=None):
-        entries = _selected_entries()
-        if not entries:
+        targets = _delete_targets(_selected_entries())
+        state["delete_targets"] = []
+        if not targets:
             return
-        if len(entries) == 1:
-            prompt = f"<b>Delete</b> <code>{html.escape(entries[0].get('name', ''))}</code>?"
-        else:
-            prompt = f"<b>Delete</b> {len(entries)} selected item(s)?"
+        shown = ", ".join(f"<code>{html.escape(name)}</code>" for _rel, name in targets[:10])
+        if len(targets) > 10:
+            shown += f" and {len(targets) - 10} more"
+        prompt = f"<b>Delete {len(targets)} item(s)?</b> {shown}"
+        # Yes deletes exactly what this prompt names, in the folder it was
+        # asked in -- not whatever is selected by the time Yes is clicked.
+        state["delete_targets"] = [rel for rel, _name in targets]
+        state["delete_dir"] = normalize_remote_relative_path(state.get("current_relative_path", ""))
         confirm_panel.children = [
             widgets.HTML(prompt),
             widgets.Button(description="Yes, delete", button_style="danger",
@@ -2395,13 +2423,15 @@ def create_tab(ctx):
 
     def _on_delete_confirm(_button=None):
         config = state.get("config")
-        entries = _selected_entries()
+        rel_paths = list(state.get("delete_targets") or [])
+        state["delete_targets"] = []
         confirm_panel.layout.display = "none"
-        if not config or not entries:
-            return
-        rel_paths = [normalize_remote_relative_path(entry.get("relative_path", "")) for entry in entries]
-        rel_paths = [rel for rel in rel_paths if rel]
-        if not rel_paths:
+        if state.get("delete_dir") != normalize_remote_relative_path(state.get("current_relative_path", "")):
+            return  # the folder changed under the prompt
+        current = normalize_remote_relative_path(state.get("current_relative_path", ""))
+        rel_paths = [rel for rel in rel_paths
+                     if rel and rel != current and not current.startswith(rel + "/")]
+        if not config or not rel_paths:
             return
         try:
             result = remote_delete(config["host"], config["user"], config["remote_path"],
@@ -2418,6 +2448,7 @@ def create_tab(ctx):
 
     def _on_confirm_cancel(_button=None):
         confirm_panel.layout.display = "none"
+        state["delete_targets"] = []
 
     # --------------------------------------------------------------------------
 
@@ -2454,18 +2485,19 @@ def create_tab(ctx):
         state["filtered_entries"] = entries
         previous_values = set(_selected_relative_paths())
         if not entries:
-            file_list.options = [("(No matches)", "")]
-            file_list.value = ()
+            _replace_options(file_list, [("(No matches)", "")])
             state["selected_entry"] = None
             _update_buttons()
             return
-        file_list.options = [(_entry_label(entry), entry.get("relative_path", "")) for entry in entries]
         available_values = {entry.get("relative_path", "") for entry in entries}
         kept = tuple(value for value in previous_values if value in available_values)
-        if kept:
-            file_list.value = kept
-        else:
-            file_list.value = ()
+        # Labels and selection reach the browser together (select_state).
+        _replace_options(
+            file_list,
+            [(_entry_label(entry), entry.get("relative_path", "")) for entry in entries],
+            kept,
+        )
+        if not kept:
             state["selected_entry"] = None
         _update_buttons()
 
@@ -2496,8 +2528,7 @@ def create_tab(ctx):
         if not config:
             state["entries"] = []
             state["filtered_entries"] = []
-            file_list.options = [("(Configure Settings first)", "")]
-            file_list.value = ()
+            _replace_options(file_list, [("(Configure Settings first)", "")])
             _update_buttons()
             return
 
@@ -2516,8 +2547,7 @@ def create_tab(ctx):
         except Exception as exc:
             state["entries"] = []
             state["filtered_entries"] = []
-            file_list.options = [("(Remote directory unavailable)", "")]
-            file_list.value = ()
+            _replace_options(file_list, [("(Remote directory unavailable)", "")])
             _clear_preview("Could not load remote directory.")
             _set_status(html.escape(str(exc)), color="#d32f2f")
             _update_buttons()
@@ -3051,9 +3081,21 @@ def create_tab(ctx):
         elif action == "paste":
             _on_remote_paste()
         elif action == "delete":
-            _on_delete_click()
+            # Delete key: the selection only; with nothing selected, nothing.
+            if _delete_targets(_selected_entries()):
+                _on_delete_click()
+            else:
+                _set_status("Select the items to delete first.", color="#555")
+        elif action == "up":
+            # Backspace / Alt+Up: one folder up, as in Explorer and Finder.
+            # A question asked in the folder being left goes with it.
+            confirm_panel.layout.display = "none"
+            state["delete_targets"] = []
+            _navigate_up()
         elif action == "deselect":
             file_list.value = ()
+            confirm_panel.layout.display = "none"  # Esc answers an open question with No
+            state["delete_targets"] = []
         elif action == "rename":
             _on_rename_click()
 
@@ -5176,7 +5218,10 @@ def create_tab(ctx):
                 if ((e.ctrlKey || e.metaKey) && e.key === 'c') action = 'copy';
                 else if ((e.ctrlKey || e.metaKey) && e.key === 'x') action = 'cut';
                 else if ((e.ctrlKey || e.metaKey) && e.key === 'v') action = 'paste';
-                else if (e.key === 'Delete' || e.key === 'Backspace') action = 'delete';
+                /* Delete (Cmd+Backspace on a Mac) acts on the selection only;
+                 * Backspace and Alt+Up go one folder up (Explorer, Finder). */
+                else if (e.key === 'Delete' || (e.key === 'Backspace' && (e.metaKey || e.ctrlKey))) action = 'delete';
+                else if (e.key === 'Backspace' || (e.altKey && e.key === 'ArrowUp')) action = 'up';
                 else if (e.key === 'Enter') action = 'open';
                 else if (e.key === 'Escape') action = 'deselect';
                 else if (e.key === 'F2') action = 'rename';
@@ -5295,6 +5340,9 @@ def create_tab(ctx):
         # --- Agent-accessible widgets ---
         # Navigation
         "path_input": path_input,
+        "file_list": file_list,
+        "keyboard_action_input": keyboard_action_input,
+        "confirm_panel": confirm_panel,
         "filter_input": filter_input,
         "sort_dropdown": sort_dropdown,
         "search_input": search_input,

@@ -12,6 +12,12 @@ from delfin.tools._types import StepResult, StepStatus
 from delfin.tools._registry import register
 from delfin.tools._spec import DataKeySpec, ParamSpec
 
+
+def _mpi_note(out_path: Path) -> Optional[str]:
+    """delfin.orca.mpi_cannot_start_note, imported late like run_orca."""
+    from delfin.orca import mpi_cannot_start_note
+    return mpi_cannot_start_note(out_path)
+
 _XTB_PARAMS = (
     ParamSpec("charge", "int", required=True, description="Molecular charge"),
     ParamSpec("mult", "int", default=1, description="Spin multiplicity (2S+1)"),
@@ -106,7 +112,7 @@ class XtbOptAdapter(StepAdapter):
         return self._make_result(
             self.name, StepStatus.FAILED, work_dir, start,
             output_file=out_path if out_path.is_file() else None,
-            error="xTB optimization failed or output XYZ not produced",
+            error=_mpi_note(out_path) or "xTB optimization failed or output XYZ not produced",
         )
 
 
@@ -155,7 +161,7 @@ class XtbGoatAdapter(StepAdapter):
         return self._make_result(
             self.name, StepStatus.FAILED, work_dir, start,
             output_file=out_path if out_path.is_file() else None,
-            error="GOAT search failed or global minimum XYZ not produced",
+            error=_mpi_note(out_path) or "GOAT search failed or global minimum XYZ not produced",
         )
 
 

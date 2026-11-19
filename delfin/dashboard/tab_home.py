@@ -27,6 +27,8 @@ def create_tab(ctx):
     home_ctx = replace(ctx, calc_dir=Path.home())
     # Preserve the calculations root so items can be moved there.
     home_ctx.primary_calc_dir = ctx.calc_dir
+    # Headed by its own name, not the browser's (the tab's title).
+    home_ctx.browser_title = 'Home'
     home_ctx.browser_scan_is_bounded = True
     home_ctx.browser_hides_dotfiles = True
     return tab_calculations_browser.create_tab(home_ctx)

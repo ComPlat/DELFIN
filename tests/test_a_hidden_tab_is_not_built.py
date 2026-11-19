@@ -63,12 +63,18 @@ def test_a_hidden_clone_is_not_built(source):
     assert built == [], 'a hidden tab must cost nothing'
 
 
-def test_the_hidden_set_comes_from_settings(source):
-    assert "_hidden_at_start" in source
-    assert "get('hidden', [])" in source
-    # Read before the clones are built, or the decision comes too late.
-    assert source.index('_hidden_at_start = {') < source.index(
-        "tab6 = _clone_of_browser('archive'")
+def test_a_clone_hidden_at_start_can_still_be_switched_on(source):
+    """A clone hidden in the settings at start used to get no build at all
+    (``_hidden_at_start``), so switching it on in Settings later left it
+    off the bar until a reload -- with five tabs by default (tab_defaults)
+    the common case for Archive and Office. Every clone keeps its lazy
+    build; a hidden one still costs nothing, because only the tab shown
+    first is built at start (tab_schedule.startup_specs_to_build) and
+    every other one on its first open."""
+    clone = source.split('def _clone_of_browser(')[1].split('\n    tab6 =')[0]
+    assert 'return lambda: _clone_of_browser_now(build, refs)' in clone
+    assert 'return None' not in clone
+    assert '_hidden_at_start' not in source
 
 
 def test_showing_a_tab_again_builds_it(source):
@@ -83,12 +89,15 @@ def test_showing_a_tab_again_builds_it(source):
 
 def test_a_late_tab_does_not_wipe_the_page(source):
     """Every tab's startup script goes out in one ctx.run_js, and run_js clears
-    the output before it writes. A tab built after that must append."""
+    the output before it writes, so a tab built after that must not use it.
+    It carries its own scripts instead (helpers.self_running_html, 11.11.):
+    sent as a Javascript output into ctx.js_output after the page was out,
+    they were never executed."""
     builder = source.split('def _build_tab_now')[1].split('\n    def ')[0]
     # Its own docstring names run_js as the thing it must not use, so the
     # prose is dropped and only the code is looked at.
     code = builder.split('"""')[-1]
-    assert '_append_js(ctx, fresh)' in code
+    assert 'self_running_html(*parts)' in code
     assert 'ctx.run_js' not in code
     assert "build = spec.pop('build', None)" in code, 'build once, not per rebuild'
 

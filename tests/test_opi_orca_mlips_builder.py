@@ -31,31 +31,42 @@ def _read(work_dir, base_name="extopt"):
 # ---------------------------------------------------------------- detection
 
 
-def test_detect_reports_missing_package_without_raising(monkeypatch):
+def test_detect_reports_missing_package_without_raising(monkeypatch, tmp_path):
     """No orca-mlips installed -> available=False + install hint, never a crash."""
-    from delfin.mlp_tools import orca_mlips as om
+    import importlib.metadata as im
 
-    monkeypatch.setattr(om, "_find_spec", lambda name: None)
+    real_dist = im.distribution
+
+    def _no_mlips(name):
+        if name == "orca-mlips":
+            raise im.PackageNotFoundError(name)
+        return real_dist(name)
+
+    monkeypatch.setenv("DELFIN_AI_TOOLS_ROOT", str(tmp_path))
+    monkeypatch.delenv("DELFIN_ORCA_MLIPS_PYTHON", raising=False)
+    monkeypatch.setattr(im, "distribution", _no_mlips)
     info = detect_orca_mlips()
     assert info["available"] is False
     assert "orca-mlips" in info["install_hint"]
-    assert info["progext_names"] == []
+    assert info["progext_names"] == [] and info["progext_paths"] == {}
 
 
-def test_detect_lists_progext_names_from_entry_points(monkeypatch):
+def test_detect_lists_progext_names_from_entry_points(monkeypatch, tmp_path):
     """Entry points discovered from the installed package's metadata."""
     import importlib.metadata as im
     from types import SimpleNamespace
-    from delfin.mlp_tools import orca_mlips as om
 
-    monkeypatch.setattr(om, "_find_spec", lambda name: object())
+    real_dist = im.distribution
 
     class _Dist:
         version = "1.3.0"
+        entry_points = [SimpleNamespace(name="orca-mlips-uma", group="console_scripts",
+                                        value="orca_mlips_plugins.uma_orca:main")]
 
-    monkeypatch.setattr(im, "distribution", lambda name: _Dist())
-    eps = [SimpleNamespace(name="orca-mlips-uma", value="orca_mlips.uma:main")]
-    monkeypatch.setattr(im, "entry_points", lambda **kw: eps)
+    monkeypatch.setenv("DELFIN_AI_TOOLS_ROOT", str(tmp_path))
+    monkeypatch.delenv("DELFIN_ORCA_MLIPS_PYTHON", raising=False)
+    monkeypatch.setattr(im, "distribution",
+                        lambda name: _Dist() if name == "orca-mlips" else real_dist(name))
     info = detect_orca_mlips()
     assert info["available"] is True
     assert "orca-mlips-uma" in info["progext_names"]
@@ -67,7 +78,7 @@ def test_detect_lists_progext_names_from_entry_points(monkeypatch):
 
 def test_ext_params_defaults():
     params = ext_params_for("uma")
-    assert "--backend uma" in params
+    assert "--backend" not in params  # the command is the backend (D4)
     assert "--device" in params
 
 

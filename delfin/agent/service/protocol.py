@@ -51,7 +51,10 @@ REQUESTS: dict[str, dict[str, str]] = {
     # A line exactly as the user typed it: a message, a /command, !shell or
     # a # note. While a turn runs, how="queue" (the default) waits for the
     # turn to end and how="steer" sends it into the running turn.
-    "session.prompt": {"text": "string", "how": "string?"},
+    # via: set by the service, never by a window: "messenger" for a prompt
+    # the messenger bridge sends (a phone's); the worker then runs no
+    # window command (/sync, /pair, a builtin, a shell line) for it.
+    "session.prompt": {"text": "string", "how": "string?", "via": "string?"},
     # Esc: end the running turn. A tool call already running finishes first.
     "session.cancel": {},
     "session.setMode": {"mode": "string", "confirmed": "boolean?"},
@@ -142,6 +145,11 @@ EVENTS: dict[str, dict[str, str]] = {
                      "mode": "string", "approval": "string",
                      "title": "string?", "banner": "[string]",
                      "notices": "[string]", "tasks": "[object]?",
+                     # Optional: the person this session belongs to, in
+                     # people mode. A label, not a boundary; an entry
+                     # without one stays valid. Attached by the egress
+                     # proxy in a later step, never a credential here.
+                     "person": "string?",
                      "bypassBlocked": "string?", "bypassConfirmed": "boolean?",
                      "auto": "string?", "background": "[object]?"},
     # bypassBlocked: why shift+tab steps over bypassPermissions ("" when it
@@ -171,7 +179,7 @@ EVENTS: dict[str, dict[str, str]] = {
     # source: user | queued (sent while a turn ran; goes out after it) |
     # steer (sent into the running turn) | harness (nobody typed it: a
     # finished job, a message from another session, a continuation)
-    "user.message": {"text": "string", "source": "string"},
+    "user.message": {"text": "string", "source": "string", "via": "string?"},
     "turn.started": {"turnId": "string", "source": "string"},
     # stopped: ended by a cancel (Esc), not on its own.
     "turn.ended": {"turnId": "string", "durationMs": "integer",
@@ -230,6 +238,24 @@ EVENTS: dict[str, dict[str, str]] = {
     # brief: a failed job, a finished run, an alert from the agent view):
     # shown as one row, and put in front of the session's first prompt.
     "context": {"title": "string", "text": "string"},
+    # The chat of a session a dashboard kernel hosts (session.host), as its
+    # agent tab shows it: live only, never logged, sent to dashboard
+    # windows only. Version ``v``; the HTML is the one of version ``base``
+    # cut to its first ``keep`` characters, then ``tail``. In an attach
+    # answer it comes whole, as ``html``.
+    "dashboard.chat": {"v": "integer", "base": "integer?", "keep": "integer?",
+                       "tail": "string?", "html": "string?"},
+}
+
+#: Events a host link (session.host) sends that no window sees: the
+#: service acts on them. released: the kernel let go of the session on
+#: purpose (closed in its list) -- it saved and released it, so nothing is
+#: waited for; end: and it is to end for every window ("End it"), not run
+#: on. keep: the Keep session switch in the hosting tab, without the
+#: kernel's own window becoming a holder of the session.
+HOST_EVENTS: dict[str, dict[str, str]] = {
+    "host.released": {"end": "boolean"},
+    "host.keep": {"keep": "boolean"},
 }
 
 # ---------------------------------------------------------------------------
@@ -267,7 +293,11 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
                        # untitled: renamed back to the default name; the
                        # worker takes neither `name` nor a saved title as
                        # its title (a wake of such a session sets it).
-                       "untitled": "boolean?"},
+                       "untitled": "boolean?",
+                       # keep: false -- the session ends (saved) once every
+                       # window that holds it has closed (session.setKeep).
+                       # Absent or true: it runs on after its windows close.
+                       "keep": "boolean?"},
     "session.attach": {"sessionId": "string", "turns": "integer?"},
     # The session worktrees of cwd's repository, and one merged back into
     # the main checkout (uncommitted, for review; a conflict changes
@@ -275,7 +305,27 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
     "session.worktrees": {"cwd": "string"},
     "session.merge": {"path": "string"},
     "session.pending": {"sessionId": "string"},
-    "session.detach": {"sessionId": "string"},
+    # release: the window lets go of a session switched off (Keep
+    # session) as if its connection had closed -- a view closed with x;
+    # a plain detach (a view hidden) keeps holding it.
+    "session.detach": {"sessionId": "string", "release": "boolean?"},
+    # A dashboard kernel hosts its agent tab's session here: from the
+    # answer on, this connection is the session's pipe (the service sends
+    # it the session requests above and reads its events), and the
+    # session is listed, joined and answered from every window like one a
+    # worker runs. info: what session.info says (provider, model, effort,
+    # mode, approval, title). keep: Keep session (default on). fake: a
+    # worker that takes the session over runs the scripted engine (tests).
+    # Refused for a session that runs here already, and for a connection
+    # that may not act.
+    "session.host": {"sessionId": "string", "cwd": "string", "title": "string?",
+                     "keep": "boolean?", "info": "object?", "fake": "boolean?"},
+    # Keep session. true: the session runs on after its windows close (the
+    # default). false: it ends, saved, once every window that holds it has
+    # closed its connection; a window holds it by switching it off, by
+    # creating it with keep false or by attaching while it is off. A
+    # detach does not let go. Every summary carries "keep".
+    "session.setKeep": {"sessionId": "string", "keep": "boolean"},
     # A message for a session elsewhere (dashboard, another terminal).
     "session.message": {"key": "string", "text": "string"},
     # Saved sessions to resume, newest first: the session store's, scoped
@@ -309,6 +359,41 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
     "attention.list": {},
     "attention.answer": {"id": "string", "text": "string"},
     "attention.dismiss": {"id": "string"},
+    # DELFIN's clusters (delfin.remote, clusters_feed.py): each one in
+    # remote.clusters with its state, budget and job count. cluster.login
+    # carries what a person typed into the window's masked field: the
+    # service hands it to ctun and nowhere else -- never to a worker, into
+    # an event, a log or an error text -- and takes it only from a window.
+    "clusters.list": {},
+    "cluster.login": {"name": "string", "password": "string?", "otp": "string?"},
+    "cluster.logout": {"name": "string"},
+    # What runs in the background: the agents' shells, watches, sub-agents
+    # and wake-ups per session, DELFIN's job monitor, and the active jobs on
+    # each logged-in cluster.
+    "jobs.list": {},
+    # What Space on an entry shows (clusters_feed.cluster_detail and
+    # job_detail): the session, budget, DELFIN's installs and host key of a
+    # cluster; Slurm's facts, where a job runs and its output's tail. Only a
+    # window asks: they read files on a cluster and other sessions' output.
+    # job.detail: source cluster (cluster, id: one of the user's active
+    # jobs), agent (session: an id this service runs, group, id) or monitor.
+    "cluster.detail": {"name": "string"},
+    "job.detail": {"source": "string", "id": "string", "cluster": "string?",
+                   "session": "string?", "group": "string?"},
+    # Adding and removing a cluster (delfin.remote.setup), from the window's
+    # add form only: the entries in ctun's config and remote.clusters decide
+    # where DELFIN's ssh goes. clusters.presets: the clusters ctun knows.
+    # cluster.add writes both entries, then pins a preset's published host
+    # key if the server presents it; else hostKey.offered is the key to show
+    # the person, and cluster.pin pins exactly that one once they confirm it
+    # (cluster.hostkey asks the server again). cluster.remove: both entries.
+    "clusters.presets": {},
+    "cluster.add": {"name": "string", "user": "string", "preset": "string?",
+                    "host": "string?", "requiresOtp": "boolean?", "partition": "string?",
+                    "workDir": "string?", "installRoot": "string?"},
+    "cluster.hostkey": {"name": "string"},
+    "cluster.pin": {"name": "string", "fingerprint": "string"},
+    "cluster.remove": {"name": "string"},
     # Swarm management (package SW2b; the logic is SW1's
     # delfin/agent/swarm/, the wrappers delfin/agent/service/swarm_rpc.py).
     # spec: the spec object, or specYaml: swarm.yaml text. swarm.start is
@@ -323,6 +408,22 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
     "swarm.resume": {},
     "swarm.triage.list": {"queue": "[object]"},
     "swarm.triage.answer": {"item": "object", "answer": "string"},
+    # SW3 lead tools (builder nacht-s20): the lead session's member
+    # message + PR-readiness check surface. A message send is a plain
+    # partner message through session_messages (no shell, no approval
+    # surface); prcheck delegates to the read-only pre_pr_check report
+    # in the WORKTREE the request names (worktree, optional) -- never
+    # merges, never pushes, never edits a PR, never runs a test.
+    "swarm.message": {"to": "string", "text": "string"},
+    "swarm.prcheck": {"pr": "integer", "worktree": "string?"},
+    # Read-only watch (package SWV): pure observe reads. source: an SW1
+    # spec object, or a roster file path (name -> {package, role}), so an
+    # operator wave with no spec shows too. feed: newest last steps of one
+    # member session. Ownership for swarm.observe.feed (only the owning
+    # user may see a member's feed) is NOT yet enforced by any layer and
+    # is a follow-up; the API is currently callable by any requestor.
+    "swarm.observe.overview": {"source": "object?", "sourcePath": "string?"},
+    "swarm.observe.feed": {"session": "string", "since": "integer?"},
 }
 
 SERVICE_RESULTS: dict[str, dict[str, str]] = {
@@ -345,6 +446,10 @@ SERVICE_RESULTS: dict[str, dict[str, str]] = {
                        "summary": "object"},
     "session.pending": {"pending": "[object]"},
     "session.detach": {"detached": "boolean"},
+    # history: the session's event log holds its earlier turns already
+    # (false: a session new to the service; its host sends its history).
+    "session.host": {"hosted": "boolean", "keep": "boolean", "history": "boolean"},
+    "session.setKeep": {"keep": "boolean"},
     "session.message": {"sent": "boolean"},
     # sessionId, title, workspace, model, provider, updatedAt, running
     "sessions.past": {"sessions": "[object]"},
@@ -356,6 +461,29 @@ SERVICE_RESULTS: dict[str, dict[str, str]] = {
     "attention.list": {"items": "[object]", "version": "integer?"},
     "attention.answer": {"ok": "boolean", "error": "string?"},
     "attention.dismiss": {"ok": "boolean", "error": "string?"},
+    "clusters.list": {"clusters": "[object]"},
+    # opened: the tunnel was opened now (false: it was up already). code: a
+    # delfin.remote error code (login_failed, cluster_not_usable, ...).
+    "cluster.login": {"ok": "boolean", "opened": "boolean", "code": "string?",
+                      "error": "string?"},
+    "cluster.logout": {"ok": "boolean", "closed": "boolean", "code": "string?",
+                       "error": "string?"},
+    "jobs.list": {"groups": "[object]", "errors": "[string]"},
+    # sections: each {title, pairs: [[label, value]], lines: [text]}.
+    "cluster.detail": {"sections": "[object]", "error": "string?"},
+    "job.detail": {"sections": "[object]", "error": "string?"},
+    # presets: each {name, title, host, requiresOtp, requiresPassword,
+    # userHint, budget, fingerprint, fingerprintSource, partition}. hostKey:
+    # {pinned, fingerprint, source, offered, expected, error}; code: invalid,
+    # exists, ctun_failed, settings_unreadable, settings_unwritable,
+    # host_key_mismatch, not_pinned, jobs_followed, unknown, not_removed.
+    "clusters.presets": {"presets": "[object]", "error": "string?"},
+    "cluster.add": {"ok": "boolean", "code": "string?", "error": "string?",
+                    "name": "string", "hostKey": "object?"},
+    "cluster.hostkey": {"offered": "string?", "pinned": "boolean", "error": "string?"},
+    "cluster.pin": {"ok": "boolean", "code": "string?", "error": "string?"},
+    "cluster.remove": {"ok": "boolean", "code": "string?", "error": "string?",
+                       "loggedOut": "boolean?", "keysRemoved": "integer?"},
     # The status schema SW1 documents (status.py STATUS_SCHEMA); plan
     # carries the launch plan plus dry_run_text; start is a dry run
     # unless confirm=true. pause/resume answer available=false until SW1
@@ -375,6 +503,16 @@ SERVICE_RESULTS: dict[str, dict[str, str]] = {
     "swarm.triage.list": {"items": "[object]"},
     "swarm.triage.answer": {"answered": "boolean", "item_id": "string?",
                             "logged": "string?"},
+    # SW3 lead tools: message send confirmation; prcheck result mirrors
+    # the lead tool's structured dict (pr, checks, available, reason).
+    "swarm.message": {"sent": "boolean", "to": "string"},
+    "swarm.prcheck": {"pr": "integer?", "checks": "[object]",
+                      "available": "boolean", "reason": "string"},
+    # Read-only watch (package SWV): overview = one row per member
+    # ([object]); feed = that member's steps newest last ([object], each
+    # {at, kind, text}).
+    "swarm.observe.overview": {"rows": "[object]"},
+    "swarm.observe.feed": {"entries": "[object]"},
 }
 
 #: Events from the service itself, to every window.
@@ -398,19 +536,23 @@ SERVICE_EVENTS: dict[str, dict[str, str]] = {
 }
 
 #: An attention item (attention.list, attention.updated). kind: question |
-#: confirm | plan | failed | alert | finished | budget | notice; group:
+#: confirm | plan | failed | alert | finished | budget | login | notice; group:
 #: needs | notices; blocking: someone waits for an answer. name: what it is
 #: about (a session's title, "job 4711 failed"); text: one line on what it
 #: needs; detail: what a peek shows. sessionId: the session it belongs to,
 #: if any -- sessionOpen: another process has it open (open a copy),
 #: sessionSaved: the store has it (resume it). job: a job's id, state,
 #: folder, error signatures, the diagnosis session, summary and fix.
+#: cluster: a login item's cluster -- the window opens its masked login
+#: field for it, and never sends attention.answer (a password is no answer).
 ATTENTION_ITEM: dict[str, str] = {
     "id": "string", "kind": "string", "group": "string", "blocking": "boolean",
     "name": "string", "text": "string", "detail": "string", "workspace": "string",
     "host": "string", "sessionId": "string", "sessionTitle": "string?",
     "sessionOpen": "boolean?", "sessionSaved": "boolean?", "createdAt": "number",
-    "options": "[string]", "job": "object?"}
+    "options": "[string]", "job": "object?", "cluster": "string?",
+    # A cluster_add item's (an agent's proposal): the add form's fields.
+    "proposal": "object?"}
 
 #: The fields of a session summary (session.summary, sessions.list). The
 #: last five say what the session is about in a few words, for the agent
@@ -432,7 +574,13 @@ SESSION_SUMMARY: dict[str, str] = {
     # When someone last wrote to it (a prompt typed, queued or steered; not
     # one the harness sent), epoch seconds; none yet: absent. What a window
     # tells a session that runs on unattended by.
-    "lastInput": "number?"}
+    "lastInput": "number?",
+    # Keep session (session.setKeep): false once a window switched it off;
+    # it then ends with the windows that hold it.
+    "keep": "boolean?",
+    # "dashboard": a dashboard's kernel drives the session (session.host);
+    # pid is that kernel's. Absent: a worker of this service runs it.
+    "host": "string?"}
 
 UNKNOWN_SESSION = -32004
 WORKER_GONE = -32005

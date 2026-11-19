@@ -264,8 +264,10 @@ def test_the_setting_decides_when_no_flag_was_given(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("cage", [False, True])
-def test_isolation_off_is_honoured_even_unattended(monkeypatch, tmp_path, cage):
-    """"off" is the explicit escape hatch and stays one.
+@pytest.mark.parametrize("mode", ["default", "acceptEdits"])
+def test_isolation_off_is_honoured_where_a_person_reads_the_command(
+        monkeypatch, tmp_path, cage, mode):
+    """"off" is the explicit escape hatch in the modes that ask.
 
     Asserted on both kinds of host, because the escape hatch has to mean
     the same thing on a machine where the process cage works as on one
@@ -276,13 +278,27 @@ def test_isolation_off_is_honoured_even_unattended(monkeypatch, tmp_path, cage):
 
     ws = tmp_path / "project"
     ws.mkdir()
-    perms = KitToolPermissions(workspace=ws, mode="bypassPermissions")
+    perms = KitToolPermissions(workspace=ws, mode=mode)
     api_client = _supplied_host(monkeypatch, isolation="off", bwrap=True,
                                 cage=cage)
 
     settled = api_client._bash_isolation_argv("echo hi", str(ws), perms)
     assert not _the_filesystem_is_walled(settled)
     assert not _is_a_refusal(settled)
+
+
+@pytest.mark.parametrize("cage", [False, True])
+def test_isolation_off_refuses_in_bypass(monkeypatch, tmp_path, cage):
+    """Bypass asks nothing, so it runs only confined (2026-11-13): with
+    the wall switched off its command is refused, not run open."""
+    from delfin.agent.api_client import KitToolPermissions
+
+    ws = tmp_path / "project"
+    ws.mkdir()
+    perms = KitToolPermissions(workspace=ws, mode="bypassPermissions")
+    api_client = _supplied_host(monkeypatch, isolation="off", bwrap=True,
+                                cage=cage)
+    assert _is_a_refusal(api_client._bash_isolation_argv("echo hi", str(ws), perms))
 
 
 def test_isolation_off_leaves_the_cage_standing(monkeypatch, tmp_path):
@@ -301,7 +317,7 @@ def test_isolation_off_leaves_the_cage_standing(monkeypatch, tmp_path):
 
     ws = tmp_path / "project"
     ws.mkdir()
-    perms = KitToolPermissions(workspace=ws, mode="bypassPermissions")
+    perms = KitToolPermissions(workspace=ws, mode="default")
     api_client = _supplied_host(monkeypatch, isolation="off", bwrap=True,
                                 cage=True)
 

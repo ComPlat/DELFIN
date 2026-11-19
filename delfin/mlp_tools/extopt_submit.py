@@ -63,6 +63,11 @@ LOCAL_CPU_LIMITS = LocalCpuLimits()
 
 _PROVIDERS = ("delfin", "orca_mlips")
 
+# Scheduler argv as a module constant: the direct-call guard
+# (tests/test_r3_direct_scheduler_call_guard.py); the query goes through
+# delfin.scheduler_client.
+_SCONTROL_PARTITION = ("scontrol", "show", "partition", "-o")
+
 
 @dataclass
 class ExtOptJobRequest:
@@ -255,8 +260,92 @@ def _plan_goat_job(req: ExtOptJobRequest, *, cfg: MLPClusterConfig) -> ExtOptPla
 
 def _provider_cmd(req: ExtOptJobRequest) -> str:
     if req.provider == "orca_mlips":
-        return f"orca-mlips-{req.mlips_backend}"
+        from delfin.mlp_tools.orca_mlips import resolve_progext
+
+        return resolve_progext(req.mlips_backend)
     return "delfin-mlp-extopt"
+
+
+def _mpi_lines() -> list[str]:
+    """DELFIN's OpenMPI settings for a parallel ORCA, as job-script lines.
+
+    The one list of them (:mod:`delfin.dashboard.mpi_env`), as every DELFIN
+    job runner sets it: ``--ntasks=1`` is one OpenMPI slot however many CPUs
+    the task has, and ORCA's ``%pal nprocs 8`` then dies with "There are not
+    enough slots available in the system" (docs/MLIP_GOAT_GPU.md, D2).
+    """
+    from delfin.dashboard.mpi_env import OMPI_ENVIRONMENT, OMPI_ENVIRONMENT_REMOVED
+
+    lines = [f"export {key}={value}" for key, value in OMPI_ENVIRONMENT.items()]
+    lines.extend(f"unset {key}" for key in OMPI_ENVIRONMENT_REMOVED)
+    return lines
+
+
+def _ask_scheduler(argv: list) -> Optional[str]:
+    from delfin import scheduler_client
+
+    out = scheduler_client.query(scheduler_client.kind_of_argv(argv), argv)
+    if out is scheduler_client.THROTTLED:
+        out = scheduler_client.default_client.last_result(
+            scheduler_client.kind_of_argv(argv), argv)
+    if out is scheduler_client.THROTTLED or not out:
+        return None
+    return str(out)
+
+
+def partition_max_times(ask=None) -> dict[str, str]:
+    """Every partition's ``MaxTime`` as scontrol states it, from ONE query.
+
+    One ``scontrol show partition -o`` for all of them: the scheduler client
+    lets one query of a kind through per interval, and a second per-name
+    query in a row came back throttled -- measured: the partition asked
+    second was then taken as "limit unknown".  ``{}`` when it cannot be read.
+    """
+    import re
+
+    ask = ask or _ask_scheduler
+    out = ask(list(_SCONTROL_PARTITION)) or ""
+    limits: dict[str, str] = {}
+    for line in out.splitlines():
+        name = re.search(r"\bPartitionName=(\S+)", line)
+        found = re.search(r"\bMaxTime=(\S+)", line)
+        if name and found:
+            limits[name.group(1)] = found.group(1)
+    return limits
+
+
+def partitions_for_time(cfg: MLPClusterConfig, ask=None) -> tuple[str, str]:
+    """``(partitions, reason)``: the configured GPU partitions whose MaxTime holds
+    ``cfg.time_limit``.
+
+    The time limit is never changed to fit a partition; a partition that
+    cannot hold it is left out of ``--partition``, because Slurm refuses the
+    whole job with "Requested time limit is invalid" when every listed
+    partition is too short (docs/MLIP_GOAT_GPU.md, D1).  ``partitions`` is
+    "" when none can hold it (``reason`` names each MaxTime); a partition
+    whose MaxTime cannot be read is kept, and Slurm decides.
+    """
+    from delfin.slurm_submit import time_limit_seconds
+
+    want = time_limit_seconds(cfg.time_limit)
+    names = [p.strip() for p in cfg.gpu_partitions.split(",") if p.strip()]
+    keep: list[str] = []
+    too_short: list[str] = []
+    limits = partition_max_times(ask)
+    for name in names:
+        max_time = limits.get(name)
+        if max_time and max_time.upper() not in ("UNLIMITED", "INFINITE"):
+            if time_limit_seconds(max_time) < want:
+                too_short.append(f"{name} (MaxTime {max_time})")
+                continue
+        keep.append(name)
+    if keep:
+        return ",".join(keep), ""
+    return "", (
+        f"time_limit {cfg.time_limit} exceeds the MaxTime of every configured GPU "
+        f"partition: {', '.join(too_short)}; choose a time limit the partition "
+        "holds or a partition with a longer MaxTime"
+    )
 
 
 def render_extopt_job_script(req: ExtOptJobRequest, *, cfg: MLPClusterConfig,
@@ -295,6 +384,7 @@ def render_extopt_job_script(req: ExtOptJobRequest, *, cfg: MLPClusterConfig,
         "export OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 NUMEXPR_NUM_THREADS=2",
         "export TORCH_NUM_THREADS=2",
         "export PYTHONNOUSERSITE=1",
+        *_mpi_lines(),
     ]
     for chunk in cfg.env_activation.split(";"):
         chunk = chunk.strip()
@@ -356,14 +446,24 @@ def render_local_script(req: ExtOptJobRequest, *, pal: int) -> str:
 
 
 def submit_extopt_job(req: ExtOptJobRequest, *, cfg: MLPClusterConfig,
-                      submit: bool = False) -> dict:
+                      submit: bool = False, ask=None) -> dict:
     """Plan the job; run sbatch only when ``submit=True`` (dry run default).
 
     A dry run writes the input + script and returns them without touching
     the scheduler.  A real submission goes through
     ``delfin.scheduler_client.query`` (never a direct sbatch call), with
-    the child environment from ``delfin.agent.lifeline.child_env``.
+    the child environment from ``delfin.agent.lifeline.child_env``; before
+    it, the GPU partitions too short for ``cfg.time_limit`` are left out
+    (:func:`partitions_for_time`; ``ask`` answers the scontrol query in
+    tests), and none left is a refusal with each partition's MaxTime.
     """
+    if submit and cfg.has_gpu_partition():
+        import dataclasses
+
+        fitting, why = partitions_for_time(cfg, ask)
+        if not fitting:
+            raise RuntimeError(why)
+        cfg = dataclasses.replace(cfg, gpu_partitions=fitting)
     plan = plan_extopt_job(req, cfg=cfg)
     out = {
         "mode": plan.mode,

@@ -31,6 +31,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, Optional
 
+from delfin.agent import state_file
+
 logger = logging.getLogger(__name__)
 
 RECORD_NAME = ".delfin_last_run.json"
@@ -51,6 +53,7 @@ STRUCTURE_KEYS: FrozenSet[str] = frozenset({
     "n_explicit_solvent", "global_optimizer", "multiplicity_global_opt", "CREST",
     "charge", "solvent", "implicit_solvation_model",
     "global_opt_method", "global_opt_mlip_model", "global_opt_mlip_device",
+    "global_opt_mlip_provider", "goat_max_workers", "mlip_fast_client",
 })
 _STRUCTURE_PREFIXES = ("MANTA_", "GUPPY_")
 
@@ -150,6 +153,17 @@ def previous_run(job_dir) -> Optional[Dict[str, Any]]:
 
 def _write(job_dir, record: Dict[str, Any]) -> None:
     path = _record_path(job_dir)
+    # A writer must not land on a file it could not read: this record is the
+    # only copy of the CONTROL the last run was computed with (the Recalc tab
+    # replaces CONTROL.txt when it saves), so a damaged one is moved aside and
+    # the loss reported rather than truncated in place.  agent/state_file.py
+    # measured the silent-overwrite loss this prevents (2026-11-17).
+    _existing, aside = state_file.read_json_for_write(path, default=None)
+    if aside is not None:
+        logger.warning(
+            "The previous %s could not be read; it was moved to %s and kept "
+            "-- the CONTROL of the last run is not reconstructable.",
+            RECORD_NAME, aside)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(record, indent=1), encoding="utf-8")
     tmp.replace(path)

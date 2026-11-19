@@ -17,13 +17,15 @@ import threading
 import time
 import unicodedata
 from pathlib import Path
+from . import state_file as _state_file
+from .state_paths import state_root
 from typing import Any
 
 from . import german as _german
 from . import safe_git
 
 
-_DEFAULT_PATH = Path.home() / ".delfin" / "agent_memory.json"
+_DEFAULT_PATH = state_root() / "agent_memory.json"
 _STOPWORDS = {
     "the", "and", "for", "with", "this", "that", "from", "into", "your",
     "about", "task", "user", "agent", "project", "repo", "code", "file",
@@ -275,21 +277,57 @@ def _compose_frontmatter(
     return "\n".join(lines)
 
 
+def _empty_store() -> dict[str, Any]:
+    """A fresh empty store.
+
+    A function, not a module-level constant: ``dict(CONSTANT)`` copies
+    only the outer mapping, so the ``facts`` LIST stays shared. A caller
+    that appended to it then mutated the constant itself, and every
+    later reader of an "empty" store saw that fact -- measured while
+    building this change.
+    """
+    return {"facts": [], "updated_at": 0}
+
+
 def _read(path: Path) -> dict[str, Any]:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {"facts": [], "updated_at": 0}
+    """The store, or an empty one where it is absent OR unreadable.
+
+    Lenient on purpose: a reader asks what is remembered, and a damaged
+    file means nothing is, which is a true answer to that question and
+    must not raise in the middle of a turn. A WRITER may not build on
+    this answer -- see ``_read_for_write``.
+    """
+    data = _state_file.read_json(path, default=None)
+    return dict(data) if isinstance(data, dict) else _empty_store()
+
+
+def _read_for_write(path: Path) -> tuple[dict[str, Any], Path | None]:
+    """The store to modify, and where an unreadable one was moved to.
+
+    Measured on 2026-11-17, before this existed: two remembered facts, a
+    file truncated the way a full disk or a kill mid-write truncates it,
+    ONE ``save_memory`` call -- and the file held only the new fact. The
+    two were gone and there was no copy anywhere, because the writer
+    built its new store from the lenient read's empty result.
+    """
+    data, moved = _state_file.read_json_for_write(path, default=None)
+    if not isinstance(data, dict):
+        data = _empty_store()
+    return data, moved
 
 
 def _write(path: Path, data: dict[str, Any]) -> None:
+    """Replace the store atomically, 0600.
+
+    A temporary file and a rename: the plain ``write_text`` this replaces
+    truncated first, so a crash or a full disk between the truncation and
+    the last byte produced exactly the damaged file above. The module's
+    own ``_atomic_write`` already did this for the markdown notes; the
+    JSON store was the one writer that did not.
+    """
     _private_dir(path.parent)
     data["updated_at"] = time.time()
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
+    _state_file.write_json_atomic(path, data, mode=0o600)
 
 
 def load_memories(path: Path | None = None) -> list[dict[str, Any]]:
@@ -322,7 +360,7 @@ def save_memory(
         if reasons:
             raise MemoryRefused(reasons)
     p = path or _DEFAULT_PATH
-    data = _read(p)
+    data, moved = _read_for_write(p)
     facts = data.get("facts", [])
     facts.append({
         "text": _without_secrets(text).strip(),
@@ -331,13 +369,33 @@ def save_memory(
     })
     data["facts"] = facts
     _write(p, data)
+    if moved is not None:
+        # The new fact IS stored; what could not be carried over is
+        # whatever the damaged file held. Raised after the write so the
+        # caller does not repeat it, and naming the file rather than its
+        # contents. A caller that cannot act on this (an agent turn
+        # remembering something in passing) may ignore it; the point is
+        # that the loss is never silent.
+        raise MemoryStoreMovedAside(
+            f"the memory store could not be read and was moved to "
+            f"{moved.name}; the new fact was stored, and any fact that "
+            "file held is in it and is no longer in use")
     return len(facts) - 1
 
 
 def delete_memory(index: int, path: Path | None = None) -> bool:
-    """Remove a memory by index. Returns True if removed."""
+    """Remove a memory by index. Returns True if removed.
+
+    Raises :class:`_state_file.StateFileUnreadable` on a damaged store
+    rather than quarantining it: removing one fact from a store that
+    cannot be read would mean writing a store built from nothing, which
+    removes every OTHER fact as well. Deleting is not the moment to
+    decide a file's fate.
+    """
     p = path or _DEFAULT_PATH
-    data = _read(p)
+    data = _state_file.read_json(p, default=None, strict=True)
+    if not isinstance(data, dict):
+        data = _empty_store()
     facts = data.get("facts", [])
     if 0 <= index < len(facts):
         facts.pop(index)
@@ -603,7 +661,7 @@ _office_ws_cache: set[str] | None = None
 
 
 def _office_ws_file() -> Path:
-    return Path.home() / ".delfin" / "office_workspaces.json"
+    return state_root() / "office_workspaces.json"
 
 
 def _load_office_workspaces() -> set[str]:
@@ -1026,7 +1084,7 @@ def _private_dir(path: Path) -> Path:
     caller's write fails on its own terms if the directory is unusable.
     """
     path = Path(path)
-    root = Path.home() / ".delfin"
+    root = state_root()
     try:
         inside = path == root or root in path.parents
     except Exception:
@@ -1077,7 +1135,7 @@ def _delfin_memory_dir(repo_root: Path) -> Path:
     memory`` (not ``~/.claude`` — a different tool's namespace). Migrates
     an existing store from the legacy ~/.claude location on first access."""
     slug = _project_slug(repo_root)
-    new = Path.home() / ".delfin" / "projects" / slug / "memory"
+    new = state_root() / "projects" / slug / "memory"
     _migrate_legacy_dir(
         Path.home() / ".claude" / "projects" / slug / "memory", new)
     return new
@@ -1087,10 +1145,19 @@ def _delfin_global_memory_dir() -> Path:
     """DELFIN's USER-WIDE memory store: ``~/.delfin/memory``. Same layout
     as the per-project store (typed files + MEMORY.md index) but holds
     facts that cross repos — user identity and standing feedback."""
-    return Path.home() / ".delfin" / "memory"
+    return state_root() / "memory"
 
 
-_MEMORY_WRITE_LOCK = Path.home() / ".delfin" / "memory_writes"
+_MEMORY_WRITE_LOCK = state_root() / "memory_writes"
+
+
+class MemoryStoreMovedAside(OSError):
+    """The store could not be read and was moved aside; the write landed.
+
+    Raised AFTER a successful write, so a caller that ignores it still
+    has its fact stored. It exists so the loss of whatever the damaged
+    file held is never silent.
+    """
 
 
 class MemoryRefused(ValueError):
@@ -1181,7 +1248,7 @@ def _delfin_plans_dir(repo_root: Path) -> Path:
     user can re-open them in a later session. Under DELFIN's own ~/.delfin
     (migrated from the legacy ~/.claude location)."""
     slug = _project_slug(repo_root)
-    new = Path.home() / ".delfin" / "projects" / slug / "plans"
+    new = state_root() / "projects" / slug / "plans"
     _migrate_legacy_dir(
         Path.home() / ".claude" / "projects" / slug / "plans", new)
     return new

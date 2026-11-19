@@ -32,7 +32,7 @@ requires_the_cage = pytest.mark.skipif(
     reason="bwrap cannot build the process cage here")
 
 
-def _perms(tmp_path, mode="bypassPermissions"):
+def _perms(tmp_path, mode="default"):
     return A.KitToolPermissions(workspace=str(tmp_path), mode=mode)
 
 

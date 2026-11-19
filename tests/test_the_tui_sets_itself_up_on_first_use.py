@@ -234,6 +234,7 @@ def tui_cli(monkeypatch):
         return {"pid": 4242}
 
     monkeypatch.setattr(cli_service, "_security_preamble", lambda: None)
+    monkeypatch.setattr(cli_service, "_has_terminal", lambda: True)
     monkeypatch.setattr(launcher, "ensure_service", ensure_service)
     monkeypatch.setattr(launcher, "service_command", lambda: ["svc"])
     monkeypatch.setattr(launcher, "other_host_notes", lambda: [])

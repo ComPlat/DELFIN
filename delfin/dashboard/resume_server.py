@@ -119,16 +119,30 @@ def cull_config_args(grace: Optional[float] = None) -> list[str]:
         f"--MappingKernelManager.cull_interval={POLL_SECONDS}",
         "--MappingKernelManager.cull_connected=False",
     ]
-    if not stays_up():
+    from delfin.dashboard import server_record as _sr
+    idle = _sr.idle_exit_seconds()
+    if not stays_up() and idle > 0:
         # The server stopped itself only when a kernel ended -- and a kernel
         # exists only once somebody opens a window. A launcher that died
         # before anyone did left a server with no kernel serving nothing:
         # one ran for five days on port 8868 (2026-09-11 to -16). With no
         # kernel and no request for this long, the server ends. A kept
         # session has a live kernel, so it is never cut short by this.
+        # The same rule ends a detached server once its last kernel is
+        # gone (_delfin_stop_if_nothing_is_left); the grace is the setting
+        # server_record.IDLE_EXIT_ENV, ten minutes by default.
         args.append("--ServerApp.shutdown_no_activity_timeout="
-                    f"{int(NEVER_CONNECTED_SECONDS)}")
+                    f"{max(1, int(round(idle)))}")
     return args
+
+
+def _kept_session_kernels() -> set[str]:
+    """Kernels that hold an agent session with Keep session on."""
+    try:
+        from delfin.dashboard import kept_agent_sessions as _kept_sessions
+        return _kept_sessions.kept_kernel_ids()
+    except Exception:
+        return set()
 
 
 def kept_kernel_ids(*, root: str = "") -> set[str]:
@@ -431,6 +445,17 @@ def resume_kernel_manager_class(base: type) -> type:
                 return grace_seconds()
             return dropped_seconds()
 
+        def _delfin_said_closed(self, kernel_id) -> bool:
+            """Whether the window that went announced its closing (its
+            beacon belongs to that window, as ``_delfin_allowance`` reads
+            it), rather than dropping its connection."""
+            closed_at = self._delfin_closed().get(kernel_id)
+            entry = self._delfin_unwatched().get(kernel_id)
+            if closed_at is None or entry is None:
+                return False
+            since, had_window = entry
+            return bool(had_window) and closed_at >= since - CLOSE_WINDOW_SECONDS
+
         async def cull_kernel_if_idle(self, kernel_id):
             """End a kernel that has had no window for the grace, unless
             it is kept or a turn is running in it. Replaces the server's
@@ -446,14 +471,25 @@ def resume_kernel_manager_class(base: type) -> type:
             allowed = self._delfin_allowance(kernel_id, had_window)
             if seconds <= allowed:
                 return
-            if kernel_id in _turns.running_kernel_ids():
-                # Work in flight. A closed tab and a dropped WebSocket
-                # look the same from here, and ending the kernel now
-                # would throw away a run nobody asked to stop. The clock
-                # starts again so the grace is served after the turn,
-                # not during it -- an unwatched session still stops,
-                # just not mid-run.
-                self._delfin_unwatched()[kernel_id] = (time.monotonic(), had_window)
+            if (kernel_id in _turns.running_kernel_ids()
+                    and (not self._delfin_said_closed(kernel_id)
+                         or kernel_id in _kept_session_kernels())):
+                # Work in flight, held in two cases only. A connection that
+                # DROPPED: the page may still be open on a sleeping laptop,
+                # and ending the kernel would throw away a run nobody asked
+                # to stop. A kernel that holds a session with Keep session
+                # on: the turn finishes, then the session goes on in the
+                # agent service. A page that said it was closing is not
+                # held otherwise (2026-11-13: no hidden holding) -- its
+                # sessions end with it. The clock starts again so the grace
+                # is served after the turn -- and a window that said it was
+                # closing stays one: its close moves with the clock, or it
+                # would read as a dropped connection (15 min) afterwards.
+                closed = self._delfin_said_closed(kernel_id)
+                now = time.monotonic()
+                self._delfin_unwatched()[kernel_id] = (now, had_window)
+                if closed:
+                    self._delfin_closed()[kernel_id] = now
                 if kernel_id not in self._delfin_waiting_for_turn:
                     self._delfin_waiting_for_turn.add(kernel_id)
                     self.log.warning(
@@ -498,6 +534,21 @@ def resume_kernel_manager_class(base: type) -> type:
             if self._delfin_kernels_alive() or kept_kernel_ids():
                 return
             log = getattr(self, "log", None)
+            from delfin.dashboard import server_record as _sr
+            if _sr.is_detached():
+                # No terminal holds a detached server, and closing its
+                # last window by mistake should find the same address
+                # again: it waits out the idle grace instead
+                # (shutdown_no_activity_timeout, cull_config_args).
+                if log:
+                    idle = _sr.idle_exit_seconds()
+                    log.warning(
+                        "[delfin] the last window closed and no session is "
+                        "kept: the server ends itself after %s without a "
+                        "window (%s).",
+                        f"{idle / 60:.0f} min" if idle > 0 else "never",
+                        _sr.IDLE_EXIT_ENV)
+                return
             if log:
                 log.warning(
                     "[delfin] the last window closed and no session is kept: "
@@ -559,6 +610,18 @@ def resume_kernel_manager_class(base: type) -> type:
             self._delfin_unwatched().pop(kernel_id, None)
             _windows.mark(kernel_id, False)
             result = await super().shutdown_kernel(kernel_id, *args, **kwargs)
+            # Sessions switched to Keep session in that kernel go on in the
+            # agent service. The kernel spawns this itself on its way out;
+            # from here as well, for a kernel that was killed after the
+            # shutdown wait and ran no exit hook. A claim is atomic: two
+            # hand-overs never resume one session twice.
+            if not restart:
+                try:
+                    from delfin.dashboard import kept_agent_sessions as _kept_sessions
+                    if _kept_sessions.pending_here():
+                        _kept_sessions.spawn_hand_over()
+                except Exception:
+                    pass
             # The page's goodbye ends an un-kept kernel through here, not
             # through the cull rule -- and for one run the server then sat
             # serving nothing, because the stop lived in the cull path

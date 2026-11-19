@@ -137,7 +137,9 @@ def test_file_and_group_rename_use_pinned_simplex_api():
         await daemon.receive_file(42, '/tmp/file.png')
         await daemon.send_file('#10', '/tmp/result.pdf', 'Report')
         assert commands[0].startswith('/_group_profile #10 ')
-        assert commands[1] == '/freceive 42 encrypt=off /tmp/file.png'
+        # approved_relays=on: a relay from the phone's own list was refused
+        # (fileNotApproved) without it.
+        assert commands[1] == '/freceive 42 approved_relays=on encrypt=off /tmp/file.png'
         body = json.loads(commands[2].split(' json ')[1])
         assert body[0]['fileSource']['filePath'] == '/tmp/result.pdf'
         assert body[0]['msgContent']['type'] == 'file'

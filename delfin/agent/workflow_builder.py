@@ -92,6 +92,10 @@ _STEP_REASONS: Dict[str, str] = {
     "orca_freq_opi": "OPI-built frequencies verify the minimum and give the thermal correction",
     "orca_dlpno_opi": "DLPNO-CCSD(T) single point on the chain's geometry, started from its orbitals",
     "orca_opt_freq_opi": "OPI-built combined optimization + frequency",
+    "orca_qmmm_opi": (
+        "OPI-built additive QM/MM single point: solute region by atom indices "
+        "in an explicit-solvent cluster, force field by reference"
+    ),
 }
 
 
