@@ -497,3 +497,31 @@ def test_the_engine_budget_methods_keep_their_signatures():
         # keyword-only markers survive
         if name == "_book_delegate_spend":
             assert [x.arg for x in node.args.kwonlyargs] == ["started_turn"]
+
+
+def test_the_exhausted_notice_names_the_dial_that_is_binding(monkeypatch):
+    """A run stopped by the request cap is not helped by more money.
+
+    The model-facing block is pinned above and is unchanged; what this
+    pins is the detail the person reads in the inbox. Before the optional
+    request, token and sub-agent caps existed, that detail always said
+    "Raise agent.run_budget_usd / run_budget_s", so once another dial was
+    the binding one the advice pointed at a dial that was not in force,
+    and the ceiling it listed left the binding cap out entirely.
+    """
+    seen = []
+    # 21 of 20 is the 105% the pinned text above carries, so this also
+    # shows the model-facing block is byte-identical whichever dial binds.
+    eng = _engine_via_new(run_budget_requests=20)
+    monkeypatch.setattr(type(eng._budget_ledger()), "_requests_taken",
+                        lambda self: 21)
+    import delfin.agent.attention as A
+    monkeypatch.setattr(A, "emit_attention",
+                        lambda kind, **k: seen.append((kind, k)))
+    block = eng._build_budget_block()
+    assert block == EXHAUSTED, block
+    assert seen, "no notice reached the inbox"
+    detail = " ".join(str(v) for v in seen[0][1].values())
+    assert "agent.run_budget_requests" in detail, detail
+    assert "run_budget_usd" not in detail, detail
+    assert "20 requests" in detail, detail

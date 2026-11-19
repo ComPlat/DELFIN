@@ -34,7 +34,7 @@ import json
 import time
 from typing import Any
 
-from jupyter_server.auth.identity import PasswordIdentityProvider
+from jupyter_server.auth.identity import PasswordIdentityProvider, User
 from traitlets import default
 
 from delfin.dashboard import login_session
@@ -50,6 +50,28 @@ class DelfinIdentityProvider(PasswordIdentityProvider):
     # -- the session store, made on first use (the port is final by then) ---
     _delfin_sessions = None
     _delfin_refused = None
+    _delfin_accounts = None
+
+    def _accounts(self):
+        """The named accounts, read once; empty means none configured."""
+        if self._delfin_accounts is None:
+            from delfin.dashboard import accounts as accounts_mod
+
+            try:
+                self._delfin_accounts = accounts_mod.Accounts()
+            except accounts_mod.AccountsError as exc:
+                # Refuse to serve an unauditable accounts file: no
+                # accounts, and the reason (never a hash) in the log.
+                self._delfin_accounts = accounts_mod.Accounts(None)
+                if self.log is not None:
+                    self.log.warning(
+                        "[delfin] named accounts are not served: %s", exc)
+        return self._delfin_accounts
+
+    def _account_user(self, name: str):
+        """A User whose identity is the named account."""
+        return User(username=f"account:{name}", name=name,
+                    display_name=name)
 
     def _sessions(self) -> login_session.Sessions:
         if self._delfin_sessions is None:
@@ -72,17 +94,22 @@ class DelfinIdentityProvider(PasswordIdentityProvider):
             self._delfin_refused = login_session.RefusedLogins(log=self.log)
         return self._delfin_refused
 
-    def _note_refused(self, how: str, handler: Any) -> None:
+    def _note_refused(self, how: str, handler: Any, who: str = "") -> None:
         try:
             request = handler.request
-            self._refused().refused(how, request.remote_ip, request.path)
+            self._refused().refused(how, request.remote_ip, request.path,
+                                    who=who)
         except Exception:
             pass
 
     # -- the cookie --------------------------------------------------------
     def user_to_cookie(self, user):
         data = json.loads(super().user_to_cookie(user))
-        data[login_session.COOKIE_FIELD] = self._sessions().open()
+        owner = getattr(user, "username", "")
+        if owner.startswith("account:"):
+            data[login_session.OWNER_FIELD] = owner[len("account:"):]
+        data[login_session.COOKIE_FIELD] = self._sessions().open(
+            owner=data.get(login_session.OWNER_FIELD))
         return json.dumps(data)
 
     def user_from_cookie(self, cookie_value):
@@ -107,12 +134,38 @@ class DelfinIdentityProvider(PasswordIdentityProvider):
 
     # -- refused logins ----------------------------------------------------
     def process_login_form(self, handler):
+        # A named account first: the form may carry an account name and
+        # that account's own passphrase. Only when no account matches
+        # does jupyter-server's single-token check run, exactly as it
+        # does on a server without accounts.
+        if self._accounts():
+            name = str(handler.get_argument("account", default="") or "")
+            typed = handler.get_argument("password", default="")
+            if name and typed and self._accounts().verify(name, typed):
+                return self._account_user(name)
+            if name and typed:
+                self._note_refused("wrong passphrase for an account",
+                                   handler, who=name)
+                return None
         user = super().process_login_form(handler)
         if user is None and handler.get_argument("password", default=""):
             self._note_refused("wrong token on the login form", handler)
         return user
 
     async def get_user_token(self, handler):
+        # Same for a token in the URL or the Authorization header: it may
+        # be an account's own passphrase, otherwise it is checked as the
+        # single token, as before.
+        if self._accounts():
+            token = ""
+            try:
+                token = self.get_token(handler) or ""
+            except Exception:
+                token = ""
+            if token:
+                for name in self._accounts().names():
+                    if self._accounts().verify(name, token):
+                        return self._account_user(name)
         user = await super().get_user_token(handler)
         if user is None and getattr(handler, "token", None) \
                 and self.get_token(handler):

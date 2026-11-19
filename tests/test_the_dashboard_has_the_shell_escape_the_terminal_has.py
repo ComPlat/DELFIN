@@ -66,14 +66,26 @@ def test_an_exception_is_shown_not_raised():
 
 
 def test_the_dashboard_is_wired_to_it():
-    """The wiring only; the gate itself is `run_gated_bash`, tested where
-    it lives. Source check because the tab is built around live widgets."""
-    import inspect
+    """The dashboard reaches this gate and no other.
+
+    Driven rather than read: the branch that used to hold this call sat
+    inside a closure built around live widgets, so this test could only
+    look for a string in the module -- and it passed while the branch was
+    broken in two separate ways (see
+    test_the_shell_escape_does_not_need_a_message_first). The call now
+    lives in `tab_agent.shell_escape_entry`, which a test can run.
+    """
     from delfin.dashboard import tab_agent
 
-    src = inspect.getsource(tab_agent)
-    assert "SHELL_PREFIX" in src and "shell_escape_result as _escape" in src
-    assert "dashboard-shell-escape" in src, "it has to run off the UI thread"
+    eng = _Engine(json.dumps({"exit_code": 0, "stdout": "M README.md\n",
+                              "stderr": ""}))
+
+    entry = tab_agent.shell_escape_entry(eng, "git status --short", "/tmp")
+
+    assert eng.calls == ["git status --short"], (
+        "the command must reach engine.run_gated_bash -- the agent's own "
+        "gate -- and nothing else")
+    assert "M README.md" in entry["content"]
 
 
 def test_the_prefix_is_one_character_shared_by_both():

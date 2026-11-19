@@ -1,0 +1,48 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<!--
+  The source of assets/og-framework.png, the preview card a social network
+  or a chat client shows for framework.html. Rendered at exactly 1200x630:
+
+      chromium --headless --window-size=1200,630 --screenshot=og-framework.png \
+               assets/og-framework.source.html
+
+  (any headless browser does; the page was made with Playwright's chromium).
+  Open it from this directory, so the relative delfin.png resolves.
+
+  Colours, wording and proportions are the hero of framework.html, so the
+  card and the page a reader lands on are the same thing. Change the hero
+  and this has to be re-rendered; nothing does that automatically.
+
+  Inter is fetched from Google Fonts HERE ONLY, to bake the typeface the
+  site asks for first into a fixed image. The site itself loads no webfont
+  (--sans: Inter, Helvetica Neue, Arial), so a visitor without Inter sees
+  the fallback; the card does not, which is the point of a baked image.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:1200px;height:630px}
+  body{background:#10283f;color:#f7f9fb;font-family:Inter,system-ui,sans-serif;
+       display:flex;flex-direction:column;justify-content:center;
+       padding:0 86px;position:relative;overflow:hidden}
+  .ring{position:absolute;border:1px solid rgba(98,143,191,.17);border-radius:50%}
+  .r1{width:760px;height:760px;right:-250px;top:-130px}
+  .r2{width:520px;height:520px;right:-130px;top:-10px}
+  .r3{width:300px;height:300px;right:-20px;top:110px}
+  .brand{display:flex;align-items:center;gap:20px;margin-bottom:46px}
+  .brand img{width:66px;height:66px;border-radius:50%}
+  .brand b{font-size:31px;letter-spacing:7px;font-weight:700;color:#dce8f3}
+  .eyebrow{font-size:14px;letter-spacing:3.2px;font-weight:500;
+           color:#7ea7cf;margin-bottom:26px}
+  h1{font-size:76px;line-height:1.04;font-weight:500;letter-spacing:-1.6px}
+  h1 span{color:#8fb6da}
+  p{margin-top:30px;font-size:24px;line-height:1.5;color:#b7cadd;max-width:830px}
+</style></head><body>
+<div class="ring r1"></div><div class="ring r2"></div><div class="ring r3"></div>
+<div class="brand"><img src="delfin.png" alt=""><b>DELFIN</b></div>
+<p class="eyebrow">ENGINEERING NOTES / THE DELFIN AGENT</p>
+<h1>Inside the<br><span>agent framework.</span></h1>
+<p>How a question becomes a sequence of actions, how those actions are
+checked, and how experience becomes a reviewed improvement.</p>
+</body></html>

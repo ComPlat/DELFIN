@@ -21,6 +21,13 @@ refused; other address families are connected as asked. The filter also
 refuses datagram Unix sockets (``sendto`` carries its own address) and
 io_uring (which connects without the system call).
 
+Under the proxy a TCP connect to the loopback is refused unless every
+socket listening there is the command's own: held by its process tree or
+named as a listener of the session's own background jobs
+(``Supervisor._own_loopback``). A test that serves a fake endpoint to
+itself works; the user's notebook or model server and other users'
+services on the same host stay out of reach.
+
 If the supervisor ends, the listener closes and every later connect fails:
 the guard fails closed. Linux x86_64 and aarch64; ``available()`` says
 whether this kernel and architecture support it.
@@ -39,10 +46,30 @@ import sys
 import threading
 
 _ARCHES = {
-    # machine: (AUDIT_ARCH, seccomp, connect, socket, io_uring_setup, pidfd_open, pidfd_getfd)
+    # machine: (AUDIT_ARCH, seccomp, connect, socket, io_uring_setup,
+    #           pidfd_open, pidfd_getfd)
+    # The datagram surface (bind, sendto, sendmsg, sendmmsg) lives in
+    # _ARCH_DGRAM: _arch() keeps its original 7-tuple contract, which a
+    # main-line test unpacks by position.
     "x86_64": (0xC000003E, 317, 42, 41, 425, 434, 438),
     "aarch64": (0xC00000B7, 277, 203, 198, 425, 434, 438),
 }
+
+#: machine: (bind, sendto, sendmsg, sendmmsg)
+# From the kernel headers (operator live-run #3, recvfrom(45) was
+# refused and sendmmsg missed with the old rows): x86_64
+# asm/unistd_64.h -- bind 49, sendto 44, sendmsg 46, sendmmsg 307;
+# aarch64 asm-generic -- bind 200, sendto 206, sendmsg 211, sendmmsg
+# 269. Guarded by tests/test_sx2_syscall_numbers.py (header table +
+# name mapping), never hand-copied again.
+_ARCH_DGRAM = {
+    "x86_64": (49, 44, 46, 307),
+    "aarch64": (200, 206, 211, 269),
+}
+
+
+def _arch_dgram():
+    return _ARCH_DGRAM.get(platform.machine())
 
 _SECCOMP_SET_MODE_FILTER = 1
 _SECCOMP_GET_NOTIF_SIZES = 3
@@ -54,6 +81,9 @@ _NOTIF_RECV = 0xC0502100
 _NOTIF_SEND = 0xC0182101
 _NOTIF_ID_VALID = 0x40082102
 _NOTIF_ID_VALID_OLD = 0x80082102
+#: SECCOMP_USER_NOTIF_FLAG_CONTINUE: the kernel carries out the notified
+#: syscall itself after the supervisor answers 0 with this flag.
+_NOTIF_FLAG_CONTINUE = 1
 
 _libc = ctypes.CDLL(None, use_errno=True)
 _libc.syscall.restype = ctypes.c_long
@@ -109,6 +139,190 @@ def name_lookup_sockets(direct_routes: bool, net_mode: str,
 #: refused as a whole besides these.
 _METADATA = {ipaddress.ip_address(a) for a in (
     "169.254.169.254", "100.100.100.200", "168.63.129.16", "fd00:ec2::254")}
+
+
+#: Where the process and socket tables are read. A test points it at a
+#: recorded tree, so the ownership rule is checked on every machine.
+_PROC = "/proc"
+
+
+def _proc_net_address(field: str):
+    """``(ip_address, port)`` of a ``local_address`` in /proc/net/tcp{,6}.
+
+    The kernel prints each 32-bit word of the address in host byte order."""
+    hexaddr, hexport = field.split(":")
+    raw = bytes.fromhex(hexaddr)
+    if sys.byteorder == "little":
+        raw = b"".join(raw[i:i + 4][::-1] for i in range(0, len(raw), 4))
+    return ipaddress.ip_address(raw), int(hexport, 16)
+
+
+def loopback_listeners(ip, port: int) -> set:
+    """Inodes of the listening TCP sockets a connect to ``ip:port`` can
+    reach: bound to that address or to a wildcard, IPv4 and IPv6 (an IPv6
+    socket that also accepts IPv4 shows its address as mapped). Read from
+    /proc/net, which shows every user's sockets in this network namespace;
+    empty when nothing listens there or the tables cannot be read."""
+    out: set = set()
+    for table in (f"{_PROC}/net/tcp", f"{_PROC}/net/tcp6"):
+        try:
+            with open(table, encoding="latin-1") as fh:
+                next(fh, None)
+                for line in fh:
+                    cols = line.split()
+                    # local_address, state 0A = LISTEN, inode at index 9
+                    if len(cols) < 10 or cols[3] != "0A":
+                        continue
+                    try:
+                        addr, lport = _proc_net_address(cols[1])
+                    except ValueError:
+                        continue
+                    if lport != port:
+                        continue
+                    if getattr(addr, "ipv4_mapped", None) is not None:
+                        addr = addr.ipv4_mapped
+                    if addr == ip or addr.is_unspecified:
+                        out.add(cols[9])
+        except OSError:
+            continue
+    return out
+
+
+def socket_inodes_below(root: int, include_root: bool = True) -> set:
+    """Inodes of the sockets ``root`` and every process below it hold
+    (/proc); without ``include_root``, those of the processes below it only.
+    A process of another user is not readable and adds nothing."""
+    tree = {root}
+    parent_of: dict = {}
+    try:
+        names = os.listdir(_PROC)
+    except OSError:
+        names = []
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"{_PROC}/{name}/stat", encoding="latin-1") as fh:
+                stat = fh.read()
+            parent_of[int(name)] = int(stat.rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+    grew = True
+    while grew:
+        grew = False
+        for pid, ppid in parent_of.items():
+            if ppid in tree and pid not in tree:
+                tree.add(pid)
+                grew = True
+    if not include_root:
+        tree.discard(root)
+    inodes: set = set()
+    for pid in tree:
+        try:
+            fds = os.listdir(f"{_PROC}/{pid}/fd")
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                link = os.readlink(f"{_PROC}/{pid}/fd/{fd}")
+            except OSError:
+                continue
+            if link.startswith("socket:["):
+                inodes.add(link[8:-1])
+    return inodes
+
+
+def owns_loopback(ip, port: int, own_inodes=(), root_pid: int = 0,
+                  include_root: bool = True) -> bool:
+    """Whether every socket a connect to loopback ``ip:port`` can reach is
+    the caller's own: one of ``own_inodes`` (the listening sockets of the
+    session's background jobs) or held by ``root_pid``'s process tree.
+
+    On a shared host the loopback carries other users' services and the
+    user's own unsandboxed ones (a notebook server, a model server, the
+    dashboard); those are in neither and stay refused. Judged from /proc
+    when asked, so a port the server gave up and another program took is no
+    longer the caller's. False when nothing listens there, for a non-loopback
+    address and on any error."""
+    try:
+        if not ip.is_loopback:
+            return False
+        reach = loopback_listeners(ip, port)
+        if not reach:
+            return False
+        own = {str(i) for i in own_inodes}
+        if reach <= own:
+            return True
+        return bool(root_pid) and reach <= (
+            own | socket_inodes_below(int(root_pid), include_root))
+    except Exception:
+        return False
+
+
+def _udp_datagram_rows():
+    """The bound endpoint rows of the kernel's UDP tables.
+
+    State 07 is UDP's bound entry (an unconnected socket's resting state,
+    which is how OpenMPI holds its discovery and rank-to-rank sockets)."""
+    out: set = set()
+    for table in (f"{_PROC}/net/udp", f"{_PROC}/net/udp6"):
+        try:
+            with open(table, encoding="latin-1") as fh:
+                next(fh, None)
+                for line in fh:
+                    cols = line.split()
+                    # local_address, state 07 = the bound endpoint,
+                    # inode at index 9
+                    if len(cols) < 10 or cols[3] != "07":
+                        continue
+                    try:
+                        addr, lport = _proc_net_address(cols[1])
+                    except ValueError:
+                        continue
+                    if getattr(addr, "ipv4_mapped", None) is not None:
+                        addr = addr.ipv4_mapped
+                    out.add((addr, lport, cols[9]))
+        except OSError:
+            continue
+    return out
+
+
+def udp_datagram_ends(ip, port: int) -> set:
+    """Inodes of the bound UDP endpoints a datagram to ``ip:port`` can
+    reach: bound to that address or to a wildcard, IPv4 and IPv6 (an IPv6
+    socket that also serves IPv4 shows its address as mapped). Read from
+    /proc/net, which shows every user's sockets in this network namespace;
+    empty when nothing is bound there or the tables cannot be read."""
+    return {(inode) for (addr, lport, inode) in _udp_datagram_rows()
+            if lport == port
+            and (addr == ip or addr.is_unspecified)}
+
+
+def owns_udp(ip, port: int, own_inodes=(), root_pid: int = 0,
+             include_root: bool = True) -> bool:
+    """Whether every UDP endpoint a datagram to ``ip:port`` can reach is
+    the caller's own: one of ``own_inodes`` (the session's background
+    jobs' sockets) or held by ``root_pid``'s process tree.
+
+    Same rule as :func:`owns_loopback`, on the UDP tables: on a shared
+    host the loopback carries other users' ranks and the user's own
+    unsandboxed senders; those are in neither and stay refused. False
+    when nothing is bound there, for a non-loopback address (a datagram
+    bound to a real interface is what the filter must refuse at
+    creation) and on any error."""
+    try:
+        if not ip.is_loopback:
+            return False
+        reach = udp_datagram_ends(ip, port)
+        if not reach:
+            return False
+        own = {str(i) for i in own_inodes}
+        if reach <= own:
+            return True
+        return bool(root_pid) and reach <= (
+            own | socket_inodes_below(int(root_pid), include_root))
+    except Exception:
+        return False
 
 
 def _arch():
@@ -177,15 +391,59 @@ def _head(audit: int):
 
 def _program(block_inet_datagrams: bool = False):
     """connect() to the supervisor, no io_uring, no datagram Unix socket,
-    and with a restricted network no non-stream inet socket (UDP would
-    leave without connect(), past the supervisor). A foreign architecture
-    (32-bit entry points use other numbers) runs nothing."""
-    audit, _sc, nr_connect, nr_socket, nr_uring, _po, _pg = _arch()
+    and with a restricted network the datagram surface is judged, not
+    blocked: socket(AF_INET/6, SOCK_DGRAM) is notified (creation sends
+    nothing; OpenMPI reads interfaces over it), and the address-bearing
+    datagram sends (sendto/sendmsg/sendmmsg) are notified too -- a UDP
+    datagram otherwise leaves without connect(), past the supervisor.
+    A foreign architecture (32-bit entry points use other numbers)
+    runs nothing."""
+    (audit, _sc, nr_connect, nr_socket, nr_uring, _po, _pg) = _arch()
+    (nr_bind, nr_sendto, nr_sendmsg, nr_sendmmsg) = _arch_dgram()
     items, tail = _head(audit)
     items += [
         (_JEQ, nr_connect, "notify", None),
         (_JEQ, nr_uring, "enosys", None),
-        (_JEQ, nr_socket, None, "allow"),
+    ]
+    if block_inet_datagrams:
+        # The address-bearing datagram sends are judged BEFORE the
+        # socket() comparison: sendto(nr) never matches nr_socket, so a
+        # JEQ after socket()'s false edge was unreachable -- and with a
+        # false edge to allow it was an open escape (reviewer walk).
+        # sendto is judged only when the destination pointer (args[4],
+        # seccomp_data args[1] of sendto) is non-NULL: a NULL
+        # destination uses the connected peer, which connect() already
+        # judged -- the supervisor stays out of the no-destination hot
+        # path. sendmsg/sendmmsg carry the destination inside the
+        # msghdr, invisible to BPF: they are refused in-kernel (the
+        # measured OpenMPI path needs socket+ioctl and TCP connect
+        # only; adding them back needs the pidfd_getfd handoff first).
+        # seccomp_data: nr @0, arch @4, instruction_pointer @8, args @16
+        # (args[i] @ 16 + 8*i): sendto's dest_addr is args[4] @48, a 64-bit
+        # pointer -- NULL only when both halves are 0. It was loaded from
+        # @40 (args[3], the flags, almost always 0), so every sendto was
+        # allowed: UDP left to any host (live run 2026-11-17).
+        items += [(_JEQ, nr_sendto, None, "after_sends"),
+                  (_LD, 48),                          # args[4] low half
+                  (_JEQ, 0, None, "notify"),
+                  (_LD, 52),                          # args[4] high half
+                  (_JEQ, 0, "allow", "notify")]       # NULL -> peer judged, allow;
+        # dest non-NULL -> notified and judged by _datagram_send.
+        items += [("label", "after_sends"),
+                  # sendmsg/sendmmsg: destination inside the msghdr,
+                  # invisible to BPF -- refused in-kernel, type-agnostic
+                  # (a datagram could leave past the proxy otherwise,
+                  # reviewer walk on 9ab3816e9).
+                  (_JEQ, nr_sendmsg, "eacces", None),
+                  (_JEQ, nr_sendmmsg, "eacces", None)]
+    # Only socket() reaches the family dispatch below: every other system
+    # call is allowed here (the sends were judged above). With a
+    # fall-through on both edges every call whose first two arguments
+    # looked like (AF_UNIX, SOCK_DGRAM) or (AF_INET, SOCK_DGRAM) was
+    # refused or notified -- a close() got EACCES and a caged git push
+    # hung (CI, 2026-11-17).
+    items += [(_JEQ, nr_socket, None, "allow")]
+    items += [
         (_LD, 16),
         (_JEQ, socket.AF_UNIX, "unix", None),
     ]
@@ -196,8 +454,10 @@ def _program(block_inet_datagrams: bool = False):
               ("label", "unix"), (_LD, 24), (_AND, 0xF),
               (_JEQ, socket.SOCK_DGRAM, "eacces", "allow")]
     if block_inet_datagrams:
+        # Datagram creation is notified; anything else (streams, the
+        # proxy's TCP path) falls through to the allow label.
         items += [("label", "inet"), (_LD, 24), (_AND, 0xF),
-                  (_JEQ, socket.SOCK_STREAM, "allow", "eacces")]
+                  (_JEQ, socket.SOCK_DGRAM, "notify", None)]
     items += [("label", "allow"), (_RET, _RET_ALLOW),
               ("label", "eacces"), (_RET, _RET_ERRNO | errno.EACCES),
               ("label", "enosys"), (_RET, _RET_ERRNO | errno.ENOSYS),
@@ -209,7 +469,7 @@ def _block_unix_program(block_inet_datagrams: bool = False):
     """Where the kernel cannot hand connects to a supervisor: no Unix socket
     at all (and no io_uring), and with a restricted network no inet socket
     at all either."""
-    audit, _sc, _nc, nr_socket, nr_uring, _po, _pg = _arch()
+    audit, _sc, _nc, nr_socket, nr_uring, _po, _pg, *_x = _arch()
     items, tail = _head(audit)
     items += [(_JEQ, nr_uring, "enosys", None),
               (_JEQ, nr_socket, None, "allow"),
@@ -250,12 +510,33 @@ def install_filter(block_inet_datagrams: bool = False) -> int:
     return _install(_program(block_inet_datagrams), _SECCOMP_FILTER_FLAG_NEW_LISTENER)
 
 
+def parse_notification(raw: bytes) -> tuple[int, int, int, tuple]:
+    """(id, pid, syscall number, args) of a struct seccomp_notif.
+
+    Layout: u64 id @0, u32 pid @8, u32 flags @12, then struct seccomp_data
+    @16 -- s32 nr @16, u32 arch @20, u64 instruction_pointer @24, u64
+    args[6] @32. The number was read at offset 24 (the instruction
+    pointer's low half), so no socket() or sendto() was ever recognised
+    and each fell into the connect() path, which answered EINVAL (live run
+    2026-11-17: OpenMPI's opal_ifinit in the agent's cage)."""
+    notif_id, pid, _flags = struct.unpack_from("<QII", raw, 0)
+    (nr,) = struct.unpack_from("<i", raw, 16)
+    args = struct.unpack_from("<6Q", raw, 32)
+    return int(notif_id), int(pid), int(nr), tuple(int(a) for a in args)
+
+
 class Supervisor:
     """Answers the command's connect() calls until the command ends."""
 
     def __init__(self, listener: int, allowed: list[str], net_mode: str = "open",
-                 allowed_tcp=(), denied=()):
+                 allowed_tcp=(), denied=(), own_listeners=()):
         self.listener = listener
+        # The listening sockets of the session's own background jobs (their
+        # inodes, read when the command started); with the sockets of the
+        # command's own process tree they are the servers it may reach on
+        # the loopback (_own_loopback).
+        self.own_listeners = {str(i) for i in own_listeners if str(i).isdigit()}
+        self.root_pid = 0
         self.allowed = [os.path.realpath(p).rstrip("/") for p in allowed if p]
         self.denied = [os.path.realpath(p).rstrip("/") for p in denied if p]
         self.net_mode = net_mode if net_mode in ("open", "proxy", "none") else "none"
@@ -284,8 +565,21 @@ class Supervisor:
         if self.net_mode == "proxy" and ((ip, port) in self.allowed_tcp
                                          or (ip, 0) in self.allowed_tcp):
             return ""
+        if self.net_mode == "proxy" and ip.is_loopback and self._own_loopback(ip, port):
+            return ""
         return (f"direct connection to {ip}:{port}; the sandbox reaches the "
                 "network through its proxy only")
+
+    def _own_loopback(self, ip, port: int) -> bool:
+        """A server of the command's own tree or one of the session's own
+        background jobs (``owns_loopback``). The supervisor connects right
+        after the check (_handle); a socket replaced in between is not seen.
+
+        Rejected: allowing the whole loopback under the proxy (reaches what
+        runs outside every sandbox with the user's rights); a port list
+        fixed when the command starts (a port given up and taken by another
+        program stays open)."""
+        return owns_loopback(ip, port, self.own_listeners, self.root_pid)
 
     def unix_path_allowed(self, path: str) -> bool:
         real = os.path.realpath(path)
@@ -299,8 +593,11 @@ class Supervisor:
         return beneath(self.allowed)
 
     # -- plumbing -----------------------------------------------------------
-    def _send(self, notif_id: int, val: int, err: int) -> None:
-        resp = struct.pack("<QqiI", notif_id, val, err, 0)
+    def _send(self, notif_id: int, val: int, err: int, flags: int = 0) -> None:
+        # struct seccomp_notif_resp: id, val, error, flags. CONTINUE goes in
+        # flags with val and error both 0 -- in the error field it made the
+        # kernel answer the command's socket() with EINVAL (live run 17.11.).
+        resp = struct.pack("<QqiI", notif_id, val, err, flags)
         buf = ctypes.create_string_buffer(resp, 24)
         _libc.ioctl(self.listener, ctypes.c_ulong(_NOTIF_SEND), buf)
 
@@ -336,7 +633,79 @@ class Supervisor:
         finally:
             os.close(pidfd)
 
-    def _handle(self, notif_id: int, pid: int, args: tuple) -> None:
+    def _datagram_socket(self, notif_id: int, pid: int, args: tuple,
+                         nr: int) -> None:
+        """socket() under a restricted network: creating a datagram socket
+        is the command's own act (creation sends nothing; OpenMPI reads
+        its interfaces over one). Allowed with
+        SECCOMP_USER_NOTIF_FLAG_CONTINUE, so the kernel carries out the
+        real call -- no address rewrite, no copied descriptor.
+
+        The escape is judged where the address appears: sendto/
+        sendmsg/sendmmsg with a destination go to _datagram_send."""
+        self._send(notif_id, 0, 0, _NOTIF_FLAG_CONTINUE)
+
+    def _datagram_send(self, notif_id: int, pid: int, args: tuple) -> None:
+        """sendto() with a destination address: the destination is judged
+        by the UDP ownership rule (owns_udp -- the command tree's own
+        ranks, or a session background job's socket, loopback only). The
+        filter notifies sendto only when the destination pointer is
+        non-NULL (a NULL destination uses the connected peer, which
+        connect() already judged, and is allowed in-kernel);
+        sendmsg/sendmmsg are refused in-kernel (the destination is
+        inside the msghdr, invisible to BPF). Everything else is refused
+        with EACCES, fail closed."""
+        try:
+            # sendto(fd, buf, len, flags, dest_addr, addrlen): the destination
+            # is args[4], its length args[5] (args[1]/[2] are the payload).
+            addr_ptr, addr_len = int(args[4]), int(args[5]) & 0xFFFFFFFF
+            if addr_len < 2:
+                # no destination reached the judge: the filter only
+                # notifies sendto with a non-NULL pointer
+                self._send(notif_id, -1, -errno.EACCES)
+                return
+            with open(f"/proc/{pid}/mem", "rb", buffering=0) as mem:
+                mem.seek(addr_ptr)
+                raw = mem.read(addr_len)
+            if len(raw) != addr_len or not self._valid(notif_id):
+                raise ValueError("unreadable destination address")
+            family = struct.unpack_from("<H", raw)[0]
+            if family == socket.AF_INET and len(raw) >= 8:
+                port = struct.unpack_from(">H", raw, 2)[0]
+                ip = ipaddress.ip_address(raw[4:8])
+            elif family == socket.AF_INET6 and len(raw) >= 24:
+                port = struct.unpack_from(">H", raw, 2)[0]
+                ip = ipaddress.ip_address(raw[8:24])
+            else:
+                raise ValueError(f"address family {family}")
+            if owns_udp(ip, port, self.own_listeners,
+                        self.root_pid, include_root=True):
+                self._send(notif_id, 0, 0, _NOTIF_FLAG_CONTINUE)
+                return
+            self.refused.append(f"send {ip}:{port}")
+            self._send(notif_id, -1, -errno.EACCES)
+        except Exception:
+            try:
+                self._send(notif_id, -1, -errno.EACCES)
+            except Exception:
+                pass
+
+    def _handle(self, notif_id: int, pid: int, args: tuple, nr: int = -1) -> None:
+        # The datagram surface, by the architecture's own numbers: socket()
+        # is the command's own creation; sendto with a destination is
+        # judged by the UDP ownership rule. bind() is not notified (the
+        # filter allows it in-kernel; the escape is judged at sendto).
+        # sendmsg/sendmmsg never arrive: the filter refuses them
+        # in-kernel (the destination sits inside the msghdr, invisible
+        # to BPF).
+        (audit, _sc, nr_connect, nr_socket, nr_uring, _po, _pg) = _arch()
+        (_nr_bind, nr_sendto, _nsm, _nsmm) = _arch_dgram()
+        if nr == nr_socket:
+            self._datagram_socket(notif_id, pid, args, nr)
+            return
+        if nr == nr_sendto:
+            self._datagram_send(notif_id, pid, args)
+            return
         err = errno.EACCES
         val = -1
         try:
@@ -410,6 +779,7 @@ class Supervisor:
 
     def serve(self, child_pid: int) -> int:
         """Answer notifications until ``child_pid`` exits; return its status."""
+        self.root_pid = int(child_pid)
         poller = select.poll()
         poller.register(self.listener, select.POLLIN)
         while True:
@@ -425,7 +795,7 @@ class Supervisor:
                 buf = ctypes.create_string_buffer(80)
                 if _libc.ioctl(self.listener, ctypes.c_ulong(_NOTIF_RECV), buf) != 0:
                     continue
-                notif_id, pid, _flags = struct.unpack_from("<QII", buf.raw)
-                args = struct.unpack_from("<6Q", buf.raw, 32)
-                threading.Thread(target=self._handle, args=(notif_id, pid, args),
+                notif_id, pid, nr, args = parse_notification(buf.raw)
+                threading.Thread(target=self._handle,
+                                 args=(notif_id, pid, args, nr),
                                  daemon=True).start()

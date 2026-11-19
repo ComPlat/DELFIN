@@ -337,9 +337,16 @@ def test_the_result_keys_are_pinned():
 
 
 def test_the_stop_reasons_and_exit_codes_are_pinned():
+    # "incomplete" (9) added 2026-11-17: a turn that ends of its own
+    # accord with work left -- the task ledger still open, unreadable, or a
+    # promised tool call never made. Those four engine reasons fell through
+    # classify() to "done", so a run that stopped with its task list open
+    # read as finished. This assertion is what made that contract change
+    # visible instead of silent, which is why it is spelled out in full.
     assert TO.EXIT_CODES == {
         "done": 0, "error": 1, "needs_approval": 4, "refused": 5,
-        "max_turns": 6, "budget": 7, "timeout": 8}
+        "max_turns": 6, "budget": 7, "timeout": 8, "incomplete": 9,
+        "degenerate_test_loop": 10}
     assert set(TO.STOP_REASONS) == set(TO.EXIT_CODES)
     # 2 (usage) and 3 (engine init failed) keep the meaning they had
     # before this schema: no run happened, so there is no result.
@@ -366,13 +373,21 @@ def test_every_reason_code_is_a_gate_category():
 
 def test_engine_stop_reasons_map_to_the_documented_set():
     cases = {
-        "end_turn": "done", "": "done", "end_turn_open_tasks": "done",
+        "end_turn": "done", "": "done",
+        # Was pinned to "done" when this file was written, recording the
+        # fall-through rather than deciding it; the engine's own comment at
+        # the stop site says the opposite ("the supervisor sees WHY it
+        # ended and resumes it").
+        "end_turn_open_tasks": "incomplete",
+        "end_turn_tasks_unknown": "incomplete",
+        "promised_no_tool_call": "incomplete",
+        "quota_wait_exceeds_budget": "budget",
         "max_tool_rounds": "max_turns", "cost_cap": "budget",
         "max_turn_output": "budget", "run_budget_usd": "budget",
         "run_budget_turns": "budget", "run_budget_s": "timeout",
         "error": "error", "no_progress_loop": "error",
         "consecutive_identical_errors": "error", "max_context": "error",
-        "stopped": "error",
+        "stopped": "error", "degenerate_test_loop": "degenerate_test_loop",
     }
     for engine_reason, expected in cases.items():
         assert TO.classify(error="", engine_stop_reason=engine_reason,

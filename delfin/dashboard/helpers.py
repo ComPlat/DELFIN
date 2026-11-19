@@ -1108,6 +1108,22 @@ def apply_branding(ctx, title='DELFIN Dashboard', favicon_data_uri=''):
                 if (!'{safe_icon}') return;
                 var head = document.head || document.getElementsByTagName('head')[0];
                 if (!head) return;
+                // Voila's own page carries <link rel="icon"
+                // href="data:;base64,="> -- a blank icon it ships so the
+                // browser asks for none -- and it sits AFTER </head>,
+                // later in the document than anything appended to the
+                // head. With two icon links the browser takes the last,
+                // so the blank one won and the tab showed no logo
+                // (voila 0.5.13; the pin allows anything below 0.6).
+                // Every foreign icon link is therefore dropped, and ours
+                // is appended last.
+                var foreign = document.querySelectorAll(
+                    "link[rel~='icon'], link[rel='shortcut icon']");
+                for (var i = 0; i < foreign.length; i++) {{
+                    if (foreign[i].getAttribute('data-delfin-favicon') !== '1') {{
+                        foreign[i].parentNode.removeChild(foreign[i]);
+                    }}
+                }}
                 var link = document.querySelector("link[rel='icon'][data-delfin-favicon='1']");
                 if (!link) {{
                     link = document.createElement('link');

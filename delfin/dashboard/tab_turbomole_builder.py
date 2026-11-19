@@ -2,6 +2,7 @@
 
 import html as _html
 import json
+import logging
 import time as _time
 from pathlib import Path
 
@@ -24,6 +25,25 @@ TM_MODULE_OPTIONS = [
     'ccsdf12', 'pnoccsd',
 ]
 TM_PARA_OPTIONS = ['SMP', 'MPI']
+
+
+def _read_import_json(json_file):
+    """The job's ``delfin_import.json``, or its empty shape when absent.
+
+    A file that exists but cannot be parsed is moved aside first (its
+    bytes kept -- the recorded Define commands are the only record of
+    what was typed) and the message says where it went, so a writer
+    cannot overwrite a history it could not read.
+    """
+    from delfin.agent import state_file
+    data, moved = state_file.read_json_for_write(json_file, default={})
+    if moved:
+        logging.getLogger(__name__).warning(
+            "%s could not be read and was moved to %s; the recorded Define "
+            "commands of this job start over, and what they held is in the "
+            "file kept aside", json_file, moved.name)
+    return data if isinstance(data, dict) else {
+        'define_commands': [], 'settings': {}}
 
 
 def _xyz_to_coord(xyz_text, smiles_cache):
@@ -221,11 +241,8 @@ def create_tab(ctx):
             return
         json_file = job_dir / 'delfin_import.json'
         try:
-            if json_file.exists():
-                data = json.loads(json_file.read_text())
-            else:
-                data = {'define_commands': [], 'settings': {}}
-            data['define_commands'].append(cmd)
+            data = _read_import_json(json_file)
+            data.setdefault('define_commands', []).append(cmd)
             json_file.write_text(json.dumps(data, indent=2))
         except Exception:
             pass
@@ -582,7 +599,7 @@ def create_tab(ctx):
             # Save settings
             json_file = job_dir / 'delfin_import.json'
             try:
-                data = json.loads(json_file.read_text()) if json_file.exists() else {'define_commands': [], 'settings': {}}
+                data = _read_import_json(json_file)
                 data['settings'] = {
                     'module': tm_module.value,
                     'para_arch': tm_para_arch.value,
