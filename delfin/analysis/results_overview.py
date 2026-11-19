@@ -775,8 +775,8 @@ def _render_skeleton(sym, rotated, bonds, size,
     zcol = rotated[:, 2] if rotated.shape[1] > 2 else numpy.zeros(len(sym))
     for idx in numpy.argsort(zcol):
         s = sym[idx]
-        if s == "H" and not show_h:
-            continue
+        if s == "H":
+            continue  # heteroatom protons were kept by the caller; C-H are gone
         if s == "O" and _degree[idx] <= 1:
             s = "OH"
         if s in _implicit:
