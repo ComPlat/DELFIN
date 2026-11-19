@@ -11,10 +11,17 @@ Exit code 0 = all good; 1 = named gaps.
 import ast
 import sys
 
+# The modules this feature is made of. A hand-kept list of paths rots the
+# moment one of them moves -- help_lookup went from delfin/dashboard/ to
+# delfin/common/ on 2026-11-19 and this script then stopped at a
+# FileNotFoundError on its first file, which nobody noticed because
+# nothing runs it. tests/test_help_lookup_is_complete.py now asserts that
+# every path here exists, so the list fails loudly in CI instead.
 FILES = [
     "delfin/common/control_allowed_values.py",
     "delfin/common/control_validator.py",
-    "delfin/dashboard/help_lookup.py",
+    "delfin/common/help_lookup.py",
+    "delfin/common/help_tabs.py",
     "delfin/dashboard/tab_help.py",
     "delfin/dashboard/header_keysearch.py",
 ]

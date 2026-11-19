@@ -100,3 +100,64 @@ def test_lookup_scores_exact_names_first():
     r = lookup("Submit Job")
     assert r["entries"][0]["kind"] == "tab"
     assert r["entries"][0]["name"] == "Submit Job"
+
+
+# --------------------------------------------------------------------
+# Two properties that make the arrangement safe, which nothing held.
+# --------------------------------------------------------------------
+
+def test_the_two_sources_of_allowed_values_do_not_overlap():
+    """Allowed values live in two places: on the FieldSpec, or in
+    ALLOWED_BY_KEY for the keys whose coercion could not say it inline.
+    Measured 2026-11-19: 52 on specs, 117 in the table, zero in both and
+    zero in neither -- a clean partition, which is exactly what makes two
+    sources harmless.
+
+    Nothing pinned that. A key gaining an ``allowed=`` while its table
+    entry stays would create two answers to one question, and
+    ``spec.allowed or ALLOWED_BY_KEY[...]`` would silently prefer one of
+    them -- the table entry would still be read by a human editing it,
+    and no longer by the code.
+    """
+    from delfin.common.control_validator import CONTROL_FIELD_SPECS
+    from delfin.common.control_allowed_values import ALLOWED_BY_KEY
+
+    specs = {s.name: s for s in CONTROL_FIELD_SPECS}
+    on_spec = {n for n, s in specs.items() if (s.allowed or "").strip()}
+    in_table = set(ALLOWED_BY_KEY)
+
+    both = sorted(on_spec & in_table)
+    assert not both, (
+        "these keys state their allowed values twice; delete one side, "
+        f"because only the spec is read: {both}")
+
+    orphans = sorted(in_table - set(specs))
+    assert not orphans, (
+        "the table describes keys that no FieldSpec defines, so nothing "
+        f"will ever show them: {orphans}")
+
+    missing = sorted(set(specs) - on_spec - in_table)
+    assert not missing, (
+        f"these keys state their allowed values nowhere: {missing}")
+
+
+def test_the_checker_script_names_files_that_exist():
+    """scripts/check_help_lookup.py keeps a hand-written list of the
+    modules this feature is made of, for a login node without pytest.
+    Nothing runs it, so when help_lookup moved out of delfin/dashboard/
+    the script stopped at a FileNotFoundError on its first file and said
+    so to nobody. A list of paths that nothing checks is a list that is
+    already wrong."""
+    import importlib.util
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    path = root / "scripts" / "check_help_lookup.py"
+    spec = importlib.util.spec_from_file_location("_check_help", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    missing = [f for f in module.FILES if not (root / f).is_file()]
+    assert not missing, (
+        f"{path.name} names files that are not there: {missing}")
+    assert len(module.FILES) >= 5
