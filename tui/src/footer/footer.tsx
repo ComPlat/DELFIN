@@ -387,6 +387,12 @@ export function Footer(props: FooterProps): JSX.Element {
       return "the reason… (enter refuses with it)"
     }
     if (a) return "a message… (the keys above answer on an empty prompt)"
+    // The session's offer, as in the dashboard's box: tab takes it.
+    const offered = props.session()?.suggestions?.[0]
+    if (offered && !props.starting?.() && !props.session()?.turn) {
+      const more = (props.session()?.suggestions?.length ?? 0) > 1 ? ", again for the next" : ""
+      return `${offered}  (tab takes it${more})`
+    }
     return props.starting?.() ? "starting the session…"
       : props.session()?.turn
       ? `queue a message… (${props.keymap.label("steer")} sends it into the turn)` : "ask DELFIN…"

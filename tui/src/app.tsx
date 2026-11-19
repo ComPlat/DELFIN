@@ -471,6 +471,14 @@ export function App(props: AppProps): JSX.Element {
         picker.open("merge back a session worktree", rows, (c) => void mergeWorktreeBack(c.value))
         return true
       }
+    // /exit (or /quit) in a session a dashboard hosts: the dashboard's chat
+    // has no /exit, and the line reached it as a message. As in the REPL, it
+    // ends the session (for every window, saved) and the window leaves.
+    if (/^\/(exit|quit)$/.test(text.trim()) && !how && hostedOf(session()?.summary)) {
+      const ended = await call("session.shutdown", { sessionId: sid() })
+      if (ended) props.onQuit()
+      return Boolean(ended)
+    }
     // An unknown /command is answered here and never sent (a paid turn
     // about a typo); with the key that steers too. The line stays.
     const target = sid()
@@ -517,6 +525,8 @@ export function App(props: AppProps): JSX.Element {
     argumentChoices: (command) => argumentChoices(command),
     clickPauseMs: props.clickPauseMs,
     beforePaste: () => approval.releaseHeld(),
+    // Not while a question is open or another view has the prompt.
+    suggestions: () => (session()?.pending.length || session()?.turn || viewOpen() ? [] : session()?.suggestions ?? []),
   })
 
   // -- the agent view ----------------------------------------------------------
@@ -1240,6 +1250,14 @@ export function App(props: AppProps): JSX.Element {
           ? [String(asked.question ?? ""), ...(asked.choices ?? []).map((c, i) => `${i + 1}. ${c}`)]
           : String(asked.preview ?? "").split("\n")
         props.onLines?.(what, body)
+        return
+      }
+      // A question only guessed from the answer's text does not hold the
+      // turn: esc stops a running turn as it does without one (2026-11-16:
+      // a greeting ending in "?" took esc, and the turn could not be stopped).
+      if (asked.detected && km.matches("interrupt", key) && s?.turn && s.state !== "ended") {
+        key.preventDefault()
+        void call("session.cancel", { sessionId: sid() })
         return
       }
       // The prompt keeps the keys: the question's own from an empty prompt
