@@ -60,7 +60,7 @@ import os
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 #: Default for ``agent.endpoint_max_concurrency``. Zero disables the gate.
 DEFAULT_MAX_CONCURRENCY = 16
@@ -114,6 +114,11 @@ def display_url(url: str) -> str:
         return urlunsplit((p.scheme, host, p.path, "", ""))
     except Exception:
         return ""
+
+class SlotWaitCancelled(RuntimeError):
+    """The wait for a slot was ended by its caller (``should_stop``): the
+    person pressed Stop while the request still queued for the endpoint."""
+
 
 class SlotWaitTimeout(RuntimeError):
     """No slot became free within :data:`_SLOT_WAIT_TIMEOUT_S`."""
@@ -425,6 +430,7 @@ class EndpointGate:
     # -- acquire / release ---------------------------------------------------
 
     def acquire(self, *, timeout_s: float = _SLOT_WAIT_TIMEOUT_S,
+                should_stop: Optional[Callable[[], bool]] = None,
                 interactive: Optional[bool] = None) -> Optional[int]:
         """Take one slot, or None when the gate is disabled.
 
@@ -470,7 +476,7 @@ class EndpointGate:
             raise RuntimeError(
                 "EndpointGate already holds a slot; build a fresh "
                 "EndpointGate for the second request")
-        fd, index = self._take_slot(dirpath, limit, deadline,
+        fd, index = self._take_slot(dirpath, limit, deadline, should_stop,
                                     interactive=interactive)
         if fd is None:
             return None                       # gate broken, go ungated
@@ -489,8 +495,8 @@ class EndpointGate:
                 # so a person never queues behind that model's headless
                 # runs; the cap gate just counts everyone equally.
                 cap_fd, _ = self._take_slot(cap_dir, _config_limit(),
-                                            deadline)
-            except SlotWaitTimeout:
+                                            deadline, should_stop)
+            except (SlotWaitTimeout, SlotWaitCancelled):
                 # The endpoint is saturated by OTHER models: never leave a
                 # model slot held ungated. Free it and let the caller treat
                 # the wait as what it was -- waiting on the endpoint.
@@ -503,7 +509,9 @@ class EndpointGate:
         return index
 
     def _take_slot(self, dirpath: Path, n_slots: int,
-                   deadline: float, *, interactive=None):
+                   deadline: float,
+                   should_stop: Optional[Callable[[], bool]] = None,
+                   *, interactive=None):
         """Flock one free slot file in ``dirpath`` within ``deadline``.
 
         ``interactive`` selects the pool of slots the request scans:
@@ -570,16 +578,21 @@ class EndpointGate:
                 # The fd now holds the flock for this process's lifetime;
                 # release() undoes it. A process that dies without
                 # releasing has the kernel close it: the slot frees itself.
-                if in_use:
-                    self.wait_notice = (
-                        f"waiting for a slot on "
-                        f"{self.base_url or 'endpoint'}: {in_use} in use")
+                # A slot free at once is no wait: nothing is said (it read
+                # "waiting for a slot" with a slot taken on the first pass).
                 return fd, i
             if not announced:
                 announced = True
                 self.wait_notice = (
                     f"waiting for a slot on {self.base_url or 'endpoint'}:"
                     f" {in_use} in use")
+            if should_stop is not None:
+                try:
+                    stop = bool(should_stop())
+                except Exception:
+                    stop = False
+                if stop:
+                    raise SlotWaitCancelled("stopped while waiting for a slot")
             if time.monotonic() >= deadline:
                 raise SlotWaitTimeout(
                     f"no slot on {display_url(self.base_url)} within the "
