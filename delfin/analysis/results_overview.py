@@ -262,29 +262,12 @@ def smiles_png_bytes(smiles: str, size: int = 260, fmt: str = "png"):
         drawer.FinishDrawing()
         return drawer.GetDrawingText()
     import numpy
-    # Vector path: the vector PDF is drawn by matplotlib from the RDKit
-    # 2D coordinates (bonds as lines, atom labels).  The coordinates
-    # come from the SAME pipeline as the calc's SMILES.png
-    # (delfin_docx_report.py): RemoveHs, Normalizer, CoordGen scaling
-    # 1.5 - or Compute2DCoords + StraightenDepiction when CoordGen is
-    # unavailable - so the column-2 picture matches SMILES.png.
+    # Vector path: the ORIGINAL SMILES.png look (as drawn before the
+    # pipeline experiments - plain RDKit depiction).  RemoveHs only,
+    # then Compute2DCoords: no Normalizer, no CoordGen, no straighten.
+    # Coordinates feed the colored matplotlib vector renderer.
     mol = Chem.RemoveHs(mol, updateExplicitCount=True)
-    try:
-        from rdkit.Chem.MolStandardize import rdMolStandardize
-        mol = rdMolStandardize.Normalizer().normalize(mol)
-    except Exception:
-        pass
-    coordgen_done = False
-    try:
-        from rdkit.Chem import rdCoordGen
-        params = rdCoordGen.CoordGenParams()
-        params.SetCoordgenScaling(1.5)
-        params.SetMinimizerPrecision(1e-4)
-        coordgen_done = rdCoordGen.AddCoords(mol, params)
-    except Exception:
-        coordgen_done = False
-    if not coordgen_done:
-        AllChem.Compute2DCoords(mol)
+    AllChem.Compute2DCoords(mol)
     conf = mol.GetConformer()
     pos = numpy.array([[conf.GetAtomPosition(i).x,
                         conf.GetAtomPosition(i).y]
@@ -292,18 +275,8 @@ def smiles_png_bytes(smiles: str, size: int = 260, fmt: str = "png"):
     sym = [a.GetSymbol() for a in mol.GetAtoms()]
     bonds = [(b.GetBeginAtomIdx(), b.GetEndAtomIdx(),
               int(b.GetBondTypeAsDouble())) for b in mol.GetBonds()]
-    # bond orders list like the xyz renderer expects: (i, j) -> order
     orders = {(i, j): o for i, j, o in bonds if o >= 2}
     pairs = [(i, j) for i, j, _ in bonds]
-    try:
-        from rdkit.Chem import rdDepictor
-        rdDepictor.StraightenDepiction(mol)
-        conf = mol.GetConformer()
-        pos = numpy.array([[conf.GetAtomPosition(i).x,
-                            conf.GetAtomPosition(i).y]
-                           for i in range(mol.GetNumAtoms())])
-    except Exception:
-        pass
     return _render_skeleton(sym, pos, pairs, size,
                             bond_orders=orders, fmt=fmt, colored=True)
 
