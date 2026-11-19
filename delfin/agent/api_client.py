@@ -31890,17 +31890,46 @@ def _kit_fallback_model(current: str, provider: str, base_url: str = "",
     (A->B->A until the switch budget ran out). Only ``kit.*`` models in
     ``_KIT_PREFERENCE`` are ever returned -- never the paid ``azure.*``,
     ``google.*``, ``alias.*`` or ``standard-*`` routes, and no embedding,
-    reranker, speech or image models."""
-    if str(provider or "").lower() != "kit":
-        return ""
+    reranker, speech or image models.
+
+    Beyond KIT: any provider with a ranked roster in
+    ``model_capabilities.MODEL_PREFERENCE_BY_PROVIDER`` is served the same
+    way. That map holds only providers which bill no USD, and the reason
+    is not symmetry -- switching the model of a PAID provider would spend
+    the person's money on a model they did not choose, which is a
+    decision and not a repair. So ``openai`` and ``claude`` still answer
+    "", as a test pins.
+
+    Added for Blablador on 2026-11-19: its models are served from a
+    shared research cluster whose nodes are drained and restarted, and
+    before this an unavailable model there ended the turn instead of
+    switching -- a gap that showed only on a provider other than the one
+    the function was written for.
+    """
+    prov = str(provider or "").lower()
     try:
         from . import model_capabilities as _mc
-        served = _mc.kit_models_served(base_url, api_key, fetch=True)
+        ranked_all = _mc.MODEL_PREFERENCE_BY_PROVIDER.get(prov)
+        if not ranked_all:
+            return ""
         skip = set(already_left or ()) | {current}
-        ranked = [m for m in _mc._KIT_PREFERENCE if m not in skip]
+        ranked = [m for m in ranked_all if m not in skip]
+        if not ranked:
+            return ""
+        # What the endpoint actually lists wins over the ranking: a model
+        # that is ranked but not served is the situation being recovered
+        # from. KIT keeps its own cached reader; every other
+        # OpenAI-compatible roster is read from /v1/models.
+        if prov == "kit":
+            served = _mc.kit_models_served(base_url, api_key, fetch=True)
+        else:
+            entries = _mc._fetch_openai_models(base_url, api_key)
+            served = {str(e.get("id") or "") for e in entries or ()} or None
         if served:
             return next((m for m in ranked if m in served), "")
-        return ranked[0] if ranked else ""
+        # The listing could not be read. The ranking is still better than
+        # ending the turn, and the model being left is excluded from it.
+        return ranked[0]
     except Exception:
         return ""
 
