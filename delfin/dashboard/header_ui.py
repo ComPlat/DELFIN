@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 import threading
 import time
 from pathlib import Path
@@ -57,7 +58,18 @@ def load_prefs() -> dict:
 def save_prefs(**changes) -> None:
     try:
         from delfin.agent.state_paths import write_text_atomic
-        data = load_prefs()
+        # The whole store is written back, so the read is the writer's:
+        # a damaged file is moved aside (its bytes kept) rather than
+        # answered with an empty dict that would drop every key. Said
+        # where the person can see it, not silent.
+        from delfin.agent import state_file
+        data, moved = state_file.read_json_for_write(_prefs_path(),
+                                                     default={})
+        if moved:
+            logging.getLogger(__name__).warning(
+                "%s could not be read and was moved to %s; the header's "
+                "remembered state starts over, and what it held is in the "
+                "file kept aside", _prefs_path().name, moved.name)
         data.update(changes)
         write_text_atomic(_prefs_path(), json.dumps(data, indent=1, sort_keys=True))
     except Exception:

@@ -42,10 +42,22 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import state_file as _state_file
+
 # The five fields of the user model. Order matters where a message could
 # plausibly match more than one: correction > role > expertise > working
 # style > preference.
 FIELDS = ("role", "expertise", "preferences", "working_style", "corrections")
+
+
+class UserModelMovedAside(Exception):
+    """The model file was damaged and was moved aside, not overwritten.
+
+    Raised by the writer AFTER the new entry is stored, naming the file
+    the person must look at -- the loss of whatever the damaged file held
+    is never silent, even though a caller that only remembers in passing
+    may choose to ignore it. Mirrors ``memory_store.MemoryStoreMovedAside``.
+    """
 
 # Rough token estimate, matching memory_nudge.estimated_tokens.
 _CHARS_PER_TOKEN = 4
@@ -358,33 +370,6 @@ def classify_field(text: str) -> str | None:
 
 # --- store helpers --------------------------------------------------------------
 
-def _set_file_perms(path: Path) -> None:
-    """Best-effort 0600 on the user-model file (per-user, must not leak)."""
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
-
-
-def _atomic_write(path: Path, data: dict[str, Any]) -> None:
-    """Atomically write the model (temp file + os.replace), 0600."""
-    import tempfile
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
-    tmp = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, ensure_ascii=False, indent=2)
-        os.replace(tmp, path)
-        _set_file_perms(path)
-    finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-
 
 class UserModel:
     """A typed, per-user picture of the agent's human.
@@ -402,6 +387,42 @@ class UserModel:
         return self._path
 
     # -- read --------------------------------------------------------------------
+
+    def _normalise_fields(self, data: Any) -> dict[str, list[dict[str, Any]]]:
+        """The fields mapping, normalised to only what is stored/model-worthy.
+
+        Same filtering wherever a store is loaded, reader or writer: only
+        ``source_role == "user"`` entries that survive ``_storable`` are
+        kept, newest per field, bounded. The reader and the writer must not
+        drift apart on what an entry looks like.
+        """
+        fields = data.get("fields") if isinstance(data, dict) else None
+        if not isinstance(fields, dict):
+            fields = {}
+        normalised: dict[str, list[dict[str, Any]]] = {}
+        for f in FIELDS:
+            bucket = fields.get(f)
+            kept: list[dict[str, Any]] = []
+            for entry in bucket if isinstance(bucket, list) else ():
+                # Only what a typed message could have become: the user's
+                # own, one short line, nothing permission-shaped.
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("source_role") != "user":
+                    continue
+                value = _storable(entry.get("value"))
+                if not value:
+                    continue
+                kept.append({
+                    "value": value,
+                    "source_role": "user",
+                    "source_message": _one_line(
+                        entry.get("source_message"))[:MAX_ENTRY_CHARS]
+                    or value,
+                    "date": _one_line(entry.get("date"))[:32],
+                })
+            normalised[f] = kept[-MAX_ENTRIES_PER_FIELD:]
+        return normalised
 
     def _read(self) -> dict[str, Any]:
         if self._cache is not None:
@@ -431,34 +452,37 @@ class UserModel:
             data = json.loads(raw.decode("utf-8", errors="replace"))
         except (ValueError, TypeError):
             data = {}
-        fields = data.get("fields") if isinstance(data, dict) else None
-        if not isinstance(fields, dict):
-            fields = {}
-        normalised: dict[str, list[dict[str, Any]]] = {}
-        for f in FIELDS:
-            bucket = fields.get(f)
-            kept: list[dict[str, Any]] = []
-            for entry in bucket if isinstance(bucket, list) else ():
-                # Only what a typed message could have become: the user's
-                # own, one short line, nothing permission-shaped.
-                if not isinstance(entry, dict):
-                    continue
-                if entry.get("source_role") != "user":
-                    continue
-                value = _storable(entry.get("value"))
-                if not value:
-                    continue
-                kept.append({
-                    "value": value,
-                    "source_role": "user",
-                    "source_message": _one_line(
-                        entry.get("source_message"))[:MAX_ENTRY_CHARS]
-                    or value,
-                    "date": _one_line(entry.get("date"))[:32],
-                })
-            normalised[f] = kept[-MAX_ENTRIES_PER_FIELD:]
-        self._cache = {"schema": 1, "fields": normalised}
+        self._cache = {"schema": 1, "fields": self._normalise_fields(data)}
         return self._cache
+
+    def _read_for_update(self) -> tuple[dict[str, Any], Path | None]:
+        """The fields to modify, and where a damaged store was moved to.
+
+        The WRITER's read: distinct from ``_read``, which may answer a
+        damaged file with "nothing is learned" -- that is a true answer for
+        a reader and destroys the store for a writer that builds the file
+        from it. Here a damaged file is quarantined (bytes kept, dated name
+        reserved with O_EXCL) and the empty fields returned with ``moved``
+        set, so the caller can store its new entry and report the loss.
+        """
+        data, moved = _state_file.read_json_for_write(self._path, default=None)
+        if moved is not None and self._cache is not None:
+            # The cache described the file before it was found damaged;
+            # it must not feed the write that replaces that file.
+            self._cache = None
+        return {"schema": 1, "fields": self._normalise_fields(data)}, moved
+
+    def _read_for_deletion(self) -> dict[str, Any]:
+        """The fields a delete operation is allowed to modify, or raise.
+
+        like ``memory_store.delete_memory``: deleting entries of a store
+        that cannot be read removes the entries that could have been kept,
+        so a damaged store raises :class:`_state_file.StateFileUnreadable`
+        rather than being written over from nothing. The bytes stay in
+        place for a person to inspect.
+        """
+        data = _state_file.read_json(self._path, default=None, strict=True)
+        return {"schema": 1, "fields": self._normalise_fields(data)}
 
     def entries(self) -> dict[str, list[dict[str, Any]]]:
         """field -> list of entry dicts (value/source_role/source_message/date)."""
@@ -469,7 +493,9 @@ class UserModel:
 
     def _persist(self, fields: dict[str, list[dict[str, Any]]]) -> None:
         self._cache = {"schema": 1, "fields": fields}
-        _atomic_write(self._path, {"schema": 1, "fields": fields})
+        _state_file.write_json_atomic(self._path,
+                                      {"schema": 1, "fields": fields},
+                                      mode=0o600)
 
     def update_from_user_message(
         self,
@@ -494,7 +520,8 @@ class UserModel:
         field = classify_field(body)
         if field is None:
             return self.entries()
-        fields = self._read()["fields"]
+        model, moved = self._read_for_update()
+        fields = model["fields"]
         # Said again is not a second fact: the entry moves to the newest
         # place and keeps one line.
         bucket = [e for e in fields[field]
@@ -509,13 +536,28 @@ class UserModel:
         })
         fields[field] = bucket[-MAX_ENTRIES_PER_FIELD:]
         self._persist(fields)
+        if moved is not None:
+            # The new entry IS stored; what could not be carried over is
+            # whatever the damaged file held. Raised after the write so the
+            # caller does not repeat it, and naming the file rather than its
+            # contents. A caller that cannot act on this may ignore it; the
+            # point is that the loss is never silent.
+            raise UserModelMovedAside(
+                f"the user model could not be read and was moved to "
+                f"{moved.name}; the new fact was stored, and any fact that "
+                "file held is in it and is no longer in use")
         return {f: list(v) for f, v in fields.items()}
 
     def forget(self, field: str, index: int) -> bool:
-        """Remove one entry; True when removed (from the persisted model)."""
+        """Remove one entry; True when removed (from the persisted model).
+
+        A damaged store raises :class:`_state_file.StateFileUnreadable`
+        rather than being written over from nothing: removing one entry
+        from a model that cannot be read removes every other entry as well.
+        """
         if field not in FIELDS:
             return False
-        fields = self._read()["fields"]
+        fields = self._read_for_deletion()["fields"]
         bucket = fields[field]
         if index < 0 or index >= len(bucket):
             return False
@@ -524,8 +566,13 @@ class UserModel:
         return True
 
     def forget_all(self) -> int:
-        """Clear every field; returns the number of entries removed."""
-        fields = self._read()["fields"]
+        """Clear every field; returns the number of entries removed.
+
+        A damaged store raises :class:`_state_file.StateFileUnreadable`
+        rather than being written empty from nothing (which would drop
+        every learned fact with it).
+        """
+        fields = self._read_for_deletion()["fields"]
         removed = sum(len(v) for v in fields.values())
         self._persist({f: [] for f in FIELDS})
         return removed
