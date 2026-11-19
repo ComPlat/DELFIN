@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 import os
 import re
 import threading
@@ -1127,10 +1128,23 @@ def save_open_sessions(rows: list[dict]) -> None:
     """Remember which sessions are open, whole and with this host's name.
 
     Never raises. Written atomically: a torn write of this file is the
-    whole list of open sessions gone on the next start."""
+    whole list of open sessions gone on the next start.
+
+    The file the next start reads back is this one, so a store this
+    process could not read is not simply replaced: the damaged file is
+    moved aside (its bytes kept for the person to look at) and the
+    message names where it went.
+    """
     try:
+        from delfin.agent import state_file
         from delfin.agent.state_paths import ensure_dir, write_text_atomic
         ensure_dir(_OPEN_SESSIONS_PATH.parent)
+        _ignore, moved = state_file.read_json_for_write(_OPEN_SESSIONS_PATH)
+        if moved:
+            logging.getLogger(__name__).warning(
+                "%s could not be read and was moved to %s; the list of "
+                "open sessions starts over, and what it held is in the "
+                "file kept aside", _OPEN_SESSIONS_PATH.name, moved.name)
         here = _host()
         stamped = [{**row, "host": row.get("host") or here}
                    for row in rows if isinstance(row, dict)]
