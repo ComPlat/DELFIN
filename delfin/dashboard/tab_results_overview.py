@@ -559,7 +559,13 @@ class ResultsOverviewPanel:
             row_height = 100
             # Column 2: 2D structure drawing.
             if want_2d and smiles:
-                png = smiles_png_bytes(smiles)
+                # Prefer the calculation's own SMILES.png (the file
+                # the earlier dashboards shipped); fall back to a
+                # freshly drawn one.
+                _smp = _os.path.join(row["path"], "SMILES.png")
+                png = (open(_smp, "rb").read()
+                       if _os.path.exists(_smp)
+                       else smiles_png_bytes(smiles))
                 if png:
                     img = XLImage(_io.BytesIO(png))
                     img.width = img.height = 130

@@ -580,3 +580,24 @@ def test_formula_to_latex_subscripts_and_charges():
             == "C$_{23}$H$_{18}$N$_{4}$NiO$_{2}$")
     assert (ro.formula_to_latex("[Fe(bpy)3]2+")
             == "[Fe(bpy)$_{3}$]$^{2+}$")
+
+
+def test_skeleton_keeps_heteroatom_protons(tmp_path):
+    pytest.importorskip("numpy")
+    pytest.importorskip("matplotlib")
+    # Methanol: C + O + 4 H (3 aliphatic CH3 + 1 O-H proton).
+    xyz = ("methanol\n6\n"
+           "C   0.000  0.000  0.000\n"
+           "O   1.430  0.000  0.000\n"
+           "H  -0.360  1.030  0.000\n"
+           "H  -0.360 -0.515  0.890\n"
+           "H  -0.360 -0.515 -0.890\n"
+           "H   1.800  0.760  0.000\n")
+    calc = tmp_path / "meoh"
+    calc.mkdir()
+    (calc / "initial.xyz").write_text(xyz, encoding="utf-8")
+    off = ro.initial_xyz_png_bytes(str(calc), show_h=False)
+    on = ro.initial_xyz_png_bytes(str(calc), show_h=True)
+    assert off and on and off != on
+    # The O-H proton survives the H-off filter: only the 3 CH3 protons
+    # are dropped, so with-H has 6 atoms, without-H has 3 (C,O,H_on_O).

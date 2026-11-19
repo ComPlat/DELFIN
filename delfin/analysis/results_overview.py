@@ -376,12 +376,22 @@ def initial_xyz_png_bytes(calc_dir: str, size: int = 320, show_h=True,
     bond_orders = bond_orders if bond_orders is not None \
         else _infer_bond_orders(sym, bonds)
 
+    # Skeletal convention: aliphatic H (C-H) are NEVER drawn in the
+    # skeleton, regardless of the checkbox.  Protons on heteroatoms
+    # (OH, NH2, COOH, SH...) are the chemistry the picture is about,
+    # so they stay visible; the checkbox only adds the remaining
+    # (aliphatic) H on top.
+    _hetero = {"O", "N", "S", "P", "Se", "B", "Si", "F", "Cl", "Br", "I"}
+    hetero_h = set()
+    for i, j in bonds:
+        for h, other in ((i, j), (j, i)):
+            if sym[h] == "H" and sym[other] in _hetero:
+                hetero_h.add(h)
     if show_h:
         sym_vis = sym
         bonds_vis = bonds
     else:
-        # Hide H: bonds TO H disappear with them (skeletal convention).
-        keep = [i for i, s in enumerate(sym) if s != "H"]
+        keep = [i for i, s in enumerate(sym) if s != "H" or i in hetero_h]
         keepset = set(keep)
         remap = {old_i: new_i for new_i, old_i in enumerate(keep)}
         sym_vis = [sym[i] for i in keep]
