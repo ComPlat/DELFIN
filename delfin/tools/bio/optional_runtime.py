@@ -14,8 +14,12 @@ _ENTRY = ("import importlib.metadata as m,sys; "
           "sys.argv[0]=n; sys.exit(e.load()())")
 
 
-def probe_distribution(distribution: str, *, python: str, expected_version: str, work_dir: Path) -> dict:
+def probe_distribution(distribution: str, *, python: str, expected_version: str, work_dir: Path, allow_install: bool = False, discover: bool = True) -> dict:
     from delfin import qm_runtime
+    import sys
+    from delfin.tools.bio.environments import RECIPES, ensure_python
+    if discover and distribution in RECIPES and python == sys.executable:
+        python = ensure_python(distribution, expected_version, allow_install=allow_install)
     resolved = qm_runtime.resolve_tool(python)
     if resolved is None:
         raise FileNotFoundError(f"Python environment unavailable: {python}")
@@ -33,7 +37,7 @@ def probe_distribution(distribution: str, *, python: str, expected_version: str,
 def run_console(distribution: str, entry: str, args: list[str], *, python: str,
                 expected_version: str, work_dir: Path, timeout: float) -> dict:
     from delfin import qm_runtime
-    runtime = probe_distribution(distribution, python=python, expected_version=expected_version, work_dir=work_dir)
+    runtime = probe_distribution(distribution, python=python, expected_version=expected_version, work_dir=work_dir, allow_install=True)
     argv = ["-I", "-c", _ENTRY, distribution, entry, *map(str, args)]
     with (work_dir / "engine.log").open("w") as log:
         result = qm_runtime.run_tool(runtime["python"], argv, cwd=work_dir, stdout=log, stderr=subprocess.STDOUT,
@@ -48,10 +52,13 @@ def run_worker(script: str, options: dict, versions: dict[str, str], *, python: 
     """Run repository-owned Python worker code, never a user-supplied command."""
     from delfin import qm_runtime
     from delfin.tools.bio.artifacts import write_json
-    probes = {name: probe_distribution(name, python=python, expected_version=version, work_dir=work_dir)
-              for name, version in versions.items()}
-    if not probes:
+    if not versions:
         raise ValueError('worker requires explicit distribution versions')
+    first, version = next(iter(versions.items()))
+    initial = probe_distribution(first, python=python, expected_version=version, work_dir=work_dir, allow_install=True)
+    probes = {first: initial}
+    for name, version in list(versions.items())[1:]:
+        probes[name] = probe_distribution(name, python=initial['python'], expected_version=version, work_dir=work_dir, discover=False)
     executable = next(iter(probes.values()))['python']
     source = work_dir / 'worker.py'
     source.write_text(script)

@@ -21,6 +21,8 @@ class Binding:
 
 
 BINDINGS = {
+    "prolif": Binding("prolif_analyze", {"poses": "poses_file", "receptor": "receptor_file"}, {"interactions": "interaction_report"}),
+    "esmfold": Binding("esmfold_predict", {"request": "request_file"}, {"models": "prediction_bundle"}),
     "receptor_prepare": Binding("bio_receptor_prepare", {"structure": "structure_file"}, {"receptor": "prepared_receptor"}),
     "assemble_complex": Binding("bio_assemble_complex", {"receptor": "receptor_file", "poses": "poses_file"}, {"complex": "complex_structure"}),
     "assay_join": Binding("bio_assay_join", {"properties": "properties_file", "assays": "assays_file"}, {"dataset": "medchem_dataset"}),
@@ -56,13 +58,13 @@ def _implementation_hash(adapter) -> str:
     return hashlib.sha256("".join(file_hash(p) for p in paths).encode()).hexdigest()
 
 
-def preflight_plan(plan: dict) -> dict:
+def preflight_plan(plan: dict, *, provision: bool = False) -> dict:
     from delfin.tools.bio.workflows import validate_plan, _INDEX
     from delfin.tools._registry import get
     structural = validate_plan(plan)
     if not structural["valid"]:
         return {**structural, "inputs": {}}
-    errors, inputs, steps = [], {}, []
+    errors, inputs, steps, pending = [], {}, [], []
     for name, item in plan["inputs"].items():
         try:
             if not isinstance(item.get("path"), str) or not item["path"]:
@@ -107,18 +109,27 @@ def preflight_plan(plan: dict) -> dict:
                 else:
                     distributions = importlib.metadata.packages_distributions().get(requirement.split(".")[0], [])
                     dependencies[requirement] = {name: importlib.metadata.version(name) for name in distributions}
-            runtime = adapter.runtime_preflight(**kwargs) if hasattr(adapter, "runtime_preflight") else None
+            pending.append((adapter, kwargs, node['id'], contract.requires_binaries))
         except (ValueError, ImportError, ModuleNotFoundError, OSError, subprocess.TimeoutExpired) as exc:
             runtime = None
             errors.append(f"{node['id']}: {exc}")
-        for binary in contract.requires_binaries:
-            from delfin import qm_runtime
-            if qm_runtime.resolve_tool(binary) is None:
-                errors.append(f"{node['id']}: executable unavailable: {binary}")
         steps.append({"id": node["id"], "adapter": binding.adapter,
-                      "runtime": runtime,
+                      "runtime": None,
                       "python_dependencies": dependencies, "settings_inputs": settings_inputs,
                       "implementation_sha256": _implementation_hash(adapter)})
+    # Do not install anything until every node's inputs/settings/binding passed.
+    if not errors:
+        from delfin import qm_runtime
+        by_id = {step['id']: step for step in steps}
+        for adapter, kwargs, identity, binaries in pending:
+            try:
+                runtime = adapter.runtime_preflight(_allow_install=provision, **kwargs) if hasattr(adapter, 'runtime_preflight') else None
+                by_id[identity]['runtime'] = runtime
+                for binary in binaries:
+                    if not (runtime and runtime.get('executable')) and qm_runtime.resolve_tool(binary) is None:
+                        errors.append(f'{identity}: executable unavailable: {binary}')
+            except (ValueError, ImportError, OSError, subprocess.TimeoutExpired) as exc:
+                errors.append(f'{identity}: {exc}')
     return {"valid": True, "execution_ready": not errors, "execution_performed": False,
             "errors": [], "blockers": errors, "inputs": inputs, "steps": steps,
             "note": "Local preflight only; scientific applicability must be established separately"}
@@ -129,7 +140,12 @@ def execute_plan(plan: dict, work_dir: Path, *, cores: int = 1, resume: bool = F
     from delfin.tools.bio.workflows import _INDEX
     if type(cores) is not int or cores < 1:
         raise ValueError("cores must be a positive integer")
-    preflight = preflight_plan(plan)
+    if cancelled is not None and cancelled():
+        return {'status': 'cancelled', 'execution_performed': False, 'steps': []}
+    root = Path(work_dir).resolve()
+    if root.exists() and (not resume or not (root / 'run.json').is_file()):
+        raise ValueError('existing run directory requires resume=True and its run.json')
+    preflight = preflight_plan(plan, provision=True)
     if not preflight["execution_ready"]:
         return {"status": "blocked", "execution_performed": False, "preflight": preflight}
     signature = hashlib.sha256(json.dumps({"plan": plan, "inputs": preflight["inputs"],

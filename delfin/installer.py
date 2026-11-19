@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import threading
@@ -36,7 +37,7 @@ from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 #: In the order they are installed and listed.
-GROUPS: Tuple[str, ...] = ("qm", "analysis", "mlp", "csp", "ai", "py", "ketcher")
+GROUPS: Tuple[str, ...] = ("qm", "analysis", "mlp", "csp", "ai", "bio", "py", "ketcher")
 
 #: What the test gate needs to run the suite, by module name. Kept in one
 #: tuple so the catalog tool's presence check and its install command name
@@ -195,6 +196,11 @@ TOOLS: Tuple[Tool, ...] = (
     Tool("ketcher", "ketcher", "Ketcher"),
 )
 
+from delfin.tools.bio.environments import RECIPES as _BIO_RECIPES
+TOOLS += tuple(Tool(item.name, "bio", item.name, modules=item.modules,
+                    aliases=tuple(command for command in item.commands if command != item.name))
+               for item in _BIO_RECIPES.values())
+
 _BY_NAME: Dict[str, Tool] = {}
 for _tool in TOOLS:
     for _key in (_tool.name, *_tool.aliases):
@@ -316,10 +322,17 @@ def _run(command: List[str], *, cwd: Path, env: Dict[str, str],
         process = subprocess.Popen(
             command, cwd=str(cwd), env=env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+            start_new_session=True,
         )
     except OSError as exc:
         return False, [f"the installer could not be started: {exc}"]
-    timer = threading.Timer(timeout, process.kill) if timeout else None
+    def stop_group():
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            if process.poll() is None:
+                process.kill()
+    timer = threading.Timer(timeout, stop_group) if timeout else None
     if timer is not None:
         timer.start()
     try:
@@ -484,6 +497,11 @@ def install(requested: Iterable[str], *, on_line: Optional[Callable[[str], None]
             ok, lines = _install_ketcher(on_line, force or update, timeout)
         elif group == "py":
             ok, lines = _install_python_tools(tools, on_line=on_line, timeout=timeout)
+        elif group == "bio":
+            from delfin.tools.bio import environments
+            result = environments.install([tool.name for tool in tools], on_line=on_line, timeout=timeout or 1800, repair=force or update)
+            ok = result["ok"]
+            lines = [line for row in result["results"] for line in row["lines"]]
         else:
             group_env = dict(_UPDATE_ENV.get(group, {})) if update else {}
             group_env.update(env or {})
@@ -657,6 +675,9 @@ def _pip_package(module: str) -> str:
 
 def present(tool: Tool) -> bool:
     """Whether *tool* is installed where DELFIN looks. Found, nothing run."""
+    if tool.group == "bio":
+        from delfin.tools.bio import environments
+        return environments.present(tool.name)
     if tool.group == "ketcher":
         from delfin.dashboard import ketcher
 
@@ -724,6 +745,22 @@ def _repair_one(tool: Tool, named: bool, *, on_line, timeout) -> Optional[Dict[s
         lines = [line for result in outcome["results"] for line in result["lines"]]
         ok = bool(outcome["ok"]) and present(tool)
         return _checked(tool, ok, "reinstalled", why, lines)
+
+    if tool.group == 'bio':
+        from delfin.tools.bio import environments
+        if not present(tool):
+            return reinstall('not installed') if named else None
+        item = environments.recipe(tool.name)
+        try:
+            if item.modules:
+                environments.ensure_python(item.name, item.version)
+            else:
+                from delfin import qm_runtime
+                found = qm_runtime.resolve_tool(item.commands[0])
+                environments.check_binary(item, found.requested_name if found else item.commands[0])
+            return _checked(tool, True, 'checked', 'Version/import or binary check passed; scientific reference run pending')
+        except (ValueError, ImportError, OSError, subprocess.TimeoutExpired) as exc:
+            return reinstall(str(exc)) if named else _checked(tool, False, '', str(exc))
 
     if tool.group == "ketcher":
         if present(tool):

@@ -42,7 +42,7 @@ def test_templates_have_valid_wiring_but_explicit_execution_blockers(name):
     report = validate_plan(plan)
     assert report["valid"], report
     assert not report["execution_ready"]
-    if name == "medchem":
+    if name in {"docking", "medchem", "esmfold"}:
         assert all(step["integration"] == "adapter" for step in report["steps"])
         assert report["blockers"]  # Files and settings still need execution preflight.
     else:

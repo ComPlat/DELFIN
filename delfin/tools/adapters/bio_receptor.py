@@ -99,9 +99,12 @@ class ReceptorPreparation(StepAdapter):
             raise ValueError('explicit waters and missing_atoms policies are required')
 
     def runtime_preflight(self, **kwargs):
-        return {name: probe_distribution(name, python=kwargs.get('python', sys.executable),
-                                        expected_version=kwargs[name + '_version'], work_dir=Path.cwd())
-                for name in ('pdbfixer', 'openmm')}
+        first = probe_distribution('pdbfixer', python=kwargs.get('python', sys.executable),
+                                   expected_version=kwargs['pdbfixer_version'], work_dir=Path.cwd(),
+                                   allow_install=kwargs.get('_allow_install', False))
+        second = probe_distribution('openmm', python=first['python'], expected_version=kwargs['openmm_version'],
+                                    work_dir=Path.cwd(), discover=False)
+        return {'pdbfixer': first, 'openmm': second}
 
     def execute(self, work_dir, *, geometry=None, cores=1, **kwargs):
         start = time.monotonic()

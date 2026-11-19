@@ -1,8 +1,8 @@
 # Biomolecular workflow foundation
 
 This layer provides typed planning, native predictor inputs, executable processing
-and selected external engine adapters. It never installs engines or downloads
-model weights. Unimplemented backends remain explicit execution blockers.
+and selected external engine adapters. Execution can provision supported missing tools through the central installer;
+read-only planning never installs. Model weights are not downloaded by this layer. Unimplemented backends remain explicit execution blockers.
 
 ## Agent entry points
 
@@ -28,7 +28,7 @@ requests cannot be inferred from a placeholder such as an empty dictionary.
 
 ## Catalog coverage and status
 
-The catalog has 46 backend/operation contracts, of which 23 have execution
+The catalog has 46 backend/operation contracts, of which 25 have execution
 bindings. Additional registered adapters handle prediction import and workflow
 execution. Catalog coverage is not a claim that every engine runs in DELFIN.
 
@@ -63,6 +63,8 @@ therefore never claim `execution_ready=true`.
 | Docking | Vina, GNINA, smina adapters with exact version banner, explicit seed/box/CPU count, timeout, checked outputs | Vina 1.2.5 synthetic live I/O smoke passed; GNINA/smina not installed/tested live; no scientific benchmark |
 | Preparation/export | Meeko ligand/receptor PDBQT and pose SDF export in a selected Python environment | Implemented optional adapters; Meeko absent locally. Receptor subset: one prepared canonical PDB model, no unresolved altlocs/cofactors/metals |
 | Validation | PoseBusters redocking checks retaining raw per-pose CSV values | Mocked boundary tests; package absent locally; failed checks remain visible even when report execution succeeds |
+| Prediction | ESMFold v1 single-protein inference, verified local weights, explicit device and runtime versions | Mocked engine boundary; no inference or GPU validation performed here |
+| Interactions | ProLIF fingerprints with molecule sidecars, atom mapping and parent contact indices | Canonical hydrogenated PDB subset; mocked engine boundary; chemistry/coordinates/completeness checked |
 | Interactions | PLIP XML report for an explicitly assembled PDB complex | Implemented optional adapter; package absent locally |
 | Execution | `bio_workflow_preflight`, `bio_workflow_execute` | Actual typed DAG through `run_step`, stop on failure, checksummed outputs, resume refusal after changed inputs/settings/runtime/code |
 
@@ -70,8 +72,8 @@ therefore never claim `execution_ready=true`.
 It is separate from the read-only planning MCP tools. Exact package versions are
 required for optional Python tools; select their environment with `python`.
 Docking requires `expected_version` equal to the complete stripped `--version`
-banner. External runs use DELFIN's tracked process runtime with installation
-disabled. Timeouts terminate the process group. Cancellation callbacks stop
+banner. External calculations use DELFIN's tracked process runtime. Provisioning is a
+separate checked phase, not a fallback hidden inside an engine subprocess. Timeouts terminate the process group. Cancellation callbacks stop
 between DAG nodes; active subprocess cancellation uses DELFIN's process manager.
 Execution is sequential and accepts a CPU core count; GPU scheduling and remote
 cluster submission are not implemented by this executor.
@@ -97,9 +99,9 @@ DAG itself is not a generic DELFIN pipeline spec.
 
 ### Remaining foundation work
 
-Predictor execution (AlphaFold family, ColabFold, ESMFold, Boltz, Chai and
-RoseTTAFold), model assets/GPU validation, richer receptor chemistry support,
-Molscrub, ProLIF, MD parameterization and
+Predictor execution (AlphaFold family, ColabFold, Boltz, Chai and
+RoseTTAFold), automatic model asset acquisition, GPU scheduling, richer receptor chemistry support,
+Molscrub, MD parameterization and
 OpenMM/GROMACS/Amber/NAMD/MDAnalysis execution remain unimplemented bindings.
 The same applies to DiffDock, HADDOCK3, licensed docking, protein design and
 QM/MM-region construction. Existing native predictor input generation does not
@@ -271,8 +273,8 @@ supplied; normalization and quality assessment remain separate operations.
 `bio_receptor_prepare` binds `receptor_prepare` to PDBFixer/OpenMM in an explicit
 Python environment. Required settings are exact `pdbfixer_version` and
 `openmm_version`, `ph` (0..14), `seed`, `waters` (`keep`/`drop`) and
-`missing_atoms` (`reject`/`repair`). It uses the CPU Reference platform and never
-installs packages. This first subset accepts one hydrogen-free canonical protein
+`missing_atoms` (`reject`/`repair`). It uses the CPU Reference platform. Missing supported packages can be provisioned
+in a separate managed environment before execution. This first subset accepts one hydrogen-free canonical protein
 PDB with resolved alternate locations. Modified residues, cofactors, metals,
 nonprotein components and detected missing residues are refused. Existing
 protonation requires a separate policy; no residues or loops are built implicitly.
@@ -297,3 +299,67 @@ in `selected_ligand.sdf`. PDB output alone cannot preserve every chemical detail
 ligand coordinates are rounded to PDB precision. Unsupported anisotropic records,
 serial overflow, unresolved alternate locations and multiple receptor models
 are refused rather than silently discarded.
+
+## Shared installation and health checks
+
+The central `delfin.installer` now includes a `bio` family. Initial conda-forge
+recipes cover Vina, Meeko, PDBFixer, OpenMM, ProLIF and PLIP. Top-level releases
+are pinned; transitive dependencies are resolved by conda and their exact
+versions/builds/hashes are recorded from `conda-meta`. These recipes have
+interface tests, not successful installation evidence in this environment.
+
+Executable discovery reuses the QM resolver, including module profiles, PATH,
+overrides and managed binaries. Python selection checks the tool-specific
+`DELFIN_<TOOL>_PYTHON`, current/available interpreters, interpreters beside known
+entry points and the managed prefix. A caller-selected nondefault Python stays
+explicit. Python-only cluster module discovery remains to extend.
+
+Read-only preflight never installs. Actual workflow execution validates all
+inputs/settings first, then may provision supported missing runtimes. The same
+`DELFIN_AUTO_INSTALL_QM_TOOLS=0` opt-out disables automatic installation. Existing
+compatible environments win; managed installs go under `DELFIN_BIO_TOOLS_ROOT`
+(default `~/.local/share/delfin/bio_tools`) in separate recipe/version prefixes.
+No cluster or DELFIN Python environment is modified. Installation uses an
+existing micromamba/mamba/conda; the existing DELFIN bootstrap supplies that
+manager when needed. Installations are locked per prefix, version/import-checked
+and logged. Failed automatic attempts are not repeated indefinitely.
+
+Use `python -m delfin.installer --install meeko pdbfixer` for the central install
+route. Explicit repair can only modify a managed prefix whose ownership and
+recipe manifest match; unrelated environments are refused. Repair checks are
+technical checks, not scientific reference calculations. Install timeouts now
+terminate the installer process group, including children holding log pipes.
+
+Automatic installation is not yet supported for every catalogued backend.
+Unsupported engines, model assets, licensed software and incompatible versions
+remain explicit blockers. No installation or model download was run during this
+implementation session; tests simulate installers and package availability.
+
+### ESMFold and ProLIF execution boundaries
+
+`esmfold_predict` consumes one protein FASTA record and a local `assets_file`.
+The asset manifest has `schema_version: 1`, `engine: "esmfold"` and a `files`
+array of `{path, sha256}` entries relative to the manifest. Required entries are
+`checkpoints/esmfold_3B_v1.pt`, `checkpoints/esm2_t36_3B_UR50D.pt` and
+`checkpoints/esm2_t36_3B_UR50D-contact-regression.pt`. All declared files must
+exist and match their hashes. The worker disables Torch Hub downloads. Select
+an already prepared Python environment with exact `expected_version` (fair-esm)
+and `torch_version`, explicit `device` (`cpu` or `cuda:N`) and `seed`.
+An automatic fair-esm installation recipe is not yet provided. Returned models
+must match the requested sequence and contain a complete backbone; confidence
+values must be finite and within their declared ranges. These checks do not
+establish prediction accuracy.
+
+`prolif_analyze` requires explicit `interactions`, `expected_version`,
+`bond_policy="rdkit_proximity"` and `shared_coordinate_frame=True`. Both partners
+must already have explicit hydrogens. The current receptor subset is one
+canonical protein PDB without waters, alternate locations or cofactors. RDKit
+infers receptor bonds; the adapter does not prepare chemistry or align poses.
+Each pose retains a molecule sidecar and source atom mapping. Exports are checked
+for unchanged ligand chemistry, mapped bonds and coordinates; receptor atom
+identity and coordinates are checked, and contact parent indices must be in
+bounds. Interaction geometry is not binding affinity. Tests use synthetic data
+and mocked engine boundaries; installed ProLIF execution remains to be validated.
+
+Interfaces follow the [ESMFold implementation](https://github.com/facebookresearch/esm)
+and [ProLIF docking documentation](https://prolif.readthedocs.io/en/stable/notebooks/docking.html).

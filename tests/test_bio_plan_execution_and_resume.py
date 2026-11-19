@@ -91,3 +91,22 @@ def test_every_execution_binding_agrees_with_registered_ports():
         assert set(binding.outputs) == set(dict(backend.outputs)), backend.id
         assert set(binding.inputs.values()) <= {p.name for p in adapter.contract().params}, backend.id
         assert set(binding.outputs.values()) <= set(adapter.produces), backend.id
+
+
+def test_only_execution_can_provision_and_bad_settings_never_do(plan, tmp_path, monkeypatch):
+    from delfin.tools._registry import get
+    adapter = get('bio_structure_select')
+    calls = []
+    def probe(**kwargs):
+        calls.append(kwargs.get('_allow_install'))
+        return {'fixture': True}
+    monkeypatch.setattr(adapter, 'runtime_preflight', probe, raising=False)
+    assert preflight_plan(plan)['execution_ready']
+    assert calls == [False]
+    calls.clear()
+    assert execute_plan(plan, tmp_path / 'run')['status'] == 'success'
+    assert calls == [True]
+    calls.clear()
+    plan['nodes'][1]['settings'] = {'unknown_flag': True}
+    assert execute_plan(plan, tmp_path / 'invalid')['status'] == 'blocked'
+    assert calls == []

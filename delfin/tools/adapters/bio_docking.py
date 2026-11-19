@@ -58,14 +58,24 @@ class DockingAdapter(StepAdapter):
     def runtime_preflight(self, **kwargs):
         from delfin import qm_runtime
         resolved = qm_runtime.resolve_tool(self.engine)
+        if resolved is None and kwargs.get('_allow_install', False) and self.engine == 'vina':
+            import re
+            from delfin.tools.bio.environments import ensure_binary
+            match = re.fullmatch(r'AutoDock Vina v([0-9]+\.[0-9]+\.[0-9]+)', kwargs['expected_version'].strip())
+            if not match:
+                raise ValueError('Automatic Vina installation requires an exact AutoDock Vina vX.Y.Z banner')
+            path = ensure_binary('vina', match.group(1))
+            resolved = qm_runtime.ResolvedTool('vina', 'vina', path, 'bio_tools')
         if resolved is None:
             raise ImportError(f"optional engine is not installed: {self.engine}")
-        version = qm_runtime.run_tool(resolved.path, ["--version"], capture_output=True,
+        command = (getattr(resolved, 'requested_name', self.engine)
+                   if getattr(resolved, 'source', '').startswith('module:') else resolved.path)
+        version = qm_runtime.run_tool(command, ["--version"], capture_output=True,
                                       timeout=30, allow_install=False, track_process=True)
         banner = ((version.stdout or "") + (version.stderr or "")).strip()
         if version.returncode or banner != kwargs["expected_version"].strip():
             raise ValueError(f"version mismatch: expected {kwargs['expected_version']!r}, found {banner!r}")
-        return {"engine_version": banner, "executable": resolved.path,
+        return {"engine_version": banner, "executable": resolved.path, "command": command,
                 "executable_sha256": file_hash(Path(resolved.path))}
 
     def execute(self, work_dir, *, geometry=None, cores=1, **kwargs):
@@ -90,7 +100,7 @@ class DockingAdapter(StepAdapter):
                     raise ValueError("one ligand record with coordinates is required per docking job")
                 identity = chemical_identity(reference[0])["chemical_state_id"]
             box = BindingBox.from_dict(read_json(kwargs["site_file"]))
-            runtime = self.runtime_preflight(**kwargs)
+            runtime = self.runtime_preflight(_allow_install=True, **kwargs)
             banner = runtime["engine_version"]
             rec_name = "receptor" + receptor.suffix
             lig_name = "ligand" + ligand.suffix
@@ -104,7 +114,7 @@ class DockingAdapter(StepAdapter):
                 argv.extend(["--center_" + axis, str(box.center[index]), "--size_" + axis, str(box.size[index])])
             log = work_dir / "engine.log"
             with log.open("w") as stream:
-                result = qm_runtime.run_tool(runtime["executable"], argv, cwd=work_dir, stdout=stream, stderr=subprocess.STDOUT,
+                result = qm_runtime.run_tool(runtime["command"], argv, cwd=work_dir, stdout=stream, stderr=subprocess.STDOUT,
                                              timeout=kwargs.get("timeout", 3600.0), allow_install=False, track_process=True)
             if result.returncode:
                 return self._make_result(self.name, StepStatus.FAILED, work_dir, start,

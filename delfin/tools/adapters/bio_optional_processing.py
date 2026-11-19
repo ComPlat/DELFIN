@@ -45,7 +45,7 @@ class OptionalProcessing(StepAdapter):
     def runtime_preflight(self, **kwargs):
         from delfin.tools.bio.optional_runtime import probe_distribution
         return probe_distribution(self.distribution, python=kwargs.get("python", sys.executable),
-                                  expected_version=kwargs["expected_version"], work_dir=Path.cwd())
+                                  expected_version=kwargs["expected_version"], work_dir=Path.cwd(), allow_install=kwargs.get("_allow_install", False))
 
     def execute(self, work_dir, *, geometry=None, cores=1, **kwargs):
         start = time.monotonic()

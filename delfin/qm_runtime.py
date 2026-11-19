@@ -135,6 +135,12 @@ _TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(name="gnrs", which_targets=("gnrs",), aliases=("genarris",), prefer_qm_tools=False),
 )
 
+from delfin.tools.bio.environments import RECIPES as _BIO_RECIPES
+_TOOL_SPECS += tuple(ToolSpec(name=command, which_targets=(command,), prefer_qm_tools=False,
+                            module_patterns=(item.name, "bio/" + item.name, "chem/" + item.name),
+                            module_env_hints=("EBROOT" + item.name.upper(), item.name.upper() + "_HOME"))
+                     for item in _BIO_RECIPES.values() for command in item.commands)
+
 _SPEC_BY_CANONICAL = {spec.name: spec for spec in _TOOL_SPECS}
 _ALIAS_TO_CANONICAL = {
     alias: spec.name for spec in _TOOL_SPECS for alias in (spec.name,) + spec.aliases
@@ -415,6 +421,12 @@ def _iter_tool_candidates(spec: ToolSpec) -> Iterable[tuple[str, str]]:
         yield candidate.path, source
 
     if not spec.prefer_qm_tools:
+        from delfin.tools.bio.environments import RECIPES, prefix
+        for item in RECIPES.values():
+            if spec.name in item.commands:
+                candidate = prefix(item) / "bin" / spec.name
+                if candidate.is_file():
+                    yield str(candidate), "bio_tools"
         for bin_dir in iter_qm_tools_bin_dirs():
             local_candidate = bin_dir / spec.name
             if local_candidate.exists():
