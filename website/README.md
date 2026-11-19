@@ -1,8 +1,15 @@
-# DELFIN website draft
+# DELFIN website
 
-Local review only. Nothing has been published or configured on GitHub Pages.
+Published by `.github/workflows/pages.yml` on every push to `main` that
+touches `website/`, and reachable at **https://complat.github.io/DELFIN/**
+(the agent framework page: `framework.html`). The workflow copies
+`website/` and removes this file and `PLAN.md`, so the planning notes are
+not part of the site.
 
-## Preview
+A push that changes nothing under `website/` does not republish, and
+`workflow_dispatch` runs it by hand.
+
+## Preview before pushing
 
 Open `index.html` in a browser directly, or serve this folder from the repository:
 
