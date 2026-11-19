@@ -174,3 +174,105 @@ def test_a_real_sdk_error_with_a_far_future_date_is_not_trusted():
     exc = _real_sdk_error(503, {"retry-after": "Wed, 21 Oct 2099 07:28:00 GMT"})
 
     assert ac._retry_after_seconds(exc) is None
+
+
+# ---------------------------------------------------------------------------
+# A wait longer than we will sleep must END the attempt, not shorten it
+# ---------------------------------------------------------------------------
+#
+# Measured from the operator's own documentation (AI@JSC, Blablador API
+# access, read 2026-11-19): exceeding a model's per-minute request limit
+# returns 429 with Retry-After, blocks that model for 60 s, and EVERY
+# further violation doubles the block up to 3600 s. External callers get
+# 60 requests/min on alias-fast, 40 on alias-code and alias-large, 30 on
+# alias-huge, and 20 on any other model name.
+#
+# The ladder's longest step is 240 s. So before this, a stated wait above
+# the 300 s ceiling fell back to the ladder and the round asked again
+# inside the block -- a fresh violation each time, which doubles it. Four
+# retries turn a 20-minute block into an hour. The ladder is built for a
+# proxy hiccup, where retrying costs nothing; against a counter that
+# punishes retries it is the wrong instrument.
+
+
+def test_a_wait_we_will_sit_out_is_not_treated_as_too_long():
+    assert ac._retry_after_outlasts_patience(_Error({"retry-after": "30"})) is None
+
+
+def test_the_ceiling_itself_is_still_a_wait_we_sit_out():
+    assert ac._retry_after_outlasts_patience(
+        _Error({"retry-after": str(ac._RETRY_AFTER_MAX_S)})) is None
+
+
+def test_a_wait_beyond_the_ceiling_is_reported_with_its_number():
+    """Reported, not just refused: a person told "the service asked for 20
+    minutes" can pick another model, while an unexplained failure after
+    four silent retries tells them nothing."""
+    assert ac._retry_after_outlasts_patience(
+        _Error({"retry-after": "1200"})) == 1200.0
+
+
+def test_blabladors_longest_documented_block_is_recognised():
+    assert ac._retry_after_outlasts_patience(
+        _Error({"retry-after": "3600"})) == 3600.0
+
+
+@pytest.mark.parametrize("headers", [None, {}, {"retry-after": "soon"}])
+def test_no_usable_header_is_not_a_long_wait(headers):
+    """Absent is not long. These must keep falling back to the ladder,
+    which is the right instrument for an error nobody stated a wait for."""
+    assert ac._retry_after_outlasts_patience(_Error(headers)) is None
+
+
+def test_the_two_readers_cannot_disagree_about_the_header():
+    """One parse, two decisions. A second parser is the shape that drifts:
+    exactly one of the pair would then have to be wrong about what the
+    header said."""
+    exc = _Error({"retry-after": "120"})
+
+    assert ac._retry_after_seconds(exc) == 120.0
+    assert ac._retry_after_outlasts_patience(exc) is None
+
+    exc = _Error({"retry-after": "900"})
+
+    assert ac._retry_after_seconds(exc) is None, "too long to sleep"
+    assert ac._retry_after_outlasts_patience(exc) == 900.0, "and that is why"
+
+
+def test_a_real_sdk_error_with_a_long_block_outlasts_patience():
+    """On the transport's own case-insensitive header mapping, not a dict."""
+    exc = _real_sdk_error(429, {"Retry-After": "1800"})
+
+    assert ac._retry_after_outlasts_patience(exc) == 1800.0
+    assert ac._retry_after_seconds(exc) is None
+
+
+def test_the_retry_path_stops_rather_than_asking_again_sooner():
+    """The wiring. A guard that reads the header but still enters the
+    retry branch would pass every test above and keep the defect."""
+    import inspect
+
+    src = inspect.getsource(ac)
+    i = src.index("_stated_wait = _retry_after_outlasts_patience(")
+    block = src[i:i + 900]
+
+    assert "_is_transient_api_error" in block, (
+        "the guard sits at the retry decision, not somewhere else")
+    assert "_stated_wait is None" in block, (
+        "a stated long wait must exclude the round from the retry branch")
+    assert block.index("_stated_wait = ") < block.index(
+        "_is_transient_api_error"), "it is asked before the decision"
+
+
+def test_the_person_is_told_why_the_round_stopped():
+    """Silence here is the failure mode: the round ends, and without a
+    notice nobody can tell a rate limit from a broken endpoint."""
+    import inspect
+
+    src = inspect.getsource(ac)
+    i = src.index("_stated_wait = _retry_after_outlasts_patience(")
+    block = src[i:i + 900]
+
+    assert "StreamEvent(type=\"notice\"" in block, "it must be visible"
+    assert "lengthens the block" in block, (
+        "and it must say why asking again is not the answer")

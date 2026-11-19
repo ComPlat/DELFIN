@@ -31432,13 +31432,19 @@ _RETRY_AFTER_MAX_S = 300.0
 _RETRY_AFTER_MIN_S = 1.0
 
 
-def _retry_after_seconds(exc: Any, *, now: float | None = None
-                         ) -> Optional[float]:
-    """The server's own Retry-After for this error, in seconds, or None.
+def _retry_after_stated_seconds(exc: Any, *, now: float | None = None
+                                ) -> Optional[float]:
+    """What the server asked for, in seconds, with no ceiling applied.
 
     Input: the exception a failed request raised. Output: the wait the
-    SERVER asked for, clamped to [_RETRY_AFTER_MIN_S, _RETRY_AFTER_MAX_S],
-    or None when there is no usable header.
+    SERVER asked for, floored at _RETRY_AFTER_MIN_S but NOT capped, or
+    None when there is no usable header.
+
+    The two callers want different things from the same number, and the
+    difference matters: :func:`_retry_after_seconds` wants a wait it is
+    willing to sleep, while :func:`_retry_after_outlasts_patience` wants
+    to know that the stated wait is longer than that. Parsing it once
+    keeps the two from disagreeing about what the header said.
 
     Why read it at all: the backoff ladder is a guess made here, while
     Retry-After is the one number the service actually knows. On a shared
@@ -31489,9 +31495,48 @@ def _retry_after_seconds(exc: Any, *, now: float | None = None
             return None
     if seconds is None or seconds != seconds:          # NaN
         return None
-    if seconds > _RETRY_AFTER_MAX_S:
-        return None
     return max(_RETRY_AFTER_MIN_S, float(seconds))
+
+
+def _retry_after_seconds(exc: Any, *, now: float | None = None
+                         ) -> Optional[float]:
+    """A Retry-After this client is willing to sleep, or None.
+
+    None means "no usable number, let the ladder decide" -- including a
+    stated wait beyond _RETRY_AFTER_MAX_S, because a turn that sleeps for
+    half an hour is indistinguishable from a hang. A caller that retries
+    on None must first ask :func:`_retry_after_outlasts_patience`,
+    since retrying SOONER than the server asked is the one response that
+    makes a rate limit worse.
+    """
+    seconds = _retry_after_stated_seconds(exc, now=now)
+    if seconds is None or seconds > _RETRY_AFTER_MAX_S:
+        return None
+    return seconds
+
+
+def _retry_after_outlasts_patience(exc: Any, *, now: float | None = None
+                                   ) -> Optional[float]:
+    """The stated wait when it is longer than we will sleep, else None.
+
+    Such a wait must end the attempt rather than shorten it. Blablador's
+    documented behaviour is the case that makes this concrete: exceeding
+    a per-minute limit blocks that model for 60 s, and EVERY further
+    violation doubles the block, to a maximum of 3600 s. The ladder's
+    longest step is 240 s, so a 20-minute block would be retried into
+    four times, each retry a fresh violation -- turning a 20-minute block
+    into an hour. The ladder is built for a proxy hiccup, where retrying
+    is free; against a counter that punishes retries it is the wrong
+    instrument.
+
+    Returns the number so the caller can name it: a person told "the
+    service asked for 18 minutes" can decide, while an unexplained
+    failure after four silent retries tells them nothing.
+    """
+    seconds = _retry_after_stated_seconds(exc, now=now)
+    if seconds is not None and seconds > _RETRY_AFTER_MAX_S:
+        return seconds
+    return None
 
 
 def _transient_retry_delay(attempt: int) -> float:
@@ -34090,8 +34135,24 @@ class OpenAIClient(_BaseClient):
                     # is discarded so nothing duplicates into the context.
                     # Killing the generator here instead would discard EVERY
                     # completed round's progress mid-turn.
+                    # A wait the server stated and we will not sit out ends
+                    # the attempt instead of shortening it. Retrying sooner
+                    # than asked is a fresh violation, and on an endpoint
+                    # whose block doubles per violation that converts a
+                    # wait into a longer one. See
+                    # _retry_after_outlasts_patience.
+                    _stated_wait = _retry_after_outlasts_patience(_stream_exc)
+                    if _stated_wait is not None:
+                        yield StreamEvent(type="notice", text=(
+                            f"The service asked to be left alone for "
+                            f"{_stated_wait / 60:.0f} min "
+                            f"({_stated_wait:.0f} s) and this round is not "
+                            f"retried: asking again sooner counts as another "
+                            f"violation and lengthens the block. Pick another "
+                            f"model, or come back after that."))
                     if (_is_transient_api_error(_stream_exc)
-                            and _stream_attempt < _STREAM_RETRY_MAX):
+                            and _stream_attempt < _STREAM_RETRY_MAX
+                            and _stated_wait is None):
                         _had_partial = bool(_text_chunks or _tool_calls)
                         _text_chunks = []
                         _tool_calls = {}
