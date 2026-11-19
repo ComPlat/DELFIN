@@ -1,5 +1,9 @@
 # DELFIN Windows Launcher
 
+**New here?** `FIRST-STEPS.md` beside this file is the short path from the
+ZIP to a working agent: install, connect, put in your API key, start. This
+page is the full reference behind it.
+
 Copy this entire folder to your Windows PC. DELFIN and calculations stay on your
 Linux server. Windows does not need Python or a local DELFIN installation.
 The app includes the DELFIN logo, a desktop shortcut, saved SSH connections,
