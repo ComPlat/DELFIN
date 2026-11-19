@@ -270,6 +270,18 @@ class ChatFollower:
         self.asked = now
 
 
+def shared_questions(pending: list[dict]) -> list[dict]:
+    """What the tab has open that the other windows are asked.
+
+    A question the tab only guessed from its answer's last line (a greeting
+    that ends in "?") with no choices to pick is left out: in the dashboard
+    it only focuses the box, but the terminal showed it as a question that
+    took Enter and Esc -- the session could neither be answered nor stopped
+    (2026-11-16). A guessed question with choices goes out marked
+    ``detected`` (it does not hold the turn)."""
+    return [p for p in pending or () if not (p.get("detected") and not p.get("choices"))]
+
+
 class TabHost:
     """One agent tab's session hosted in the agent service.
 
@@ -390,7 +402,21 @@ class TabHost:
             info = {}
         if self.title:
             info["title"] = self.title
+        info["suggestions"] = self._suggestions()
         return {k: v for k, v in info.items() if v not in (None,)}
+
+    def _suggestions(self) -> list[str]:
+        """What the tab offers in its empty message box (its placeholder,
+        while it is an offer or an open task and not the resting hint):
+        the other windows show the same, Tab takes it."""
+        box = self.adapter.get("input")
+        try:
+            if box is None or "delfin-agent-input-suggests" not in tuple(box._dom_classes):
+                return []
+            line = " ".join(str(box.placeholder or "").split())
+        except Exception:
+            return []
+        return [line[:300]] if line else []
 
     def _tick(self) -> None:
         link = self.link
@@ -400,6 +426,7 @@ class TabHost:
             pending = self.session.pending()
         except Exception:
             pending = []
+        pending = shared_questions(pending)
         self.follower.step(self.state.get("chat_messages") or (),
                            bool(self.state.get("streaming")), pending)
         info = self._now_info()
