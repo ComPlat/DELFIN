@@ -979,8 +979,8 @@ def missing_key_notice(provider: str, lookup) -> str:
     return (
         "No API key yet, so the agent cannot start.\n"
         "   1. Open the Settings tab.\n"
-        f"   2. Section API keys, with {name} selected.\n"
-        "   3. Paste your key, press Store key.\n"
+        "   2. Open the section Diagnosis & API key.\n"
+        f"   3. Pick {name}, paste your key, press Store key.\n"
         "   4. Come back here and press New Cycle.\n"
         "Nothing has to be installed and nothing has to be restarted.")
 
@@ -8616,9 +8616,8 @@ def create_tab(ctx):
                 "KIT_TOOLBOX_API_KEY", ""
             ):
                 hint = (
-                    " → no KIT key yet. Open the Settings tab, section "
-                    "API keys, paste your key and press Store key. Then "
-                    "come back and press ↻."
+                    " → no KIT key yet. Settings tab → Diagnosis & API "
+                    "key → paste it → Store key. Then press ↻ here."
                 )
             elif provider == "openai" and not os.environ.get(
                 "OPENAI_API_KEY", ""
@@ -25400,8 +25399,8 @@ def create_tab(ctx):
                     else "OPENAI_API_KEY"
                 )
                 _hint = (
-                    " — no key yet. Settings tab → API keys → paste it "
-                    "→ Store key. Then press ↻ here."
+                    " — no key yet. Settings tab → Diagnosis & API key "
+                    "→ paste it → Store key. Then press ↻ here."
                 )
             else:
                 _hint = (
