@@ -1215,14 +1215,18 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         from delfin.dashboard.header_keysearch import build_and_register
 
         def _open_tab_from_header(name: str) -> None:
-            """Switch to the named tab itself (title read from built tabs)."""
+            """Route to the Help tab's guide section for this tab name."""
             try:
+                state = getattr(ctx, "_help_tab_state", None)
+                if state is None:
+                    return
+                state["open_tab_guide"](name)
                 tabs = getattr(ctx, "tabs_widget", None)
                 if tabs is None:
                     return
                 titles = [str(t) for t in getattr(tabs, "titles", ())]
-                if name in titles:
-                    tabs.selected_index = titles.index(name)
+                if "Help" in titles:
+                    tabs.selected_index = titles.index("Help")
             except Exception:
                 pass
 

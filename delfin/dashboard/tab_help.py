@@ -281,9 +281,17 @@ def _feature_block(on_open_key) -> tuple[W.DOMWidget, W.Accordion]:
     # Start collapsed except the first group, so the page opens compact.
     accordion.selected_index = 0
 
+    def _open_tab_guide(name: str) -> None:
+        """Show the tab guide and open the named tab's accordion section."""
+        tabs_section.selected_index = None  # close others first
+        for idx, (tname, *_rest) in enumerate(_TABS_HELP):
+            if tname == name:
+                tabs_section.selected_index = idx
+                break
+
     tabs_section = _dashboard_tabs_block()
 
-    return W.VBox([header, accordion, W.HTML('<h3 style="margin-top:18px">Dashboard Reiter (tabs)</h3>'), tabs_section]), accordion, _feature_filter
+    return W.VBox([header, accordion, W.HTML('<h3 style="margin-top:18px">Dashboard Reiter (tabs)</h3>'), tabs_section]), accordion, _feature_filter, tabs_section
 
 
 # Rich tab guide: (name, purpose, widgets, flow, interactions).
@@ -790,7 +798,16 @@ def create_tab(ctx: Any):
         keys_state["rerender"]()
         tabs.selected_index = 1
 
-    feature, accordion, feature_filter = _feature_block(_open_key)
+    feature, accordion, feature_filter, tabs_section = _feature_block(_open_key)
+
+    def _open_tab_guide(name: str) -> None:
+        """Show the tab guide and open the named tab's accordion section."""
+        tabs_section.selected_index = None  # close others first
+        from delfin.dashboard.tab_help import _TABS_HELP as _guide
+        for idx, (tname, *_rest) in enumerate(_guide):
+            if tname == name:
+                tabs_section.selected_index = idx
+                break
 
     global_search = W.Text(
         placeholder="search features and keys…",
@@ -816,13 +833,28 @@ def create_tab(ctx: Any):
     tabs.children = [feature, keys_box]
     tabs.set_title(0, "Features")
     tabs.set_title(1, "CONTROL keys")
+    # Same tab-bar design as the dashboard's main tab strip
+    # (helpers.DASHBOARD_TABS_CSS targets .delfin-dashboard-tabs, which
+    # create_dashboard puts on the page once -- so adding the class here
+    # reuses the exact same rules, no second copy of the CSS).
+    try:
+        from delfin.dashboard.helpers import DASHBOARD_TABS_CLASS
+        tabs.add_class(DASHBOARD_TABS_CLASS)
+    except Exception:  # pragma: no cover - cosmetic only
+        pass
     widget = W.VBox([header, W.HBox([global_search, _search_hint]), tabs])
     widget.add_class("delfin-help")
     widget.children = (css,) + widget.children
     # Publish the key-filter state on ctx so the header key search can
     # route a picked key here (lazy wiring in create_dashboard).
+    # Also publish the tab-guide accordion + the inner subtab, so a picked
+    # TAB name opens this tab's guide section, not the tab itself.
     try:
         ctx._help_key_state = keys_state
+        ctx._help_tab_state = {
+            "open_tab_guide": _open_tab_guide,
+            "subtabs": tabs,
+        }
     except Exception:
         pass
     return widget, {"help_key_state": keys_state}
