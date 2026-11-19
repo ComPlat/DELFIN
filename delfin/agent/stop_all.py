@@ -105,6 +105,26 @@ def last_stop() -> dict:
     return dict(record)
 
 
+def last_stop_parseable() -> bool:
+    """Whether the register, when it exists, parses. Absent counts as True.
+
+    The one question a writer of the register may not answer with {}: a
+    file it could not read must be moved aside, not replaced.
+    """
+    try:
+        return not _PATH.exists() or _PATH_is_ok()
+    except Exception:
+        return False
+
+
+def _PATH_is_ok() -> bool:
+    try:
+        json.loads(_PATH.read_text(encoding="utf-8"))
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 def stop_time() -> float:
     """When the last stop was given (epoch seconds), 0.0 for never."""
     try:
@@ -320,6 +340,18 @@ def request(reason: str = "", *, end_here: bool = True,
     """
     at = time.time()
     prior = last_stop()
+    # The register read as {} is not distinguishable from a register that
+    # was never written -- fine for a reader, fatal for this writer, which
+    # builds `count` on it and replaces the file. A file that exists but
+    # cannot be parsed is therefore moved aside (state_file.quarantine)
+    # before the write, so its bytes survive and the loss is named.
+    unreadable = _PATH.exists() and not last_stop_parseable()
+    if unreadable:
+        try:
+            from .state_file import quarantine
+            moved = quarantine(_PATH)
+        except Exception:
+            moved = None
     record = {
         "at": at,
         "host": _hostname(),
@@ -335,8 +367,14 @@ def request(reason: str = "", *, end_here: bool = True,
     except OSError:
         pass
     os.replace(tmp, _PATH)
+    _cache = None
 
     summary = dict(record)
+    if unreadable and moved is not None:
+        summary["register_unreadable"] = (
+            f"the stop register could not be read and was moved to "
+            f"{moved.name}; any stop recorded in it is in that file and is "
+            "no longer in use")
     try:
         # The opening words come from the scheduler, which reads them back
         # in `disabled_by_emergency_stop`: `scheduler enable` refuses an
