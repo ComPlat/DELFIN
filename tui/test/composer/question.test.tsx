@@ -154,6 +154,14 @@ describe("a question keeps the prompt", () => {
     expect(w!.replies()).toEqual([{ sessionId: "s1", requestId: "q1", text: "2 of them" }])
   })
 
+  test("esc stops a running turn behind a question only guessed from its text", async () => {
+    await mount()
+    await asked({ ...ask("q9", 2), detected: true })
+    await w!.escape()
+    expect(w!.calls.filter((c) => c.method === "session.cancel").length).toBe(1)
+    expect(w!.replies()).toEqual([])
+  })
+
   test("esc on an empty prompt dismisses it", async () => {
     await mount()
     await asked(ask("q1", 2))

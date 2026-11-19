@@ -1249,7 +1249,8 @@ class Worker:
                 "bypassBlocked": self._bypass_blocked(),
                 "bypassConfirmed": bool(getattr(self, "_bypass_confirmed", False)),
                 "auto": self._auto_line(),
-                "background": self._background_rows()}
+                "background": self._background_rows(),
+                "suggestions": self._suggestions()}
 
     def _bypass_blocked(self) -> str:
         try:
@@ -1300,6 +1301,17 @@ class Worker:
         except Exception:
             pass
         return self._tasks
+
+    #: Suggestions sent at most (the window takes them one Tab at a time).
+    _SUGGESTIONS_MAX = 5
+
+    def _suggestions(self) -> list[str]:
+        """What the person could send next, as the dashboard offers it:
+        the open tasks the agent left, pending ones (task_ticker.next_steps
+        orders them the same way), each one plain line."""
+        return [protocol.clean_line(r["label"], protocol.TASK_LABEL_MAX)
+                for r in self._tasks if r.get("status") == "pending"
+                and str(r.get("label") or "").strip()][:self._SUGGESTIONS_MAX]
 
     #: How often the background list is read again. check_session runs
     #: every tick (0.25 s); the list reads the job registry, the process
@@ -1379,7 +1391,8 @@ class Worker:
                 "bypassBlocked": facts["bypassBlocked"],
                 "bypassConfirmed": facts["bypassConfirmed"],
                 "auto": facts["auto"],
-                "background": facts["background"]}
+                "background": facts["background"],
+                "suggestions": facts["suggestions"]}
 
     def header(self) -> dict[str, Any]:
         """A ``session.info`` event as the session is now (for replays)."""
