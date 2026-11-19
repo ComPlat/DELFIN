@@ -91,7 +91,9 @@ def build_key_search(
     dropdown = W.VBox(layout=W.Layout(
         display="none", max_height="300px", overflow_y="auto", width="460px",
     ))
-    card = W.HTML("", layout=W.Layout(display="none"))
+    card = W.VBox(
+        layout=W.Layout(display="none", width="500px"),
+    )
     wrapper = W.VBox(
         [_overlay_css, search, dropdown, card],
         layout=W.Layout(width="180px"),
