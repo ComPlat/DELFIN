@@ -33,11 +33,18 @@ def test_every_control_key_is_findable_and_returns_its_name():
 
 
 def test_every_control_key_states_what_it_accepts():
+    from delfin.common.control_allowed_values import ALLOWED_BY_KEY
     from delfin.common.control_validator import CONTROL_FIELD_SPECS
+
+    # Same resolution rule as the readers (help_lookup, Help tab,
+    # header search): spec.allowed, else the ALLOWED_BY_KEY table.
+    def resolved_allowed(spec) -> str:
+        return (getattr(spec, "allowed", "") or
+                ALLOWED_BY_KEY.get(spec.name, "")).strip()
 
     no_allowed = [
         s.name for s in CONTROL_FIELD_SPECS
-        if not (getattr(s, "allowed", "") or "").strip()
+        if not resolved_allowed(s)
     ]
     assert not no_allowed, (
         f"{len(no_allowed)} keys never state their allowed values; "

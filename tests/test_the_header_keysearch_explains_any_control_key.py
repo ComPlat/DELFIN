@@ -27,8 +27,7 @@ def test_a_picked_suggestion_shows_an_explanation_card():
     from delfin.dashboard import header_keysearch
 
     wrapper = header_keysearch.build_key_search(max_suggestions=3)
-    search, dropdown = wrapper.children[0].children
-    card = wrapper.children[1]
+    _style, search, dropdown, card = wrapper.children
 
     search.value = 'reduction'
     dropdown.children[0].click()  # first suggestion button
@@ -43,8 +42,7 @@ def test_no_matches_close_cleanly_and_empty_query_hides_everything():
     from delfin.dashboard import header_keysearch
 
     wrapper = header_keysearch.build_key_search()
-    search, dropdown = wrapper.children[0].children
-    card = wrapper.children[1]
+    _style, search, dropdown, card = wrapper.children
 
     search.value = 'zzz_no_such_key'
     assert dropdown.children and 'no key matches' in dropdown.children[0].value
