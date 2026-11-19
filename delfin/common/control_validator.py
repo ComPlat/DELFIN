@@ -2461,10 +2461,14 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("calc_initial", _as_yes_no, default="yes",
              help="Whether the workflow also runs the neutral state (the charge as given) before the redox steps. Set no only when that calculation exists already -- the potentials need its Gibbs energy. Stability-constant runs force this back on.",
              allowed="yes or no"),
-    FieldSpec("oxidation_steps", _as_str, default="",
+    # _as_list, not _as_str: the parser already turns "1,2" into
+    # ["1", "2"], and the OCCUPIER job-builders iterate that list to
+    # create red_step_1, red_step_2. Coercing it to a string handed
+    # them the literal "['1', '2']" and the steps were silently lost.
+    FieldSpec("oxidation_steps", _as_list, default="",
              help="Redox steps to compute, as charge deltas from the neutral state: e.g. 1,2 oxidises by +1 then +2 electrons; a leading minus sign reduces. Empty means every step the workflow derives from method and the multiplicity keys.",
              allowed="comma- or semicolon-separated integers, e.g. 1,2 or -1 (empty = all steps)"),
-    FieldSpec("reduction_steps", _as_str, default="",
+    FieldSpec("reduction_steps", _as_list, default="",
              help="Reduction steps to compute, same format as oxidation_steps: e.g. -1,-2 removes one and then two electrons. Empty means every reduction step the workflow derives.",
              allowed="comma- or semicolon-separated integers, e.g. -1,-2 (empty = all steps)"),
     FieldSpec("E_ref", _as_str, default="",
@@ -2661,6 +2665,62 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
              help="Converter that builds the structures of the thermodynamics workflow: QUICK, NORMAL, MANTA, ARCHITECTOR, MOLSIMPLIFY or MACE."),
     FieldSpec("thdy_preopt", _as_preopt_mode, default="xtb",
              help="Pre-optimisation for the thermodynamics structures: none, xtb (default), crest, or goat."),
+
+    # Restored 2026-11-19: these eight reached main on 2026-11-03
+    # (dea0bcca0) and were lost when this table was rebuilt to add
+    # the redox/OCCUPIER keys. Everything that reads the schema --
+    # control_key_notes.json, the MLIP/GOAT providers, the help
+    # lookup -- went looking for them. The allowed= lines are new:
+    # each is read off the key's own coercion function.
+    # GOAT method choice (opt-in; absent = GOAT with the xTB_method, the
+    # input unchanged). Not in the shipped template, like mlp_preopt.
+    FieldSpec("global_opt_method", _as_global_opt_method, default="",
+              help="Method GOAT optimises with: empty = the xTB_method "
+                   "(default), or mlip:uma | mlip:mace | mlip:orb | "
+                   "mlip:aimnet2 -- an orca-mlips machine-learned potential "
+                   "through ORCA's ExtOpt, run inside the workflow's job (the "
+                   "node needs the GPU for device=cuda). A screen: the "
+                   "ensemble's MLIP energies are not final numbers. CREST "
+                   "stays xTB-only. Weights: UMA gated (own HF login), MACE "
+                   "non-commercial (Academic Software License).",
+              allowed="empty, or xtb/none/off for GOAT with the xTB method, or mlip:BACKEND with BACKEND one of aimnet2, mace, orb, uma"),
+    FieldSpec("global_opt_mlip_provider", _as_global_opt_mlip_provider, default="auto",
+              help="auto (default): orca-external-tools when installed with the "
+                   "backend (one model server for the job), else orca-mlips; "
+                   "oet or orca-mlips forces one.",
+              allowed="auto (default), orca-external-tools (or oet), or orca-mlips"),
+    FieldSpec("global_opt_mlip_model", _as_global_opt_mlip_model, default="",
+              help="Model name passed to the orca-mlips plugin as --model; "
+                   "empty = the plugin's default.",
+              allowed="one token of letters, digits, '_', '.', '+' and '-', at most 80 characters, e.g. uma-s-1p1 (empty = the plugin's own default)"),
+    FieldSpec("global_opt_mlip_device", _as_global_opt_mlip_device, default="cuda",
+              help="cuda (default) or cpu. cuda without a visible GPU stops "
+                   "the GOAT step; there is no silent CPU fallback.",
+              allowed="cuda (default) or cpu"),
+    FieldSpec("refuse_noncommercial_weights", _as_yes_no, default="no",
+              help="yes refuses an MLIP whose weights are non-commercially "
+                   "licensed (global_opt_method=mlip:mace).",
+              allowed="yes or no (also true/false, on/off, 1/0)"),
+    FieldSpec("goat_max_workers", _as_goat_max_workers, default=None, allow_none=True,
+              help="GOAT workers of an MLIP GOAT (a multiple of 4). Empty: "
+                   "DELFIN's measured default -- orca-mlips capped at 8 (one "
+                   "model per worker), orca-external-tools W workers on one "
+                   "server with W model processes (%pal nprocs W).",
+              allowed="a positive multiple of 4, since ORCA runs one worker per GOAT temperature; empty = DELFIN's measured default"),
+    FieldSpec("mlip_fast_client", _as_mlip_fast_client, default=None, allow_none=True,
+              help="orca-external-tools client of an MLIP GOAT: auto (DELFIN's "
+                   "measured default), yes (the same request sent with curl, no "
+                   "Python start-up per call) or no (the documented oet_client).",
+              allowed="auto (default), yes or no (also true/false, on/off, 1/0)"),
+    # MLP pre-optimisation (wave19 m4): opt-in. The default keeps the
+    # shipped behaviour -- the ORCA steps run on the geometry as built.
+    FieldSpec("mlp_preopt", _as_mlp_preopt, default="none",
+              help="ML potential the start geometry is relaxed with before "
+                   "the ORCA steps: none (default) or ani2x, aimnet2, "
+                   "mace_off, chgnet, m3gnet. A screening step only: the "
+                   "geometry is a starting guess, every final energy comes "
+                   "from DFT.",
+              allowed="none (default), ani2x, aimnet2, mace_off, chgnet or m3gnet (also no/false/off/0 = none)"),
 )
 
 

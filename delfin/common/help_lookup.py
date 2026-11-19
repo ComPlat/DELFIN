@@ -1,7 +1,7 @@
 """Help lookup: the single entry point for "what is X" questions.
 
 Reads the two sources of truth -- ``CONTROL_FIELD_SPECS`` (keys) and
-``_TABS_HELP`` (dashboard tabs) -- and answers name/help/allowed queries.
+``TABS_HELP`` (dashboard tabs) -- and answers name/help/allowed queries.
 No second copy of any explanation lives here: this module only reads.
 
 Used by the agent's operating rule (knowledge/operating/help-lookup) and
@@ -11,6 +11,7 @@ surface.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -33,7 +34,7 @@ def _key_entries() -> list[dict[str, str]]:
 
 
 def _tab_entries() -> list[dict[str, str]]:
-    from delfin.dashboard.tab_help import _TABS_HELP
+    from delfin.common.help_tabs import TABS_HELP as _TABS_HELP
 
     entries = []
     for name, purpose, widgets, flow, interactions in _TABS_HELP:
@@ -49,14 +50,44 @@ def _tab_entries() -> list[dict[str, str]]:
     return entries
 
 
+#: Everything that is not part of a key or tab name. A question is split
+#: on these, so the name inside it can be found.
+_WORD_BREAK = re.compile(r"[^a-z0-9_]+")
+
+
+def _words(text: str) -> list[str]:
+    return [w for w in _WORD_BREAK.split(text.lower()) if w]
+
+
 def _score(entry: dict[str, str], q: str) -> int:
-    """Match strength: exact name > name contains > text contains."""
+    """Match strength: exact name > a word of the question IS the name >
+    name contains the query > text contains it.
+
+    The word pass is what makes a question work. People do not type a bare
+    key: they type "was macht maxcore" or "what does mlp_preopt do", and a
+    substring test the other way round ("is the query inside the name")
+    misses every one of those -- measured 2026-11-19, where that exact
+    question returned "No entry" for a key the table describes. The agent
+    reads this through the same function, so a question it is asked in
+    prose finds the entry too.
+    """
     name = entry["name"].lower()
     if q == name:
         return 3
+    words = _words(q)
+    if name in words:
+        return 3
     if q in name:
         return 2
-    if q in entry["help"].lower() or (entry["allowed"] and q in entry["allowed"].lower()):
+    # A word of the question inside the name ("preopt" -> "mlp_preopt"),
+    # but not a word so short that it matches everything.
+    if any(len(w) >= 4 and w in name for w in words):
+        return 2
+    text = entry["help"].lower()
+    allowed = (entry["allowed"] or "").lower()
+    if q in text or (allowed and q in allowed):
+        return 1
+    if any(len(w) >= 4 and (w in text or w in allowed) for w in words):
         return 1
     return 0
 

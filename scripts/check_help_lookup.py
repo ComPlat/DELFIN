@@ -35,7 +35,7 @@ def main() -> int:
     sys.path.insert(0, ".")
     from delfin.common.control_allowed_values import ALLOWED_BY_KEY
     from delfin.common.control_validator import CONTROL_FIELD_SPECS
-    from delfin.dashboard.help_lookup import lookup
+    from delfin.common.help_lookup import lookup
     from delfin.dashboard.tab_help import _TABS_HELP
 
     def resolved_allowed(spec) -> str:

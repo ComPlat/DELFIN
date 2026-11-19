@@ -6,7 +6,7 @@ every key/tab answer, the Help tab and the header search) never reports
 a gap for something DELFIN actually has.
 """
 
-from delfin.dashboard.help_lookup import lookup
+from delfin.common.help_lookup import lookup
 
 
 def test_every_control_key_has_a_help_text():
