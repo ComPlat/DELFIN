@@ -390,13 +390,22 @@ def _running_update(sa_id: str, entry: dict | None) -> None:
             if "owner_session" not in entry and f.exists():
                 # The run rewrites its entry at every step without knowing
                 # which session reserved it; the reservation's owner stays.
+                # A file that cannot be parsed is moved aside
+                # (state_file.quarantine) rather than overwritten: the
+                # read's empty answer must never reach this write, or one
+                # damaged byte erases the live record with no message and
+                # no copy.
                 try:
                     owner = json.loads(f.read_text(encoding="utf-8")).get(
                         "owner_session")
                     if owner:
                         entry = {**entry, "owner_session": owner}
                 except Exception:
-                    pass
+                    from .state_file import quarantine
+                    moved = quarantine(f)
+                    if moved is not None:
+                        entry = {**entry,
+                                 "_previous_unreadable": moved.name}
             if not f.exists():
                 # Starting an entry is the one moment guaranteed to happen
                 # and cheap enough to carry the cleanup of what an earlier
