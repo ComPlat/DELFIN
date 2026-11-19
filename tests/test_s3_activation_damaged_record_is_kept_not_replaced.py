@@ -79,6 +79,68 @@ def test_configure_refuses_the_phone_re_enable_on_an_unreadable_record(
     out = activation.configure("s1", "on", by="phone", phone="+49123")
     assert "not switched on from the phone" in out, (
         "the phone re-enable is refused, and the person is told why")
-    # The record was not replaced by an enabled-by-phone record.
-    assert any(store.parent.glob("*.unreadable-*")), (
-        "the damaged bytes are kept aside")
+    # The damaged file stays exactly where it is. Moving it aside on this
+    # path would be the hole the next test measures.
+    assert store.read_text() == TRUNCATED, (
+        "the refused path must not touch the record at all")
+    assert not list(store.parent.glob("*.unreadable-*"))
+    assert activation.enabled("s1") is False
+
+
+def test_the_refusal_holds_for_a_second_attempt_from_the_phone(_records):
+    """A refusal that lasts one attempt is not a refusal.
+
+    Driven on 2026-11-19 against the first version of this guard, which
+    quarantined the damaged record before refusing the phone. A quarantine
+    is a rename, so after it the live path does not exist -- and an absent
+    record reads as "nothing was recorded", which is the one answer this
+    guard exists never to give. The phone's next pull, a second later, was
+    granted and wrote an enabled record:
+
+        guard before: True -> attempt 1 refused -> guard after: False
+        -> attempt 2: "switched on" -> enabled: True
+
+    A phone that is refused retries. So the damaged file is left in place:
+    it is the only thing that still withholds, nothing the phone does can
+    clear it, and the person at the computer resolves it (their own write
+    quarantines it and stores the new state).
+    """
+    activation.configure("s1", "off")
+    store = _record_file()
+    store.write_text(TRUNCATED)
+
+    for attempt in (1, 2, 3):
+        out = activation.configure("s1", "on", by="phone", phone="+49123")
+        assert "not switched on from the phone" in out, (attempt, out)
+        assert activation.switched_off_in_session("s1") is True, attempt
+        assert activation.enabled("s1") is False, attempt
+
+
+def test_the_person_at_the_computer_is_still_the_way_back(_records):
+    """Failing closed must not lock the session out for good: a write from
+    the session itself quarantines the damaged record and stores the new
+    state, so there is exactly one route back and it needs a person."""
+    activation.configure("s1", "off")
+    store = _record_file()
+    store.write_text(TRUNCATED)
+
+    out = activation.configure("s1", "on", endpoint="http://127.0.0.1:1")
+
+    assert activation.enabled("s1") is True, out
+    aside = list(store.parent.glob("*.unreadable-*"))
+    assert any(p.read_bytes() == TRUNCATED.encode() for p in aside), (
+        "the damaged bytes are kept when the person's write replaces them")
+    assert "moved" in out and "aside" in out, (
+        "and the person is told, in the answer they get: " + out)
+
+
+def test_the_phone_may_still_switch_off_an_unreadable_record(_records):
+    """Switching OFF is withheld by nothing, so it is not refused. The
+    opposite would let a damaged file keep a session reachable from a phone
+    the person wants to stop."""
+    activation.configure("s1", "on")
+    _record_file().write_text(TRUNCATED)
+
+    out = activation.configure("s1", "off", by="phone")
+
+    assert activation.enabled("s1") is False, out

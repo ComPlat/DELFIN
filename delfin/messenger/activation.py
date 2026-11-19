@@ -310,20 +310,26 @@ def configure(sid, args='', *, endpoint=None, directory=None, by='session', phon
         old = _record_strict(sid, directory=directory)
     except state_file.StateFileUnreadable as exc:
         # The record exists but cannot be read. A phone turning the session
-        # ON must never overwrite a record that may exist to withhold it; for
-        # everyone else the new state is stored but the old bytes are kept
+        # ON is refused and the file is LEFT WHERE IT IS: quarantining it
+        # here would move the only thing that still withholds the phone out
+        # of the way, and the next pull -- a retry a second later -- would
+        # read "nothing was recorded" and be granted. Measured: the refusal
+        # held for exactly one attempt before this order was fixed.
+        #
+        # For everyone else the new state is stored, the old bytes are kept
         # aside (quarantined) and the person is told, never silently lost.
+        # Switching OFF from the phone is not withheld by anything, so it
+        # takes that path too.
+        if by == 'phone' and args != 'off':
+            return ("the session record could not be read, so it is not "
+                    "switched on from the phone: what that record withheld "
+                    "cannot be read, and it is kept exactly as it is. "
+                    "Switch it on at the computer with /sync instead.")
         try:
             moved = state_file.quarantine(_path(sid, directory))
         except OSError:
             moved = None
         damaged = (moved, str(exc))
-        if by == 'phone' and args != 'off':
-            where = f" ({moved.name})" if moved else ""
-            return ("the session record could not be read and was moved "
-                    f"aside{where}; it is not switched on from the phone "
-                    "because what it withheld cannot be read. Switch it on "
-                    "at the computer with /sync instead.")
         old = {}
     on = args != 'off'
     same_endpoint = endpoint is None or (old.get('endpoint') or '') == endpoint
