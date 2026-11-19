@@ -561,17 +561,20 @@ def test_latex_contains_all_ticked_images_side_by_side(tmp_path):
     assert tex.count("includegraphics[width=0.3\\textwidth]") == 3
 
 
-def test_initial_xyz_show_h_toggles_heteroatom_protons(tmp_path):
+def test_skeleton_h_policy_independent_of_checkbox(tmp_path):
     pytest.importorskip("numpy")
     pytest.importorskip("matplotlib")
-    # Water is all H - with H shown both bonds render, without none.
+    # Skeletal convention is INDEPENDENT of show_h: identical bytes.
     calc = tmp_path / "w403"
     calc.mkdir()
     (calc / "initial.xyz").write_text(_WATER_XYZ, encoding="utf-8")
     with_h = ro.initial_xyz_png_bytes(str(calc), show_h=True)
     without_h = ro.initial_xyz_png_bytes(str(calc), show_h=False)
-    assert with_h and without_h
-    assert with_h != without_h  # H atoms and their bonds dropped
+    assert with_h == without_h  # same skeleton either way
+    # ... while the ball-stick view still follows the checkbox.
+    ball_on = ro.optimized_3d_png_bytes(str(calc), show_h=True)
+    ball_off = ro.optimized_3d_png_bytes(str(calc), show_h=False)
+    assert ball_on != ball_off
 
 
 def test_formula_to_latex_subscripts_and_charges():

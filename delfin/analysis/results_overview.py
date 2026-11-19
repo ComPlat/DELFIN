@@ -376,36 +376,30 @@ def initial_xyz_png_bytes(calc_dir: str, size: int = 320, show_h=True,
     bond_orders = bond_orders if bond_orders is not None \
         else _infer_bond_orders(sym, bonds, rotated)
 
-    # Skeletal convention: aliphatic H (C-H) are NEVER drawn in the
-    # skeleton, regardless of the checkbox.  Protons on heteroatoms
-    # (OH, NH2, COOH, SH...) are the chemistry the picture is about,
-    # so they stay visible; the checkbox only adds the remaining
-    # (aliphatic) H on top.
+    # Skeletal convention, INDEPENDENT of the checkbox: aliphatic H
+    # (C-H) are never drawn in the skeleton; protons on heteroatoms
+    # (OH, NH2, COOH, SH...) always are.  The "Show hydrogen atoms"
+    # checkbox steers only the ball-stick view (optimized 3D column).
     _hetero = {"O", "N", "S", "P", "Se", "B", "Si", "F", "Cl", "Br", "I"}
     hetero_h = set()
     for i, j in bonds:
         for h, other in ((i, j), (j, i)):
             if sym[h] == "H" and sym[other] in _hetero:
                 hetero_h.add(h)
-    if show_h:
-        sym_vis = sym
-        bonds_vis = bonds
-    else:
-        keep = [i for i, s in enumerate(sym) if s != "H" or i in hetero_h]
-        keepset = set(keep)
-        remap = {old_i: new_i for new_i, old_i in enumerate(keep)}
-        sym_vis = [sym[i] for i in keep]
-        rotated = rotated[keep]
-        bonds_vis = [(remap[i], remap[j]) for i, j in bonds
-                     if i in keepset and j in keepset]
-        # The upgrade indices must follow the remap or the double-bond
-        # lines point at hidden atoms and silently disappear.
-        bond_orders = {(remap[i], remap[j]): o
-                       for (i, j), o in bond_orders.items()
-                       if i in keepset and j in keepset}
+    keep = [i for i, s in enumerate(sym) if s != "H" or i in hetero_h]
+    keepset = set(keep)
+    remap = {old_i: new_i for new_i, old_i in enumerate(keep)}
+    sym_vis = [sym[i] for i in keep]
+    rotated = rotated[keep]
+    bonds_vis = [(remap[i], remap[j]) for i, j in bonds
+                 if i in keepset and j in keepset]
+    # The upgrade indices must follow the remap or the double-bond
+    # lines point at hidden atoms and silently disappear.
+    bond_orders = {(remap[i], remap[j]): o
+                   for (i, j), o in bond_orders.items()
+                   if i in keepset and j in keepset}
     return _render_skeleton(sym_vis, rotated, bonds_vis, size,
-                            show_h=show_h, bond_orders=bond_orders,
-                            fmt=fmt)
+                            bond_orders=bond_orders, fmt=fmt)
 
 
 def _detect_bonds(sym, cov, pts):
@@ -712,7 +706,7 @@ def _find_rings(sym, bonds):
     return rings
 
 
-def _render_skeleton(sym, rotated, bonds, size, show_h=False,
+def _render_skeleton(sym, rotated, bonds, size,
                      bond_orders=None, fmt="png"):
     """Wireframe of the rotated structure in RDKit-2D style (PNG bytes).
 
