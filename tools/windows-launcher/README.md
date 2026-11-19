@@ -1,8 +1,9 @@
 # DELFIN Windows Launcher
 
-**New here?** `FIRST-STEPS.md` beside this file is the short path from the
-ZIP to a working agent: install, connect, put in your API key, start. This
-page is the full reference behind it.
+**New here?** `START-HERE.txt` beside this file is the short path from the
+ZIP to a working agent: clearing the download mark, install, connect, put in
+your API key, start. Plain text, because a .md file has no reliable handler
+on Windows. This page is the full reference behind it.
 
 Copy this entire folder to your Windows PC. DELFIN and calculations stay on your
 Linux server. Windows does not need Python or a local DELFIN installation.
@@ -42,10 +43,15 @@ Closing the browser does not close SSH or stop the dashboard.
 The installer creates ordinary Windows shortcuts (`.lnk`, through the standard
 `WScript.Shell` object) that start Windows PowerShell on the installed
 `DELFIN.ps1`:
-`powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File "...\DELFIN.ps1"`.
-Nothing is compiled, downloaded or hidden. The shortcut starts PowerShell's
-console window **minimized**; it belongs to the app (closing it closes the
-app). The settings app is an independent main window with the DELFIN icon.
+`powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -WindowStyle Hidden
+-File "...\DELFIN.ps1"`.
+Nothing is compiled and nothing is downloaded. The shortcut hides the
+PowerShell console that hosts the app: it showed nothing anyone could read,
+and started minimized it was still an empty black taskbar entry that people
+took for a second, broken program. The DELFIN window is the app. That switch
+is used **here and nowhere else** in the package -- in particular not for the
+SSH connection, which stays visible because that is where OpenSSH asks for a
+password. A test pins the exception to that one line.
 
 A separate dashboard terminal appears for native OpenSSH password/OTP and
 host-key prompts and stays visible after the browser opens. This is the only
@@ -416,9 +422,14 @@ this updated package first; saved connections are preserved.
 ## Antivirus
 
 The package is plain text: PowerShell, batch, Bash and Python scripts, a
-README, a PNG and an ICO. It compiles nothing, starts no hidden window, uses
-no encoded command, downloads nothing, writes no autostart entry and changes
-no security setting. Its only registry entry is the per-user
+README, a PNG and an ICO. It compiles nothing, uses no encoded command,
+downloads nothing, writes no autostart entry and changes no security
+setting. One window is hidden, and only one: the PowerShell console that
+hosts the app itself, through `-WindowStyle Hidden` in the desktop
+shortcut's command line, which is visible in the shortcut's properties.
+Reputation engines weigh that shape, since malware uses it to run unseen;
+here it hides the app's own empty host console and nothing is launched
+behind it. Its only registry entry is the per-user
 Installed apps registration.
 
 Reputation-based engines (Norton Insight, reported as `WS.Reputation.1`,

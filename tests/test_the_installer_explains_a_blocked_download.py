@@ -104,5 +104,45 @@ def test_only_this_folder_is_touched():
 
 
 def test_the_failure_text_points_at_the_page_a_newcomer_has():
-    assert "FIRST-STEPS.md" in INSTALL, (
-        "README.md is the reference; the four steps are in FIRST-STEPS.md")
+    assert "START-HERE.txt" in INSTALL, (
+        "README.md is the reference; the steps a newcomer needs are in "
+        "START-HERE.txt, which is plain text because a .md file has no "
+        "reliable handler on Windows")
+
+
+def test_the_start_page_covers_the_download_mark_itself():
+    """Install.cmd offers to clear the mark, but someone who never gets
+    that far -- a blocked Install.cmd, a locked-down machine, an
+    organisation that forbids it -- needs the by-hand route written
+    down, with the command to type."""
+    start = (ROOT / "START-HERE.txt").read_text(encoding="utf-8")
+
+    assert "not digitally signed" in start, "quote what they will see"
+    assert "Get-ChildItem . -Recurse | Unblock-File" in start, (
+        "give the line to type, not a description of it")
+    assert "Open PowerShell window here" in start, (
+        "say how to get a PowerShell in that folder; a bare command is "
+        "no use to someone who has never opened one")
+    assert "Properties" in start and "Unblock" in start, (
+        "and the route with no PowerShell at all")
+    assert "Extract All" in start, (
+        "running from inside the ZIP is the other first-try failure")
+
+
+def test_the_start_page_is_plain_text():
+    """A .md file on Windows opens in whatever happens to be registered,
+    or nothing. A .txt opens in Notepad."""
+    names = _package_names()
+
+    assert "START-HERE.txt" in names
+    assert not [n for n in names if n.startswith("FIRST-STEPS")]
+    start = (ROOT / "START-HERE.txt").read_text(encoding="utf-8")
+    assert "```" not in start and not start.lstrip().startswith("#")
+
+
+def _package_names():
+    import importlib.util as util
+    spec = util.spec_from_file_location("wl_build", ROOT / "build_package.py")
+    module = util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.NAMES

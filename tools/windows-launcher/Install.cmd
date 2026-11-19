@@ -24,6 +24,6 @@ exit /b 0
 :failed
 echo.
 echo Installation failed. Nothing was installed. Read the error above,
-echo then FIRST-STEPS.md for the usual causes, or README.md for the detail.
+echo then START-HERE.txt for the usual causes, or README.md for the detail.
 pause
 exit /b 1
