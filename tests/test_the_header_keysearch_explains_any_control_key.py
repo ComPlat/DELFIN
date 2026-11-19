@@ -33,7 +33,7 @@ def test_a_picked_suggestion_shows_an_explanation_card():
     btns = list(dropdown.children)
     pick = next(b for b in btns if 'reduction_steps' in b.description)
     pick.click()
-    html = card.value
+    html = card.children[1].value
     assert 'reduction_steps' in html
     assert 'default' in html.lower()
     assert 'Allowed' in html
