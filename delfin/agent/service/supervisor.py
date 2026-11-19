@@ -1858,7 +1858,11 @@ class Supervisor:
         info = {k: v for k, v in (params.get("info") or {}).items()
                 if k in ("provider", "model", "effort", "mode", "approval", "title",
                          "banner", "notices", "tasks", "auto", "background",
-                         "suggestions")}
+                         "suggestions",
+                         # The session's person, when it has one. A label,
+                         # not a boundary; the header carries it along with
+                         # the session id. Nothing filters on it yet.
+                         "person")}
         keep = params.get("keep") is not False
         settings: dict[str, Any] = {"cwd": str(cwd), "keep": keep}
         title = protocol.clean_title(params.get("title") or info.get("title") or "")

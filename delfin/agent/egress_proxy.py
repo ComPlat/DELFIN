@@ -26,6 +26,11 @@ as an upload (default 1 MiB), ``upload_domains`` the hosts (same forms as
 Decisions per request (``EgressProxy.decide``), for the session whose
 token the request carries (``token_for``):
 
+0. a server of the session's own on the loopback (``_own_server``: a port
+   its background jobs listen on, or one only processes of the command
+   that sent the request listen on, told apart by the sending helper's
+   pid) passes in every mode, writes included, and is connected to the
+   loopback directly;
 1. a port outside ``allowed_ports`` is refused;
 2. a ``web_fetch(domain:...)`` permission rule (``permission_rules``,
    when that module is present) denies, asks or allows first;
@@ -93,6 +98,7 @@ import re
 import secrets
 import select
 import socket
+import struct
 import tempfile
 import threading
 import weakref
@@ -140,6 +146,51 @@ def _own_ports(perms) -> set:
             str(getattr(perms, "task_session_id", "") or ""))
     except Exception:
         return set()
+
+
+def _loopback_addr(host: str) -> str:
+    """The address the proxy connects to for a loopback ``host``."""
+    return "::1" if str(host).strip("[]") == "::1" else "127.0.0.1"
+
+
+def _peer_pid(conn) -> int:
+    """The process on the other end of a Unix-socket connection (the
+    sandbox helper whose forwarder carries the command's request), or 0."""
+    try:
+        cred = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+                               struct.calcsize("3i"))
+        pid, _uid, _gid = struct.unpack("3i", cred)
+        return pid if pid > 0 else 0
+    except (OSError, AttributeError, struct.error):
+        return 0
+
+
+def _own_server(perms, host: str, port: int, peer_pid: int = 0) -> bool:
+    """Whether ``host:port`` is a server of the requesting session's own on
+    the loopback: a port one of its running background jobs listens on
+    (``_own_ports``), or one only processes below the sandbox helper that
+    sent the request listen on (``peer_pid``, ``socket_guard.owns_loopback``):
+    a test that serves a fake endpoint to itself, a server started in the
+    same command. Such a request stays on this machine between the
+    session's own processes: it is let through for a session's token in
+    every mode, writes included, and connected to the loopback itself.
+
+    The helper's own sockets (the forwarder) do not count. The process
+    token, other ports and every other host go on to the rules. Measured
+    2026-11-15: 118 refusals in one unattended swarm run, each a POST of a
+    test to the scripted endpoint it served itself."""
+    if perms is None or not _is_loopback(host):
+        return False
+    if port in _own_ports(perms):
+        return True
+    if not peer_pid:
+        return False
+    try:
+        from . import socket_guard as _sg
+        return _sg.owns_loopback(ipaddress.ip_address(_loopback_addr(host)),
+                                 port, (), peer_pid, include_root=False)
+    except Exception:
+        return False
 
 
 def _settings() -> dict:
@@ -719,14 +770,13 @@ class EgressProxy:
                 "data another way.")
 
     def decide(self, host: str, port: int, *, method: str = "CONNECT",
-               body_bytes: int = 0, perms=None) -> tuple[str, str, bool]:
+               body_bytes: int = 0, perms=None,
+               peer_pid: int = 0) -> tuple[str, str, bool]:
         """``(verdict, reason, upload)``; verdict is allow, ask or deny."""
-        # The session's own server on this machine (bash_jobs.
-        # own_listening_ports): a port one of ITS running background jobs
-        # listens on, on the loopback, for a session's token only -- the
-        # process token and every other port and host go on below.
-        if (perms is not None and _is_loopback(host)
-                and port in _own_ports(perms)):
+        # The session's own server on this machine (_own_server), for a
+        # session's token only -- the process token and every other port
+        # and host go on below.
+        if _own_server(perms, host, port, peer_pid):
             return "allow", "", False
         if port not in self.allowed_ports:
             return "deny", (
@@ -770,10 +820,15 @@ class EgressProxy:
                 "agent.sandbox_network.allowed_domains in ~/.delfin_settings.json.")
 
     def settle(self, host: str, port: int, *, method: str = "CONNECT",
-               body_bytes: int = 0, perms=None) -> Optional[str]:
+               body_bytes: int = 0, perms=None,
+               peer_pid: int = 0) -> Optional[str]:
         """Apply ``decide``: None to proceed, else the refusal reason. Asks
         the session's approval channel where there is one and the mode
         allows a question; a known host's upload passes unasked otherwise."""
+        # A write to the session's own server is not an upload: it stays
+        # between the session's processes on this machine.
+        if _own_server(perms, host, port, peer_pid):
+            return None
         verdict, why, upload = self.decide(host, port, method=method,
                                            body_bytes=body_bytes, perms=perms)
         if verdict == "deny":
@@ -973,6 +1028,7 @@ class EgressProxy:
             if not ok:
                 self._refuse(conn, 407, "proxy token missing or wrong")
                 return
+            peer = _peer_pid(conn) if perms is not None else 0
             meter = None
             if method.upper() == "CONNECT":
                 host, _, port_s = target.rpartition(":")
@@ -982,7 +1038,7 @@ class EgressProxy:
                 except ValueError:
                     self._refuse(conn, 400, "CONNECT target needs host:port")
                     return
-                why = self.settle(host, port, perms=perms)
+                why = self.settle(host, port, perms=perms, peer_pid=peer)
                 if why:
                     self._refuse(conn, 403, why)
                     return
@@ -997,8 +1053,9 @@ class EgressProxy:
                     # is named for uploads.
                     meter = (lambda sent, _h=host, _p=port, _perms=perms:
                              self.settle(_h, _p, method="CONNECT",
-                                         body_bytes=sent, perms=_perms) is None)
-                upstream = self._open(conn, host, port, perms)
+                                         body_bytes=sent, perms=_perms,
+                                         peer_pid=peer) is None)
+                upstream = self._open(conn, host, port, perms, peer)
                 if upstream is None:
                     return
                 conn.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
@@ -1019,8 +1076,8 @@ class EgressProxy:
                     except ValueError:
                         size = self.upload_ask_bytes + 1
                 why = self.settle(url.hostname, port, method=method,
-                                  body_bytes=size, perms=perms)
-                if not why:
+                                  body_bytes=size, perms=perms, peer_pid=peer)
+                if not why and not _own_server(perms, url.hostname, port, peer):
                     why = self._payload_refusal(target, url.hostname, perms)
                 if why:
                     self._refuse(conn, 403, why)
@@ -1034,7 +1091,7 @@ class EgressProxy:
                     except OSError:
                         pass
                     return
-                upstream = self._open(conn, url.hostname, port, perms)
+                upstream = self._open(conn, url.hostname, port, perms, peer)
                 if upstream is None:
                     return
                 path = url.path or "/"
@@ -1062,14 +1119,13 @@ class EgressProxy:
                     except OSError:
                         pass
 
-    def _open(self, conn, host: str, port: int, perms=None):
+    def _open(self, conn, host: str, port: int, perms=None, peer_pid: int = 0):
         try:
-            if (perms is not None and _is_loopback(host)
-                    and port in _own_ports(perms)):
+            if _own_server(perms, host, port, peer_pid):
                 # The session's own server (decide): the loopback itself,
                 # never a name that resolves elsewhere.
-                addr = "::1" if str(host).strip("[]") == "::1" else "127.0.0.1"
-                return socket.create_connection((addr, port), timeout=30.0)
+                return socket.create_connection((_loopback_addr(host), port),
+                                                timeout=30.0)
             return self._connector(host, port, 30.0)
         except OSError as exc:
             reason = str(exc)

@@ -247,6 +247,145 @@ class BudgetLedger:
 
     # -- the fraction spent ------------------------------------------------
 
+    def _run_budget_requests(self) -> int:
+        """Request ceiling for this run — 0 disables it. OPTIONAL, default
+        OFF: absent from the settings and unset on the engine it adds no
+        dimension to :meth:`_run_budget_detail` at all.
+
+        **Cost in prompt text:** when it is in force, the wind-down /
+        exhausted budget block and the >110 % refusal name it like the
+        other dials — one short setting name in text that is already
+        injected every turn past 80 % of any configured budget; with the
+        cap off the prompt text is unchanged.
+
+        Same precedence as the other dimensions: an explicit
+        ``run_budget_requests`` attribute, which a caller that builds the
+        engine itself (a scheduler entry, a test) may set, beats the
+        settings value ``agent.run_budget_requests``. Unlike the three
+        older dimensions this one has no command-line flag and no
+        unattended default in ``run_limits``: it is off until somebody
+        asks for it.
+        """
+        engine = self._engine
+        reqs = int(getattr(engine, "run_budget_requests", 0) or 0)
+        if reqs <= 0:
+            try:
+                from delfin.user_settings import load_settings as _ls
+                ag = (_ls() or {}).get("agent", {}) or {}
+                reqs = int(ag.get("run_budget_requests", 0) or 0)
+            except Exception:
+                reqs = 0
+        return max(0, reqs)
+
+    def _run_budget_tokens(self) -> int:
+        """Token ceiling for this run — 0 disables it. OPTIONAL, default
+        OFF: absent from the settings and unset on the engine it adds no
+        dimension to :meth:`_run_budget_detail` at all.
+
+        **Cost in prompt text:** when it is in force, the wind-down /
+        exhausted budget block and the >110 % refusal name it like the
+        other dials — one short setting name in text that is already
+        injected every turn past 80 % of any configured budget; with the
+        cap off the prompt text is unchanged.
+
+        Same precedence as the other dimensions: an explicit
+        ``run_budget_tokens`` attribute beats the settings value
+        ``agent.run_budget_tokens``. No command-line flag and no
+        unattended default: off until somebody asks for it.
+        """
+        engine = self._engine
+        tokens = int(getattr(engine, "run_budget_tokens", 0) or 0)
+        if tokens <= 0:
+            try:
+                from delfin.user_settings import load_settings as _ls
+                ag = (_ls() or {}).get("agent", {}) or {}
+                tokens = int(ag.get("run_budget_tokens", 0) or 0)
+            except Exception:
+                tokens = 0
+        return max(0, tokens)
+
+    def _run_budget_subagents(self) -> int:
+        """Sub-agent ceiling for this run — 0 disables it. OPTIONAL,
+        default OFF: absent from the settings and unset on the engine it
+        adds no dimension to :meth:`_run_budget_detail` at all.
+
+        **Cost in prompt text:** when it is in force, the wind-down /
+        exhausted budget block and the >110 % refusal name it like the
+        other dials — one short setting name in text that is already
+        injected every turn past 80 % of any configured budget; with the
+        cap off the prompt text is unchanged.
+
+        Delegates count towards the PARENT's cap: every sub-agent this
+        session ran is in the delegated-spend ledger's session bucket,
+        whoever asked for it and whenever it returned. Same precedence as
+        the other dimensions: an explicit ``run_budget_subagents``
+        attribute beats the settings value ``agent.run_budget_subagents``.
+        No command-line flag and no unattended default: off until
+        somebody asks for it.
+        """
+        engine = self._engine
+        sub = int(getattr(engine, "run_budget_subagents", 0) or 0)
+        if sub <= 0:
+            try:
+                from delfin.user_settings import load_settings as _ls
+                ag = (_ls() or {}).get("agent", {}) or {}
+                sub = int(ag.get("run_budget_subagents", 0) or 0)
+            except Exception:
+                sub = 0
+        return max(0, sub)
+
+    def _requests_taken(self) -> int:
+        """Model requests this session has actually made.
+
+        Read from the per-session request metrics, one entry per finished
+        request (``record_request`` runs once per round, on every
+        backend). Requests with a ``purpose`` are side calls (the action
+        classifier's verdicts), not the agent's own model requests, and
+        are left out — the same split ``format_requests`` makes.
+        Best-effort: no metrics file reads as zero, never an exception.
+        """
+        engine = self._engine
+        try:
+            from . import turn_metrics as _tm
+            session = str(getattr(engine, "session_id", "") or "")
+            if not session:
+                return 0
+            entries = _tm.read_requests(session)
+            return sum(1 for e in entries
+                       if isinstance(e, dict) and not e.get("purpose"))
+        except Exception:
+            return 0
+
+    def _run_budget_tokens_spent(self) -> int:
+        """Tokens this run has actually spent: the parent's own
+        session-cumulative counter PLUS every delegated run's tokens.
+
+        The delegated half comes from the delegated-spend ledger's
+        session bucket, the same figure the cost line reports; counting
+        only the parent would let a run that delegates never reach its
+        token cap. Missing counters (an engine built bare) read as zero.
+        """
+        engine = self._engine
+        usage = getattr(engine, "token_usage", None) or {}
+        parent = (int(usage.get("input", 0) or 0)
+                  + int(usage.get("output", 0) or 0))
+        delegated = 0
+        try:
+            led = self.delegate_spend().session
+            delegated = int(led.input_tokens) + int(led.output_tokens)
+        except Exception:
+            delegated = 0
+        return max(0, parent) + max(0, delegated)
+
+    def _subagents_taken(self) -> int:
+        """Sub-agents this session has actually run — the delegated-spend
+        ledger's session count, whoever the delegate's parent was.
+        """
+        try:
+            return int(self.delegate_spend().session.count or 0)
+        except Exception:
+            return 0
+
     def _run_budget_status(self) -> tuple[float, bool]:
         """(worst fraction spent, exhausted). Fraction is max over the
         enabled dimensions; (0.0, False) when no budget is configured.
@@ -282,6 +421,21 @@ class BudgetLedger:
             share = float(self._turns_taken()) / turns_cap
             if share > frac:
                 frac, dim = share, "agent.run_budget_turns"
+        reqs_cap = self._run_budget_requests()
+        if reqs_cap > 0:
+            share = float(self._requests_taken()) / reqs_cap
+            if share > frac:
+                frac, dim = share, "agent.run_budget_requests"
+        tokens_cap = self._run_budget_tokens()
+        if tokens_cap > 0:
+            share = float(self._run_budget_tokens_spent()) / tokens_cap
+            if share > frac:
+                frac, dim = share, "agent.run_budget_tokens"
+        sub_cap = self._run_budget_subagents()
+        if sub_cap > 0:
+            share = float(self._subagents_taken()) / sub_cap
+            if share > frac:
+                frac, dim = share, "agent.run_budget_subagents"
         return frac, frac >= 1.0, dim
 
     # -- what the model and the operator hear ------------------------------
@@ -331,18 +485,30 @@ class BudgetLedger:
         except Exception:
             pass
         try:
-            frac, exhausted = self._run_budget_status()
+            frac, exhausted, dim = self._run_budget_detail()
         except Exception:
-            frac, exhausted = 0.0, False
+            frac, exhausted, dim = 0.0, False, ""
         if frac >= 0.8:
             pct = min(999, int(frac * 100))
             usd, secs = self._run_budget()
             turn_cap = self._run_budget_turns()
+            # Every dial in force, so the notice says which run this was
+            # and the next line can say which one to turn.
             ceiling = ", ".join(
                 [p for p in (f"${usd:.2f}" if usd > 0 else "",
                              f"{secs:.0f}s" if secs > 0 else "",
-                             f"{turn_cap} turns" if turn_cap > 0 else "")
+                             f"{turn_cap} turns" if turn_cap > 0 else "",
+                             f"{self._run_budget_requests()} requests"
+                             if self._run_budget_requests() > 0 else "",
+                             f"{self._run_budget_tokens()} tokens"
+                             if self._run_budget_tokens() > 0 else "",
+                             f"{self._run_budget_subagents()} sub-agents"
+                             if self._run_budget_subagents() > 0 else "")
                  if p])
+            # The dial that is actually binding, not a fixed pair: a run
+            # stopped by the request cap is not helped by more money.
+            raise_it = (f"Raise {dim}" if dim
+                        else "Raise agent.run_budget_usd / run_budget_s")
             if exhausted:
                 parts.append(
                     "# Run budget EXHAUSTED\n"
@@ -356,8 +522,7 @@ class BudgetLedger:
                     "Run budget exhausted — the agent is wrapping up",
                     f"{pct}% of the run budget ({ceiling}) is spent. The "
                     f"agent finishes the current step and starts no new "
-                    f"work. Raise agent.run_budget_usd / run_budget_s or "
-                    f"start a new run to continue.")
+                    f"work. {raise_it} or start a new run to continue.")
             else:
                 parts.append(
                     "# Run budget wind-down (auto-injected)\n"

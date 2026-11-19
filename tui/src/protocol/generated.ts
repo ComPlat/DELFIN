@@ -166,6 +166,7 @@ export interface SessionInfoEvent {
   "banner": string[]
   "notices": string[]
   "tasks"?: Record<string, unknown>[] | null
+  "person"?: string | null
   "bypassBlocked"?: string | null
   "bypassConfirmed"?: boolean | null
   "auto"?: string | null

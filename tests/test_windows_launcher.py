@@ -619,7 +619,18 @@ def test_the_app_and_the_server_agree_on_the_login_key_argument():
     server = (root / 'remote_bootstrap.sh').read_text(encoding='utf-8')
     assert "(Shell-Quote (Get-PersonName)) + ' ' + (Shell-Quote $publicKey)" in app
     assert 'person=${9:-}' in server and 'login_key=${10:-}' in server
-    assert "$options += @('-i',$loginKey.Key)" in app
+    assert "'-i',$loginKey.Key" in app
+    # ...and ONLY that key. Without IdentitiesOnly, -i adds the launcher's
+    # key to the agent's and every default ~/.ssh/id_*, and each one
+    # offered spends one of the server's MaxAuthTries. Where that limit is
+    # low (3 on the lab Pi, measured 2026-11-19) the password prompt is
+    # never reached, or the connection is cut with "Too many
+    # authentication failures" -- indistinguishable, to the person typing,
+    # from a password the server refused.
+    offers = [l for l in app.splitlines() if "$loginKey.Key" in l]
+    assert offers, "the login key is never offered to ssh"
+    for line in offers:
+        assert line.count("IdentitiesOnly=yes") == line.count("'-i'"), line
     assert 'RememberLogin=$rememberToggle.Checked' in app and 'RememberLogin=$true' in app
 
 
@@ -735,7 +746,11 @@ def test_the_package_holds_no_compiled_encoded_or_hidden_code():
         (r'Add-Type\s+(-TypeDefinition|-MemberDefinition|-Path|-Language)', 'Add-Type with C# source'),
         (r'DllImport|GetDelegateForFunctionPointer|Reflection\.Emit|\[Reflection\.Assembly\]::Load', 'Win32 calls or loaded code'),
         (r'-EncodedCommand|-enc\b|-ec\b', 'encoded command'),
-        (r'(?i)-WindowStyle\s+Hidden|-w\s+hidden', 'hidden window'),
+        # One exception, by name: Install.ps1 puts this switch in the
+        # shortcut's command line so the app's own PowerShell host has no
+        # window. See test_only_the_apps_own_host_window_is_hidden, which
+        # pins that it appears there and in no other line of any file.
+        (r'(?i)-w\s+hidden', 'hidden window'),
         (r'(?i)csc\.exe|Invoke-Expression|\biex\b', 'compiler or expression evaluation'),
         (r'GZipStream|DeflateStream', 'packed data'),
         (r'(?i)DownloadString|DownloadFile|Invoke-WebRequest\s+-Uri\s+["\']?https?://(?!127\.0\.0\.1)', 'download'),
@@ -773,7 +788,8 @@ def test_install_creates_standard_shortcuts_to_windows_powershell():
     assert '$shell = New-Object -ComObject WScript.Shell' in install
     assert "$shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) 'DELFIN.lnk'))" in install
     assert '$shortcut.TargetPath = "$env:SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"' in install
-    assert "$shortcut.Arguments = '-NoProfile -ExecutionPolicy RemoteSigned -File \"' + $app + '\"'" in install
+    assert ("$shortcut.Arguments = '-NoProfile -ExecutionPolicy RemoteSigned "
+            "-WindowStyle Hidden -File \"' + $app + '\"'") in install
     assert '$shortcut.WindowStyle = 7' in install
     assert "$shortcut.IconLocation = (Join-Path $destination 'DELFIN.ico') + ',0'" in install
     assert '$shortcut.Save()' in install
@@ -796,3 +812,46 @@ def test_the_checksums_match_the_shipped_files():
     assert sorted(listed) == sorted(_package_names())
     for name, digest in listed.items():
         assert hashlib.sha256((_ROOT / name).read_bytes()).hexdigest() == digest, name
+
+
+def test_only_the_apps_own_host_window_is_hidden():
+    """`-WindowStyle Hidden` is allowed in exactly one place.
+
+    The app is a window of its own; the PowerShell console hosting it
+    showed nothing anyone could read, and minimized it was still an empty
+    black taskbar entry that people took for a second, broken program. So
+    the shortcut hides it.
+
+    A hidden PowerShell window is also the shape malware uses, and the
+    shape reputation scanners weigh against a file, which is why the rest
+    of the package still refuses it. This pins the exception to the one
+    line that earns it: the shortcut's own command line. The SSH
+    connection must stay visible -- that is where OpenSSH asks for a
+    password, and a hidden window there would look like a hang.
+    """
+    import re
+    hidden = []
+    for name in _package_names():
+        if not name.endswith(('.ps1', '.cmd')):
+            continue
+        for number, line in enumerate(
+                (_ROOT / name).read_text(encoding='utf-8').splitlines(), 1):
+            if re.search(r'(?i)-WindowStyle\s+Hidden', line) and not line.lstrip().startswith('#'):
+                hidden.append((name, number, line.strip()))
+
+    assert len(hidden) == 1, hidden
+    name, _number, line = hidden[0]
+    assert name == 'Install.ps1', name
+    assert '$shortcut.Arguments' in line, (
+        'only the shortcut that starts the app may hide a window: ' + line)
+    assert 'ssh' not in line.lower()
+
+
+def test_the_shortcut_still_asks_for_minimized_as_well():
+    """A .lnk cannot say "hidden" -- its WindowStyle is normal, minimized
+    or maximized. The switch on the command line does the hiding; the
+    stored style is what Windows falls back to if the switch is ever
+    dropped, and minimized is the better fallback than normal."""
+    install = (_ROOT / 'Install.ps1').read_text(encoding='utf-8')
+
+    assert '$shortcut.WindowStyle = 7' in install

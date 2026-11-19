@@ -11,6 +11,7 @@ sessions when the dashboard ends. An emergency stop still ends it
 from __future__ import annotations
 
 import json
+import datetime as _dt
 import os
 import subprocess
 import sys
@@ -39,6 +40,57 @@ class ServiceDidNotStart(RuntimeError):
 
 def service_log() -> Path:
     return eventlog.service_dir() / "logs" / "service.log"
+
+
+# The supervisor's stdout and stderr are this one file, opened O_APPEND and
+# handed to the child, and nothing ever truncated or rotated it.
+SERVICE_LOG_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _rotate_service_log(log: Path) -> Path | None:
+    """Move an oversized service log aside; return where, or None.
+
+    Called immediately before the log is opened for a service that is
+    about to start, which is the only safe moment: the file descriptor is
+    handed to the supervisor as its stdout and stderr, and a rename
+    follows the inode -- rotating under a running service would leave it
+    writing into the rotated file while the live log stayed empty.
+
+    Rejected: copy-and-truncate, which loses whatever the writer appends
+    between the copy and the truncation, and a logging handler, which the
+    supervisor cannot use because its output includes anything its own
+    children print to stderr.
+
+    The rotated copies are named ``service.log.<date>`` and are pruned by
+    the ordinary derived-state retention, so this does not trade one
+    unbounded file for an unbounded set of them.
+    """
+    try:
+        if log.stat().st_size <= SERVICE_LOG_MAX_BYTES:
+            return None
+    except OSError:
+        return None
+    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    for n in range(100):
+        aside = log.with_name(
+            log.name + f".{stamp}" + (f"-{n}" if n else ""))
+        try:
+            fd = os.open(aside, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            continue
+        except OSError:
+            return None
+        os.close(fd)
+        try:
+            os.replace(log, aside)
+        except OSError:
+            try:
+                aside.unlink()
+            except OSError:
+                pass
+            return None
+        return aside
+    return None
 
 
 #: What a service started from a dashboard kernel (or a TUI in its
@@ -84,6 +136,7 @@ def start_service(*, idle_exit_s: float | None = None) -> subprocess.Popen:
 
     log = service_log()
     state_paths.ensure_dir(log.parent)
+    _rotate_service_log(log)
     fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     cmd = [sys.executable, "-m", "delfin.agent.service.supervisor"]
     if idle_exit_s is not None:

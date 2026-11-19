@@ -145,6 +145,11 @@ EVENTS: dict[str, dict[str, str]] = {
                      "mode": "string", "approval": "string",
                      "title": "string?", "banner": "[string]",
                      "notices": "[string]", "tasks": "[object]?",
+                     # Optional: the person this session belongs to, in
+                     # people mode. A label, not a boundary; an entry
+                     # without one stays valid. Attached by the egress
+                     # proxy in a later step, never a credential here.
+                     "person": "string?",
                      "bypassBlocked": "string?", "bypassConfirmed": "boolean?",
                      "auto": "string?", "background": "[object]?",
                      "suggestions": "[string]?"},

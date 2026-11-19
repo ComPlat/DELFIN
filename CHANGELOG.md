@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-16
+
 ### Changed — a new commit's install holds no turn, and keeps to the login node's share
 
 - **The first submit of a commit the cluster does not have comes back at

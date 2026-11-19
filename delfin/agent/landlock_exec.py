@@ -22,7 +22,7 @@ instead of running it unconfined.
         [--net open|proxy|none] [--proxy-socket PATH] [--allow-tcp IP:PORT ...] \
         [--deny-socket DIR ...] [--read-only PATH ...] [--read DIR ...] \
         [--proxy-token-file PATH] [--guard 0] [--netns 1] \
-        -- /bin/bash -c CMD
+        [--own-listener INODE ...] -- /bin/bash -c CMD
 
 ``--read-only`` (any number) keeps a path beneath a write root readable
 but not writable. ``--read`` (any number) confines reading to beneath those
@@ -31,7 +31,11 @@ except ``--hide``. ``--proxy-token-file`` names the per-session proxy token
 (default: ``token`` beside the proxy socket). ``--guard 0`` leaves out the
 seccomp supervisor (a host without user notification, or a test of the
 layers below it); ``--netns 1`` says the caller already put the command in
-a network namespace of its own.
+a network namespace of its own. ``--own-listener`` (any number) names a
+listening socket of the session's own background jobs by inode: under the
+socket guard the command may connect to it on the loopback directly, as it
+may to a server its own process tree listens on
+(``socket_guard.owns_loopback``).
 
 Unix sockets are guarded too (``socket_guard``): the command reaches them
 only beneath the write roots, the private temp directory and the cluster's
@@ -369,7 +373,8 @@ def _run_guarded(write: list[str], hide: list[str], allowed: list[str],
                  read_only: list[str] | None = None,
                  read: list[str] | None = None,
                  token_file: str = "", use_guard: bool = True,
-                 netns: bool = False) -> int:
+                 netns: bool = False,
+                 own_listeners: list[str] | None = None) -> int:
     """Apply the filesystem policy (unless ``use_fs`` is off, inside
     bubblewrap), the socket guard and the network mode, and run the command.
 
@@ -457,9 +462,12 @@ def _run_guarded(write: list[str], hide: list[str], allowed: list[str],
             elif _libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
                 raise _Refused("prctl(PR_SET_NO_NEW_PRIVS) failed")
             listener = sg.install_filter(block_inet_datagrams=restricted)
-            _socket.send_fds(child_end, [b"L"], [listener])
-            os.close(listener)                      # the command must not hold it
-            child_end.recv(1)
+            # The listener stays in this process: the parent is told the
+            # listener's fd NUMBER and fetches it with pidfd_getfd. A
+            # send_fds handoff here would be a sendmsg notified to
+            # nobody (the live-run deadlock on f4217992a).
+            child_end.send(str(listener).encode())
+            child_end.recv(1)                       # the parent's "go"
             child_end.close()
             for key in _UNSET_VARS:
                 os.environ.pop(key, None)
@@ -472,15 +480,41 @@ def _run_guarded(write: list[str], hide: list[str], allowed: list[str],
             finally:
                 os._exit(126)
     child_end.close()
+    # The child holds the listener and has reported its fd NUMBER over
+    # the socketpair (a plain send, not a filtered syscall). The parent
+    # fetches it with pidfd_getfd, serves, then tells the child to go.
+    # Every failure path here ends the cage with an error -- the child
+    # waits for its "go", so a silent fallthrough would deadlock.
+    listener = -1
+    go = False
     try:
-        _msg, fds, _flags, _addr = _socket.recv_fds(parent_end, 16, 1)
-    except OSError:
-        fds = []
-    if not fds:
+        audit, _sc, _nc, _ns, _nu, nr_pidfd_open, nr_pidfd_getfd = sg._arch()
+        number = parent_end.recv(16).decode().strip()
+        if not number.isdigit():
+            raise OSError(f"the child reported no listener number ({number!r})")
+        pidfd = _libc.syscall(ctypes.c_long(nr_pidfd_open),
+                              ctypes.c_int(pid), ctypes.c_uint(0))
+        if pidfd < 0:
+            raise OSError(f"pidfd_open failed ({ctypes.get_errno()})")
+        try:
+            listener = _libc.syscall(ctypes.c_long(nr_pidfd_getfd),
+                                     ctypes.c_int(pidfd),
+                                     ctypes.c_int(int(number)),
+                                     ctypes.c_uint(0))
+        finally:
+            os.close(pidfd)
+        if listener < 0:
+            raise OSError(f"pidfd_getfd failed ({ctypes.get_errno()}) -- "
+                          "check /proc/sys/kernel/yama/ptrace_scope")
+        go = True
+    except Exception as exc:
+        print(f"refused: the cage supervisor could not take over ({exc}); "
+              "the command was not run.", file=sys.stderr)
+        parent_end.close()
         _pid, status = os.waitpid(pid, 0)
-        return _exit_code(status)
-    listener = fds[0]
-    parent_end.send(b"k")
+        return _exit_code(status) if status else 126
+    if go:
+        parent_end.send(b"k")
     parent_end.close()
     try:
         _libc.prctl(4, 0, 0, 0, 0)                  # PR_SET_DUMPABLE: not readable
@@ -489,7 +523,8 @@ def _run_guarded(write: list[str], hide: list[str], allowed: list[str],
     if forwarder is not None:
         forwarder.start()
     status = sg.Supervisor(listener, allowed, net_mode, allow_tcp,
-                           denied=deny_socket or ()).serve(pid)
+                           denied=deny_socket or (),
+                           own_listeners=own_listeners or ()).serve(pid)
     return _exit_code(status)
 
 
@@ -544,6 +579,7 @@ def main(argv: list[str]) -> int:
     hide: list[str] = []
     allow_socket: list[str] = []
     allow_tcp: list[str] = []
+    own_listeners: list[str] = []
     deny_socket: list[str] = []
     read_only: list[str] = []
     read: list[str] | None = None
@@ -589,6 +625,8 @@ def main(argv: list[str]) -> int:
             use_guard = value != "0"
         elif flag == "--netns":
             netns = value == "1"
+        elif flag == "--own-listener":
+            own_listeners.append(value)
         else:
             print(f"landlock_exec: unknown option {flag}", file=sys.stderr)
             return 126
@@ -616,7 +654,8 @@ def main(argv: list[str]) -> int:
                         proxy_socket=proxy_socket, allow_tcp=allow_tcp,
                         deny_socket=deny_socket, read_only=read_only,
                         read=read, token_file=token_file,
-                        use_guard=use_guard, netns=netns)
+                        use_guard=use_guard, netns=netns,
+                        own_listeners=own_listeners)
 
 
 if __name__ == "__main__":
