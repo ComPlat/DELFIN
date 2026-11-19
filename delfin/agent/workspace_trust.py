@@ -332,6 +332,38 @@ def _write_store(store: dict) -> None:
         _STORE_CACHE.clear()
 
 
+class TrustStoreMovedAside(Exception):
+    """A writer stored its decision but the previous store was unreadable and
+    was moved aside; whatever other decisions it held are in that kept file,
+    no longer in use."""
+
+
+def _read_store_for_write() -> tuple[dict, Path | None]:
+    """What a WRITER may build on: the store, and (None) or the place a
+    damaged store was moved to.
+
+    ``_read_store`` answers "what is trusted" leniently -- a damaged store is
+    nothing trusted, which is the gate's correct answer and stops a turn
+    mid-way with an exception for nothing. A WRITER may not build the next
+    store from that answer: measured 2026-11-19, a store truncated the way a
+    kill mid-write truncates it read as empty and the next
+    trust_workspace decision overwrote every OTHER workspace's decision with
+    no copy anywhere. The writer reads strictly and the damaged bytes are kept
+    aside, never overwritten.
+    """
+    from . import state_file
+    data, moved = state_file.read_json_for_write(
+        _trust_store_path(), default={"version": _STORE_VERSION,
+                                      "workspaces": {}})
+    workspaces = data.get("workspaces") if isinstance(data, dict) else {}
+    store = {
+        "version": data.get("version", _STORE_VERSION) if isinstance(data, dict)
+        else _STORE_VERSION,
+        "workspaces": workspaces if isinstance(workspaces, dict) else {},
+    }
+    return store, moved
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -732,7 +764,7 @@ def trust_workspace(
     for name in names:
         get_kind(name)                      # unknown kind -> KeyError, loudly
 
-    store = _read_store()
+    store, moved = _read_store_for_write()
     workspaces = dict(store.get("workspaces") or {})
     record = dict(workspaces.get(str(root)) or {})
     record.setdefault("first_trusted_at", _now_iso())
@@ -756,6 +788,14 @@ def trust_workspace(
     workspaces[str(root)] = record
     _write_store({"version": _STORE_VERSION, "workspaces": workspaces})
     reset_announcements()
+    if moved is not None:
+        # The new decision IS stored; what could not be carried over is
+        # every OTHER workspace's decision in the kept file. The loss is
+        # never silent.
+        raise TrustStoreMovedAside(
+            f"the trust store could not be read and was moved aside ("
+            f"{moved.name}); {str(root)} was trusted, and the decisions "
+            "that file held are in it and are no longer in use")
     return {"workspace": str(root), **record}
 
 
@@ -770,7 +810,15 @@ def revoke_workspace(
     root = _canonical(workspace)
     if root is None:
         return False
-    store = _read_store()
+    store, moved = _read_store_for_write()
+    if moved is not None:
+        # The store is damaged and was kept aside: no decision in it can be
+        # read, so nothing here can be withdrawn correctly. The person is
+        # told where it went, not silently told "nothing to revoke".
+        raise TrustStoreMovedAside(
+            f"the trust store could not be read and was moved aside ("
+            f"{moved.name}); nothing was revoked, and the decisions that "
+            "file held are in it and are no longer in use")
     workspaces = dict(store.get("workspaces") or {})
     record = dict(workspaces.get(str(root)) or {})
     if not record:

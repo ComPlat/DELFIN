@@ -41,13 +41,43 @@ def record(sid, *, directory=None):
         return {}
 
 
+def _record_strict(sid, *, directory=None):
+    """The stored record, or {} where absent; raises StateFileUnreadable
+    when the file exists but cannot be parsed.
+
+    One read answering two questions (agent/state_file.py): a READER may
+    conflate "nothing was recorded" with "what was recorded cannot be read",
+    a WRITER may not -- it builds the next record from that answer, and a
+    {}-shaped answer after damage destroys the person's decision with no
+    copy anywhere.
+    """
+    from delfin.agent import state_file
+    data = state_file.read_json(_path(sid, directory), default=None, strict=True)
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise state_file.StateFileUnreadable(
+            f"{_path(sid, directory)} is not a JSON object")
+    return data if data.get('session_id') == sid else {}
+
+
 def enabled(sid, *, directory=None):
     return record(sid, directory=directory).get('enabled') is True
 
 
 def switched_off_in_session(sid, *, directory=None):
-    """True when the session itself said /sync off: the phone may not undo it."""
-    value = record(sid, directory=directory)
+    """True when the session itself said /sync off: the phone may not undo it.
+
+    Fails closed. An unreadable record is not 'no restriction recorded':
+    the file may exist exactly to withhold the phone, so when it cannot be
+    read the phone is refused the re-enable (the person fixes it at the
+    computer), never silently granted.
+    """
+    from delfin.agent import state_file
+    try:
+        value = _record_strict(sid, directory=directory)
+    except state_file.StateFileUnreadable:
+        return True
     return value.get('enabled') is False and value.get('by', 'session') != 'phone'
 
 
@@ -273,8 +303,34 @@ def configure(sid, args='', *, endpoint=None, directory=None, by='session', phon
             text += ' (from the phone ' + str(old['phone'])[:40] + ')'
         return text + '.' + ('' if old.get('enabled') is not True or messenger_running()
                              else NOT_RUNNING)
+    from delfin.agent import state_file
     from delfin.agent.state_paths import write_text_atomic
-    old = record(sid, directory=directory)
+    damaged = None
+    try:
+        old = _record_strict(sid, directory=directory)
+    except state_file.StateFileUnreadable as exc:
+        # The record exists but cannot be read. A phone turning the session
+        # ON is refused and the file is LEFT WHERE IT IS: quarantining it
+        # here would move the only thing that still withholds the phone out
+        # of the way, and the next pull -- a retry a second later -- would
+        # read "nothing was recorded" and be granted. Measured: the refusal
+        # held for exactly one attempt before this order was fixed.
+        #
+        # For everyone else the new state is stored, the old bytes are kept
+        # aside (quarantined) and the person is told, never silently lost.
+        # Switching OFF from the phone is not withheld by anything, so it
+        # takes that path too.
+        if by == 'phone' and args != 'off':
+            return ("the session record could not be read, so it is not "
+                    "switched on from the phone: what that record withheld "
+                    "cannot be read, and it is kept exactly as it is. "
+                    "Switch it on at the computer with /sync instead.")
+        try:
+            moved = state_file.quarantine(_path(sid, directory))
+        except OSError:
+            moved = None
+        damaged = (moved, str(exc))
+        old = {}
     on = args != 'off'
     same_endpoint = endpoint is None or (old.get('endpoint') or '') == endpoint
     value = {'session_id': sid, 'enabled': on,
@@ -287,14 +343,23 @@ def configure(sid, args='', *, endpoint=None, directory=None, by='session', phon
     elif endpoint is None and old.get('endpoint'):
         value['endpoint'] = old['endpoint']
     write_text_atomic(_path(sid, directory), json.dumps(value))
+    if damaged is not None:
+        # The write landed; what could not be carried over is what the
+        # damaged file held. The loss is never silent.
+        moved, _exc = damaged
+        where = f" ({moved.name})" if moved else ""
+        note = (" Note: the session record could not be read and was moved "
+                f"aside{where}; anything it held is in that file.")
+    else:
+        note = ""
     if not on:
-        return 'SimpleX switched off for this session. No more messages or phone approvals.'
+        return 'SimpleX switched off for this session. No more messages or phone approvals.' + note
     if by != 'phone' and not messenger_running():
         # Said, not refused: the record stands and the session reaches the
         # phone as soon as the messenger runs (a bridge that crash-looped
         # left /sync saying "on" while nothing arrived).
-        return 'SimpleX switched on for this session.' + NOT_RUNNING
-    return 'SimpleX switched on for this session. The messenger invites you to its chat.'
+        return 'SimpleX switched on for this session.' + NOT_RUNNING + note
+    return 'SimpleX switched on for this session. The messenger invites you to its chat.' + note
 
 
 #: A session's deliberate notes to the phone (push_notification): at most
