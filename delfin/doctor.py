@@ -463,6 +463,27 @@ def check_docs_index() -> CheckResult:
     return CheckResult("docs_index", OK, f"index present at {idx}")
 
 
+def _cluster_modules():
+    """The delfin.remote pieces the cluster check needs, or ImportError.
+
+    One named seam instead of four import statements inside the check, for
+    two reasons. It is the only thing that may raise ImportError for an
+    absent optional package, so the handler cannot silently swallow an
+    ImportError raised deeper in. And it is patchable: a test that has to
+    behave the same on a machine WITH the cluster tunnel and one without
+    replaces this function, where patching sys.modules does not work --
+    once delfin.remote.clusters has been imported, ``from delfin.remote
+    import clusters`` reads the attribute off the parent package and never
+    consults sys.modules again. Measured on CI 2026-11-19, where the
+    package is installed and a sys.modules-based test passed locally and
+    failed there.
+    """
+    from delfin.remote import clusters as _clusters
+    from delfin.remote import connection as _connection
+    from delfin.remote.errors import RemoteError, RemoteRefused
+    return _clusters, _connection, RemoteError, RemoteRefused
+
+
 def _clusters_without_the_tunnel(settings: dict | None,
                                  exc: ImportError) -> list[CheckResult]:
     """What to report when the cluster tunnel is not installed.
@@ -517,9 +538,7 @@ def check_clusters(*, budget: bool = False, settings: dict | None = None,
     actually name a cluster; otherwise there is nothing to say.
     """
     try:
-        from delfin.remote import clusters as _clusters
-        from delfin.remote import connection as _connection
-        from delfin.remote.errors import RemoteError, RemoteRefused
+        _clusters, _connection, RemoteError, RemoteRefused = _cluster_modules()
     except ImportError as exc:
         return _clusters_without_the_tunnel(settings, exc)
 

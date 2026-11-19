@@ -22,13 +22,12 @@ cluster configured, and logged in. ``run_all`` now takes the same
 ``settings`` / ``ctun_config`` seam ``check_clusters`` already had, and
 those tests pass ``settings={}``.
 
-The import is forced to fail here with ``sys.modules``, so these tests
-measure the same thing whether or not the package is installed.
+The import is forced to fail here through the one seam the check imports
+behind, so these tests measure the same thing whether or not the package
+is installed.
 """
 
 from __future__ import annotations
-
-import sys
 
 import pytest
 
@@ -37,14 +36,22 @@ from delfin.doctor import BROKEN, MISSING, check_clusters, exit_code, run_all
 
 @pytest.fixture
 def no_tunnel(monkeypatch):
-    """Make ``from delfin.remote import clusters`` raise ImportError.
+    """Make the cluster check see an absent package, on any machine.
 
-    A None entry in sys.modules is what the import system treats as "this
-    module is not importable", which is exactly the state of a machine
-    without the package -- and it is independent of this machine's own.
+    Through the one named seam the check imports behind,
+    ``doctor._cluster_modules``. The first version of this fixture put
+    None into sys.modules, which works only where the package was never
+    imported: once ``delfin.remote.clusters`` is in memory, ``from
+    delfin.remote import clusters`` reads the attribute off the parent
+    package and never consults sys.modules. It passed here, where the
+    package is absent, and failed on CI, where it is installed -- the
+    machine dependence this whole change is about, reintroduced in its
+    own test. Measured 2026-11-19.
     """
-    monkeypatch.setitem(sys.modules, "delfin.remote.clusters", None)
-    monkeypatch.setitem(sys.modules, "delfin.remote.connection", None)
+    def _absent():
+        raise ImportError("No module named 'cluster_tunnel'")
+
+    monkeypatch.setattr("delfin.doctor._cluster_modules", _absent)
 
 
 def test_no_cluster_configured_says_nothing_at_all(no_tunnel):
