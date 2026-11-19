@@ -60,6 +60,34 @@ class Dialog:
         return True
 
 
+@pytest.fixture(autouse=True)
+def _no_foreign_latencies(monkeypatch):
+    """An empty endpoint-latency window for every test in this file.
+
+    Without a ``timeout_s`` setting the wait comes from
+    ``_adaptive_classifier_wait``, which reads ``_ENDPOINT_TTFT_S`` -- a
+    deque at module level, filled by every request this PROCESS makes.
+    Under three samples it answers ``_CLASSIFIER_TIMEOUT_S``, which these
+    tests patch to 0.2 s; from three it computes 1.5 x the 75th
+    percentile and clamps that to _CLASSIFIER_TIMEOUT_BOUNDS_S, whose
+    floor is 5 s.
+
+    So a test here that expects a 0.4 s verdict to be too late passes on
+    its own and fails once any earlier test in the same process has
+    recorded three latencies: the wait becomes at least 5 s, the verdict
+    arrives inside it, and the dialog this file asserts never appears.
+    Measured 2026-11-19: empty -> 0.2 s, three samples of 12/15/20 s ->
+    30.0 s. Seen on CI as `assert 0 == 1` in shard 4 of 4 on a branch
+    that does not touch the classifier.
+
+    A fresh deque per test, so what this file measures is its own.
+    """
+    import collections
+    import delfin.agent.api_client as _ac
+    monkeypatch.setattr(_ac, "_ENDPOINT_TTFT_S",
+                        collections.deque(maxlen=20), raising=False)
+
+
 @pytest.fixture
 def settings(tmp_path, monkeypatch):
     """A settings file of its own; write(value) sets timeout_s."""

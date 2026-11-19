@@ -1015,6 +1015,7 @@ PROVIDER_KEY_NAMES: dict[str, str] = {
     "kit": "KIT_TOOLBOX_API_KEY",
     "openai": "OPENAI_API_KEY",
     "api": "ANTHROPIC_API_KEY",
+    "blablador": "BLABLADOR_API_KEY",
 }
 
 
@@ -8234,6 +8235,8 @@ def create_tab(ctx):
         _available_providers.append(("OpenAI", "openai"))
     if _provider_key("KIT_TOOLBOX_API_KEY"):
         _available_providers.append(("KIT Toolbox", "kit"))
+    if _provider_key("BLABLADOR_API_KEY"):
+        _available_providers.append(("Helmholtz Blablador", "blablador"))
     # Detect a local OpenAI-compatible server (Ollama / vLLM / LM Studio /
     # llama.cpp). We probe the host's /api/tags (Ollama-native) and fall
     # back to /v1/models (everyone else). A 200 means at least one model
@@ -8499,6 +8502,21 @@ def create_tab(ctx):
                     return None
                 from delfin.agent.model_capabilities import _KIT_BASE_URL as _kit_base
                 url = _kit_base + "/models"
+                import urllib.request
+                req = urllib.request.Request(
+                    url, headers={"Authorization": f"Bearer {key}"}
+                )
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    data = _json.loads(resp.read())
+            elif provider == "blablador":
+                # Same shape as KIT: a bearer token on /models. The ids are
+                # server-side aliases that move, so nothing is shipped.
+                key = _provider_key("BLABLADOR_API_KEY")
+                if not key:
+                    return None
+                from delfin.agent.model_capabilities import (
+                    _BLABLADOR_BASE_URL as _bla_base)
+                url = _bla_base + "/models"
                 import urllib.request
                 req = urllib.request.Request(
                     url, headers={"Authorization": f"Bearer {key}"}
@@ -25451,7 +25469,7 @@ def create_tab(ctx):
     except Exception:
         pass
 
-    _LIVE_FETCH_PROVIDERS = {"kit", "openai"}
+    _LIVE_FETCH_PROVIDERS = {"kit", "openai", "blablador"}
     try:
         _mst = state.get("_models_init_status") or {}
         _mp = _mst.get("provider", "")

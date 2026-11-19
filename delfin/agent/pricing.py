@@ -129,12 +129,25 @@ OPENAI_RATES: dict[str, tuple[float, float]] = {
 # fallback -- and the honest display is tokens spent, not dollars.
 NON_BILLING_PROVIDERS: frozenset[str] = frozenset({
     "kit", "ollama", "local", "vllm", "lmstudio", "llamacpp", "llama.cpp",
+    # Helmholtz Blablador (Forschungszentrum Jülich): a shared research
+    # service, free to its users. Zero here is measured, not assumed --
+    # there is no per-token rate to publish.
+    "blablador",
 })
 
 # Server-side aliases the KIT gateway routes to a default model. They
 # carry no ``kit.`` prefix, so name them explicitly.
 _NON_BILLING_MODEL_IDS: frozenset[str] = frozenset({
     "standard-extern", "standard-external", "standard-local",
+})
+
+# Blablador's server-side aliases. They point at changing concrete models,
+# so the alias is the only stable name and the one DELFIN stores; the
+# service bills nothing for any of them. Named rather than matched on an
+# ``alias-`` prefix, which is generic enough to claim another provider's
+# id by accident.
+_BLABLADOR_ALIASES: frozenset[str] = frozenset({
+    "alias-fast", "alias-code", "alias-large", "alias-huge",
 })
 
 # ``kit.`` is KIT's own serving prefix. ``azure.`` looks like a vendor
@@ -221,6 +234,8 @@ def infer_provider(model: str) -> str:
     mid = (model or "").strip().lower()
     if not mid:
         return ""
+    if mid in _BLABLADOR_ALIASES:
+        return "blablador"
     if mid.startswith(_NON_BILLING_PREFIXES) or mid in _NON_BILLING_MODEL_IDS:
         return "kit"
     # Ollama tag convention is ``name:tag`` (``qwen3-coder:32b``). A colon
