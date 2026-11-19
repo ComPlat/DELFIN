@@ -243,25 +243,12 @@ class ResultsOverviewPanel:
 
     @staticmethod
     def _resolve_roots(ctx: Any) -> List[str]:
-        """Calculation roots: the dashboard's archive/calc dirs plus any
-        extra directories.
-
-        Extra roots come from the ``DELFIN_RESULTS_OVERVIEW_ROOTS``
-        environment variable (os.pathsep-separated, e.g. ``:``) - that
-        covers sshfs/NFS mounts or rsync copies of calculations from
-        other servers.  Directories that do not exist are skipped.
-        """
         roots: List[str] = []
         for attr in ("archive_dir", "calc_dir"):
             path = getattr(ctx, attr, None)
             if path is None:
                 continue
             path = str(path)
-            if path and os.path.isdir(path) and path not in roots:
-                roots.append(path)
-        extra = os.environ.get("DELFIN_RESULTS_OVERVIEW_ROOTS", "")
-        for path in extra.split(os.pathsep):
-            path = path.strip()
             if path and os.path.isdir(path) and path not in roots:
                 roots.append(path)
         return roots or [os.path.expanduser("~/calc")]

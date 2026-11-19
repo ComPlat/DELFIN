@@ -619,25 +619,3 @@ def test_skeleton_keeps_heteroatom_protons(tmp_path):
     off = ro.initial_xyz_png_bytes(str(calc), show_h=False)
     on = ro.initial_xyz_png_bytes(str(calc), show_h=True)
     assert off and on and off == on
-
-
-_os_pathsep = __import__('os').pathsep
-
-
-def test_resolve_roots_env_extra(monkeypatch, tmp_path):
-    """DELFIN_RESULTS_OVERVIEW_ROOTS adds sshfs/rsync calc roots."""
-    from delfin.dashboard import tab_results_overview as tab
-    extra = tmp_path / "remote_calc"
-    extra.mkdir()
-    monkeypatch.setenv("DELFIN_RESULTS_OVERVIEW_ROOTS", str(extra))
-    class FakeCtx:
-        archive_dir = str(tmp_path / "missing_archive")
-        calc_dir = str(tmp_path / "missing_calc")
-    roots = tab.ResultsOverviewPanel._resolve_roots(FakeCtx())
-    assert roots == [str(extra)]  # non-existing ctx dirs skipped
-
-    # Not a directory -> dropped.
-    monkeypatch.setenv("DELFIN_RESULTS_OVERVIEW_ROOTS",
-                       f"{extra}{_os_pathsep}{tmp_path / 'nope'}")
-    roots = tab.ResultsOverviewPanel._resolve_roots(FakeCtx())
-    assert roots == [str(extra)]
