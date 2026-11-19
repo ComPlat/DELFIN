@@ -120,6 +120,7 @@ def test_phone_resolution_hides_real_dashboard_widget():
 
 def test_replaced_dashboard_question_rejects_old_phone_answer():
     state = {'active_session_id': 'one', '_pending_question': {'type': 'open', 'options': []},
+             '_pending_question_sid': 'one',   # the question belongs to this session
              '_last_answer_text': 'First question?'}
     answers = []
     ui = adapter(state, question=lambda text: answers.append(text) or True)
