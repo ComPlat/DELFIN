@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 from pathlib import Path
 
@@ -40,13 +41,43 @@ def record(sid, *, directory=None):
         return {}
 
 
+def _record_strict(sid, *, directory=None):
+    """The stored record, or {} where absent; raises StateFileUnreadable
+    when the file exists but cannot be parsed.
+
+    One read answering two questions (agent/state_file.py): a READER may
+    conflate "nothing was recorded" with "what was recorded cannot be read",
+    a WRITER may not -- it builds the next record from that answer, and a
+    {}-shaped answer after damage destroys the person's decision with no
+    copy anywhere.
+    """
+    from delfin.agent import state_file
+    data = state_file.read_json(_path(sid, directory), default=None, strict=True)
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise state_file.StateFileUnreadable(
+            f"{_path(sid, directory)} is not a JSON object")
+    return data if data.get('session_id') == sid else {}
+
+
 def enabled(sid, *, directory=None):
     return record(sid, directory=directory).get('enabled') is True
 
 
 def switched_off_in_session(sid, *, directory=None):
-    """True when the session itself said /sync off: the phone may not undo it."""
-    value = record(sid, directory=directory)
+    """True when the session itself said /sync off: the phone may not undo it.
+
+    Fails closed. An unreadable record is not 'no restriction recorded':
+    the file may exist exactly to withhold the phone, so when it cannot be
+    read the phone is refused the re-enable (the person fixes it at the
+    computer), never silently granted.
+    """
+    from delfin.agent import state_file
+    try:
+        value = _record_strict(sid, directory=directory)
+    except state_file.StateFileUnreadable:
+        return True
     return value.get('enabled') is False and value.get('by', 'session') != 'phone'
 
 
@@ -101,14 +132,42 @@ def clean_name(text):
 #: What /sync understands (German matchers for what the user types).
 SYNC_ON = frozenset({'', 'on', 'an', 'ein', 'enable'})
 SYNC_OFF = frozenset({'off', 'aus', 'ausschalten', 'disable', 'stop'})
-SYNC_USAGE = ('Usage: /sync [on|off|status] or /sync name NAME; '
-              '/sync policy pull on|off for pulling from the phone. Anything else changes nothing.')
+SYNC_USAGE = ('Usage: /sync [on|off|status] or /sync NAME (one word names '
+              'the session); /sync policy pull on|off for pulling from the '
+              'phone. Anything else changes nothing.')
+
+
+#: Words a person types to stop, to answer or to ask for help (German
+#: matchers for what the user types). Never a session name: '/sync nein'
+#: or a typo like '/sync of' switching the phone ON would publish the
+#: session against the person's intent.
+_NOT_A_NAME = frozenset({
+    'of', 'no', 'nein', 'nicht', 'nie', 'never', 'ende', 'beenden',
+    'abschalten', 'stopp', 'halt', 'pause', 'exit', 'quit', 'cancel',
+    'abbrechen', 'help', 'hilfe', 'ja', 'yes', 'true', 'false', 'name',
+    'status', 'policy'})
+
+#: A name word: starts with a letter, then letters, digits, '_' or '-',
+#: 2 to 40 characters. Punctuation ('off!', 'status?') is no name.
+_NAME_WORD = re.compile(r"[^\W\d_][\w-]{1,39}")
+
+
+def _one_word(raw):
+    """One word that can name a session, or ''."""
+    text = str(raw or '').strip()
+    if (not text or not _NAME_WORD.fullmatch(text)
+            or text.lower() in _NOT_A_NAME):
+        return ''
+    return clean_name(text)
 
 
 def parse_sync(args):
     """``/sync`` arguments as (action, name): action on | off | status |
-    usage; a name only after ``name`` or in quotes. Anything else is
-    ``usage`` -- it changes nothing (an unknown word never switches on)."""
+    usage; a name after ``name``, in quotes, or as ONE word -- ``/sync
+    OFFICE`` means "on, named OFFICE" (the person's wording, seen
+    2026-11-12). What is not one clean word -- several words, a bare
+    ``name``, unknown ``policy`` arguments -- is ``usage``: it changes
+    nothing (the guard from review finding 2 stays for those)."""
     raw = str(args or '').strip()
     word = raw.lower()
     if word in SYNC_ON:
@@ -125,6 +184,9 @@ def parse_sync(args):
         return 'on', clean_name(rest)
     if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in '"\'' and clean_name(raw[1:-1]):
         return 'on', clean_name(raw[1:-1])
+    one = _one_word(raw)
+    if one and word not in SYNC_ON and word not in SYNC_OFF and word != 'name':
+        return 'on', one
     return 'usage', ''
 
 
@@ -136,18 +198,79 @@ NOT_RUNNING = (' But the messenger is not running on this machine (no bridge soc
                'nothing reaches the phone until it runs.')
 
 
-def messenger_running() -> bool:
-    """Whether a messenger bridge serves on this machine: its socket exists
-    (the explicit DELFIN_MESSENGER_SOCKET, the provisioned path, or the
-    per-user default). The unit removes the socket's directory when the
-    bridge stops, so a bridge that crashes or never started has none.
-    Never raises."""
+#: The bridge's unit of the root install (scripts/pi/pi_messenger.sh, UNIT_DIR).
+PROVISIONED_UNIT = '/etc/systemd/system/delfin-messenger-bridge.service'
+
+UNAVAILABLE = ('The phone messenger is not available on this machine: no SimpleX messenger '
+               '(bridge and gateway) is set up here, as on an HPC cluster. Pair your phone '
+               'on a machine where the messenger runs, or set it up here without root: '
+               'delfin-agent messenger setup --user --accept-loopback-risk')
+STOPPED = ('The phone messenger is set up on this machine but not running (no bridge socket), '
+           'so /pair cannot reach it. Start it again (systemctl status delfin-messenger-bridge '
+           'delfin-messenger-gateway; without root: delfin-agent messenger setup --user), '
+           'then /pair.')
+
+
+def _bridge_sockets() -> list:
+    """Every place a bridge socket of this host can be: the explicit
+    DELFIN_MESSENGER_SOCKET, the provisioned path, the per-user default and
+    the rootless setup's (its units set DELFIN_MESSENGER_SOCKET for
+    themselves only, so a session process does not see it)."""
     candidates = [os.environ.get('DELFIN_MESSENGER_SOCKET', ''), PROVISIONED_SOCKET]
     try:
         from delfin.messenger.bridge_client import default_socket_path
         candidates.append(str(default_socket_path()))
     except Exception:
         pass
+    try:
+        from delfin.messenger.rootless import state_dir
+        candidates.append(str(state_dir() / 'run' / 'bridge.sock'))
+    except Exception:
+        pass
+    return candidates
+
+
+def messenger_installed() -> bool:
+    """Whether a messenger is set up on this machine, running or not: the
+    root install's bridge unit, the rootless setup's state directory, or
+    its user units. Never raises."""
+    try:
+        from delfin.messenger.rootless import UNITS, state_dir, unit_dir
+        traces = [Path(PROVISIONED_UNIT), state_dir() / 'gateway'] + [unit_dir() / u for u in UNITS]
+    except Exception:
+        traces = [Path(PROVISIONED_UNIT)]
+    for path in traces:
+        try:
+            if path.exists():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def messenger_here() -> bool:
+    """Whether a phone can be paired from this machine at all: a bridge
+    runs, or a messenger is set up that is stopped for now. The agent tab
+    shows its Phone button only then; a host without one (an HPC login
+    node) has nothing a phone could reach."""
+    return messenger_running() or messenger_installed()
+
+
+def pairing_unavailable() -> str:
+    """Why /pair cannot reach a messenger from here, or '' when a bridge
+    runs. Checked before a pairing request is written: without a bridge
+    nobody collects it, and the person waited 30 s for 'No answer'."""
+    if messenger_running():
+        return ''
+    return STOPPED if messenger_installed() else UNAVAILABLE
+
+
+def messenger_running() -> bool:
+    """Whether a messenger bridge serves on this machine: its socket exists
+    (_bridge_sockets). The unit removes the socket's directory when the
+    bridge stops, so a bridge that crashes or never started has none.
+    Never raises."""
+    candidates = _bridge_sockets()
     import stat
     for path in filter(None, candidates):
         try:
@@ -180,8 +303,34 @@ def configure(sid, args='', *, endpoint=None, directory=None, by='session', phon
             text += ' (from the phone ' + str(old['phone'])[:40] + ')'
         return text + '.' + ('' if old.get('enabled') is not True or messenger_running()
                              else NOT_RUNNING)
+    from delfin.agent import state_file
     from delfin.agent.state_paths import write_text_atomic
-    old = record(sid, directory=directory)
+    damaged = None
+    try:
+        old = _record_strict(sid, directory=directory)
+    except state_file.StateFileUnreadable as exc:
+        # The record exists but cannot be read. A phone turning the session
+        # ON is refused and the file is LEFT WHERE IT IS: quarantining it
+        # here would move the only thing that still withholds the phone out
+        # of the way, and the next pull -- a retry a second later -- would
+        # read "nothing was recorded" and be granted. Measured: the refusal
+        # held for exactly one attempt before this order was fixed.
+        #
+        # For everyone else the new state is stored, the old bytes are kept
+        # aside (quarantined) and the person is told, never silently lost.
+        # Switching OFF from the phone is not withheld by anything, so it
+        # takes that path too.
+        if by == 'phone' and args != 'off':
+            return ("the session record could not be read, so it is not "
+                    "switched on from the phone: what that record withheld "
+                    "cannot be read, and it is kept exactly as it is. "
+                    "Switch it on at the computer with /sync instead.")
+        try:
+            moved = state_file.quarantine(_path(sid, directory))
+        except OSError:
+            moved = None
+        damaged = (moved, str(exc))
+        old = {}
     on = args != 'off'
     same_endpoint = endpoint is None or (old.get('endpoint') or '') == endpoint
     value = {'session_id': sid, 'enabled': on,
@@ -194,14 +343,23 @@ def configure(sid, args='', *, endpoint=None, directory=None, by='session', phon
     elif endpoint is None and old.get('endpoint'):
         value['endpoint'] = old['endpoint']
     write_text_atomic(_path(sid, directory), json.dumps(value))
+    if damaged is not None:
+        # The write landed; what could not be carried over is what the
+        # damaged file held. The loss is never silent.
+        moved, _exc = damaged
+        where = f" ({moved.name})" if moved else ""
+        note = (" Note: the session record could not be read and was moved "
+                f"aside{where}; anything it held is in that file.")
+    else:
+        note = ""
     if not on:
-        return 'SimpleX switched off for this session. No more messages or phone approvals.'
+        return 'SimpleX switched off for this session. No more messages or phone approvals.' + note
     if by != 'phone' and not messenger_running():
         # Said, not refused: the record stands and the session reaches the
         # phone as soon as the messenger runs (a bridge that crash-looped
         # left /sync saying "on" while nothing arrived).
-        return 'SimpleX switched on for this session.' + NOT_RUNNING
-    return 'SimpleX switched on for this session. The messenger invites you to its chat.'
+        return 'SimpleX switched on for this session.' + NOT_RUNNING + note
+    return 'SimpleX switched on for this session. The messenger invites you to its chat.' + note
 
 
 #: A session's deliberate notes to the phone (push_notification): at most

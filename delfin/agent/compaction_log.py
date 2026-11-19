@@ -19,12 +19,12 @@ import json
 import time
 from pathlib import Path
 
-from .state_paths import ensure_dir, open_append
+from .state_paths import ensure_dir, open_append, state_root
 
 #: Resolved at import time so the suite can redirect it
 #: (``USER_STATE_SINKS`` in state_paths.py) — see the sink table's header
 #: comment for why every module-level state path must be listed there.
-_LOG_DIR = Path.home() / ".delfin" / "compaction_log"
+_LOG_DIR = state_root() / "compaction_log"
 
 _MAX_RECORD_CHARS = 2000
 

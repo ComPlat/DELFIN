@@ -95,6 +95,7 @@ def _worker(tmp_path, monkeypatch, sid="s7"):
     monkeypatch.setattr(pairing, "_DIR", tmp_path / "pairing")
     monkeypatch.setattr(pairing, "_spawn", lambda fn: None)
     monkeypatch.setattr(pairing, "_door_dir", lambda directory=None: tmp_path)
+    monkeypatch.setattr(pairing, "_unavailable", lambda: "")   # a messenger runs on this host
     notices = []
     host = type("W", (), {})()
     host.emitter = type("E", (), {"session_id": sid,

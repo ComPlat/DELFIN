@@ -27,12 +27,13 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
+from .state_paths import state_root
 from typing import Any
 
 
-_REPORTS_DIR = Path.home() / ".delfin" / "eval_reports"
+_REPORTS_DIR = state_root() / "eval_reports"
 # Same draft location the 🐞→task scaffolder uses — one review inbox.
-_TASK_DRAFTS_DIR = Path.home() / ".delfin" / "bug_tasks"
+_TASK_DRAFTS_DIR = state_root() / "bug_tasks"
 
 # A pattern is "recurring" when at least this many failures share the
 # same fingerprint within the analysis window.

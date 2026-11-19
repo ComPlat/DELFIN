@@ -253,6 +253,23 @@ def socket_path() -> Path:
     return Path(os.environ.get("DELFIN_MESSENGER_SOCKET") or (rundir.runtime_dir() / SOCKET_NAME))
 
 
+def _said_and_action(preview: str) -> tuple[str, str]:
+    """``(statement, action)`` of an approval's preview: the gate's block
+    of what cannot be undone (agent/irreversible.py), "" when there is
+    none, and the rest. The phone's length limit and the outward check
+    judge the action; the statement is sent whole beside it, so a long
+    statement never pushes a command over the limit or out of the text."""
+    from delfin.agent import irreversible
+    said, action = irreversible.split(preview)
+    if said is None:
+        return "", preview
+    return preview[:len(preview) - len(action)].rstrip("\n"), action
+
+
+def _with_said(said: str, action: str, limit: int) -> str:
+    return (said + "\n\n" if said else "") + _truncate(action, limit)
+
+
 def _truncate(text: str, limit: int = 400) -> str:
     text = text if isinstance(text, str) else str(text)
     if len(text) <= limit:
@@ -338,6 +355,16 @@ class Bridge:
 
     # -- the service side ---------------------------------------------------------------
 
+    #: How often the connection to the agent service is rebuilt before the
+    #: process gives up and lets systemd deal with it. A restart of the
+    #: service costs one; the cap is there so a service that cannot come
+    #: back is not papered over for ever.
+    SERVICE_RECONNECTS = 60
+    #: Seconds between attempts. Longer than the service needs to come back
+    #: after a restart (measured: under a second), short enough that a phone
+    #: message waits rather than fails.
+    SERVICE_RECONNECT_WAIT = 2.0
+
     def _connect_service(self):
         from .client import ServiceClient
 
@@ -376,14 +403,43 @@ class Bridge:
         self._loop = asyncio.get_running_loop()
         serving = None
         try:
-            self._connect_service()
-            self._pump_task = self._loop.run_in_executor(None, self._pump_service)
             serving = asyncio.create_task(server.serve_forever())
-            done, _ = await asyncio.wait(
-                [serving, self._pump_task], return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                task.result()
-            raise ConnectionError("agent service connection closed")
+            # The connection to the agent service is rebuilt, not fatal.
+            # Before, losing it raised out of serve() and the process died:
+            # a deploy restarts the agent service, so EVERY deploy left a
+            # traceback and a five-second gap (measured 2026-11-17), and
+            # systemd's Restart=on-failure was what put the bridge back.
+            # Five such deaths inside the start-limit window would have
+            # latched the unit in `failed`, where neither a deploy nor
+            # anything else starts it again -- the phone would simply stop
+            # answering, with nobody told. The gateway's own socket stays
+            # bound across a reconnect, so a phone message is never met by
+            # a missing socket.
+            attempts = 0
+            while True:
+                self._connect_service()
+                attempts += 1
+                self._pump_task = self._loop.run_in_executor(
+                    None, self._pump_service)
+                done, _ = await asyncio.wait(
+                    [serving, self._pump_task],
+                    return_when=asyncio.FIRST_COMPLETED)
+                if serving in done:
+                    serving.result()          # the gateway side ended: done
+                    return
+                self._pump_task.result()      # surface a pump error, if any
+                # The pump ended, so the service connection is gone.
+                if self._service is not None:
+                    try:
+                        self._service.close()
+                    except Exception:
+                        pass
+                    self._service = None
+                if attempts > self.SERVICE_RECONNECTS:
+                    raise ConnectionError(
+                        "agent service connection closed "
+                        f"{attempts} times; giving up")
+                await asyncio.sleep(self.SERVICE_RECONNECT_WAIT)
         finally:
             server.close()
             await server.wait_closed()
@@ -750,14 +806,15 @@ class Bridge:
                     code = secrets.token_hex(4)
                     self._issued[code] = (sid, rid, fingerprint, now)
                 keys = {o.get("key") for o in req.get("options", [])}
+                said, action = _said_and_action(preview)
                 # Never approve a truncated action; lasting rules require confirmation.
-                allowed = len(preview) <= 1400 and ((kind == "confirm" and "y" in keys) or
+                allowed = len(action) <= 1400 and ((kind == "confirm" and "y" in keys) or
                                                    (kind == "plan" and bool(keys & {"d", "e"})))
                 flags = req.get("flags") or {}
                 what = ("shell" if flags.get("shell") else "write" if flags.get("write")
                         else "read" if flags.get("outsideRead") else "")
                 items.append({"id": code, "kind": "question" if kind == "ask" else kind,
-                              "sessionId": sid, "text": _truncate(preview, 1400),
+                              "sessionId": sid, "text": _with_said(said, action, 1400),
                               "action": what,
                               "purpose": _truncate(self._redactor().text(str(req.get("purpose") or "")), 200),
                               "phoneApproval": allowed, "tool": req.get("tool", ""),
@@ -822,7 +879,7 @@ class Bridge:
                 if choice not in {o.get("key") for o in req.get("options", [])}:
                     return {"error": 'This decision is not available for the request.'}
                 preview = self._redactor().text(str(req.get("preview") or ""))
-                if choice != "n" and len(preview) > 1400:
+                if choice != "n" and len(_said_and_action(preview)[1]) > 1400:
                     return {"error": 'The action is too long for the phone. Please approve it on the dashboard.'}
                 if choice == "?":
                     return {"error": 'Please choose one of the options shown.'}
@@ -1008,7 +1065,8 @@ class Bridge:
                     "question": _truncate(red.text(str(payload.get("question") or "")), 1000) if ask else "",
                     "choices": AA.option_labels(payload.get("options")) if ask else [],
                     "multiSelect": bool(payload.get("multiSelect")),
-                    "text": _truncate(red.text(str(record.get("preview") or "")), 1400),
+                    "text": _with_said(*_said_and_action(
+                        red.text(str(record.get("preview") or ""))), 1400),
                     "options": [] if ask else [{"key": "y", "label": "yes"}, {"key": "n", "label": "no"}],
                     "phoneApproval": not ask and not record.get("protected"),
                 })
@@ -1155,11 +1213,12 @@ class Bridge:
                 # create/merge, forge API writes, mail, uploads -- is shown
                 # but never phone-approved.
                 outward = self._outward(req)
-                approvable = ("y" in options and len(preview) <= 1400
+                said, action = _said_and_action(preview)
+                approvable = ("y" in options and len(action) <= 1400
                               and not flags.get("protected") and not outward)
                 items.append({
                     "tool": str(req.get("tool") or ""),
-                    "text": _truncate(preview, 300),
+                    "text": _with_said(said, action, 300),
                     "risk": what,
                     "session": title,
                     "sessionId": sid,
@@ -1197,7 +1256,7 @@ class Bridge:
         and the outward MCP tools. Never raises (an error refuses)."""
         from delfin.agent import auto_guard
         name = str(req.get("tool") or "")
-        text = str(req.get("preview") or "")
+        text = _said_and_action(str(req.get("preview") or ""))[1]
         # The preview holds the command as the screen shows it ("$ cmd");
         # auto_guard matches shell commands either way.
         verdict = auto_guard.classify_call(name, {"command": text})

@@ -726,6 +726,8 @@ _WRITE_TOOLS = frozenset({
     "fill_series", "merge_pdfs", "split_pdf", "create_pdf",
     # An undo overwrites user files too, and is itself undoable.
     "undo_changes",
+    # Files copied in from a cluster (cluster_tools.fetch).
+    "cluster_fetch",
 })
 
 # Write routes that reach the user's files WITHOUT a pre-image in the
@@ -759,10 +761,20 @@ _WRITE_TOOLS = frozenset({
 # is a record without undo, and a root over the file cap is not tracked
 # (the command's result says so); the per-file lookup below reports
 # both as unrecoverable.
+#
+# * ``cluster_fetch`` -- copies files in from a cluster, never over an
+#   existing file, so there is no pre-image to keep; delete what it wrote.
+# * ``cluster_run``, ``cluster_submit``, ``cluster_cancel``,
+#   ``cluster_upload`` -- change files and jobs on a cluster, not here: the
+#   journal holds nothing of them and undoes none of it.
 _UNJOURNALLED_WRITE_TOOLS = frozenset({
-    "fill_series", "publish_report",
+    "fill_series", "publish_report", "cluster_fetch",
+    "cluster_run", "cluster_submit", "cluster_cancel", "cluster_upload",
 })
-_COMMAND_TOOLS = frozenset({"bash", "bash_background"})
+# The cluster tools act on another machine: their rows carry a command line
+# that says what was done there (cluster_tools._audit).
+_COMMAND_TOOLS = frozenset({"bash", "bash_background", "cluster_run", "cluster_submit",
+                            "cluster_cancel", "cluster_upload"})
 _PERSIST_TOOLS = frozenset({"remember_permission", "remember_permission_bundle"})
 # A hook is a shell command. It runs outside the permission gate, outside
 # the deny-list and outside the sandbox, and it fires on every prompt and

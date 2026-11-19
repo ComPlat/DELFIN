@@ -30,6 +30,7 @@ from .memory_store import (
     _atomic_write,
     _delfin_memory_dir,
     _parse_frontmatter,
+    _private_dir,
     bm25_scores,
 )
 
@@ -78,8 +79,12 @@ def save_episode(
     up. After the write the store is pruned to the newest
     ``_MAX_EPISODES`` entries. Returns the written path.
     """
-    d = _episodes_dir(repo_root)
-    d.mkdir(parents=True, exist_ok=True)
+    # Owner-only on any umask, ~/.delfin and every level down to here:
+    # list_episodes feeds every *.md in this directory into the next
+    # prompt, so a directory a group member can write to is a way into
+    # this user's prompts. Under the cluster's umask 002 a plain mkdir
+    # made it 0775 (bug hunt 11.11.2026, #7).
+    d = _private_dir(_episodes_dir(repo_root))
 
     date = time.strftime("%Y-%m-%d")
     sid8 = _safe_sid(session_id)

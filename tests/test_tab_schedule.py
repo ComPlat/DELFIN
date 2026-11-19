@@ -126,6 +126,11 @@ def test_every_visible_tab_is_on_the_bar_and_builds_on_its_first_open(tmp_path):
         "    init(self, *a, **k)\n"
         "    tabs.append(self)\n"
         "w.Tab.__init__ = record\n"
+        # A person who switched the deferred tabs on (a new installation
+        # shows five; tab_defaults): the tabs under test are on the bar.
+        "from delfin.user_settings import save_settings\n"
+        "save_settings({'ui': {'tabs': {'order': ['submit', 'recalc', 'orca_builder',\n"
+        "    'chemdarwin', 'agent', 'job_status', 'calculations'], 'hidden': []}}})\n"
         "d.create_dashboard(backend='local')\n"
         "bar = next(t for t in tabs if 'Submit Job' in t.titles)\n"
         "for title in ('Recalc', 'ORCA Builder', 'ChemDarwin', 'DELFIN Agent', 'Job Status', 'Calculations'):\n"

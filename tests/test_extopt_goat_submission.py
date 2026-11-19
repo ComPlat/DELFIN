@@ -133,7 +133,10 @@ def test_submission_goes_through_scheduler_client(tmp_path, monkeypatch):
     )
     out = submit_extopt_job(_goat(tmp_path), cfg=_cfg(), submit=True)
     assert out["submitted"] is True
-    assert calls == [("sbatch", ["sbatch", str(tmp_path / "goat_job.sbatch")])]
+    # The partition's MaxTime is asked first (D1), then the one sbatch.
+    assert [c for c in calls if c[0] == "sbatch"] == [
+        ("sbatch", ["sbatch", str(tmp_path / "goat_job.sbatch")])]
+    assert calls[0][1][:3] == ["scontrol", "show", "partition"]
 
 
 def test_opt_script_unchanged_by_goat_lines(tmp_path):

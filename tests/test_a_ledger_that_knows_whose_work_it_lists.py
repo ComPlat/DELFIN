@@ -161,7 +161,7 @@ def test_exit_on_a_live_worktree_reports_that_it_removed_it(repo):
 
 
 def test_the_descriptions_say_who_removes_the_worktree():
-    from delfin.agent import api_client as a
+    from delfin.agent import tool_catalog as a
     src = open(a.__file__).read()
     assert "apply removes the worktree and its branch" in src
     assert "(worktree_removed; no exit needed)" in src

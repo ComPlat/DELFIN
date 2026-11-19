@@ -312,7 +312,10 @@ def find_electronic_energy(filename: str) -> Optional[float]:
 
 
 _ELECTRONIC_PATTERNS = (
-    rf"FINAL\s+SINGLE\s+POINT\s+ENERGY\s+{FLOAT_RE}",
+    # An ExtOpt run (energy and gradient from an external program, e.g. an
+    # MLIP through orca-mlips) prints "FINAL SINGLE POINT ENERGY (From
+    # external program)   -155.1397..." -- read as the same energy.
+    rf"FINAL\s+SINGLE\s+POINT\s+ENERGY(?:\s+\(From\s+external\s+program\))?\s+{FLOAT_RE}",
     rf"Total\s+Energy\s*:\s*{FLOAT_RE}",
     rf"Electronic\s+energy{_GAP}{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
 )

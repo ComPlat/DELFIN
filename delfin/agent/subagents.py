@@ -70,6 +70,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from .state_paths import state_root
 from typing import Any, Optional, TYPE_CHECKING
 
 from . import german as _de
@@ -135,7 +136,7 @@ def _subagent_limits() -> dict:
         "max_output_tokens": _num("max_output_tokens", _MAX_OUTPUT_TOKENS, int),
     }
 
-_TELEMETRY_PATH = Path.home() / ".delfin" / "subagent_telemetry.jsonl"
+_TELEMETRY_PATH = state_root() / "subagent_telemetry.jsonl"
 _TELEMETRY_MAX_LINES = 5000
 
 # Context-inheritance budgets. A spawned child used to start with a bare
@@ -274,7 +275,7 @@ def _stream_text_only(sub_client, messages: list[dict], system_prompt: str,
 # read-modify-write would race-drop each other's entries (the panel would
 # flicker subagents in and out). One owner per file → no races. The normal
 # finally-cleanup removes a subagent's file when it finishes or errors.
-_RUNNING_DIR = Path.home() / ".delfin" / "subagent_running"
+_RUNNING_DIR = state_root() / "subagent_running"
 
 
 def _format_action(name: str, tool_input) -> str:
@@ -389,13 +390,22 @@ def _running_update(sa_id: str, entry: dict | None) -> None:
             if "owner_session" not in entry and f.exists():
                 # The run rewrites its entry at every step without knowing
                 # which session reserved it; the reservation's owner stays.
+                # A file that cannot be parsed is moved aside
+                # (state_file.quarantine) rather than overwritten: the
+                # read's empty answer must never reach this write, or one
+                # damaged byte erases the live record with no message and
+                # no copy.
                 try:
                     owner = json.loads(f.read_text(encoding="utf-8")).get(
                         "owner_session")
                     if owner:
                         entry = {**entry, "owner_session": owner}
                 except Exception:
-                    pass
+                    from .state_file import quarantine
+                    moved = quarantine(f)
+                    if moved is not None:
+                        entry = {**entry,
+                                 "_previous_unreadable": moved.name}
             if not f.exists():
                 # Starting an entry is the one moment guaranteed to happen
                 # and cheap enough to carry the cleanup of what an earlier
@@ -723,7 +733,7 @@ def reap_dead_running() -> list[str]:
 # completion announced twice is its own defect, and the claim has to
 # survive a restart. The claim IS the unlink -- on POSIX only one caller
 # can remove a given file -- so two drains racing cannot both report it.
-_PENDING_DIR = Path.home() / ".delfin" / "subagent_pending"
+_PENDING_DIR = state_root() / "subagent_pending"
 # A marker whose owning process is gone belongs to a session that can no
 # longer be told anything; kept only long enough to be reaped, like the
 # died-run records above.
@@ -926,7 +936,7 @@ def drain_finished_subagents(limit: int = _PENDING_DRAIN_LIMIT) -> list[dict]:
 # Finished-subagent sessions (resume-by-id): each run
 # persists its conversation so a later ``resume_id`` call can continue
 # the same subagent with its context intact.
-_SESSIONS_DIR = Path.home() / ".delfin" / "subagent_sessions"
+_SESSIONS_DIR = state_root() / "subagent_sessions"
 _SESSIONS_LIST_LIMIT = 20
 
 
@@ -1578,7 +1588,7 @@ def _md_preset_search_dirs() -> list[Path]:
     """Directories scanned for ``*_subagent.md`` user-extensible presets."""
     return [
         Path(__file__).resolve().parent / "pack" / "agents",
-        Path.home() / ".delfin" / "subagents",
+        state_root() / "subagents",
     ]
 
 
@@ -1651,7 +1661,7 @@ def _build_preset_registry() -> dict[str, SubagentPreset]:
     # Pack presets cannot override a built-in; user presets may.
     override_by_dir = {
         Path(__file__).resolve().parent / "pack" / "agents": False,
-        Path.home() / ".delfin" / "subagents": True,
+        state_root() / "subagents": True,
     }
     for d in _md_preset_search_dirs():
         allow_override = override_by_dir.get(d, True)
@@ -1760,7 +1770,9 @@ def _known_preset_tool_names() -> frozenset[str]:
     channel a preset already ships with (subagent_message). Read-only
     catalogue names (explore's measured surface) are included via the
     preset definitions themselves — a NEW preset listing a tool an
-    existing preset lists must not be refused for it.
+    existing preset lists must not be refused for it. The ops server's own
+    structure/geometry tools are derived from the server module (see below),
+    never from a hand list.
     """
     names: set[str] = set()
     try:
@@ -1776,6 +1788,20 @@ def _known_preset_tool_names() -> frozenset[str]:
                     or "")
             if n:
                 names.add(n)
+    except Exception:
+        pass
+    # The ops server's structure/geometry tools: a preset may list them
+    # bare (geometry_renumber) or namespaced (mcp__delfin-ops__
+    # geometry_renumber). Derive from the server module so a NEW
+    # tool_geometry_* the server registers stays known automatically —
+    # never a hand list, and a made-up name is still refused below.
+    try:
+        from delfin.ops_server import server as _ops_server
+        for _n in dir(_ops_server):
+            if _n.startswith("tool_geometry_"):
+                _base = _n[len("tool_"):]
+                names.add(_base)
+                names.add(f"mcp__delfin-ops__{_base}")
     except Exception:
         pass
     # The union of tools every shipped preset actually lists: these are
@@ -1846,6 +1872,14 @@ def validate_preset(path_or_text: str) -> list[str]:
         try:
             pack_ids = {p.stem.replace("_subagent", "") for p in
                         pack_dir.glob("*_subagent.md")}
+            # A preset validated by path is the file being introduced; its
+            # own stem is not an "existing pack preset" it overrides.
+            if not source.strip().startswith("---"):
+                try:
+                    own = Path(source).stem.replace("_subagent", "")
+                    pack_ids.discard(own)
+                except Exception:
+                    pass
             pack_ids |= {n for n in SUBAGENT_PRESETS
                          if n not in _BUILTIN_PRESETS
                          and n not in pack_ids}
@@ -1910,7 +1944,8 @@ def validate_preset(path_or_text: str) -> list[str]:
             for prop, spec in props.items():
                 t = spec.get("type") if isinstance(spec, dict) else None
                 sample[prop] = {"string": "x", "integer": 1,
-                                "number": 1.0, "boolean": True}.get(
+                                "number": 1.0, "boolean": True,
+                                "array": [], "object": {}}.get(
                     t if isinstance(t, str) else "", "x")
         errs = validate_json_schema(sample, schema)
         if errs:
@@ -3541,6 +3576,48 @@ def _principles_text() -> str:
     return text.rstrip() + "\n\n" if _has_body(text) else ""
 
 
+def _isolate_sub_client(sub_client) -> None:
+    """Give a shallow-copied child client its own mutable per-run state.
+
+    ``run_subagent`` copies the parent client so concurrent fan-out runs do
+    not share one ``_permissions``. A shallow copy shares every attribute it
+    does not replace, and each one that is mutable and per-run has to be
+    named here. Extracted from the call site so a test can drive exactly
+    what production does: the defect this guards against was an attribute
+    MISSING from the list, which a test re-implementing the list cannot see.
+    """
+    # A shallow copy shares the parent's MUTABLE evidence ledgers: the
+    # child would union its own reads into the parent's session set in
+    # place, so a file only the delegate opened grounded the parent's
+    # citations -- even when the parent discarded the report (the
+    # fan-out timeout path abandons the thread, it does not stop it).
+    # The verified merge in _merge_delegate_evidence is the one route
+    # a delegate's reads may take to the parent; give the child its own
+    # ledger so that stays the only one.
+    # The same reasoning for the per-turn tool state. A shallow copy
+    # shares the parent's ToolContext object, so the child's turn start
+    # (tool_context.for_client(self).begin_turn()) emptied the PARENT's
+    # undo window mid-turn and rebound live_messages to the child's
+    # conversation. A parent that delegated anything and then called
+    # undo_changes(scope="turn") reverted the delegate's files and left
+    # its own edits on disk, reporting success either way -- the exact
+    # sharing the per-session ToolContext was built to end, surviving it
+    # by one missing line. Measured by probe: for_client(parent) is
+    # for_client(copy.copy(parent)), and the child's begin_turn() clears
+    # the parent's seq list.
+    try:
+        from . import tool_context as _tool_context
+        sub_client._tool_context = _tool_context.ToolContext()
+    except Exception:
+        pass
+    for _ledger in ("_observed_files", "_observed_files_session"):
+        if hasattr(sub_client, _ledger):
+            try:
+                setattr(sub_client, _ledger, set())
+            except Exception:
+                pass
+
+
 def run_subagent(
     *,
     subagent_type: str,
@@ -3710,20 +3787,7 @@ def run_subagent(
     restore_parent = False
     try:
         sub_client = _copy.copy(parent_client)
-        # A shallow copy shares the parent's MUTABLE evidence ledgers: the
-        # child would union its own reads into the parent's session set in
-        # place, so a file only the delegate opened grounded the parent's
-        # citations -- even when the parent discarded the report (the
-        # fan-out timeout path abandons the thread, it does not stop it).
-        # The verified merge in _merge_delegate_evidence is the one route
-        # a delegate's reads may take to the parent; give the child its own
-        # ledger so that stays the only one.
-        for _ledger in ("_observed_files", "_observed_files_session"):
-            if hasattr(sub_client, _ledger):
-                try:
-                    setattr(sub_client, _ledger, set())
-                except Exception:
-                    pass
+        _isolate_sub_client(sub_client)
         sub_client.set_permissions(sub_perms)
         # The copy inherited the parent's Stop probe; a stop the user gives
         # this run alone (the × in the Background panel) is heard too.

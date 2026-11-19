@@ -224,7 +224,15 @@ if ($Mode -ne 'App') {
         if ($p.RememberLogin) { try { $loginKey = Get-LoginKey } catch { $loginKey = $null } }
         $publicKey = ''
         $identity = @()
-        if ($loginKey) { $options += @('-i',$loginKey.Key); $identity = @('-i',$loginKey.Key); $publicKey = $loginKey.Public }
+        # IdentitiesOnly: offer THIS key and no other. Without it, -i adds
+        # the launcher's key to the agent's keys and every default
+        # ~/.ssh/id_* , and each one offered is one of the server's
+        # MaxAuthTries. On a hardened server (the lab Pi allows 3) the
+        # password prompt is then never reached, or the connection is cut
+        # with "Too many authentication failures" -- which reads exactly
+        # like a refused password. Measured 2026-11-19: that server offers
+        # publickey,password and allows three attempts.
+        if ($loginKey) { $options += @('-o','IdentitiesOnly=yes','-i',$loginKey.Key); $identity = @('-o','IdentitiesOnly=yes','-i',$loginKey.Key); $publicKey = $loginKey.Public }
         if ($Mode -eq 'Terminal') {
             Write-Host 'Working terminal. Password and OTP prompts are handled exclusively by OpenSSH.'
             Write-Host 'To paste a password here: right-click in this window. Ctrl+V does not paste into this console; it sends a control character, and the server sees a wrong password.'
@@ -240,10 +248,22 @@ if ($Mode -ne 'App') {
             $sshProcess.WaitForExit()
             Write-Host "SSH ended (exit code $($sshProcess.ExitCode))."
         } else {
-            Write-Host 'Dashboard terminal: enter your password and OTP directly in OpenSSH.'
-            Write-Host 'To paste a password here: right-click in this window. Ctrl+V does not paste into this console; it sends a control character, and the server sees a wrong password.'
+            # The two things that make a first login fail for someone who
+            # did nothing wrong: pasting with Ctrl+V, which this console
+            # turns into a control character so that a CORRECT password is
+            # refused, and being asked two or three times -- one prompt per
+            # SSH connection (check, copy, dashboard) -- which reads as the
+            # password having been rejected. Both are said HERE, before the
+            # first prompt and short enough to be read, instead of in a
+            # paragraph among six other lines.
+            Write-Host ''
+            Write-Host '  You may be asked for the password up to three times. That is normal:' -ForegroundColor Cyan
+            Write-Host '  one question per connection, not a refusal.' -ForegroundColor Cyan
+            Write-Host '  TYPE the password. Ctrl+V does not work here - paste with a RIGHT-CLICK.' -ForegroundColor Cyan
+            if ($loginKey) { Write-Host '  After this once, this PC is known and no password is asked again.' -ForegroundColor Cyan }
+            Write-Host ''
+            Write-Host 'Password and OTP are handled by OpenSSH itself; this app never sees them.'
             Write-Host 'On first login, compare the host fingerprint with the official server fingerprint.'
-            if ($loginKey) { Write-Host 'Remember login ON: after this login the server knows this PC; the next connection needs no password (where the server allows keys).' }
             $version = Sync-ServerScripts ([string]$p.Target) $identity
             $remote = Get-RemoteCommand $p 'dashboard' $tunnelPath $publicKey $version
             Write-Host 'The browser signs in automatically.'
@@ -334,6 +354,48 @@ if ($Mode -ne 'App') {
             }
             $sshProcess.WaitForExit()
             Write-Host "SSH ended (exit code $($sshProcess.ExitCode))."
+            # The login was refused and the dashboard never opened. On a
+            # server that takes no passwords this is where a new person
+            # stops: the launcher registers a PC during its first PASSWORD
+            # login, so where there is none the key is added once you are
+            # in, and you get in with the key.
+            #
+            # The way out is for the server's owner to add this PC's public
+            # key, which means getting one line off this machine. Telling
+            # someone to open a console and print a file from a dotted
+            # folder is where that fails, so the line is put on their
+            # desktop as a file they can attach to a mail. The PUBLIC half
+            # only; the private key never leaves this PC.
+            if ($sshProcess.ExitCode -ne 0 -and -not $opened -and $loginKey) {
+                try {
+                    $note = Join-Path ([Environment]::GetFolderPath('Desktop')) 'DELFIN-key-for-the-server-owner.txt'
+                    $text = @(
+                        'The DELFIN launcher could not log in to ' + [string]$p.Target + '.',
+                        '',
+                        'If you were given no password, this PC is not known to the server yet.',
+                        'Send THIS FILE to whoever runs the server. It holds the public half of',
+                        'this PC''s key - it is not secret, and it is not your password.',
+                        '',
+                        'They add it with one command:',
+                        '',
+                        '    delfin-people --add-key ' + (Get-PersonName) + ' < this-file.txt',
+                        '',
+                        'Then start DELFIN again. No password will be needed.',
+                        '',
+                        $loginKey.Public) -join [Environment]::NewLine
+                    [IO.File]::WriteAllText($note, $text)
+                    Write-Host ''
+                    Write-Host '  The login was refused.' -ForegroundColor Yellow
+                    Write-Host '  If you were given no password, this PC is not known to the server.' -ForegroundColor Yellow
+                    Write-Host '  A file is now on your desktop:' -ForegroundColor Yellow
+                    Write-Host '    DELFIN-key-for-the-server-owner.txt' -ForegroundColor Yellow
+                    Write-Host '  Send it to whoever runs the server, then start DELFIN again.' -ForegroundColor Yellow
+                    Write-Host ''
+                } catch {
+                    Write-Host 'The login was refused, and this PC key could not be written to the desktop:'
+                    Write-Host $loginKey.Public
+                }
+            }
 
         }
 

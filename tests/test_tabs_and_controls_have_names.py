@@ -22,12 +22,15 @@ def _css(widget) -> str:
     return " ".join(widget.value.split())
 
 
-def test_the_dashboard_tab_bar_wraps_instead_of_clipping():
+def test_the_dashboard_tab_bar_never_clips_a_label():
+    # One row that scrolls sideways where the names do not fit (it wrapped
+    # onto a second row from 2026-11-12 to 2026-11-13);
+    # test_the_dashboard_tab_bar_is_one_calm_row pins the rest.
     css = _css(helpers.create_page_css())
     bar = f".jupyter-widgets.jupyter-widget-tab.{helpers.DASHBOARD_TABS_CLASS}"
-    assert f"{bar} > .lm-TabBar > .lm-TabBar-content {{ flex-wrap: wrap; }}" in css
-    assert f"{bar} > .lm-TabBar .lm-TabBar-tab {{ flex: 0 0 auto; }}" in css
-    assert f"{bar} > .lm-TabBar .lm-TabBar-tabLabel {{ overflow: visible; }}" in css
+    assert f"{bar} > .lm-TabBar > .lm-TabBar-content {{ flex-wrap: nowrap;" in css
+    assert f"{bar} > .lm-TabBar .lm-TabBar-tab {{ flex: 0 0 auto;" in css
+    assert f"{bar} > .lm-TabBar .lm-TabBar-tabLabel {{ overflow: visible;" in css
 
 
 def test_an_inactive_tab_label_has_the_primary_text_colour():

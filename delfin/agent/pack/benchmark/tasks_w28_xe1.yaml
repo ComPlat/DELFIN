@@ -1,0 +1,74 @@
+# Wave 28 XE1: structure-department editing tasks (structure_edit library
+# + xyz-editor preset, package target #5).
+#
+# Each task hands the model a small hand-built xyz fixture in ./struc/ and
+# asks it to produce one NEW xyz file with the structure tools. The verify
+# script reads the WRITTEN file (parse_xyz) and asserts the geometry /
+# composition / no-overwrite — it grades the artifact, not the prose.
+# Fixtures are hand-built or DELFIN-generated, never ORCA output (licence).
+version: 1
+package: XE1
+tasks:
+  - id: w28_xe1_renumber_product_onto_educt
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      In struc/ there are educt.xyz (a reference atom order) and
+      product.xyz (the same atoms in a scrambled order — same atoms,
+      same bonds, only the ordering differs). Renumber product.xyz onto
+      educt.xyz's atom order and write the result to a NEW file
+      struc/product_renumbered.xyz. Do not modify educt.xyz. In your
+      report say the number of atoms and confirm the composition matches
+      the educt.
+    setup: xe1_renumber_seed.py
+    verify: xe1_renumber_verify.py
+    expected_signals:
+      - pattern: '(?i)(renumber|atom order|same composition)'
+        against: text
+    max_duration_s: 900
+    max_cost_usd: 0.50
+  - id: w28_xe1_fix_missing_h_on_metal_complex
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      In struc/ there is complex.xyz: a zinc complex whose amido N is
+      missing one coordinating hydrogen. Fix the structure by adding the
+      missing hydrogen(s) and write the result to a NEW file
+      struc/complex_fixed.xyz. Do not modify complex.xyz. In your report
+      state how many hydrogens you added and the final atom count.
+    setup: xe1_fix_h_seed.py
+    verify: xe1_fix_h_verify.py
+    expected_signals:
+      - pattern: '(?i)(hydrogen|amide|added)'
+        against: text
+    max_duration_s: 900
+    max_cost_usd: 0.50
+  - id: w28_xe1_split_a_dimer
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      In struc/ there is dimer.xyz: two identical molecules placed far
+      apart in one file (no covalent bond between them). Split the dimer
+      into its two molecules and write each to a NEW file
+      struc/fragment_a.xyz and struc/fragment_b.xyz. Do not modify
+      dimer.xyz. In your report say the atom count of one molecule.
+    setup: xe1_split_seed.py
+    verify: xe1_split_verify.py
+    expected_signals:
+      - pattern: '(?i)(fragment|split|atom count)'
+        against: text
+    max_duration_s: 900
+    max_cost_usd: 0.50
+  - id: w28_xe1_refuse_to_overwrite_input
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      In struc/ there is input.xyz. Apply a small structure edit (for
+      example fix missing hydrogens) and write the corrected structure to
+      a NEW file struc/output.xyz. The input file input.xyz must stay
+      byte-for-byte unchanged — never overwrite it. In your report name
+      the file you wrote.
+    setup: xe1_no_overwrite_seed.py
+    verify: xe1_no_overwrite_verify.py
+    max_duration_s: 900
+    max_cost_usd: 0.50

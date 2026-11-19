@@ -65,9 +65,9 @@ _ID = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _SECRET_KEY = re.compile(r"(pass|secret|token|key|auth|cred)", re.I)
 _SECRET_REF = re.compile(r"^cred:[A-Za-z0-9_.-]{1,64}$")
 DRIVERS_IMPLEMENTED = ("simulator", "shelly_rpc", "tasmota", "mqtt",
-                       "opcua_lads")
+                       "opcua_lads", "gpiod")
 #: Named in the interface and the design doc; refused until written.
-DRIVERS_PLANNED = ("home_assistant", "gpiod", "sila2", "serial", "modbus")
+DRIVERS_PLANNED = ("home_assistant", "sila2", "serial", "modbus")
 
 
 def state_str(v: Any) -> str:

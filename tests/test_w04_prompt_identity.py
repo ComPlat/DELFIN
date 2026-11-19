@@ -9,8 +9,9 @@ skills).
 Identity is measured per task, branch vs main, after normalising the
 blocks that are tree-inherent and carry no capability text: the
 live-state block (branch name, dirty status, recent commit hashes) and
-the per-content fence nonces of the memory blocks. Everything else must
-be byte-identical.
+the per-content fence nonces of the memory blocks. No line the branch
+adds may carry chemistry or ORCA text (test_prompt_carries_no_orca_knowledge
+says why this replaced byte identity).
 
 Measured on this branch (scratch/measure_prompt_identity.py): the
 prompt differences vs main are exactly those normalised blocks. On
@@ -75,6 +76,13 @@ _FORBIDDEN = ("orca_explain", "orca_check_input", "workflow_candidates",
               "3conv", "NoSplitRIJ", "SLOWCONV", "TIGHTSCF",
               "CHEMISTRY TASK DETECTED", "Chemistry Protocol")
 
+#: Chemistry text that must not arrive in a line a branch adds to the
+#: always-on prompt of a non-chemistry task: the markers above, ORCA and
+#: its tools, the OPI interface.
+_CHEMISTRY_TEXT = re.compile(
+    "|".join(re.escape(m) for m in _FORBIDDEN)
+    + r"|\bORCA\b|\borca_\w+|\bOPI\b")
+
 # The recalled-memory region (MEMORY.md index, external-memory notes,
 # past-session episodes) is DATA -- task-keyed recall over the user's
 # memory store, not the prompt head. It legitimately differs between two
@@ -124,14 +132,27 @@ def main_tree(tmp_path_factory):
                                        ("dashboard_agent", "dashboard")])
 @pytest.mark.parametrize("task", TASKS)
 def test_prompt_carries_no_orca_knowledge(task, role, mode, main_tree):
-    """Branch prompt for a non-chemistry task: no chemistry protocol,
-    no ORCA knowledge, no new tool description -- and identical to main
-    apart from the tree-inherent live-state and fence blocks."""
+    """Branch prompt for a non-chemistry task: no chemistry protocol and
+    no ORCA knowledge -- on main, on the branch, and in no line the
+    branch adds to the always-on prompt.
+
+    It asserted byte identity with main once (the w04 measurement, when
+    the only intended difference was the removed leak). Kept as identity,
+    every intended prompt change elsewhere -- a new rule in a shared
+    addendum, paid for under the token budget -- turned this test red on
+    its own pull request, where it compares the PR to origin/main. What
+    this test exists for is RULE 1, no cost to other abilities: no
+    chemistry text reaching a non-chemistry task. So the lines the branch
+    adds are what is judged; the size of the head is the token budget's
+    (test_prompt_token_budget.py)."""
     branch = _prompt(_repo(), task, role, mode)
     main = _prompt(main_tree, task, role, mode)
-    assert branch == main, (
-        f"{role}/{task!r}: the branch changed the always-on prompt "
-        "beyond the tree-inherent live-state/fence blocks")
+    known = set(main.splitlines())
+    added = [line for line in branch.splitlines() if line not in known]
+    leaked = [line for line in added if _CHEMISTRY_TEXT.search(line)]
+    assert not leaked, (
+        f"{role}/{task!r}: the branch adds chemistry text to the always-on "
+        f"prompt: {leaked[:3]}")
     for marker in _FORBIDDEN:
         assert marker not in branch and marker not in main, (
             role, task, marker)

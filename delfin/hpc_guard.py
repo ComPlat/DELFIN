@@ -198,18 +198,20 @@ def keep_cli_off_login_node(func, args, argv: Sequence[str], *,
     """The delfin-agent entry point's guard, called once its arguments are
     parsed. A session, a turn, the TUI, a pre-PR check or a benchmark moves
     onto a compute node (srun --pty) from a terminal and is refused without
-    one. Starting a swarm or the schedule daemon is refused: their sessions
-    outlive the command, so they belong in an sbatch job. Everything else
-    (status, lists, approvals, watch, where, ...) stays: it is light."""
+    one. Starting the schedule daemon is refused: it outlives the command,
+    so it belongs in an sbatch job. Starting a swarm is handed over to the
+    swarm command, which submits it as a SLURM job itself
+    (delfin.agent.swarm.job; its members never start on a login node:
+    launch.start_members refuses there). Everything else (status, lists,
+    approvals, watch, where, ...) stays: it is light."""
     try:
         ensure_watcher(env=env)
     except Exception:
         pass  # the watcher is a net; it never breaks the command
     name = getattr(func, "__name__", "")
-    is_swarm = getattr(func, "__module__", "") == "delfin.agent.cli_swarm"
-    if is_swarm and "start" in argv:
-        exit_on_login_node("a swarm's member sessions",
-                           "start the swarm from inside an sbatch job", env=env)
+    # `delfin-agent swarm start` on a login node: no refusal here -- the
+    # swarm command checks the spec and submits the swarm as a SLURM job
+    # (delfin.agent.swarm.job.route says "job" on every login node).
     if name == "cmd_scheduler" and getattr(args, "scheduler_action", "") == "start":
         exit_on_login_node("the schedule daemon",
                            "run it inside an sbatch job", env=env)

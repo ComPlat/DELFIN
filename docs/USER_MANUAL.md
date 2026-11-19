@@ -49,6 +49,18 @@ installs the QM and analysis tools. It needs no root and no module system.
 ```bash
 git clone https://github.com/ComPlat/DELFIN.git ~/software/delfin
 bash ~/software/delfin/install.sh              # DELFIN, ORCA wiring, QM/analysis tools
+```
+
+These two commands are a complete first install. The installer checks first what it
+needs (curl or wget, tar, git, writable directories, about 6 GB free, a C compiler
+where OpenMPI has to be built) and stops before changing anything when something is
+missing. It keeps its output in `~/software/logs/`; a failed step is named, and the
+same command run again continues. It ends with how to start: `source ~/.delfin_env.sh`
+(new shells do it by themselves), `delfin-voila` for the dashboard,
+`cd ~/calc && delfin-agent` for the agent, and, on a cluster login node, the
+`ssh -L 8866:127.0.0.1:8866 ...` tunnel to reach the dashboard from your own computer.
+
+```bash
 bash ~/software/delfin/install.sh --all        # everything, ML and AI stacks too (several GB)
 bash ~/software/delfin/install.sh --only crest,gxtb
 bash ~/software/delfin/install.sh --dry-run    # print the plan, change nothing
@@ -363,6 +375,9 @@ Within OCCUPIER this is split once more: keys that only the stage frequency jobs
 | `global_opt_method` | (empty) | Method GOAT optimises with: empty = the `xTB_method`; `mlip:uma`, `mlip:mace`, `mlip:orb` or `mlip:aimnet2` = an orca-mlips machine-learned potential through ORCA's ExtOpt. Not with CREST |
 | `global_opt_mlip_model` | (empty) | Model name for the orca-mlips plugin (`--model`); empty = its default |
 | `global_opt_mlip_device` | `cuda` | `cuda` or `cpu`; `cuda` without a visible GPU stops the GOAT step |
+| `global_opt_mlip_provider` | `auto` | ExtOpt provider: `auto` takes orca-external-tools (one model server per job) when it is installed with the backend, else orca-mlips; `oet` or `orca-mlips` forces one |
+| `goat_max_workers` | (empty) | GOAT workers of an MLIP GOAT, a multiple of 4; empty = DELFIN's measured choice (docs/MLIP_GOAT_GPU.md) |
+| `mlip_fast_client` | `auto` | orca-external-tools client: `auto` (measured default, the documented `oet_client`), `yes` (the same request sent with curl), `no` |
 | `refuse_noncommercial_weights` | `no` | `yes` refuses MLIP weights under a non-commercial licence (`mlip:mace`) |
 
 With `global_opt_method=mlip:<plugin>` the GOAT step runs inside the
@@ -838,20 +853,55 @@ delfin doctor --scratch /path/to/scratch
 ### delfin-voila
 
 ```bash
-delfin-voila                     # starts on 127.0.0.1:8866
+delfin-voila                     # starts on 127.0.0.1:8866, in the background
+delfin-voila status              # running? URL, uptime, kept dashboards, kept agent sessions
+delfin-voila stop                # end the server, as Ctrl+C did
 delfin-voila --port 9000         # custom port
 delfin-voila --dark              # dark theme
-delfin-voila --keep              # run inside a tmux session, survives a dropped terminal
+delfin-voila --keep              # every window starts with Keep dashboard on
 delfin-voila --resume SID        # reopen a previous agent session
+delfin-voila --foreground        # run in this terminal (debugging)
 
 # On HPC/login nodes, keep 127.0.0.1 and use an SSH tunnel.
 # Direct network binds require an explicit security override:
 delfin-voila --ip 0.0.0.0 --allow-remote-bind
 ```
 
-Voila prints a URL containing an access token; token authentication is mandatory
-and cannot be switched off. If the port is taken, the next free one is used — read
-the printed URL rather than assuming 8866.
+`delfin-voila` prints a URL containing an access token; token authentication is
+mandatory and cannot be switched off. If the port is taken, the next free one is
+used — read the printed URL rather than assuming 8866.
+
+**The server outlives the terminal.** Typed at a terminal, `delfin-voila` starts
+the server detached from it (its own session, its output in
+`~/.delfin/dashboard_server/logs/<host>.log`), waits until it answers, prints
+the URL and, on a remote host, the `ssh -L` command for your computer, and
+returns the prompt. Closing the terminal or a dropped SSH connection ends
+nothing; no tmux is needed. `--keep` no longer starts tmux; it still switches
+Keep dashboard on in every window the dashboard opens.
+
+**One server per user and host.** A second `delfin-voila` finds the running
+server (its record is `~/.delfin/dashboard_server/run/<host>.json`, owner-only,
+judged by process id and start time) and opens it instead of starting another.
+`delfin-voila status` shows it: URL, uptime, the open dashboards, every kept
+dashboard with its return address and last activity, and the number of kept
+agent sessions. `delfin-voila stop` ends it the way Ctrl+C did: the dashboards
+end, and agent sessions with Keep session on go on in the agent service.
+
+**Several dashboards.** Each window is a dashboard of its own. The header's
+**Dashboards** menu lists the kept ones: **Open** brings one back in a new tab
+with its state, **End** ends it after one confirmation, **New dashboard** opens
+another.
+
+**When it ends by itself.** A server with no open window, no kept dashboard and
+no running kernel ends itself after 10 minutes, so a forgotten one does not hold
+a port and memory on a shared login node; within that time `delfin-voila` and
+the old address reach it again. `DELFIN_DASHBOARD_IDLE_EXIT_MINUTES` sets the
+grace (`0` keeps the server up).
+
+**Stays in the foreground** (as before, Ctrl+C ends it): a launch without a
+terminal (a script, systemd, launchd, the Pi's dashboard unit), inside a SLURM
+job (`--job`), inside tmux or screen (the Windows launcher), with
+`--foreground`, or with `DELFIN_VOILA_FOREGROUND=1`.
 
 ### delfin-build
 
@@ -1845,6 +1895,10 @@ itself and goes on with its session. After an update, a window of the new
 release moves an idle service over to it; a busy one is left running, and
 `delfin-agent service restart` moves it once its sessions are done.
 
+**Your HPC clusters.** `/clusters` adds your clusters and logs in to them,
+`/jobs` shows what runs there; see [running jobs on a cluster from your
+PC](#from-your-pc-running-jobs-on-a-cluster).
+
 **On a cluster.** Each login node runs its own service; the window tells
 you when sessions of yours are on another login node. Logging out leaves
 the service and its sessions running for as long as the node allows;
@@ -2364,6 +2418,111 @@ delfin_NMR output.out         # 1H NMR: writes NMR_<name>.png
 ---
 
 ## 15. Cluster & HPC Usage
+
+### From your PC: running jobs on a cluster
+
+DELFIN can send its calculations to an HPC cluster while it runs on your
+own PC: you work in `delfin-agent tui`, the agent submits DELFIN workflows
+and ORCA inputs to the cluster as Slurm jobs, and the results come back
+into your workspace. The rest of this section, from "SLURM backend" on, is
+about DELFIN installed and started on a cluster itself, which works as
+before.
+
+Everything goes over one ssh login per cluster that you make, held by
+[cluster-tunnel](https://github.com/aimat-lab/cluster-tunnel) (`ctun`,
+installed with DELFIN). How the login and the agent's limits are protected
+is in [SECURITY_MODEL.md](SECURITY_MODEL.md#hpc-clusters).
+
+**Add a cluster.** Open `/clusters` and press `a`.
+
+1. Pick one of the clusters ctun knows (bwUniCluster 3, HoreKa, HAICORE,
+   KCIST, ...), or "another cluster" to give its login host yourself.
+2. Fill in the name DELFIN uses for it, your user name there (the form
+   shows the cluster's hint, e.g. the `ka_` prefix on bwUniCluster 3), the
+   partition DELFIN's jobs go to, the work dir (default `~/delfin/jobs`)
+   and the install root (default `~/delfin/installs`). The partition is
+   filled in where DELFIN knows a good one; change it if your group uses
+   another. For another cluster, also say what its login asks for:
+   `space` switches between "password" and "password + OTP". A known
+   cluster brings its own.
+3. **The host key.** For bwUniCluster 3, HoreKa and HAICORE the cluster's
+   operators publish their key: when the server presents exactly that key
+   it is pinned at once and the form says so. For any other cluster, or a
+   server that presents a different key, the window shows the key it
+   offers. Compare it with what your cluster's documentation or admins say,
+   then press `y` to pin it, `n` to leave it unpinned (DELFIN will not use
+   the cluster until it is pinned; enter on its row shows the key again)
+   or `r` to ask the server again.
+4. **Log in.** The login field opens. Type your password, and the OTP if
+   the cluster asks for one. The screen shows only dots, and what you type
+   goes to ctun alone, never to the agent. Later logins: enter on a
+   logged-out cluster in `/clusters`; `o` logs out.
+
+A preset cluster comes with ctun's budget guard and its default limit per
+login (200 job-hours on bwUniCluster 3, 100 on KCIST); a cluster you gave
+by host has none. You never edit ctun's config or `~/.delfin_settings.json` by hand.
+
+The agent can suggest a cluster as well ("add bwUniCluster 3 for me"): it
+leaves an item in NEEDS YOU that opens the same form filled in. Check it
+and send it, or press esc. The agent cannot add a cluster by itself.
+
+**ORCA on the cluster.** Your ORCA has to be on the cluster: an unpacked
+`orca_*` directory in your home there, or its `.tar.xz`, which the
+installer unpacks. After you log in, the cluster's row says when DELFIN
+finds no ORCA where its installer looks. DELFIN never copies ORCA for you
+(it is your licence).
+
+**Run a job folder there.** Ask the agent, e.g. "run the DELFIN workflow
+in `opt-freq` on bwuni3 with a 30-minute limit".
+
+- Cores, memory and time come from the folder's CONTROL.txt (`PAL`,
+  `maxcore`, `job_timeout_hours`; DELFIN's defaults where it names none)
+  or from the ORCA input. The batch is checked first: the folders, the
+  partition, the budget left, and whether DELFIN is installed there.
+  What does not fit is refused before you are asked.
+- You get **one dialog per batch**: each job's cores, memory and time, the
+  hours against the budget left, and an install it needs first. Exactly
+  what you approved is uploaded and submitted.
+- **The first submit of a DELFIN version the cluster does not have yet**
+  installs that version there first (one install per commit; ORCA,
+  OpenMPI and the tools are shared). The install runs on the login node
+  on one core, so it can take around an hour. The agent does not wait: it
+  ends its turn, and DELFIN submits your approved batch by itself once the
+  install is done, without asking again. `/jobs` shows such a batch as
+  "waiting for install". If the install fails, or the folder or the
+  budget changed meanwhile, nothing is submitted and NEEDS YOU says why.
+
+**Follow the jobs.** `/jobs` lists everything running in the background,
+the jobs on each logged-in cluster included; ↑/↓ move from job to job and
+`space` opens a job's details (Slurm's state, where it runs, the last lines
+of its output). In both screens esc or ← goes back.
+
+**The results.** When a job ends, DELFIN brings its key results into
+`<job folder>/<cluster>-<id>/` in your workspace: DELFIN_Data.json,
+DELFIN.txt and the report, ORCA outputs, inputs, geometries and logs (at
+most 100 MB a file and 500 MB a job). Wave functions, densities and
+scratch stay on the cluster. NEEDS YOU says how the job ended, and the
+session that sent it is told, also when it was asleep.
+
+**When your PC was off.** The jobs run on regardless. The next time
+DELFIN's agent service starts, it brings back what ended meanwhile and
+submits a batch whose install finished. Without a login it asks for one in
+NEEDS YOU first.
+
+**Remove a cluster.** Select it in `/clusters` and press `x`, then `y`. It
+goes from DELFIN's settings and from ctun's config (its key is unpinned and
+its tunnel closed). DELFIN refuses while it still follows a job there,
+since those results could not come back.
+
+**When something does not work**
+
+| What you see | What it means |
+|---|---|
+| "login required", or a login item in NEEDS YOU | Nobody is logged in to that cluster: enter on it in `/clusters`. |
+| The cluster is "refused": no pinned host key | Enter on its row shows the key; compare and press `y`. |
+| "no ORCA where DELFIN looks" | Put your ORCA into the cluster's home (see above). |
+| An install reported as "stopped" | The login node's guard (hpc_guard) paused it because your processes there used more than their share of cores. Nothing resumes it by itself; the batch waiting for it is not submitted, and NEEDS YOU says so. |
+| A job's results did not come back yet | DELFIN looks once a minute while its agent service runs, and tries a failed fetch again over about a day. |
 
 ### SLURM backend
 

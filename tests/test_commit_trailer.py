@@ -56,7 +56,10 @@ def _agent_commit(repo, monkeypatch, command, model="kit.glm-5.3-flash",
     monkeypatch.setattr(us, "load_settings", lambda *a, **k: base)
     A.set_commit_trailer_model(model)
     try:
-        perms = A.KitToolPermissions(workspace=str(repo), mode="bypassPermissions")
+        # A person approves the commit: isolation "off" runs a command only
+        # where somebody reads it (bypass refuses an unconfined command).
+        perms = A.KitToolPermissions(workspace=str(repo), mode="default",
+                                     confirm_callback=lambda *a, **k: True)
         result = A._doc_executor.execute("bash", {"command": command}, perms)
         assert "error" not in result, result
     finally:

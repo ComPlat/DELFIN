@@ -147,10 +147,17 @@ def tcp(host, p, timeout=3):
     except OSError as e:
         return "refused" if e.errno == 13 else "error"
 def udp():
+    # SX2: under the proxy a datagram socket may be CREATED (OpenMPI reads
+    # its interfaces over one); what must not happen is a datagram leaving
+    # for an outside host. "refused" = creation or the send refused.
     try:
-        socket.socket(socket.AF_INET, socket.SOCK_DGRAM); return "created"
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     except OSError:
         return "refused"
+    try:
+        s.sendto(b"x", ("192.0.2.1", 9)); return "created"
+    except OSError as e:
+        return "refused" if e.errno == 13 else "created"
 res = {}
 t = threading.Thread(target=lambda: res.update(thread=tcp("127.0.0.1", port)))
 t.start(); t.join()
@@ -417,3 +424,133 @@ def test_an_unattended_run_installs_fetches_and_calls_its_model(
     assert "pkg 42" in out.stdout and "model got 16" in out.stdout, out
     if git:
         assert "fetched" in out.stdout, out
+
+
+# -- the command's own server on the loopback --------------------------------
+#
+# A caged command reaches a server it started itself on 127.0.0.1 and no
+# other server there. The rule itself (socket_guard.owns_loopback, read
+# from a recorded process tree) is checked in
+# tests/test_a_command_reaches_the_servers_it_started_itself.py; these two
+# need the real guard and Landlock, so they live with the other guard
+# tests, where a skip on the kernel feature is already the case.
+
+_OWN_SERVER_PROBE = r'''
+import http.server, socket, sys, threading, urllib.error, urllib.request
+foreign = int(sys.argv[1])
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        self.rfile.read(n)
+        body = f"got {n}".encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *a):
+        pass
+srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+own = srv.server_address[1]
+def tcp(p):
+    s = socket.socket(); s.settimeout(5)
+    try:
+        s.connect(("127.0.0.1", p)); return "connected"
+    except OSError:
+        return "refused"
+    finally:
+        s.close()
+def post(p):
+    try:
+        return urllib.request.urlopen(urllib.request.Request(
+            f"http://127.0.0.1:{p}/v1/chat", data=b"x" * 10), timeout=20
+        ).read().decode().split()[0]
+    except urllib.error.HTTPError as e:
+        return f"HTTP{e.code}"
+    except Exception:
+        return "error"
+print(tcp(own), post(own), tcp(foreign), post(foreign))
+'''
+
+
+@pytest.fixture
+def loopback_web():
+    yield from ES.serve_web()
+
+
+@pytest.fixture
+def loopback_proxy(loopback_web, monkeypatch):
+    yield from ES.session_proxy(loopback_web, monkeypatch)
+
+
+def _own_server_run(argv, ws, tmp_path):
+    return subprocess.run(argv, cwd=str(ws), env=child_env(tmp_path),
+                          capture_output=True, text=True, timeout=240)
+
+
+@guard
+def test_an_unattended_command_reaches_its_own_server_and_no_other(
+        loopback_proxy, loopback_web, tmp_path):
+    """Its own server directly and through the proxy, a POST included; the
+    test's server on the same loopback (not the command's) neither way."""
+    if not A._landlock_functional():
+        pytest.skip("needs Landlock")
+    perms = ES.perms_in(tmp_path, mode="bypassPermissions")
+    ws = Path(perms.workspace)
+    (ws / "probe.py").write_text(_OWN_SERVER_PROBE)
+    argv = [sys.executable, "-I", HELPER, "--fs", "0", "--net", "proxy",
+            "--proxy-socket", loopback_proxy.socket_path,
+            "--proxy-token-file", loopback_proxy.token_file_for(perms),
+            "--allow-socket", "/", "--",
+            sys.executable, str(ws / "probe.py"),
+            str(loopback_web.server_address[1])]
+    out = _own_server_run(argv, ws, tmp_path)
+    assert out.stdout.split() == ["connected", "got", "refused", "HTTP403"], out
+    assert not any(m == "POST" for m, _h, _p in loopback_web.seen), loopback_web.seen
+
+
+@guard
+def test_the_bash_tools_cage_reaches_the_commands_own_server(
+        loopback_proxy, loopback_web, tmp_path, monkeypatch):
+    """The same through the argv the bash tool builds (bubblewrap with the
+    helper inside where it works, the helper alone otherwise)."""
+    monkeypatch.setattr(A, "_record_security_event", lambda *a, **k: None)
+    if not (A._bwrap_functional() or A._landlock_functional()):
+        pytest.skip("needs bubblewrap or Landlock for the default isolation")
+    perms = ES.perms_in(tmp_path, mode="bypassPermissions")
+    ws = Path(perms.workspace)
+    (ws / "probe.py").write_text(_OWN_SERVER_PROBE)
+    argv = A._bash_isolation_argv(
+        f"{sys.executable} {ws / 'probe.py'} {loopback_web.server_address[1]}",
+        ws, perms)
+    out = _own_server_run(argv, ws, tmp_path)
+    assert out.stdout.split() == ["connected", "got", "refused", "HTTP403"], out
+
+
+@guard
+def test_a_background_jobs_listener_is_reached_only_when_named(loopback_proxy,
+                                                               tmp_path):
+    """The inode named with --own-listener is the only loopback listener a
+    command that holds nothing itself may reach."""
+    if not A._landlock_functional():
+        pytest.skip("needs Landlock")
+    perms = ES.perms_in(tmp_path, mode="bypassPermissions")
+    ws = Path(perms.workspace)
+    base = [sys.executable, "-I", HELPER, "--fs", "0", "--net", "proxy",
+            "--proxy-socket", loopback_proxy.socket_path,
+            "--proxy-token-file", loopback_proxy.token_file_for(perms),
+            "--allow-socket", "/"]
+    with socket.socket() as srv:
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(8)
+        port = srv.getsockname()[1]
+        inode = str(os.fstat(srv.fileno()).st_ino)
+        probe = (f"import socket; s = socket.socket(); s.settimeout(5)\n"
+                 f"try:\n    s.connect(('127.0.0.1', {port})); print('connected')\n"
+                 f"except OSError:\n    print('refused')\n")
+        tail = ["--", sys.executable, "-c", probe]
+        named = _own_server_run(base + ["--own-listener", inode] + tail, ws,
+                                tmp_path)
+        unnamed = _own_server_run(base + tail, ws, tmp_path)
+    assert named.stdout.split() == ["connected"], named
+    assert unnamed.stdout.split() == ["refused"], unnamed

@@ -630,11 +630,56 @@ class SlurmJobBackend(JobBackend):
         env_vars += f',DELFIN_PAL={pal_used},DELFIN_MAXCORE={maxcore_used}'
         env_vars = self._append_extra_env(env_vars, extra_env)
         env_vars = self._append_tool_exports(env_vars)
+        submit_script = self.submit_templates_dir / 'submit_delfin.sh'
+        gpu, partition, refusal = self._mlip_goat_gpu(
+            job_dir, submit_script, time_limit, pal_used, mem_used)
+        if refusal:
+            return SubmitResult(1, '', refusal)
         result = self._sbatch(
             job_dir, env_vars, time_limit, pal_used, mem_used,
-            job_name, self.submit_templates_dir / 'submit_delfin.sh',
+            job_name, submit_script, gpu=gpu, partition=partition,
         )
         return SubmitResult(result.returncode, result.stdout, result.stderr)
+
+    def _mlip_goat_gpu(self, job_dir, submit_script, time_limit, pal, mem_mb):
+        """``(gres, partitions, refusal)`` for a DELFIN job, all None but for an MLIP GOAT.
+
+        A CONTROL.txt with ``global_opt_method=mlip:<backend>`` on cuda runs
+        GOAT on the job's own node and needs its GPU; without one the job
+        stops at the GOAT step, so it is not sent to a CPU partition at all.
+        The GPU partitions are the configured ones
+        (:meth:`_gpu_partition_candidates`); those whose MaxTime cannot hold
+        the time limit are left out with one scontrol query, the rest are
+        asked with sbatch --test-only like every multi-partition submit, and
+        the job goes to all that fit. PAL, maxcore and the time limit are
+        never changed to fit. ``refusal`` is the reason when none can.
+        """
+        try:
+            control = (Path(job_dir) / 'CONTROL.txt').read_text(
+                encoding='utf-8', errors='replace')
+        except OSError:
+            return None, None, ''
+        from delfin.mlp_tools.goat_gpu_submit import gpu_partitions_for, mlip_goat_method
+
+        method = mlip_goat_method(control)
+        if not method:
+            return None, None, ''
+        try:
+            asked_time = normalize_time_limit(time_limit)
+        except ValueError:
+            return None, None, ''  # _sbatch refuses it with the reason
+        why = f'CONTROL.txt sets global_opt_method={method} on cuda: '
+        fitting, reason = gpu_partitions_for(self._gpu_partition_candidates(), asked_time)
+        if not fitting:
+            return None, None, why + reason
+        gres = 'gpu:1'
+        accepted = self._gpu_partitions_for_names(
+            fitting.split(','), job_dir, submit_script, asked_time, pal, mem_mb, gres)
+        if not accepted:
+            return None, None, why + (
+                f'none of the GPU partitions {fitting} accepts a job of {pal} cores, '
+                f'{mem_mb} MB and {asked_time} with one GPU (sbatch --test-only)')
+        return gres, accepted, ''
 
     def submit_guppy_batch(
         self,
@@ -783,8 +828,9 @@ class SlurmJobBackend(JobBackend):
         return SubmitResult(result.returncode, result.stdout, result.stderr)
 
     def _gpu_partition_candidates(self) -> tuple:
-        """Settings, then DELFIN_SLURM_GPU_PARTITIONS, then the site profile,
-        then every GPU partition scontrol reports.
+        """Settings, then DELFIN_SLURM_GPU_PARTITIONS, then DELFIN_MLP_CLUSTER_GPU_PARTITIONS
+        (the MLP jobs' own variable), then the site profile, then every GPU
+        partition scontrol reports.
 
         This used to ask sinfo for partitions named gpu, gpu_4, gpu_8 and
         gpu_a100. bwUniCluster 3.0 refuses sinfo and has none of those names,
@@ -794,6 +840,7 @@ class SlurmJobBackend(JobBackend):
             self._gpu_candidates = (
                 self._partition_list(self._gpu_partitions_setting)
                 or self._partition_list(os.environ.get('DELFIN_SLURM_GPU_PARTITIONS', ''))
+                or self._partition_list(os.environ.get('DELFIN_MLP_CLUSTER_GPU_PARTITIONS', ''))
                 or PROFILE_GPU_PARTITIONS.get(self.slurm_profile, ())
                 or discover_gpu_partitions()
             )
@@ -808,7 +855,14 @@ class SlurmJobBackend(JobBackend):
         24-hour job without knowing its name. '' when none can: the job then
         runs on CPUs.
         """
-        candidates = self._gpu_partition_candidates()
+        return self._gpu_partitions_for_names(
+            self._gpu_partition_candidates(), job_dir, submit_script, time_limit,
+            pal, mem_mb, gres)
+
+    def _gpu_partitions_for_names(self, candidates, job_dir, submit_script, time_limit,
+                                  pal, mem_mb, gres='gpu:1') -> str:
+        """:meth:`_gpu_partitions_for` over the given candidates."""
+        candidates = tuple(candidates)
         if len(candidates) <= 1:
             return candidates[0] if candidates else ''
         fitting = []

@@ -60,7 +60,8 @@ _OK_TERMINAL_STATES = frozenset({"COMPLETED"})
 # venv/tarball entry is a production failure from a field report.
 ERROR_SIGNATURES: tuple[tuple[str, str], ...] = (
     (r"bin/activate: No such file or directory", "venv-activation-failed"),
-    (r"(?i)out.of.memory|oom-kill|Killed", "out-of-memory"),
+    # Slurm says "oom_kill event" (an underscore) beside the cgroup handler's line.
+    (r"(?i)out.of.memory|oom.kill|Killed", "out-of-memory"),
     (r"(?i)DUE TO TIME LIMIT", "slurm-timelimit"),
     (r"(?i)SCF NOT CONVERGED|SCF did not converge", "scf-not-converged"),
     (r"(?i)ORCA finished by error termination", "orca-error-termination"),
@@ -547,6 +548,23 @@ def register_agent_job(
     return entry
 
 
+def session_is_watched(workspace: str | Path, session_id: str) -> bool:
+    """Whether a job or batch this session started is still being followed.
+
+    Such a session is parked on purpose: the watcher wakes it when the job
+    ends. Only entries that name the session count, and only those not yet
+    in a terminal state; an empty session id counts nothing. Never raises."""
+    if not session_id or not workspace:
+        return False
+    try:
+        jobs = load_watched(_agent_watch_path(workspace)).get("jobs", {})
+    except Exception:
+        return False
+    done = _OK_TERMINAL_STATES | _FAILURE_STATES
+    return any(isinstance(e, dict) and e.get("session_id") == session_id
+               and e.get("last_state") not in done for e in jobs.values())
+
+
 def unwatch_agent_job(workspace: str | Path, job_id: str) -> bool:
     """Stop watching a job. The job itself is not touched: a cluster job or
     a CI run goes on, only nobody is told when it ends. True if it was
@@ -796,7 +814,8 @@ def check_agent_jobs(
             # owner, which is no session's: a new conversation must not be
             # woken by work an old one left behind. The daemon reads those.
             continue
-        if float(entry.get("added_at") or now) < now - _AGENT_WATCH_MAX_AGE_S:
+        if (float(entry.get("added_at") or now) < now - _AGENT_WATCH_MAX_AGE_S
+                and not _cluster_job_followed(jid, entry, now)):
             # Only an entry that never got an answer is worth an alarm. One
             # the daemon already reported on is being pruned as bookkeeping.
             resolved = (entry.get("daemon_notified")
@@ -864,6 +883,35 @@ def check_agent_jobs(
                 else:
                     entry[marker] = True
                 changed = True
+        elif _kind(jid, entry) == "cluster":
+            # A job on one of DELFIN's clusters: the agent service's watcher
+            # (delfin.remote.watch) asks the cluster and brings the results
+            # back; this reads what it found and asks nobody.
+            try:
+                from delfin.remote import watch as _remote_watch
+                seen = _remote_watch.outcome(entry.get("cluster"), entry.get("remote_id"))
+            except Exception:
+                seen = None
+            if seen is None:
+                continue        # queued, running, or its results on the way
+            if seen.get("state") and seen["state"] != entry.get("last_state"):
+                entry["last_state"] = seen["state"]
+                changed = True
+            if _already_told(jid, entry):
+                continue
+            done.append({
+                "job_id": jid, "kind": "cluster",
+                "description": entry.get("description", ""),
+                "state": seen.get("state") or "?", "ok": bool(seen.get("ok")),
+                "exit_code": seen.get("exit_code"),
+                "signatures": list(seen.get("signatures") or []),
+                "results": _remote_watch.summary(seen),
+            })
+            if _takes(entry):
+                jobs.pop(jid)
+            else:
+                entry[marker] = True
+            changed = True
         elif _kind(jid, entry) == "ci":
             if (now - float(entry.get("last_checked") or 0) < _CI_MIN_INTERVAL_S
                     or now < float(entry.get("retry_at") or 0)):
@@ -951,6 +999,21 @@ def check_agent_jobs(
     if changed:
         save_watched(data, path)
     return done
+
+
+def _cluster_job_followed(jid: str, entry: dict, now: float) -> bool:
+    """A cluster job outlives the seven-day prune until the watcher's own
+    giving up (GIVE_UP_DAYS): it may wait in a queue, or run, for longer, and
+    the outcome the watcher gives every job -- also "given up" -- is reported
+    by the cluster branch. Never raises."""
+    if entry.get("kind") != "cluster":
+        return False
+    try:
+        from delfin.remote import watch as _remote_watch
+        return float(entry.get("added_at") or now) > now - (
+            _remote_watch.GIVE_UP_DAYS + 1) * 86400
+    except Exception:
+        return False
 
 
 def check_all_agent_jobs(
@@ -1296,6 +1359,10 @@ def check_agent_workspaces_once(settings: dict | None = None) -> list[dict]:
         state = str(item.get("state") or "")
         if state == STATE_UNAVAILABLE:
             continue        # degradation is reported in-turn, not notified
+        if item.get("kind") == "cluster":
+            # delfin.remote.watch noticed it already, judged on the results
+            # it brought back; a diagnosis here would read the workspace.
+            continue
         jid = str(item.get("job_id") or "?")
         if item.get("ok"):
             _emit_watch_attention(

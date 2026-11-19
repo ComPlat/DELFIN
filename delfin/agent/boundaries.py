@@ -559,6 +559,8 @@ MASKED_HOME_ENTRIES: tuple[str, ...] = (
     ".delfin/credentials.json",
     ".delfin/approval_codes",
     ".delfin/trust_store",
+    ".config/cluster-tunnel",
+    ".cache/cluster-tunnel",
     # Which sessions the phone may reach (delfin.messenger.activation).
     ".delfin/messenger_sessions",
     # Phone pairing requests and answers (delfin.messenger.pairing).

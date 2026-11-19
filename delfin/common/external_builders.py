@@ -165,6 +165,56 @@ TOOLS = {
     },
 }
 
+#: Programs that live in an environment of their own the installer builds under
+#: the same root, the same way, but are not structure builders: build_frames
+#: does not know them (tool_key refuses them); managed_python / tool_python /
+#: own_env do.
+PROGRAMS = {
+    # orca-mlips (MIT), the program ORCA's ExtOpt starts as ProgExt
+    # (delfin/mlp_tools/orca_mlips.py): a CUDA build of PyTorch and the aimnet2
+    # (MIT) and orb (Apache-2.0) plugins, whose pins DELFIN's own environment
+    # cannot hold. install_ai_tools.sh (INSTALL_ORCA_MLIPS) builds it; ExtOpt
+    # then names the absolute <env>/bin/orca-mlips-<backend>, which a compute
+    # node finds without any PATH set up. Its package is orca_mlips_plugins, so
+    # it is found by its distribution, orca-mlips.
+    "orca_mlips": {
+        "display": "orca-mlips",
+        "module": "orca_mlips_plugins",
+        "dist": "orca-mlips",
+        "python_env": "DELFIN_ORCA_MLIPS_PYTHON",
+        "managed_env": ".mamba_env/orca_mlips",
+        "install": "python -m delfin.installer --install orca-mlips",
+    },
+    # orca-mlips with the UMA plugin's stack (fairchem-core), opt-in, in an
+    # environment of its own: fairchem-core pins torch~=2.13.0 and e3nn>=0.5,
+    # which neither the torch of the environment above nor MACE's e3nn==0.4.4
+    # allows. Its presence is the model stack's distribution, fairchem-core.
+    "orca_mlips_uma": {
+        "display": "orca-mlips (UMA)",
+        "module": "orca_mlips_plugins",
+        "dist": "fairchem-core",
+        "python_env": "DELFIN_ORCA_MLIPS_UMA_PYTHON",
+        "managed_env": ".mamba_env/orca_mlips_uma",
+        "install": "python -m delfin.installer --install orca-mlips-uma",
+    },
+    # orca-external-tools (FACCTs, GPL-3.0; github.com/faccts/orca-external-tools),
+    # the second ExtOpt provider (delfin/mlp_tools/oet.py): one long-lived,
+    # multi-process model server per job (oet_server) and a slim client
+    # (oet_client) as ProgExt, so a GOAT with many workers neither starts one
+    # model per worker nor pays a Python start-up with torch on every call.
+    # A separately installed external program DELFIN only starts; never
+    # vendored. install_ai_tools.sh (INSTALL_ORCA_EXTERNAL_TOOLS) builds it with the aimnet2
+    # extra (MIT weights) and a CUDA build of PyTorch.
+    "oet": {
+        "display": "orca-external-tools",
+        "module": "oet",
+        "dist": "oet",
+        "python_env": "DELFIN_OET_PYTHON",
+        "managed_env": ".mamba_env/oet",
+        "install": "python -m delfin.installer --install orca-external-tools",
+    },
+}
+
 #: Tools whose build is defined in delfin.cluster_bench.tool_workers.smiles_tools.
 SMILES_TOOLS = ("rxembed", "molassembler", "metallogen")
 
@@ -201,6 +251,14 @@ def tool_key(tool: str) -> str:
     return key
 
 
+def own_env(tool: str) -> dict:
+    """The entry of a builder (:data:`TOOLS`) or a program (:data:`PROGRAMS`)."""
+    key = str(tool or "").strip().lower()
+    if key in PROGRAMS:
+        return PROGRAMS[key]
+    return TOOLS[tool_key(key)]
+
+
 def managed_python(tool: str, environ=None):
     """The interpreter of the environment DELFIN's installer builds for *tool*.
 
@@ -208,7 +266,7 @@ def managed_python(tool: str, environ=None):
     ``DELFIN_AI_TOOLS_ROOT``, else ``~/.delfin/ai_tools``, where the installer
     puts it), or ``None`` when the tool has no environment of its own.
     """
-    rel = TOOLS[tool_key(tool)].get("managed_env")
+    rel = own_env(tool).get("managed_env")
     if not rel:
         return None
     env = os.environ if environ is None else environ
@@ -224,7 +282,7 @@ def tool_python(tool: str, environ=None) -> str:
     one.
     """
     env = os.environ if environ is None else environ
-    named = (env.get(TOOLS[tool_key(tool)]["python_env"]) or "").strip()
+    named = (env.get(own_env(tool)["python_env"]) or "").strip()
     if named:
         return named
     managed = managed_python(tool, env)

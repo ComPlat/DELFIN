@@ -98,6 +98,28 @@ describe("the agent view's rows", () => {
     expect(rows.find((r) => r.id === "ask")!.activity).toContain("waiting for you")
   })
 
+  test("as the dashboard lists them: running before not running, kept and background marked", () => {
+    const state = emptyState()
+    const add = (id: string, extra: Record<string, unknown>) => {
+      const s = ensureSession(state, id, {})
+      s.summary = summary(id, extra) as never
+      s.state = String(extra.state ?? "idle")
+    }
+    add("idle", { createdAt: 1 })
+    add("asleep", { state: "sleeping", createdAt: 9 })
+    add("ends", { createdAt: 2, keep: false })
+    add("swarm", { createdAt: 3, unattended: true })
+    add("tree", { createdAt: 4, workspace: "/p/.delfin/worktrees/delfin-wt-1a2b3c4d" })
+    const rows = agentRows(state, new Set())
+    const ids = rows.map((r) => r.id)
+    expect(ids.indexOf("asleep")).toBe(ids.length - 1)
+    const marks = Object.fromEntries(rows.map((r) => [r.id, r.marks]))
+    expect(marks.idle).toEqual(["kept"])
+    expect(marks.ends).toEqual([])
+    expect(marks.swarm).toEqual(["kept", "background"])
+    expect(marks.tree).toEqual(["kept", "background"])
+  })
+
   test("a peek shows an answer as plain text", () => {
     expect(peekLines([{ type: "text.ended", text: "## Summary\n\nThe workspace holds **one** `README`.\n- first\n* second" }]))
       .toEqual(["Summary", "The workspace holds one README.", "• first", "• second"])
@@ -456,8 +478,9 @@ describe("the agent view", () => {
     await left()
     expect(panel()).toMatch(/☾ old scan\s+asleep · The scan finished\./)
     expect(panel()).toContain("5 sessions · 1 needs you · 1 working")
-    w.keys.pressArrow("up")                             // DONE: z1 is the newest there
-    w.keys.pressArrow("up")
+    // DONE: what runs first, then what does not -- z1 is asleep, so last,
+    // right below the session in view (as in the dashboard's list).
+    w.keys.pressArrow("down")
     await w.settle()
     expect(panel()).toMatch(/›\s+☾ old scan/)
     w.keys.pressEnter()

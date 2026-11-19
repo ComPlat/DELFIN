@@ -119,6 +119,48 @@ def _provider_notes(args: argparse.Namespace) -> list[str]:
     return [note] if note else []
 
 
+def _exit_when_no_model(args: argparse.Namespace, engine, backend: str,
+                        provider: str, model: str) -> None:
+    """Stop with how to connect a model when the settings' choice cannot run.
+
+    Input: a command that takes the settings-file defaults (``chat``) and
+    names no --backend, --provider or --model of its own, the engine just
+    built, and the backend, provider and model resolved from those
+    defaults. Output: nothing when model_setup finds the selection usable;
+    else the no-model message on stderr and exit status 2, before the
+    first turn. Asked of the client the engine really built (the CLI
+    backend's program, a keyed API client): a fresh install lands here --
+    the shipped default is the CLI backend, and with its program missing
+    or too old the turn used to fail with a backend error ("unknown option
+    '--include-hook-events'"). An engine without such a client (a
+    stand-in) is not asked about.
+
+    Rejected: checking every command -- ``run``, the scheduler and the
+    benchmark pass their selection explicitly and keep their own errors;
+    checking before the engine exists, which also stopped every caller
+    that supplies its own engine.
+    """
+    if not getattr(args, "settings_defaults", False):
+        return
+    if any(getattr(args, name, "") for name in ("backend", "provider", "model")):
+        return
+    from . import api_client, model_setup
+    client = getattr(engine, "client", None)
+    if engine is None:
+        # The engine could not be built: CLIClient found no program.
+        problem = (model_setup.cli_program_problem()
+                   if backend == "cli" and provider in ("", "claude", "anthropic") else "")
+    elif isinstance(client, api_client.CLIClient):
+        problem = model_setup.cli_program_problem(getattr(client, "claude_path", None))
+    elif isinstance(client, (api_client.OpenAIClient, api_client.APIClient)):
+        problem = model_setup.selection_problem(backend, provider, model)
+    else:
+        return
+    if problem:
+        print(model_setup.no_model_message(problem), file=sys.stderr)
+        raise SystemExit(2)
+
+
 def _build_engine(args: argparse.Namespace):
     """Construct an AgentEngine for the given CLI args.
 
@@ -139,23 +181,29 @@ def _build_engine(args: argparse.Namespace):
     provider = _resolve_provider(args, fallback)
     mode = getattr(args, "mode", "") or "solo"
     cwd = getattr(args, "cwd", "") or os.getcwd()
-    engine = AgentEngine(
-        repo_dir=Path(cwd).expanduser().resolve(),
-        backend=backend,
-        provider=provider,
-        model=model,
-        mode=mode,
-        # Declared on the parser since the first version of this file and
-        # never forwarded: --effort parsed fine and changed nothing.
-        effort=getattr(args, "effort", "") or fallback.get("effort", ""),
-        permission_mode=getattr(args, "permission_mode", "") or "",
-        extra_dirs=list(getattr(args, "extra_dirs", None) or []),
-        read_only_dirs=list(getattr(args, "read_only_dirs", None) or []),
-        # None, never []: CLIClient tests the parameter for ``is not None``
-        # and an empty list would build ``--allowedTools`` with nothing
-        # after it, which restricts the session to no tools at all.
-        allowed_tools=_allowed_tools(args) or None,
-    )
+    try:
+        engine = AgentEngine(
+            repo_dir=Path(cwd).expanduser().resolve(),
+            backend=backend,
+            provider=provider,
+            model=model,
+            mode=mode,
+            # Declared on the parser since the first version of this file and
+            # never forwarded: --effort parsed fine and changed nothing.
+            effort=getattr(args, "effort", "") or fallback.get("effort", ""),
+            permission_mode=getattr(args, "permission_mode", "") or "",
+            extra_dirs=list(getattr(args, "extra_dirs", None) or []),
+            read_only_dirs=list(getattr(args, "read_only_dirs", None) or []),
+            # None, never []: CLIClient tests the parameter for ``is not None``
+            # and an empty list would build ``--allowedTools`` with nothing
+            # after it, which restricts the session to no tools at all.
+            allowed_tools=_allowed_tools(args) or None,
+        )
+    except FileNotFoundError:
+        # CLIClient refuses to exist without its program.
+        _exit_when_no_model(args, None, backend, provider, model)
+        raise
+    _exit_when_no_model(args, engine, backend, provider, model)
     _apply_run_budget(engine, args)
     _apply_tool_surface(engine, args)
     # After the client exists, because two of the three switches live on
@@ -680,12 +728,17 @@ def _continue_announced(engine, prompt_sent: str, out: dict[str, Any], *,
     """
     allowed = _resolve_announce_continuations()
     try:
+        from . import turn_outcome as _TO
         from .api_client import _announces_an_action
     except Exception:
         return out
     if allowed <= 0 or not isinstance(out, dict) or out.get("error"):
         return out
-    if str(out.get("stop_reason") or "done") != "done":
+    # A turn that ended on its own terms, which now includes ending with
+    # the task ledger open ("incomplete"): comparing against "done" alone
+    # would have switched this continuation off for exactly the turns that
+    # most need it, the moment that reason stopped being reported as done.
+    if not _TO.ended_by_itself(str(out.get("stop_reason") or "done")):
         return out
     if not _announces_an_action(str(out.get("text") or "")):
         return out
@@ -713,7 +766,9 @@ def _continue_announced(engine, prompt_sent: str, out: dict[str, Any], *,
         out = _run_once(engine, _ANNOUNCE_CONT_PROMPT,
                         max_tokens=max_tokens, emit=emit)
         tools_after = bool(getattr(engine, "_tools_after_last_text", False))
-        if out.get("error") or str(out.get("stop_reason") or "done") != "done":
+        from . import turn_outcome as _TO
+        if out.get("error") or not _TO.ended_by_itself(
+                str(out.get("stop_reason") or "done")):
             break
         if not _announces_an_action(str(out.get("text") or "")):
             # A real answer -- with or without tool calls -- ends it.
@@ -723,6 +778,135 @@ def _continue_announced(engine, prompt_sent: str, out: dict[str, Any], *,
         # No tool call AND still announcing: nudging again would only
         # repeat the same sentence.
         break
+    return out
+
+
+#: Default for ``run --job-wait``: how long a one-shot run stays up for the
+#: jobs its session watches before it ends (and stops its own shells).
+_JOB_WAIT_DEFAULT_S = 3600
+#: How often the waiting run looks. Shells are local; a watched SLURM job is
+#: one scheduler query per look, so the look stays well apart.
+_JOB_WAIT_POLL_S = 30.0
+#: At most this many wake turns in one run, as a bound on a job loop.
+_JOB_WAIT_MAX_WAKES = 5
+
+
+def _own_running_shells(session_id: str, registry: Any = None) -> list[str]:
+    """Ids of this session's background shells that are still running."""
+    try:
+        if registry is None:
+            from . import bash_jobs as _bj
+            registry = _bj.get_registry()
+        return [j.job_id for j in registry.list_jobs(include_finished=False)
+                if str(getattr(j, "session_id", "") or "") == session_id
+                and j.poll() is None]
+    except Exception:
+        return []
+
+
+def _wait_for_watched_jobs(engine, repo: Any, out: dict[str, Any], *,
+                           wait_s: int, max_tokens: int, emit: Any = None,
+                           poll_s: float = _JOB_WAIT_POLL_S,
+                           max_wakes: int = _JOB_WAIT_MAX_WAKES,
+                           sleep: Any = None, clock: Any = None,
+                           err: Any = None) -> dict[str, Any]:
+    """Keep a one-shot run up while its session waits for a watched job.
+
+    ``watch_job`` tells the model "you will be notified in a future turn --
+    end your turn", and the terminal and the dashboard keep that promise
+    (job_wake). A one-shot run did not: it ended with the answer, its
+    background shells were stopped at exit, and nobody woke anything.
+    Seen on 2026-11-14: an agent started a calculation chain with
+    bash_background, called watch_job, ended its turn -- and the chain was
+    killed seconds later with the run, while the answer said "I'll be
+    woken when it is done".
+
+    Now, while a background shell of this session is still running, or
+    ``job_monitor.session_is_watched`` says it waits for a job it watches
+    (a SLURM job), the run stays up (one look every ``poll_s``) and, when
+    a job finished, runs a wake turn with the same message the terminal
+    sends (``job_wake.wake_prompt``, marked as a system event, not the
+    user); the engine reads the watch file at the start of that turn as it
+    does in a session. Every own shell counts, watched or not, as a
+    background command in Claude Code reports back on its own: an agent
+    that forgot watch_job still hears of its job. It stops when nothing
+    runs or is watched any more, after ``max_wakes`` wake turns, at a run
+    ceiling, or after ``wait_s`` seconds -- then it says so on stderr, and
+    the exit stops the shells as before. ``wait_s <= 0`` (``--job-wait
+    0``) is the old behaviour.
+
+    Output: the LAST turn's dict, with the earlier answers' text in front,
+    so the printed answer reads as the run happened. Never raises.
+    """
+    import time as _time
+    sleep = sleep or _time.sleep
+    clock = clock or _time.monotonic
+    err = err or sys.stderr
+    sid = str(getattr(engine, "session_id", "") or "")
+    ws = str(repo or "")
+    if wait_s <= 0 or not sid or not ws or not isinstance(out, dict):
+        return out
+    try:
+        from . import job_wake
+        from .job_monitor import session_is_watched
+        if not job_wake.wake_enabled():
+            return out
+    except Exception:
+        return out
+    def _waiting() -> bool:
+        try:
+            if session_is_watched(ws, sid):
+                return True
+        except Exception:
+            pass
+        return bool(_own_running_shells(sid))
+
+    deadline = clock() + wait_s
+    seen: set = set()
+    wakes = 0
+    told = False
+    while wakes < max_wakes:
+        if not _waiting():
+            break
+        if clock() >= deadline:
+            print(f"[run] still waiting for a background job after {wait_s} s; "
+                  "the run ends now and stops its background shells "
+                  "(--job-wait sets the limit).", file=err)
+            break
+        if not told:
+            told = True
+            print(f"[run] a background job of this session is still running; "
+                  f"waiting for it (up to {wait_s} s, --job-wait 0 ends the "
+                  "run now).", file=err)
+        sleep(poll_s)
+        try:
+            done = job_wake.finished_shells(seen, session_id=sid)
+            done = done + job_wake.finished_watched_jobs(
+                ws, seen, session_id=sid)
+        except Exception:
+            done = []
+        uniq, ids = [], set()
+        for ev in done:
+            key = str(ev.get("job_id"))
+            if key not in ids:
+                ids.add(key)
+                uniq.append(ev)
+        prompt = job_wake.wake_prompt(uniq)
+        if not prompt:
+            continue
+        try:
+            from .run_limits import ceiling_reason
+            if ceiling_reason(engine):
+                break
+        except Exception:
+            pass
+        wakes += 1
+        before = str(out.get("text") or "")
+        out = _run_once(engine, prompt, max_tokens=max_tokens, emit=emit)
+        if before and isinstance(out, dict):
+            out["text"] = before + "\n\n" + str(out.get("text") or "")
+        if not isinstance(out, dict) or out.get("error"):
+            break
     return out
 
 
@@ -957,8 +1141,7 @@ def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
         return 2
     # The start check cmd_chat runs too (isolation_posture), once per run
     # for both doors (`run` and chat -p; neither prepare path runs it):
-    # without a layer, bypass is confirmed when a terminal can answer,
-    # else the run continues in default and says so here. After the
+    # without a layer, the run continues in default and says so here. After the
     # session is opened, as in cmd_chat, so it judges the mode the run
     # will actually have.
     from .isolation_posture import apply_at_start
@@ -1040,6 +1223,13 @@ def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
                               max_tokens=int(getattr(args, "max_tokens", 0)
                                              or 0),
                               emit=_emit.get("emit"))
+    # A watched job keeps the run up and wakes it when it finishes, as the
+    # terminal and the dashboard do (_wait_for_watched_jobs).
+    out = _wait_for_watched_jobs(
+        engine, repo, out,
+        wait_s=int(getattr(args, "job_wait", _JOB_WAIT_DEFAULT_S)),
+        max_tokens=int(getattr(args, "max_tokens", 0) or 0),
+        emit=_emit.get("emit"))
     sid = _save_session(engine, repo)
 
     _end_session(engine, sid, repo, task=prompt, failed=bool(out["error"]),
@@ -2268,8 +2458,8 @@ def _start_interactive_session(args: argparse.Namespace, report,
             engine.set_kit_permission_mode(posture)
     except Exception:
         pass          # a backend with no gate has no posture to set
-    # The same start check as cmd_run: bypass without isolation is
-    # confirmed once here, else the session starts in default.
+    # The same start check as cmd_run: bypass without isolation starts
+    # in default.
     from .isolation_posture import apply_at_start
     start_notes = tuple(_provider_notes(args))
     start_notes += tuple(apply_at_start(engine, can_ask=can_ask))
@@ -3316,6 +3506,78 @@ def cmd_bug(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_state(args: argparse.Namespace) -> int:
+    """Show or apply the retention sweep over the agent's state tree.
+
+    Input: ``args.state_action`` ("usage" or "prune") and ``args.apply``.
+    Output: a report on stdout; exit 0 unless the sweep could not run.
+
+    Why this command exists: ``state_paths.run_startup_maintenance`` has
+    done the repair and the prune since it was written, but its only
+    caller is ``session_store._startup_maintenance``, once per process and
+    guarded by a module flag. Nothing a person can invoke calls it, and
+    ``cleanup_old_sessions`` has no production caller at all. A retention
+    policy nobody can run is a setting, not a policy -- and a full disk is
+    how the state files this agent depends on become unreadable in the
+    first place.
+
+    A prune DELETES files past retention, so the default is the dry run
+    and ``--apply`` is the deliberate second step. The listing comes from
+    ``prune_old(dry_run=True)``, the same code that does the deleting, so
+    what is shown cannot drift from what would go.
+    """
+    from . import state_paths as _sp
+
+    action = getattr(args, "state_action", "usage") or "usage"
+    try:
+        dirs = _sp.state_dirs()
+    except Exception as exc:
+        print(f"Cannot read the state tree: {exc}", file=sys.stderr)
+        return 1
+
+    if action == "usage":
+        print(f"State tree: {_sp.state_root()}")
+        rows = []
+        for entry in dirs:
+            total = 0
+            count = 0
+            try:
+                for q in entry.path.rglob(entry.glob or "*"):
+                    if q.is_file():
+                        total += q.stat().st_size
+                        count += 1
+            except OSError:
+                pass
+            rows.append((total, count, entry))
+        rows.sort(key=lambda r: -r[0])
+        for total, count, entry in rows:
+            kept = " (kept, never pruned)" if entry.kind == "keep" else ""
+            print(f"  {total / 1e6:9.1f} MB  {count:6d} file(s)  "
+                  f"{entry.path}{'/' + entry.glob if entry.glob else ''}"
+                  f"{kept}")
+        print(f"  {sum(r[0] for r in rows) / 1e6:9.1f} MB  total")
+        return 0
+
+    going: list = []
+    result = _sp.run_startup_maintenance(
+        force=True, dry_run=not getattr(args, "apply", False),
+        on_remove=going.append)
+    if not getattr(args, "apply", False):
+        for q in going[:40]:
+            print(f"  would delete  {q}")
+        if len(going) > 40:
+            print(f"  ... and {len(going) - 40} more")
+        print(f"{len(going)} file(s) past retention in "
+              f"{result.get('dirs', 0)} directory(ies); "
+              f"{result.get('repaired', 0)} file mode(s) repaired.")
+        print("Nothing was deleted. Run with --apply to delete them.")
+        return 0
+    print(f"Deleted {result.get('pruned', 0)} file(s) past retention; "
+          f"repaired {result.get('repaired', 0)} file mode(s) across "
+          f"{result.get('dirs', 0)} directory(ies).")
+    return 0
+
+
 def cmd_credentials(args: argparse.Namespace) -> int:
     """Manage API keys: the OS keyring or ~/.delfin/credentials.json (0600).
 
@@ -3353,6 +3615,10 @@ def cmd_credentials(args: argparse.Namespace) -> int:
         print(f"  file:    {_cred.credentials_path()}")
         print(f"  keyring: {kr}")
         print()
+        # list_credentials reports an unreadable store under the empty
+        # name. Printed as a row it is a blank line with a tag, which
+        # tells a person nothing; it is the one entry that is a sentence.
+        damaged = items.pop("", None)
         for name in sorted(items):
             info = items[name]
             src = info.get("source", "?")
@@ -3360,6 +3626,13 @@ def cmd_credentials(args: argparse.Namespace) -> int:
             extra = [s for s in info.get("stores") or [] if s != src]
             also = f"  (also in: {', '.join(extra)})" if extra else ""
             print(f"  {name:<28}  {info.get('value', ''):<14}  {tag}{also}")
+        if damaged is not None:
+            if items:
+                print()
+            print(f"  The file store cannot be read: "
+                  f"{damaged.get('detail', '')}")
+            print("  Keys stored in it are not in use. Storing a key moves "
+                  "the file aside first, so nothing in it is lost.")
         return 0
 
     if action == "migrate":
@@ -3367,6 +3640,9 @@ def cmd_credentials(args: argparse.Namespace) -> int:
         try:
             rows = _cred.migrate_to_keyring(names)
         except _cred.CredentialStoreUnavailable as exc:
+            print(f"Nothing moved: {exc}", file=sys.stderr)
+            return 1
+        except _cred.CredentialStoreUnreadable as exc:
             print(f"Nothing moved: {exc}", file=sys.stderr)
             return 1
         if not rows:
@@ -3390,6 +3666,12 @@ def cmd_credentials(args: argparse.Namespace) -> int:
         except _cred.CredentialStoreUnavailable as exc:
             print(f"{name} is still in the keyring: {exc}", file=sys.stderr)
             return 1
+        except _cred.CredentialStoreUnreadable as exc:
+            # Nothing was removed and the file is untouched: writing a
+            # store built from an unreadable one would drop every other
+            # name. Quarantining it is a decision for the person.
+            print(f"Nothing removed: {exc}", file=sys.stderr)
+            return 1
         if removed:
             print(f"Removed {name}.")
             return 0
@@ -3407,12 +3689,22 @@ def cmd_credentials(args: argparse.Namespace) -> int:
         if not value:
             print("No value entered, aborting.", file=sys.stderr)
             return 1
+        unreadable = ""
         try:
             ok = _cred.set_credential(name, value)
         except (_cred.CredentialStoreNotPrivate,
                 _cred.CredentialStoreUnavailable) as exc:
             print(f"Not stored: {exc}", file=sys.stderr)
             return 1
+        except _cred.CredentialStoreUnreadable as exc:
+            # The key IS stored; what was lost is the damaged store's
+            # other contents, which were moved aside rather than
+            # overwritten. Reporting this as a failed write would send the
+            # person to type the key again for no reason, so the success
+            # line below still prints and the exit code stays 0.
+            ok, unreadable = True, str(exc)
+        if unreadable:
+            print(f"WARNING: {unreadable}", file=sys.stderr)
         if ok:
             # No part of the value, not even a masked one: the first and
             # last four characters of a key stay in the terminal's
@@ -4190,7 +4482,8 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
             backend=getattr(args, "backend", "") or "",
             repeats=max(1, int(getattr(args, "repeats", 1) or 1)),
         )
-        ent = _sched.Scheduler().schedule_interval(
+        _bench_sched = _sched.Scheduler()
+        ent = _bench_sched.schedule_interval(
             every_seconds=every_s,
             prompt=prompt,
             reason=f"nightly benchmark watch ({model})",
@@ -4198,6 +4491,12 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
         )
         print(f"Scheduled bench entry {ent.id}: every {every_token}, "
               f"workspace {ent.workspace}")
+        # What the write had to say about the file itself: a cron.json that
+        # could not be read was moved aside rather than replaced, and the
+        # person is the only one who can rescue what was in it.
+        _note = _bench_sched.take_store_note()
+        if _note:
+            print(f"WARNING: {_note}", file=sys.stderr)
         print("Cost estimate: ~$8 per run for the 48-task KIT-Qwen suite "
               "at repeats=1 (repeats multiply cost; the suspect recheck "
               "adds up to $3 more on suspect days).")
@@ -4209,6 +4508,33 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
         print(f"Remove anytime: delete entry {ent.id} via the dashboard "
               "scheduler tools, or edit ~/.delfin/cron.json.")
         return 0
+
+    if action == "enable":
+        # The way back from a disabled entry without editing cron.json by
+        # hand. Exit code: 0 when the entry is enabled AND when it already
+        # was (the repair is idempotent, so it can be repeated or
+        # scripted), 1 for a refusal -- an emergency stop's disable, a
+        # workspace that is gone, an id that is not there -- so a caller
+        # can tell "nothing to do" from "this did not happen".
+        from .scheduler import Scheduler
+
+        entry_id = (getattr(args, "entry_id", "") or "").strip()
+        if not entry_id:
+            print("ERROR: an entry id is required; `delfin-agent scheduler "
+                  "status` lists them.", file=sys.stderr)
+            return 2
+        sched = Scheduler()
+        changed, message = sched.enable(entry_id)
+        # "Nothing to do" is read off the entry, not off the message text:
+        # a mechanism keyed on wording stops working when the wording is
+        # improved.
+        enabled_now = any(e.id == entry_id and not e.disabled
+                          for e in sched.list_entries())
+        if changed or enabled_now:
+            print(message)
+            return 0
+        print(f"ERROR: {message}", file=sys.stderr)
+        return 1
 
     if action == "stop":
         st = _sd.daemon_status()
@@ -4231,10 +4557,16 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
     st = _sd.daemon_status()
     state = f"running (PID {st['pid']})" if st["running"] else "not running"
     print(f"Scheduler daemon: {state}")
-    entries = sorted(Scheduler().list_entries(), key=lambda e: e.next_fire_at)
+    sched = Scheduler()
+    entries = sorted(sched.list_entries(), key=lambda e: e.next_fire_at)
     if not entries:
-        print("No scheduled entries (~/.delfin/cron.json is empty).")
-        return 0
+        # A damaged file is not an empty schedule: the two lead a person to
+        # opposite actions (schedule something / rescue what is in the
+        # file), so they are not reported the same way.
+        problem = sched.store_problem()
+        print(problem if problem
+              else "No scheduled entries (~/.delfin/cron.json is empty).")
+        return 1 if problem else 0
     print(f"{len(entries)} entries ({st['disabled']} disabled):")
     now = _time.time()
     for e in entries:
@@ -4249,6 +4581,17 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
         every = f", every {e.every_seconds}s" if e.kind == "interval" else ""
         ws = f" @ {e.workspace}" if e.workspace else ""
         print(f"  {e.id}  [{e.kind}{every}]  {due}{ws}  — {prompt}")
+        if e.disabled:
+            # The route back, printed beside the entry that needs it: a
+            # disabled entry used to be shown with no way to act on it but
+            # editing cron.json.
+            from .scheduler import disabled_by_emergency_stop
+            if disabled_by_emergency_stop(e.disabled_reason):
+                print("      an emergency stop disabled it; schedule the "
+                      "work again yourself to bring it back")
+            else:
+                print(f"      enable again: delfin-agent scheduler enable "
+                      f"{e.id}")
     return 0
 
 
@@ -4768,6 +5111,35 @@ def cmd_compare_arms(args: argparse.Namespace) -> int:
     return _pc.exit_code(verdict)
 
 
+def cmd_friction(args: argparse.Namespace) -> int:
+    """Where real use lost turns and time since ``--since``, ranked, with a
+    proposed task per bucket (friction_report). Read only, except that
+    ``--save`` keeps the day's JSON under ~/.delfin/friction/ and shows the
+    change against the last saved day."""
+    import json as _json
+    import time as _time
+
+    from . import friction_report as _fr
+    from . import round_report as _rpt
+    try:
+        since_s = _rpt.parse_since(getattr(args, "since", "") or "24h")
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    data = _fr.collect(since_s=since_s)
+    if getattr(args, "json", False):
+        print(_json.dumps(data, indent=1))
+        return 0
+    save_dir = Path.home() / ".delfin" / "friction"
+    previous = _fr.previous_report(
+        save_dir,
+        _time.strftime("%Y-%m-%d", _time.gmtime(data["generated_s"])))
+    print(_fr.render_text(data, previous))
+    if getattr(args, "save", False):
+        print(f"\nsaved: {_fr.save(data, save_dir)}")
+    return 0
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     """What one agent session actually did: tools, files, commands,
     tests, denials, cost. `--json` prints the SessionReport itself,
@@ -4877,6 +5249,20 @@ def _route_argv(argv: list[str], known: frozenset[str]) -> list[str]:
         return ["chat"]
     if argv[0] in known or argv[0] in ("-h", "--help", "--version"):
         return list(argv)
+    # A single bare word one or two letters away from a subcommand is a
+    # typo, not a prompt: `delfin-agent stauts` started a billed chat
+    # titled "stauts". As git, gh and kubectl do: say so, offer the
+    # command, exit 2. A prompt of that one word still goes through
+    # `delfin-agent chat <word>` or -p.
+    if len(argv) == 1 and not argv[0].startswith("-") and len(argv[0]) >= 3:
+        import difflib
+        close = difflib.get_close_matches(argv[0], sorted(known), n=1, cutoff=0.75)
+        if close:
+            print(f"delfin-agent: '{argv[0]}' is not a command. Did you mean "
+                  f"'{close[0]}'?\nTo ask the agent that word, use "
+                  f"`delfin-agent chat {argv[0]}` or `delfin-agent -p {argv[0]}`.",
+                  file=sys.stderr)
+            raise SystemExit(2)
     return ["chat", *argv]
 
 
@@ -4960,6 +5346,10 @@ def build_parser() -> argparse.ArgumentParser:
         prog="delfin-agent",
         description="The .delfin agent, in a terminal",
     )
+    from delfin import __version__ as _delfin_version
+    p.add_argument("--version", action="version",
+                   version=f"%(prog)s {_delfin_version}",
+                   help="Print the DELFIN version and exit")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     # chat — the implicit subcommand a bare `delfin-agent` routes to
@@ -5119,6 +5509,12 @@ def build_parser() -> argparse.ArgumentParser:
                           "bypassPermissions, as on chat")
     run.add_argument("--json", action="store_true",
                      help="Emit JSON instead of plain text")
+    run.add_argument("--job-wait", type=int, default=_JOB_WAIT_DEFAULT_S,
+                     dest="job_wait", metavar="SECONDS",
+                     help="Stay up this long for jobs the session watches "
+                          "and wake the agent when they finish "
+                          f"(default {_JOB_WAIT_DEFAULT_S}; 0: end with the "
+                          "answer and stop them)")
     run.add_argument("-v", "--verbose", action="store_true")
     run.set_defaults(func=cmd_run)
 
@@ -5383,6 +5779,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     cred.set_defaults(func=cmd_credentials, cred_action="list")
 
+    # state
+    st = sub.add_parser(
+        "state",
+        help=("Show what the agent's state tree holds, and apply the "
+              "retention sweep that until now only ran at session start"),
+    )
+    st_sub = st.add_subparsers(dest="state_action", required=False)
+    st_sub.add_parser(
+        "usage", help="Size and file count per state directory, largest first"
+    ).set_defaults(state_action="usage")
+    st_prune = st_sub.add_parser(
+        "prune",
+        help=("List files past retention (default) and delete them with "
+              "--apply"))
+    st_prune.add_argument(
+        "--apply", action="store_true",
+        help="Actually delete; without it nothing is removed")
+    st.set_defaults(func=cmd_state, state_action="usage", apply=False)
+
     # session
     sess = sub.add_parser("session", help="Session inspection")
     sess_sub = sess.add_subparsers(dest="session_action", required=True)
@@ -5644,6 +6059,15 @@ def build_parser() -> argparse.ArgumentParser:
         "stop", help="Stop the daemon (SIGTERM; finishes the current turn)")
     sched_stop.set_defaults(scheduler_action="stop")
 
+    sched_enable = sched_sub.add_parser(
+        "enable",
+        help=("Re-enable an entry that was disabled by failures or by a "
+              "missing workspace (ids: `scheduler status`). Refuses an "
+              "entry an emergency stop disabled"))
+    sched_enable.add_argument("entry_id",
+                              help="Entry id as `scheduler status` shows it")
+    sched_enable.set_defaults(scheduler_action="enable")
+
     sched_bench = sched_sub.add_parser(
         "add-bench",
         help=("OPT-IN: register a recurring `bench nightly` entry "
@@ -5697,11 +6121,11 @@ def build_parser() -> argparse.ArgumentParser:
     # swarm -- build and run agent swarms (package SW1). The body lives
     # in cli_swarm.py, owned and tested there; this is the only hunk in
     # cli.py (same pattern as the prcheck subcommand).
-    from .cli_swarm import main as _swarm_main
+    from .cli_swarm import configure_parser as _swarm_configure
     _swarm_p = sub.add_parser(
         "swarm",
         help="Build and run agent swarms (init/plan/start/status)")
-    _swarm_p.set_defaults(func=_swarm_main)
+    _swarm_configure(_swarm_p)
 
     pins_p = sub.add_parser(
         "mcp-pins",
@@ -5797,6 +6221,21 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Print the SessionReport as JSON instead of "
                              "the terminal rendering")
     report.set_defaults(func=cmd_report)
+
+    # friction — ranked refusals, slow turns and silent exits, with tasks
+    fric = sub.add_parser(
+        "friction",
+        help="Where real use lost turns and time, ranked, with a proposed "
+             "task per bucket (read only)")
+    fric.add_argument("--since", default="24h",
+                      help="Window start: 24h / 3d / 2026-11-12 "
+                           "(default 24h)")
+    fric.add_argument("--json", action="store_true",
+                      help="Print the report as JSON")
+    fric.add_argument("--save", action="store_true",
+                      help="Keep the report under ~/.delfin/friction/ and "
+                           "compare with the last saved day")
+    fric.set_defaults(func=cmd_friction)
 
     # provenance / compare-arms -- a paired comparison of two runs that
     # refuses skewed pairs and null tests (paired_compare.py). Read only.
@@ -6256,8 +6695,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     tui = sub.add_parser(
         "tui",
-        help="The terminal UI: one window over all your sessions, which keep "
-             "running when it closes (sessions live in `delfin-agent service`)",
+        help="The terminal UI: one window over your sessions (they live in "
+             "`delfin-agent service`). A session this window starts ends when it "
+             "closes (ctrl+c twice) unless Keep session is on: /keep on, or --keep",
     )
     tui.add_argument("--cwd", default="", help="Workspace of the first session")
     tui.add_argument("-n", "--name", dest="session_name", default="",
@@ -6277,6 +6717,9 @@ def build_parser() -> argparse.ArgumentParser:
     tui.add_argument("--no-isolate", action="store_true")
     tui.add_argument("-v", "--verbose", action="store_true",
                      help="Show the model's thinking, as chat --verbose does")
+    tui.add_argument("--keep", action="store_true",
+                     help="Start this window's sessions with Keep session on: they keep "
+                          "running in the agent service after the window closes")
     tui.add_argument("--inline", action="store_true",
                      help="Draw under the shell's last line, the conversation in the "
                           "terminal's own scrollback, instead of taking the whole terminal")
@@ -6303,7 +6746,7 @@ def build_parser() -> argparse.ArgumentParser:
                      help="end: let a running turn finish first (without it, the turn "
                           "is stopped at its next safe point, as ctrl+x twice does)")
     svc.add_argument("--yes", "-y", action="store_true",
-                     help="end: without asking (for scripts)")
+                     help="end, stop, restart: without asking (for scripts)")
     svc.add_argument("--json", action="store_true",
                      help="status: as JSON, for scripts")
     svc.add_argument("--lines", type=int, default=40,

@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#10283f">
+  <title>DELFIN — Molecular insight. Scientific impact.</title>
+  <meta name="description" content="Open-source, AI-orchestrated computational chemistry. Explore molecular workflows, meet the Animal Loop, and build science for a shared planet.">
+  <meta property="og:title" content="DELFIN — Molecular insight. Scientific impact.">
+  <meta property="og:description" content="Computational chemistry with curiosity, purpose, and a few animal friends.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="assets/delfin.png" type="image/png">
+  <link rel="stylesheet" href="styles.css">
+  <script src="content.js" defer></script>
+  <script src="assets/molecule.js" defer></script>
+  <script src="app.js" defer></script>
+  <script src="assets/earth.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div class="reading-progress" aria-hidden="true"></div>
+  <header class="header">
+    <a href="#" class="brand" aria-label="DELFIN home"><img src="assets/delfin.png" width="38" height="38" alt=""><span>DELFIN</span></a>
+    <nav aria-label="Main navigation">
+      <a href="#science">The science</a><a href="#stack">The stack</a><a href="framework.html">The agent</a><a href="#purpose">The purpose</a><a href="#animal-loop">The Animal Loop</a>
+    </nav>
+    <a class="nav-cta" href="#start">Dive in <span aria-hidden="true">↓</span></a>
+  </header>
+  <main id="main">
+    <section class="hero section-shell" aria-labelledby="hero-title">
+      <div class="hero-grid" aria-hidden="true"></div>
+      <div class="hero-copy">
+        <p class="eyebrow" data-content="hero.eyebrow">COMPUTATIONAL CHEMISTRY / AGENTIC SCIENCE</p>
+        <h1 id="hero-title"><span data-content="hero.title">Molecular insight.</span><span class="serif blue" data-content="hero.accent">Scientific impact.</span></h1>
+        <p class="hero-description" data-content="hero.description">From SMILES to reproducible predictions. DELFIN connects structure generation, molecular mutation, quantum chemistry and AI agents in one open research platform.</p>
+        <div class="actions"><a class="button primary" href="#science">Explore DELFIN <span aria-hidden="true">↘</span></a><a class="text-link" href="https://github.com/ComPlat/DELFIN">Find us on GitHub <span aria-hidden="true">↗</span></a></div>
+        <div class="hero-meta"><span>Structure generation</span><span>Quantum chemistry</span><span>AI orchestration</span></div>
+      </div>
+      <div class="molecule-art" aria-label="Interactive molecular structure viewer">
+        <div class="structure-heading"><span class="eyebrow">STRUCTURE EXPLORER</span><span class="structure-badge">XYZ COORDINATES</span></div>
+        <canvas id="molecule" tabindex="0" role="img" aria-label="Ir(ppy)3 molecular structure. Drag or use arrow keys to rotate. Use plus and minus to zoom."></canvas>
+        <div class="structure-identity"><h2>Ir(ppy)<sub>3</sub></h2><p>Tris(2-phenylpyridinato)iridium(III)</p></div>
+        <div class="structure-legend"><span><i class="ir"></i>Ir</span><span><i class="n"></i>N</span><span><i class="c"></i>C</span><span><i class="h"></i>H</span><span class="drag-hint">Drag to rotate</span></div>
+        <div class="structure-controls"><button id="molecule-reset" type="button">Reset view</button><button id="molecule-hydrogens" type="button" aria-pressed="true">Hydrogens</button><a href="assets/ir-ppy3.xyz" download>Download XYZ ↓</a></div>
+        <p class="structure-source">MANTA starting geometry · not DFT-optimised <a href="assets/STRUCTURE.md" aria-label="Read structure provenance">↗</a></p>
+      </div>
+      <div class="hero-bottom"><a href="#science">Scroll to explore <span aria-hidden="true">↓</span></a><button class="motion-toggle" type="button" aria-pressed="false">Pause motion</button></div>
+    </section>
+    <div class="ticker" aria-hidden="true"><div class="ticker-track"><span>Sense <i>→</i> Think <i>→</i> Act <i>→</i> Learn <i>↗</i> Stay curious. <i>✳</i> Stay in the Animal Loop. <i>✳</i></span><span>Sense <i>→</i> Think <i>→</i> Act <i>→</i> Learn <i>↗</i> Stay curious. <i>✳</i> Stay in the Animal Loop. <i>✳</i></span></div></div>
+    <section class="science section-shell section-pad" id="science" aria-labelledby="science-title">
+      <div class="section-heading reveal"><p class="eyebrow">01 / FROM CURIOSITY TO CALCULATION</p><h2 id="science-title">Big questions.<br><span class="serif">Molecular beginnings.</span></h2><p>Less friction between an idea and a calculation.<br>More room to ask the next question.</p></div>
+      <div class="workflow reveal">
+        <div class="workflow-steps" aria-label="Explore the workflow"></div>
+        <div class="workflow-body" aria-live="polite" aria-atomic="true"><div><span class="eyebrow" id="flow-tag"></span><h3 id="flow-title"></h3><p id="flow-text"></p><span class="flow-detail" id="flow-detail"></span></div><div class="flow-graphic"><div class="flow-orbits" aria-hidden="true"><span></span><span></span><span></span><img src="assets/delfin.png" alt="" width="68" height="68"></div><code id="flow-code"></code></div></div>
+      </div>
+      <noscript><p>DELFIN connects molecular input, structure generation, quantum-chemical calculation and documented results. <a href="https://github.com/ComPlat/DELFIN#what-delfin-can-do">Explore the workflows in the documentation.</a></p></noscript>
+      <div class="engine-row reveal"><span>WORKS WITH ESTABLISHED TOOLS</span><span>ORCA</span><span>xTB</span><span>RDKit</span><span>CREST</span><span>MANTA</span></div>
+    </section>
+    <section class="stack section-shell section-pad" id="stack" aria-labelledby="stack-title">
+      <div class="section-heading reveal"><p class="eyebrow">02 / THE WHOLE QM STACK</p><h2 id="stack-title">SMILES in.<br><span class="serif">Properties out.</span></h2><p>One pipeline from a line of text to reported properties.<br>The agent plans, runs, repairs and verifies every stage.</p></div>
+      <figure class="qm reveal" aria-label="The DELFIN pipeline: SMILES in, properties out, orchestrated by the DELFIN agent">
+        <div class="qm-agent">
+          <div class="qm-agent-name"><img src="assets/delfin.png" alt="" width="52" height="52"><div><b>DELFIN Agent</b><span>orchestration layer</span></div></div>
+          <ol class="qm-agent-steps">
+            <li><b>Plan</b><span>plan before acting</span></li>
+            <li><b>Decompose</b><span>one step at a time</span></li>
+            <li><b>Subagents</b><span>isolated context</span></li>
+            <li><b>Verify</b><span>check and recover</span></li>
+          </ol>
+        </div>
+        <p class="qm-note">plans, runs, repairs and verifies</p>
+        <span class="qm-drop qm-drop-1" aria-hidden="true"></span><span class="qm-drop qm-drop-2" aria-hidden="true"></span><span class="qm-drop qm-drop-3" aria-hidden="true"></span><span class="qm-drop qm-drop-out" aria-hidden="true"></span>
+        <div class="qm-box qm-in"><span class="qm-label">INPUT</span><h3>SMILES</h3><code>c1ccc(-c2ccccn2)nc1</code><span class="qm-sub">or an .xyz file</span></div>
+        <span class="qm-arrow qm-a1" aria-hidden="true"></span>
+        <div class="qm-box qm-s1"><span class="qm-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2.4"/><circle cx="18" cy="5" r="2.4"/><circle cx="12" cy="19" r="2.4"/><path d="M7.6 6.8 11 16.6M16.4 6.8 13 16.6"/></svg></span><h3>Structure generation</h3><p>MANTA · Architector<br>RDKit · Open Babel</p></div>
+        <span class="qm-arrow qm-a2" aria-hidden="true"></span>
+        <div class="qm-box qm-s2"><span class="qm-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12 7 5l5 7 5-7 4.5 7"/><path d="M2.5 19 7 12l5 7 5-7 4.5 7" opacity=".55"/></svg></span><h3>Conformer ensemble</h3><p>CREST · GOAT<br>CENSO</p></div>
+        <span class="qm-arrow qm-a3" aria-hidden="true"></span>
+        <div class="qm-box qm-s3"><span class="qm-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5v19"/><path d="M5 5.5c0 6.8 2.6 9.6 7 9.6s7-2.8 7-9.6"/></svg></span><h3>Quantum chemistry</h3><p>ORCA · Turbomole<br>xTB · MOPAC</p></div>
+        <span class="qm-arrow qm-a4" aria-hidden="true"></span>
+        <div class="qm-box qm-out"><div class="qm-out-head"><span class="qm-label">OUTPUT</span><span class="qm-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 19h4c3 0 3-14 5-14s2 14 5 14h4"/></svg></span></div><h3>Properties</h3>
+          <dl>
+            <div><dt>Redox potentials E½</dt><dd>V</dd></div>
+            <div><dt>ΔE(S–T), k(RISC)</dt><dd>eV, 1/s</dd></div>
+            <div><dt>UV–Vis · IR · NMR</dt><dd>nm, ppm</dd></div>
+            <div><dt>Free energy, log K</dt><dd>kJ/mol</dd></div>
+            <div><dt>NLO β tensors</dt><dd>a.u.</dd></div>
+          </dl>
+          <span class="qm-sub">DOCX report + provenance</span></div>
+        <div class="qm-loop" aria-hidden="true"><span class="qm-loop-l"></span><span class="qm-loop-m"></span><span class="qm-loop-r"></span></div>
+        <figcaption class="qm-loop-text"><b>inverse design</b><span>the computed property is the fitness criterion; the chemist picks the next seeds</span></figcaption>
+        <div class="qm-foot"><span>SMILES in, properties out — the whole QM stack, AI-orchestrated.</span><a href="https://github.com/ComPlat/DELFIN">github.com/ComPlat/DELFIN</a></div>
+      </figure>
+    </section>
+    <section class="framework-intro section-shell" aria-labelledby="framework-intro-title">
+      <div class="framework-teaser"><div><p class="eyebrow">INSIDE THE AGENT</p><h2 id="framework-intro-title">How the framework works.</h2><p>Explore the architecture behind the research partner: tool use, memory, self-validation and measured, human-reviewed improvement.</p></div><a class="text-link" href="framework.html">Inside the agent framework <span aria-hidden="true">→</span></a></div>
+    </section>
+    <section class="research section-shell section-pad" aria-labelledby="research-title">
+      <div class="section-heading reveal"><p class="eyebrow">03 / QUESTIONS WORTH ASKING</p><h2 id="research-title">What will you<br><span class="serif">look into?</span></h2></div>
+      <div class="research-layout reveal"><div class="research-choices" aria-label="Research areas"></div><article class="research-panel" aria-live="polite" aria-atomic="true"><div class="research-visual" aria-hidden="true"><div class="signal-lines"></div><span id="research-symbol">e⁻</span><span class="visual-note" id="research-note"></span></div><div class="research-copy"><h3 id="research-heading"></h3><p id="research-text"></p><div class="tags" id="research-tags"></div></div></article></div>
+    </section>
+    <section class="interfaces section-shell section-pad" aria-labelledby="interfaces-title">
+      <div class="section-heading reveal"><p class="eyebrow">04 / YOUR WAY INTO THE SCIENCE</p><h2 id="interfaces-title">A research partner.<br><span class="serif">A whole toolbox.</span></h2></div>
+      <div class="interface-layout">
+        <div class="terminal reveal"><div class="terminal-bar"><div aria-hidden="true"><i></i><i></i><i></i></div><span>DELFIN / WORKFLOW SKETCH</span></div><div class="terminal-content"><p class="terminal-comment"># A question becomes a workflow.</p><p><span class="prompt">you ›</span> Explore the redox behaviour<br>      of this molecular candidate.</p><div class="terminal-path"><p><span>01</span> Prepare the structure</p><p><span>02</span> Configure the calculation</p><p><span>03</span> Follow the job</p><p><span>04</span> Inspect the evidence<span class="cursor" aria-hidden="true">▌</span></p></div><p class="terminal-comment">Illustrative sequence · not a live calculation</p></div></div>
+        <div class="interface-notes reveal"><article><span>01</span><div><h3>Talk to an agent.</h3><p>Configure workflows, follow calculations and explore results with hosted or local models.</p></div></article><article><span>02</span><div><h3>See the whole picture.</h3><p>A browser dashboard for job setup, molecular structures, queues and result analysis.</p></div></article><article><span>03</span><div><h3>Make it your workflow.</h3><p>Use the CLI on your workstation or cluster. Keep inputs, methods and outputs together.</p></div></article><a class="text-link" href="https://github.com/ComPlat/DELFIN#-quick-start">Meet the interfaces <span aria-hidden="true">↗</span></a></div>
+      </div>
+    </section>
+    <section class="purpose" id="purpose" aria-labelledby="purpose-title">
+      <div class="purpose-waves" aria-hidden="true"><svg viewBox="0 0 1440 500" preserveAspectRatio="none"><path d="M-200 220 Q160 0 520 220 T1240 220 T1960 220"/><path d="M-200 250 Q160 30 520 250 T1240 250 T1960 250"/><path d="M-200 280 Q160 60 520 280 T1240 280 T1960 280"/><path d="M-200 310 Q160 90 520 310 T1240 310 T1960 310"/><path d="M-200 340 Q160 120 520 340 T1240 340 T1960 340"/><path d="M-200 370 Q160 150 520 370 T1240 370 T1960 370"/></svg></div>
+      <div class="section-shell section-pad purpose-inner"><p class="eyebrow reveal">05 / A PLANET WORTH CARING ABOUT</p><h2 id="purpose-title" class="reveal">Science is our tool.<br><span class="serif">Life is the point.</span></h2><div class="purpose-bottom reveal"><span class="purpose-globe" aria-hidden="true"><svg preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 360">
+  <path fill="#416d96" d="M0 0h720v360H0z"/>
+  <g fill="#c3d9e8" stroke="#c3d9e8" stroke-width="2" stroke-linejoin="round">
+    <path d="m20 42 30-15 44 5 22 16 36-5 28 17 18 26-11 17-17-2-14 18-13 21 6 17 21 12 5 17 19 9 4 16-12 1-19-20-18-3-9-19-23-10-11-22-20-11-11-28-28-10-19-20-18 3z"/>
+    <path d="m192 192 25-5 29 15 16 23-6 22-14 17-8 30-17 32-12 5-6-25-10-22-3-30-13-25 5-25z"/>
+    <path d="m267 17 24-8 28 9-4 31-20 22-14-7-9-23z"/>
+    <path d="m335 108 9-12 16 1 10-15-2-18 16-15 8 7-4 31-12 15 9 9 14-6 9 9-8 13-29-2-15 10-23-9z"/>
+    <path d="m337 137 24-9 27 4 19 16 11 25 24 6-12 24-22 14-10 28-15 20-13-3-7-25-17-23-5-20-20-17-1-23z"/>
+    <path d="m393 61 31-16 37 4 28-10 37 10 23-5 40 12 43-2 30 15 35 12-8 14-30-2-10 15-19 3-8 21-23 5-12 24-24 5-4 24-16 11-14-29-13-7-6 28-12 13-10-20-6-24-24-1-9-17-25-10-14 5-10-15-18-1-13-14 8-15z"/>
+    <path d="m417 151 27 9 10 20-16 14-14-16zM551 199l20 8 12 12-10 5-21-12zM582 220l27 2 13 11-25 2zM637 126l6 7-7 19-6-4z"/>
+    <path d="m588 247 23-12 31 2 9 20 10 17-9 20-24-4-16 5-19-16-19-8zM645 304l9 2-3 13-8-2zM689 284l7 6-9 19-8 4-3-7zM418 251l8-17 4 11-4 18z"/>
+    <path d="m0 340 54-5 51 8 52-5 48 7 43-10 41 3 42-8 33 7 46-2 43 8 46-8 37 4 48-5 37 6 44-5 51 7 26-2v20H0z"/>
+  </g>
+</svg>
+<canvas width="320" height="320"></canvas></span><div><p>We want to help make the Earth a better place. By making rigorous computational chemistry easier to use, easier to question, and easier to build on.</p><p class="purpose-small">That ambition is part of DELFIN’s operating principles: advance science for the long-term well-being of humanity and the planet. Progress should serve people and the living world we share.</p><a class="text-link" href="https://github.com/ComPlat/DELFIN/blob/main/delfin/agent/pack/shared/principles_addendum.md">Read the principles <span aria-hidden="true">↗</span></a></div></div></div>
+    </section>
+    <section class="animals section-shell section-pad" id="animal-loop" aria-labelledby="animal-title">
+      <div class="section-heading reveal"><p class="eyebrow">06 / SCIENCE HAS A WILD SIDE</p><h2 id="animal-title">Stay in the<br><span class="serif blue">Animal Loop.</span></h2><p>A dolphin. A manta ray. A seal. And a little evolution.<br>A shared curiosity for what comes next.</p></div>
+      <div class="animal-track" aria-hidden="true"><span>SENSE</span><i>→</i><span>THINK</span><i>→</i><span>ACT</span><i>→</i><span>LEARN</span><i>↺</i></div>
+      <div class="animal-grid"></div>
+    </section>
+    <section class="videos section-shell section-pad" id="watch" hidden aria-labelledby="watch-title"><div class="section-heading reveal"><p class="eyebrow">IN THE WILD / WATCH & EXPLORE</p><h2 id="watch-title">See the science<br><span class="serif">in motion.</span></h2></div><div class="video-grid"></div></section>
+    <section class="get-started section-shell section-pad" id="start" aria-labelledby="start-title"><div class="reveal"><p class="eyebrow">YOUR NEXT QUESTION STARTS HERE</p><h2 id="start-title">Ready to<br><span class="serif blue">dive in?</span></h2><p>Bring your ideas. Keep your curiosity.</p><div class="actions"><a class="button primary" href="https://github.com/ComPlat/DELFIN#-installation">Installation guide <span aria-hidden="true">↗</span></a><a class="text-link" href="https://github.com/ComPlat/DELFIN/issues">Help shape DELFIN ↗</a></div></div><div class="install-card reveal"><span class="eyebrow">THE PYTHON PACKAGE</span><div class="install-command"><code>pip install delfin-complat</code><button id="copy-install" type="button" aria-label="Copy installation command">Copy</button></div><p>Python 3.10–3.12. External engines such as ORCA are installed separately. See the guide for your workflow’s requirements.</p><div class="install-links"><a href="https://github.com/ComPlat/DELFIN#-quick-start">Quick start ↗</a><a href="https://github.com/ComPlat/DELFIN/blob/main/docs/USER_MANUAL.md">Documentation ↗</a></div><span id="copy-status" role="status"></span></div></section>
+  </main>
+  <footer class="section-shell"><div class="footer-top"><a href="#" class="brand"><img src="assets/delfin.png" width="34" height="34" alt=""><span>DELFIN</span></a><p>For curious minds.<br>For a living planet.</p><div><a href="https://github.com/ComPlat/DELFIN">GitHub ↗</a><a href="https://doi.org/10.5281/zenodo.17208144">Cite DELFIN ↗</a><a href="https://github.com/ComPlat/DELFIN/blob/main/LICENSE">LGPL-3.0-or-later ↗</a></div></div><div class="footer-bottom"><span>Developed at KIT.</span><span>Stay in the Animal Loop. <span aria-hidden="true">↺</span></span></div></footer>
+  <dialog id="video-dialog" aria-labelledby="video-dialog-title"><div class="dialog-heading"><h2 id="video-dialog-title">Video</h2><button id="close-video" type="button" aria-label="Close video">Close ×</button></div><div id="video-player"></div></dialog>
+</body>
+</html>

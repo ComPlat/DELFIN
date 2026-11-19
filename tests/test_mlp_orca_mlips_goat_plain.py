@@ -37,7 +37,7 @@ def test_goat_fallback_text(tmp_path):
         "\n"
         "%method\n"
         '  ProgExt "orca-mlips-uma"\n'
-        '  Ext_Params "--backend uma --device cpu"\n'
+        '  Ext_Params "--device cpu"\n'
         "end\n"
         "\n"
         "%goat\n"

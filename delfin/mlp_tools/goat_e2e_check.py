@@ -50,6 +50,21 @@ _JOB_FAILURES = (
 )
 
 
+#: Lines that carry a failure word and are no failure, seen in finished,
+#: normally terminated MLIP GOAT runs (ethanol, orca-mlips 1.3.0, ORB and
+#: MACE on an A100, 2026-11):
+#: * ORCA's RFO step: "The lambda equations have not converged!" -- an inner
+#:   iteration of one geometry step; the optimisation goes on and converges;
+#: * orca-mlips' model server: several GOAT workers start it at once, the
+#:   ones that lose the socket print "[ERROR] [Errno 98] Address already in
+#:   use" and use the server that won (it answers every later call).
+#: They are reported as notes, not as an aborted run.
+_BENIGN_FAILURE_LINES = (
+    "The lambda equations have not converged",
+    "[Errno 98] Address already in use",
+)
+
+
 def check_goat_e2e(
     run_dir: Path | str,
     *,
@@ -59,7 +74,9 @@ def check_goat_e2e(
 
     ``run_dir``: the job working directory; ``base_name``: the job-name
     stem (default "extopt", the GOAT builder's ``_BASE_NAME``).  Reads
-    the files ``goat_output_files(base_name)`` names.  Returns a dict:
+    the files ``goat_output_files(base_name)`` names; the ORCA output also
+    as ``output_<base>.out``, the name the CONTROL path writes it under.
+    Returns a dict:
 
     ``ok``              -- whether every hard check passed;
     ``findings``        -- ``(dict, ...)``, one per failed or advisory
@@ -76,6 +93,12 @@ def check_goat_e2e(
     run_dir = Path(run_dir)
     files = goat_output_files(base_name)
     out_path = run_dir / files["output"]
+    control_out = run_dir / f"output_{base_name}.out"
+    if not out_path.is_file() and control_out.is_file():
+        # The CONTROL path (global_opt_method=mlip:*, delfin/xtb_crest.py)
+        # writes ORCA's output as output_XTB_GOAT.out next to XTB_GOAT.inp;
+        # without this the checker could not read the run the workflow made.
+        out_path = control_out
 
     # --- ensemble + global minimum through the real reader ----------------
     # F1/F2 (reviewer s13): read_goat_ensemble raises ValueError when a
@@ -109,25 +132,35 @@ def check_goat_e2e(
     terminated: Optional[bool] = None
     if out_path.is_file():
         text = out_path.read_text(errors="replace")
-        n_fail = len(_failure_lines(out_path))
+        failure_lines = _failure_lines(out_path)
+        benign = [line for line in failure_lines
+                  if any(mark in line for mark in _BENIGN_FAILURE_LINES)]
+        n_fail = len(failure_lines) - len(benign)
         terminated = _TERMINATED_MARK in text and n_fail == 0
+        if benign:
+            findings.append(_finding(
+                "info",
+                f"{out_path.name}: {len(benign)} line(s) with a failure word "
+                "that are no failure (RFO lambda notice / orca-mlips server "
+                "start race): " + "; ".join(sorted(set(benign)))[:300],
+            ))
         if _TERMINATED_MARK not in text:
             findings.append(_finding(
                 "error",
-                f"{files['output']} does not end with the ORCA "
+                f"{out_path.name} does not end with the ORCA "
                 f"termination marker ({_TERMINATED_MARK!r}); the run did "
                 "not finish cleanly",
             ))
         if n_fail:
             findings.append(_finding(
                 "error",
-                f"{files['output']} carries {n_fail} failure line(s) "
+                f"{out_path.name} carries {n_fail} failure line(s) "
                 "(SCF NOT CONVERGED / ERROR / FATAL / aborted / ...); the "
                 "run aborted before finishing",
             ))
     else:
         findings.append(_finding(
-            "error", f"{files['output']} is missing; no ORCA output at all"))
+            "error", f"{out_path.name} is missing; no ORCA output at all"))
     goat["terminated_normally"] = terminated
 
     # --- job-log failures: name WHICH failure ended the run (D2-D4) --------
@@ -284,14 +317,26 @@ def _gpu_evidence(run_dir: Path) -> Optional[str]:
 
 
 def _parse_walltime(out_path: Path) -> Optional[float]:
-    """Wall-clock seconds from ORCA's final 'Total Job Time (sec): N' line.
+    """Wall-clock seconds from ORCA's final 'TOTAL RUN TIME' line (ORCA 6),
+    else a 'Total Job Time (sec): N' line.
 
-    ORCA prints this in the timing block at the end of a run.  ``None``
-    when the .out is absent or carries no such line.
+    ``None`` when the .out is absent or carries neither line.
     """
     if not out_path.is_file():
         return None
-    for line in out_path.read_text(errors="replace").splitlines():
+    import re
+
+    text = out_path.read_text(errors="replace")
+    # ORCA 6.1.1 ends with "TOTAL RUN TIME: 0 days 0 hours 9 minutes 28
+    # seconds 822 msec" and prints no "Total Job Time" line (measured on a
+    # finished MLIP GOAT run); the walltime was then reported as missing.
+    run_time = re.findall(
+        r"TOTAL RUN TIME:\s*(\d+)\s*days?\s+(\d+)\s*hours?\s+(\d+)\s*minutes?\s+"
+        r"(\d+)\s*seconds?\s+(\d+)\s*msec", text)
+    if run_time:
+        d, h, m, s, ms = (int(x) for x in run_time[-1])
+        return d * 86400 + h * 3600 + m * 60 + s + ms / 1000.0
+    for line in text.splitlines():
         if "total job time" in line.lower():
             rest = line.split("sec", 1)[-1]
             digits = "".join(c for c in rest if c.isdigit() or c == ".")

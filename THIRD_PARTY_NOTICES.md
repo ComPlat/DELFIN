@@ -229,6 +229,7 @@ exceptions in `scripts/dependency_licences.toml`.
 | odfpy | extras `[agent]`, `[office]` | Apache-2.0, GPL or LGPL, at the user's choice | Used under Apache-2.0. |
 | paho-mqtt | extra `[lab-mqtt]` | EPL-2.0 or EDL-1.0 (BSD-3-Clause), at the user's choice | Used under EDL-1.0. Imported only when the lab's MQTT driver reaches a real broker. |
 | asyncua (opcua-asyncio) | extra `[lab-opcua]` | LGPL-3.0-or-later | Compatible. Imported only when the lab's OPC UA driver reaches a real device. |
+| gpiod (libgpiod Python bindings) | extra `[lab-gpio]` | LGPL-2.1-or-later | Compatible. Imported only when the lab's GPIO driver opens a /dev/gpiochip. |
 
 Every other core dependency declares a permissive licence (MIT, BSD, Apache-2.0,
 ISC, PSF, MPL-2.0); `stk` and four of its dependencies declare none and are MIT

@@ -45,6 +45,23 @@ FILE_MODE = 0o600
 # Bits that must never be set on anything in the state tree.
 _SHARED_BITS = 0o077
 
+
+def state_root() -> Path:
+    """The DELFIN state root shared temp directories live under.
+
+    ``~/.delfin`` by default, overridable via the ``DELFIN_STATE``
+    environment variable (used by tests and by callers that keep state
+    elsewhere). Resolution errors fall back to ``~/.delfin`` -- a
+    missing HOME must not turn a temp-path question into a crash.
+    """
+    env = os.environ.get("DELFIN_STATE", "").strip()
+    if env:
+        return Path(env).expanduser()
+    try:
+        return Path.home() / ".delfin"
+    except Exception:  # pragma: no cover - HOME unset
+        return Path("/.delfin")
+
 # A walk over a state tree is bounded so a pathological directory (a user
 # pointing the archive at their home, a runaway trace dir) cannot turn
 # start-up into a multi-minute stat storm.
@@ -128,7 +145,32 @@ def ensure_dir(path: Any, *, mode: int = DIR_MODE) -> Path:
     except OSError:
         return p
     _chmod(p, mode)
+    _tighten_state_root_above(p)
     return p
+
+
+def _tighten_state_root_above(path: Path) -> None:
+    """Make ``~/.delfin`` and every level between it and *path* 0700.
+
+    ``mkdir(parents=True, mode=...)`` gives the mode to the LAST level
+    only; the parents it creates get the umask. On a fresh home under the
+    cluster's umask 002 the first state write therefore made ``~/.delfin``
+    itself 0775 (bug hunt 11.11.2026, #7), and group members could reach
+    everything below it, the memory notes read back into prompts among
+    them. An owner-only root closes the whole tree, whatever the modes
+    further down. Only ``~/.delfin`` and levels inside it: a path
+    elsewhere belongs to the user or to a test. Never raises.
+    """
+    try:
+        root = Path.home() / ".delfin"
+        if path != root and root not in path.parents:
+            return
+        levels = [root, *[a for a in reversed(path.parents)
+                          if root in a.parents]]
+    except Exception:
+        return
+    for level in levels:
+        _chmod(level, DIR_MODE)
 
 
 def secure_file(path: Any, *, mode: int = FILE_MODE) -> Path:
@@ -325,6 +367,7 @@ def prune_old(
     now: float | None = None,
     on_remove: Callable[[Path], None] | None = None,
     max_paths: int = _MAX_SWEEP_PATHS,
+    dry_run: bool = False,
 ) -> int:
     """Delete files under ``root`` last modified more than N days ago.
 
@@ -340,6 +383,13 @@ def prune_old(
     directory per report and pruning only its files would leave an
     ever-growing tree of empty shells.  Returns the number of files
     removed.  Never raises.
+
+    ``dry_run`` counts and reports through ``on_remove`` without
+    unlinking anything, so a person can be shown what a prune would
+    delete before it runs. It lives here rather than in the caller
+    because the age rule is here: a caller that listed candidates itself
+    would be a second answer to the same question, free to drift from
+    the one that does the deleting.
     """
     try:
         days = float(max_age_days)
@@ -366,12 +416,15 @@ def prune_old(
                 on_remove(p)
             except Exception:
                 pass
+        if dry_run:
+            removed += 1
+            continue
         try:
             p.unlink()
             removed += 1
         except OSError:
             pass
-    if removed and glob is None:
+    if removed and glob is None and not dry_run:
         _drop_empty_subdirs(root_path)
     return removed
 
@@ -429,7 +482,58 @@ _STATE_DIR_SOURCES: tuple[tuple[str, str, str, str | None, bool], ...] = (
      "audit.log", True),
     ("delfin.agent.failure_log", "_LOG_PATH", "keep",
      "failure_log.jsonl", True),
+    # The agent service: every turn of every session appends to a
+    # <sid>.jsonl under sessions/ and nothing removed them, so this grew
+    # without bound. It was in no prune table; the only limits were in
+    # memory (RecentEvents._trim, REPLAY_BUDGET_BYTES), which bound what
+    # is replayed, not what is kept.
+    #
+    # Resolved HERE rather than by importing the service layer. The
+    # resolver of this table runs on the first session write of a
+    # process (session_store._startup_maintenance), and naming
+    # ``service.eventlog`` would pull the service modules into that
+    # path -- a coupling the session store did not have, in the one
+    # place where a service test is also starting a service. The layout
+    # is duplicated as a consequence, and
+    # test_the_retention_sweep_is_reachable pins the two against
+    # eventlog.service_dir() so they cannot drift.
+    #
+    # Rotated service logs only: the ACTIVE service.log is the file a
+    # running supervisor holds open as its stdout, so pruning it would
+    # delete the log of a live service. The rotation happens where the
+    # file is opened (launcher._rotate_service_log).
+    ("delfin.agent.state_paths", "_service_sessions_dir", "derived",
+     "*.jsonl", False),
+    ("delfin.agent.state_paths", "_service_logs_dir", "derived",
+     "service.log.*", False),
 )
+
+
+def _service_dir() -> Path:
+    """``~/.delfin/agent_service``, by the same rules the service uses.
+
+    A copy of ``service.eventlog.service_dir`` deliberately: see the note
+    in the table above. ``DELFIN_AGENT_SERVICE_DIR`` first, then
+    ``DELFIN_SCRATCH_STATE``, then the home -- a test or a probe that
+    redirects either must redirect this too, which is the property the
+    pinning test checks.
+    """
+    override = os.environ.get("DELFIN_AGENT_SERVICE_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    scratch = os.environ.get("DELFIN_SCRATCH_STATE", "").strip()
+    home = Path(scratch).expanduser() if scratch else Path.home()
+    return home / ".delfin" / "agent_service"
+
+
+def _service_sessions_dir() -> Path:
+    """Where the per-session event logs live."""
+    return _service_dir() / "sessions"
+
+
+def _service_logs_dir() -> Path:
+    """Where the supervisor's stdout log and its rotated copies live."""
+    return _service_dir() / "logs"
 
 
 def state_dirs() -> list[StateDir]:
@@ -507,12 +611,20 @@ def run_startup_maintenance(
     prune: bool = True,
     force: bool = False,
     now: float | None = None,
+    dry_run: bool = False,
+    on_remove: Callable[[Path], None] | None = None,
 ) -> dict:
     """Repair modes and apply retention across the state tree, once.
 
     Returns ``{"repaired": n, "pruned": n, "dirs": n, "ran": bool}``.
     ``ran`` is False when a previous call in this process already did the
     work — the caller can therefore be a hot path.
+
+    ``dry_run`` reports what a prune would delete and removes nothing;
+    ``on_remove`` receives each such path. Repair still runs, because
+    fixing a file mode destroys nothing. A reachable prune has to be
+    shown before it is applied: it deletes files past retention, and a
+    person asked to approve that is owed the list.
 
     Never raises: start-up maintenance that can abort start-up is worse
     than the permissions it fixes.
@@ -546,7 +658,8 @@ def run_startup_maintenance(
                     else retention_days)
             try:
                 pruned += prune_old(path, max_age_days=days, glob=glob,
-                                    now=now)
+                                    now=now, dry_run=dry_run,
+                                    on_remove=on_remove)
             except Exception:
                 pass
         # Repair AFTER the prune: no point chmod'ing a file about to go.
@@ -780,6 +893,12 @@ USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     ("delfin.agent.session_store", "_handoffs_path", "handoffs"),
     ("delfin.agent.session_store", "_bundles_path", "bundles"),
     ("delfin.agent.attention", "_inbox_path", "attention_inbox.jsonl"),
+    # The jobs DELFIN submitted to a cluster (delfin.remote.jobs), which the
+    # job watcher follows: a run's fixture jobs must not be watched for real.
+    ("delfin.remote.jobs", "_records_path", "remote_jobs.jsonl"),
+    # What the watcher found of each of them, and the lock of its ticks.
+    ("delfin.remote.watch", "_state_path", "remote_watch.json"),
+    ("delfin.remote.watch", "_lock_path", "remote_watch.lock"),
     # What the user said about themselves, loaded into every prompt. A
     # run reading the real one would test against the developer's own
     # self-description, and a run that drove the Send button would write
@@ -791,6 +910,11 @@ USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     # and the launcher's atexit hook then deleted it on the way out --
     # leaving a dashboard that was still serving with no way back to it.
     ("delfin.agent.where", "record_path", "dashboard_here.json"),
+    # This host's dashboard server record (pid, port, token), its lock
+    # and a detached launcher's log. A run that drove the launcher must
+    # not leave its server where a real `delfin-voila` would open it, nor
+    # take the real one's lock.
+    ("delfin.dashboard.server_record", "_state_dir", "dashboard_server"),
     # The header's branch list (pins and hidden entries), the log of
     # deleted branches and worktrees with their undo commands, and the
     # records of running branch previews. A run that pinned a fixture

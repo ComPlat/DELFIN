@@ -168,6 +168,12 @@ def test_every_backticked_command_in_the_docs_exists():
 # 3. Message texts: every recommended command exists
 # ---------------------------------------------------------------------------
 
+#: Commands of OTHER tools that a message names on purpose, with the tool:
+#: the Claude CLI's ``/login`` ("run `claude` in a terminal, do its /login").
+#: Only for the message check -- documentation is held to DELFIN's own.
+OTHER_TOOLS_COMMANDS = frozenset({"/login"})
+
+
 def _agent_message_recommendations() -> list[str]:
     """``/token`` a delfin/agent/*.py message text recommends.
 
@@ -188,14 +194,28 @@ def _agent_message_recommendations() -> list[str]:
         r"(?=[ ,.:;)`'\"]|$)")
     root = repo_root() / "delfin" / "agent"
     found: set[str] = set()
+    window = window_commands()
     for path in sorted(root.glob("*.py")):
         text = path.read_text(encoding="utf-8")
         for match in rec.finditer(text):
             token = "/" + match.group(1)
             if NOT_COMMANDS.search(token):
                 continue
+            # A window command is a real recommendation where the message
+            # says it is the window's (/clusters "in the DELFIN window",
+            # "the window's login field"): the REPL and the dashboard do
+            # not have it, so a message without that word would send their
+            # user to a command that is not there.
+            if token in window and _names_the_window(text, match):
+                continue
             found.add(token)
     return sorted(found)
+
+
+def _names_the_window(text: str, match: "re.Match[str]") -> bool:
+    """Whether the message around ``match`` says the command is the window's."""
+    near = text[max(0, match.start() - 80):match.end() + 80].lower()
+    return "window" in near or "delfin-agent tui" in near
 
 
 def test_every_recommended_command_in_agent_messages_exists(
@@ -207,6 +227,6 @@ def test_every_recommended_command_in_agent_messages_exists(
     assert recs, ("extractor found nothing — the verb-anchored regex "
                   "no longer matches real recommendations; loosen it, "
                   "do not delete this guard")
-    known = all_commands() | dashboard_routed()
+    known = all_commands() | dashboard_routed() | OTHER_TOOLS_COMMANDS
     missing = [t for t in recs if t not in known]
     assert missing == [], f"recommended in code but not a command: {missing}"
