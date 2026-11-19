@@ -31,11 +31,12 @@ from __future__ import annotations
 
 import contextlib
 import os
+import signal
 import socket
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, Optional, Tuple
 
 #: Liveness answers: the step's process still runs / has ended / cannot be
 #: checked from here.
@@ -114,6 +115,68 @@ def beating(path: Optional[str]) -> Iterator[None]:
         thread.join(timeout=5)
 
 
+#: The signals a run is told to end with: ``scancel`` and a batch system's
+#: time limit send SIGTERM, a closing terminal or an ended shell call SIGHUP.
+END_SIGNALS = ("SIGTERM", "SIGHUP")
+
+
+@contextlib.contextmanager
+def ended_on_signal(record: Callable[[str], None]) -> Iterator[None]:
+    """Call ``record(<signal name>)`` when the run is ended by a signal, then
+    end exactly as before.
+
+    Without it, a step ended by ``scancel`` reads "still running" until
+    its heartbeat is :data:`STALE_SECONDS` old, and a resume in that window
+    is refused (JC3 live run 6). The previous handler is restored first
+    and then given the signal. Only where that ends the process (the
+    default action) is the end recorded: a Python handler is called and
+    decides for itself, an ignored signal stays ignored. Only the main thread may set handlers; elsewhere (a tool
+    server's worker thread) this does nothing and the heartbeat decides.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous: Dict[int, Any] = {}
+
+    def _handler(signum, frame):
+        prev = previous.get(signum, signal.SIG_DFL)
+        signal.signal(signum, prev)
+        if callable(prev):
+            # Whoever set it decides whether the process ends; if it raises,
+            # the pipeline's own except-clause records the end.
+            prev(signum, frame)
+            return
+        if prev == signal.SIG_IGN:
+            return
+        # The default action: the process ends now. Only then is "ended"
+        # true -- recorded for a signal that does not end the run, it would
+        # let a resume start the same step twice.
+        try:
+            record(signal.Signals(signum).name)
+        except Exception:  # noqa: BLE001 - the signal must still end the run
+            pass
+        os.kill(os.getpid(), signum)
+
+    for name in END_SIGNALS:
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            previous[sig] = signal.getsignal(sig)
+            signal.signal(sig, _handler)
+        except (ValueError, OSError):
+            previous.pop(sig, None)
+    try:
+        yield
+    finally:
+        for sig, prev in previous.items():
+            try:
+                if signal.getsignal(sig) is _handler:
+                    signal.signal(sig, prev)
+            except (ValueError, OSError):
+                pass
+
+
 def _process_answer(r: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     """RUNNING/GONE from the recorded process, None when it cannot tell."""
     host = str(r.get("host") or "")
@@ -177,4 +240,5 @@ def runner_liveness(step: Any) -> Tuple[str, str]:
 
 
 __all__ = ["RUNNING", "GONE", "UNKNOWN", "BEAT_SECONDS", "STALE_SECONDS",
-           "HEARTBEAT_NAME", "this_runner", "beating", "runner_liveness"]
+           "HEARTBEAT_NAME", "END_SIGNALS", "this_runner", "beating",
+           "ended_on_signal", "runner_liveness"]
