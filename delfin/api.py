@@ -725,7 +725,7 @@ class CalculationStatus:
     """How one calculation folder stands, and what says so."""
 
     folder: str
-    state: str                 # succeeded | failed | finished | running | stalled | pending | unknown | missing
+    state: str                 # succeeded | failed | finished | running | interrupted | stalled | pending | unknown | missing
     outcome: str               # the phrase, with its source ("failed (exit code 1025)")
     method: str | None = None  # "PBE0/def2-SVP" when the folder names it
     evidence: list[dict] = field(default_factory=list)   # [{"source", "says"}]
@@ -769,7 +769,78 @@ def _scheduler_jobs_by_dir() -> dict:
     return out
 
 
-def _state_for(outcome: str, age_s, job=None) -> str:
+def _chain_step_witness(folder) -> tuple[str | None, dict | None]:
+    """What a calculation chain knows about *folder*, when it is a chain step's.
+
+    ``(state, evidence)``: state is "running" when the step's runner
+    verifiably still runs, "interrupted" when it verifiably does not (or
+    the folder is an earlier attempt the chain gave up on), None when the
+    chain cannot tell or the folder is no step of one; evidence is the
+    ``{"source", "says"}`` line, None when there is no chain.
+
+    The files alone cannot tell a killed run from a live one: an ORCA run
+    killed mid-optimisation leaves its temporary files and a fresh output
+    behind, and the six-hour clock then says "running". In JC3's live run
+    6 (2026-11-15) calc_status said exactly that about a killed step; the
+    chain's runner record (pid in its namespace, heartbeat) is the witness
+    that knows. Looked up in the folder and at most two levels above it --
+    a step dir, or an attempt dir under one -- never a walk.
+    """
+    from pathlib import Path as _P
+    try:
+        d = _P(folder).resolve()
+    except OSError:
+        return None, None
+    state_file = None
+    for cand in (d, d.parent, d.parent.parent):
+        f = cand / "chain_state.json"
+        try:
+            if f.is_file():
+                state_file = f
+                break
+        except OSError:
+            continue
+    if state_file is None:
+        return None, None
+    try:
+        from delfin.tools.chain_liveness import GONE, RUNNING, runner_liveness
+        from delfin.tools.chain_state import ChainState
+        chain = ChainState.load(state_file)
+    except Exception:
+        return None, None
+
+    def _same(p) -> bool:
+        if not p:
+            return False
+        try:
+            return _P(str(p)).resolve() == d
+        except OSError:
+            return False
+
+    for step in chain.steps:
+        where = f"chain '{chain.name}' step '{step.name}'"
+        if _same(step.work_dir):
+            if step.state not in ("submitted", "running"):
+                return None, {"source": "chain_state.json",
+                              "says": f"{where}: {step.state}"}
+            alive, why = runner_liveness(step)
+            ev = {"source": "chain_state.json", "says": f"{where}: {why}"}
+            if alive == RUNNING:
+                return "running", ev
+            if alive == GONE:
+                return "interrupted", ev
+            return None, ev
+        for att in step.attempts:
+            if _same(att.get("work_dir")):
+                return "interrupted", {
+                    "source": "chain_state.json",
+                    "says": (f"{where}: attempt {att.get('attempt')} ended "
+                             f"({att.get('end') or 'failed'}); the chain is "
+                             f"on attempt {step.attempt}")}
+    return None, None
+
+
+def _state_for(outcome: str, age_s, job=None, chain_state: str | None = None) -> str:
     """The one-word state the outcome phrase, the clock and the scheduler
     agree on. A scheduler job on the folder settles "running"; without
     one, a run with no exit code that has written nothing for
@@ -778,6 +849,10 @@ def _state_for(outcome: str, age_s, job=None) -> str:
     if job is not None:
         return "running"
     state = _state_of(outcome)
+    # A chain's runner record outranks the clock, never the files: an
+    # exit code or a termination line keeps its word.
+    if chain_state and state in ("running", "pending", "unknown"):
+        return chain_state
     if state == "running" and age_s is not None and age_s > STALLED_AFTER_S:
         return "stalled"
     # An input with no output, no job in the scheduler, and nothing
@@ -870,7 +945,10 @@ def calculation_status(folder: str) -> CalculationStatus:
     # is still being written; the scheduler says whether the job is
     # alive. The outcome phrase keeps what the files say, the state
     # says what the rest adds.
-    state = _state_for(outcome, age, job)
+    chain_state, chain_ev = (None, None) if job is not None else _chain_step_witness(d)
+    if chain_ev is not None:
+        evidence.append(chain_ev)
+    state = _state_for(outcome, age, job, chain_state)
     if state == "not started":
         evidence.append({"source": "scheduler + clock",
                          "says": (f"no job lists this folder and nothing was "
@@ -1237,7 +1315,9 @@ def extract_energy_table(
         # these is still running": succeeded / failed / finished /
         # running / stalled / pending / unknown, by the same rule
         # calc_status uses.
-        row["state"] = _state_for(str(row.get("outcome") or ""), row["last_activity_age_s"], job)
+        chain_state = None if job is not None else _chain_step_witness(row["folder"])[0]
+        row["state"] = _state_for(str(row.get("outcome") or ""), row["last_activity_age_s"],
+                                  job, chain_state)
     return rows
 
 
