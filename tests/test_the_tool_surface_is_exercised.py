@@ -38,7 +38,9 @@ from delfin.agent.api_client import KitToolPermissions, _doc_executor
 
 def advertised_tools() -> set[str]:
     """Every name that appears as a tool schema the model is shown."""
-    src = Path(api_client.__file__).read_text(encoding="utf-8")
+    from delfin.agent import tool_catalog
+    src = (Path(api_client.__file__).read_text(encoding="utf-8")
+           + Path(tool_catalog.__file__).read_text(encoding="utf-8"))
     return set(re.findall(r'"name":\s*"([a-z_][a-z0-9_]*)"', src))
 
 
@@ -83,6 +85,15 @@ _NOT_EXERCISED_HERE = {
     "lab_estop": "tests/test_lab_deadman_and_estop.py",
     # Cluster resources this machine does not have.
     "watch_job": "needs SLURM",
+    "cluster_status": "tests/test_the_agent_reaches_a_cluster_only_through_"
+                      "its_tools_and_a_person.py — needs a cluster behind ctun",
+    "cluster_read": "tests/test_the_agent_reaches_a_cluster_only_through_its_tools_and_a_person.py",
+    "cluster_fetch": "tests/test_the_agent_reaches_a_cluster_only_through_its_tools_and_a_person.py",
+    "cluster_upload": "tests/test_the_agent_reaches_a_cluster_only_through_its_tools_and_a_person.py",
+    "cluster_submit": "tests/test_the_agent_reaches_a_cluster_only_through_its_tools_and_a_person.py",
+    "cluster_cancel": "tests/test_the_agent_reaches_a_cluster_only_through_its_tools_and_a_person.py",
+    "cluster_run": "tests/test_the_agent_reaches_a_cluster_only_through_its_tools_and_a_person.py",
+    "cluster_propose": "tests/test_a_cluster_is_added_in_the_window_and_only_proposed_by_an_agent.py",
     "session_message": "tests/test_sessions_can_write_to_each_other.py — "
                        "needs a second open session",
     "run_tests": "would run the suite inside the suite",
@@ -375,6 +386,9 @@ def test_a_fetched_page_arrives_as_text_inside_the_fence(box, perms,
     monkeypatch.setattr(web_tools, "_fetch_bytes",
                         lambda url, timeout_s, *a, **k:
                         (page, "text/html; charset=utf-8"))
+    # The user named the page: in bypass a host neither known nor named
+    # is refused before anything is sent (web_fetch's host decision).
+    perms.user_named_urls.add("https://example.com")
     out, raw = call("web_fetch", {"url": "https://example.com",
                                   "timeout_s": 15}, perms)
     assert "Example Domain" in out.get("text", ""), raw
@@ -392,6 +406,7 @@ def test_web_fetch_retrieves_and_fences_a_page(box, perms):
     (``_wrap_untrusted``), so it is a run with nothing to check here; the
     fence itself is pinned offline above.
     """
+    perms.user_named_urls.add("https://example.com")
     out, raw = call("web_fetch", {"url": "https://example.com",
                                   "timeout_s": 15}, perms)
     if out.get("error"):

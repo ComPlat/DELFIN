@@ -795,7 +795,12 @@ def create_tab(ctx, history_path: Path | None = None):
         import threading as _th
         if state.get("_live_stop"):
             return
-        _refresh_live()
+        # Refresh only while this tab is on screen: the panel asks the job
+        # backend, and a hidden panel has nobody to show the answer to.
+        title_of = getattr(ctx, "selected_tab_title", None)
+        shown = title_of() if callable(title_of) else None
+        if shown is None or shown == "Agent Activity":
+            _refresh_live()
         timer = _th.Timer(5.0, _live_loop)
         timer.daemon = True
         state["_live_timer"] = timer

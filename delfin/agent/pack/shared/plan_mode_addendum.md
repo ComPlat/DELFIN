@@ -39,7 +39,7 @@ once it is signed off.
 
 ## After approval
 
-The user clicks "Plan akzeptieren" → `exit_plan_mode` returns
+The user clicks "Accept plan & execute" → `exit_plan_mode` returns
 ``{"approved": true, "new_mode": "acceptEdits"}``. At that point the
 permission profile flips back automatically and you may execute the
 plan you just got signed off. Stay incremental: one step → verify →

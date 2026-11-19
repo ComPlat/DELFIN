@@ -128,11 +128,46 @@ class _Run:
 # Host
 # --------------------------------------------------------------------------
 
+#: The kinds a person may name for this host instead of the guess.
+HOST_KINDS = ("login_node", "workstation", "slurm_job")
+
+
+def _declared_host_kind(env: dict) -> str:
+    """The kind the person named: ``DELFIN_HOST_KIND``, else the user
+    setting ``hpc.host_kind``; "" for "guess" (``auto``, unset, unknown).
+
+    The guess only sees that SLURM's client is installed. A group server
+    or a workstation can have it too and is not a shared login node: there
+    the login-node limits (one agent session, tests to SLURM, two cores)
+    would take functionality for nothing. Naming the host fixes that.
+    """
+    named = str(env.get("DELFIN_HOST_KIND", "")).strip().lower()
+    if not named:
+        try:
+            import json as _json
+            from delfin.user_settings import get_settings_path
+            data = _json.loads(Path(get_settings_path()).read_text(
+                encoding="utf-8"))
+            hpc = data.get("hpc") if isinstance(data, dict) else None
+            named = str((hpc or {}).get("host_kind") or "").strip().lower()
+        except Exception:
+            named = ""
+    return named if named in HOST_KINDS else ""
+
+
 def host_kind(env: Optional[dict] = None) -> str:
-    """``slurm_job``, ``login_node`` or ``workstation``."""
+    """``slurm_job``, ``login_node`` or ``workstation``.
+
+    Inside a SLURM allocation always ``slurm_job``. Otherwise the kind the
+    person named (``_declared_host_kind``), else the guess: SLURM's client
+    on PATH means a cluster login node, anything else a workstation.
+    """
     env = os.environ if env is None else env
     if str(env.get("SLURM_JOB_ID", "")).strip():
         return "slurm_job"
+    named = _declared_host_kind(env)
+    if named and named != "slurm_job":
+        return named
     if shutil.which("sbatch") and shutil.which("squeue"):
         return "login_node"
     return "workstation"
@@ -1063,6 +1098,62 @@ def check_sbatch(run: _Run, cwd: Path,
 # The verdict
 # --------------------------------------------------------------------------
 
+#: Commands that are a test run or a build: on a cluster login node they
+#: belong in a SLURM job (issue #640: the account was suspended for the load
+#: of test suites and builds that agent sessions ran there). Matched at the
+#: command position of a segment only, so `grep pytest` stays free.
+_LOGIN_NODE_HEAVY = re.compile(
+    r"(?:\S*/)?(?:"
+    r"py\.?test"
+    r"|python[\d.]*\s+(?:-\S+\s+)*-m\s+(?:pytest|unittest|tox|nox|pip\s+install)"
+    r"|tox|nox"
+    r"|tsc|vitest|jest|esbuild|webpack"
+    r"|bun\s+(?:test|build|run|x)"
+    r"|npm\s+(?:test|t|ci|install|i|run(?:-script)?)"
+    r"|npx|pnpm|yarn"
+    r"|cargo\s+(?:build|test|run|check)"
+    r"|make|cmake|ninja"
+    r"|pip[\d.]*\s+install"
+    r"|delfin-voila"
+    r")(?=\s|$)")
+
+#: What may stand before the program: assignments and plain wrappers.
+_WRAPPER = re.compile(
+    r"^(?:\w+=\S*\s+|(?:env|nice|nohup|time|command|exec)\s+"
+    r"|timeout\s+(?:-\S+\s+)*\S+\s+|uv\s+run\s+|poetry\s+run\s+)")
+
+
+def login_node_heavy(command: str, kind: Optional[str] = None) -> str:
+    """The refusal for a test run or a build on a cluster login node, or "".
+
+    Not a dialog: the cluster's rule is not the user's to wave through one
+    command at a time. The way that works is named, so the session goes on.
+    """
+    kind = kind or host_kind()
+    if kind != "login_node":
+        return ""
+    hit = False
+    for seg in re.split(r"[;&|()\n]+|\$\(|`", command or ""):
+        seg = seg.strip()
+        while True:
+            m = _WRAPPER.match(seg)
+            if not m:
+                break
+            seg = seg[m.end():]
+        if _LOGIN_NODE_HEAVY.match(seg):
+            hit = True
+            break
+    if not hit:
+        return ""
+    return ("Refused on this cluster login node: tests, builds and installs "
+            "run on a compute node (the cluster's rule; issue #640). Commit, "
+            "then run the tests with `delfin-agent test-on-slurm --run-dir "
+            "<repo>/.delfin/hpc_tests/<name> <repo> <ref> dev_cpu 20 "
+            "<test files>` and read the log it names, or submit the build "
+            "with sbatch. (Not a shared login node: the user sets "
+            "DELFIN_HOST_KIND=workstation or hpc.host_kind.)")
+
+
 def judge_command(segments: list, cwd: Path,
                   segment_allowed: Callable[[str], bool],
                   *, tool_wall_s: Optional[float] = None,
@@ -1355,17 +1446,37 @@ def judge_delfin_job(text: str, pal: int, maxcore: int, time_limit: str, *,
 def judge_delfin_submission(folder: Path, pal: int, maxcore: int,
                             time_limit: str, *, kind: Optional[str] = None,
                             limits_of: Optional[Callable] = None,
-                            jobs_now: Optional[Callable] = None) -> Verdict:
-    """The verdict for the ops ``submit_calculation`` in DELFIN mode."""
+                            jobs_now: Optional[Callable] = None,
+                            budget=None, job: Optional[dict] = None,
+                            client=None, run_fn=None) -> Verdict:
+    """The verdict for the ops ``submit_calculation`` in DELFIN mode.
+
+    When ``budget`` (a :class:`delfin.agent.calc_budget.Budget`) and ``job``
+    (a dict carrying ``n_atoms``, ``basis_functions`` and ``method``) are
+    given and the existing setup/resource checks would admit the job, the
+    session budget rides on top: ``estimate(job)`` + ``budget.decision()``
+    flips the verdict to "over budget -> ask the person".  The job is never
+    silently re-sized (PAL/maxcore/wall time stay as requested); an over-
+    budget submission keeps the dialog so a person decides.
+    """
     control = Path(folder) / "CONTROL.txt"
     try:
         text = control.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return Verdict(True, False, "", f"no CONTROL.txt in {folder}")
-    return judge_delfin_job(text, pal, maxcore, time_limit,
-                            base_dir=Path(folder), name="CONTROL.txt",
-                            pal_is_the_request=True, kind=kind,
-                            limits_of=limits_of, jobs_now=jobs_now)
+    verdict = judge_delfin_job(text, pal, maxcore, time_limit,
+                               base_dir=Path(folder), name="CONTROL.txt",
+                               pal_is_the_request=True, kind=kind,
+                               limits_of=limits_of, jobs_now=jobs_now)
+    if budget is not None and job is not None and verdict.admit:
+        from delfin.agent import calc_budget
+        est = calc_budget.estimate(job, client=client, run_fn=run_fn)
+        decide, reason = budget.decision(est)
+        if decide == "ask":
+            verdict = Verdict(
+                True, False, verdict.summary,
+                "over budget -> ask the person: " + reason)
+    return verdict
 
 
 def judge_delfin_run(folder: Path, *, kind: Optional[str] = None) -> Verdict:

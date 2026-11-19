@@ -9,7 +9,7 @@ next keystroke. Measured in the real page with 300 ms latency: after
 Enter on a six-line message the box was empty at 2 s and still 138 px.
 After: the box carries the class ``delfin-agent-input-empty`` whenever
 its value is empty, set by Python in the same message that empties it,
-and the stylesheet holds an empty box at its resting 80 px. No timing in
+and the stylesheet holds an empty box at its resting 56 px. No timing in
 the browser is involved, and the test needs no JavaScript runtime.
 """
 from __future__ import annotations
@@ -64,4 +64,4 @@ def test_the_stylesheet_holds_an_empty_box_at_its_resting_height():
     css = " ".join(tab_agent._AGENT_CSS.split())
     rule = re.search(r"\.delfin-agent-input-empty textarea \{([^}]*)\}", css)
     assert rule, "no rule for the empty box"
-    assert "height: 80px !important" in rule.group(1)
+    assert "height: 56px !important" in rule.group(1)

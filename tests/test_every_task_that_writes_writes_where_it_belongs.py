@@ -424,8 +424,10 @@ def test_the_counts_still_match_what_was_measured():
     # tasks_w28_lh.yaml long_horizon tasks (no dedicated bucket yet).
     # science 55 -> 58 on 2026-11-09 (TF1, wave 28, agent/s9-tf1b): the three
     # tasks_w28_tf1.yaml ts-finder tasks, graded on recorded artifacts.
+    # science 58 -> 62 (XE1, wave 28, agent/s5-xe1b): the four
+    # tasks_w28_xe1.yaml xyz-editor tasks (task_class science_analysis).
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 58, "chemistry": 32, "generalist": 26,
+                      "science": 62, "chemistry": 32, "generalist": 26,
                       "other": 96}, counts
 
 

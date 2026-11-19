@@ -121,7 +121,10 @@ def test_a_program_merely_called_orca_is_not_orca(tmp_path):
 
     done, _ = _dry_run(tmp_path, "--profile", "core", extra_path=fake)
 
-    assert "ORCA     not found" in done.stdout
+    # A host with an ORCA of its own (/opt/orca, a module) may report that
+    # one; never the program merely called orca.
+    orca_line = next(line for line in done.stdout.splitlines() if "ORCA     " in line)
+    assert str(fake) not in orca_line, orca_line
 
 
 def test_orca_is_found_where_it_was_unpacked_and_names_its_openmpi(tmp_path):

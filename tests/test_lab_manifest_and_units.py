@@ -67,7 +67,9 @@ def test_a_manifest_with_an_inline_secret_is_refused(address):
      "outside its range"),
     (lambda d: _device(d, "hotplate")["interlocks"][0].update(
         requires="stirer.power == on"), "unknown channel stirer.power"),
-    (lambda d: _device(d, "lamp").update(driver="shelly_rpc"), "planned"),
+    # shelly_rpc, tasmota and mqtt are implemented since their drivers landed;
+    # home_assistant stays the planned-driver example
+    (lambda d: _device(d, "lamp").update(driver="home_assistant"), "planned"),
     (lambda d: _device(d, "lamp").update(colour="red"), "unknown key"),
     (lambda d: _device(d, "pump")["writes"]["flow"].update(level="maybe"),
      "level must be"),

@@ -71,7 +71,8 @@ def _entry(world: dict, device) -> dict:
         t = time.time()
         e = {"kind": kind, "values": dict(_KIND_CHANNELS[kind]),
              "temp": AMBIENT_C, "temp_ts": t, "ts": t, "fault": None,
-             "watchdog": None, "safe": dict(device.safe_state),
+             "watchdog": None, "watchdog_armed": None,
+             "safe": dict(device.safe_state),
              "address": dict(device.address)}
         devs[device.id] = e
     return e
@@ -80,7 +81,12 @@ def _entry(world: dict, device) -> dict:
 def _advance(world: dict, e: dict, t: float) -> None:
     """Bring one device to time ``t``: thermal lag and the device timer."""
     wd = e.get("watchdog")
-    if wd is not None and t >= wd:
+    armed = e.get("watchdog_armed")
+    # t >= wd: deadline reached. t < armed: the clock jumped backward below
+    # the moment the watchdog was armed, so the deadline can no longer be
+    # reached by this clock; fail safe instead of waiting for real time to
+    # catch up with a timestamp that has already been passed.
+    if wd is not None and (t >= wd or (armed is not None and t < armed)):
         _settle_temp(e, wd)
         e["values"].update(e.get("safe") or {})
         e["watchdog"] = None
@@ -168,6 +174,7 @@ class SimulatorDriver(Driver):
             e = _entry(world, device)
             self._check(e)
             e["watchdog"] = self.clock() + float(seconds)
+            e["watchdog_armed"] = self.clock()
             e["safe"] = dict(device.safe_state)
         return True
 
@@ -175,6 +182,7 @@ class SimulatorDriver(Driver):
         with _world() as world:
             e = _entry(world, device)
             e["watchdog"] = None
+            e["watchdog_armed"] = None
 
     def health(self, device) -> Health:
         try:

@@ -16,10 +16,11 @@ import threading
 import time
 from collections import Counter
 from pathlib import Path
+from .state_paths import state_root
 from typing import Any
 
 
-_DEFAULT_PATH = Path.home() / ".delfin" / "context_usage.jsonl"
+_DEFAULT_PATH = state_root() / "context_usage.jsonl"
 _MAX_ENTRIES = 500
 
 # Minimum data points before we trust the hit rate enough to skip a section.

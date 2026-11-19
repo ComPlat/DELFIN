@@ -204,7 +204,7 @@ def build_job(
         '[ -x "$STAGE_PYTHON" ] || STAGE_PYTHON="' + q_python + '"',
         "",
         '# run ONLY the named tests, from the node-local copy',
-        f"cd \"$LOCAL\"",
+        "cd \"$LOCAL\"",
         f"TESTS=({quoted_paths})",
         'set +e',
         '"$STAGE_PYTHON" -m pytest -q "${TESTS[@]}" > "$LOCAL/pytest.log" 2>&1',
@@ -342,7 +342,9 @@ def _node_visible(path: str | Path, repo: str) -> bool:
     person's, not ours.
     """
     p = Path(path).resolve()
-    for root in (Path.home(), Path(repo).resolve(), Path.cwd().resolve()):
+    # Resolved like the path: a HOME that is a symlink (to the parallel
+    # filesystem, as on bwUniCluster) is still HOME.
+    for root in (Path.home().resolve(), Path(repo).resolve(), Path.cwd().resolve()):
         try:
             p.relative_to(root)
             return True

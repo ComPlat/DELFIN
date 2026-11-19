@@ -198,7 +198,14 @@ def _run_doctor_subcommand(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="delfin doctor",
         description="Installation self-check: ORCA, xTB, OpenMPI, scratch dir, "
-        "SLURM, KIT key and doc index. No computations, no network.",
+        "SLURM, KIT key, doc index and the clusters in remote.clusters. "
+        "No computations, no network (unless --budget).",
+    )
+    parser.add_argument(
+        "--budget",
+        action="store_true",
+        help="Also probe the compute budget of each logged-in cluster "
+        "(runs its budget script over the tunnel).",
     )
     parser.add_argument(
         "--json",
@@ -214,7 +221,7 @@ def _run_doctor_subcommand(argv: list[str]) -> int:
 
     from .doctor import run_all, exit_code  # lazy: keep CLI startup light
 
-    results = run_all(scratch_dir=args.scratch)
+    results = run_all(scratch_dir=args.scratch, cluster_budget=args.budget)
 
     if args.json:
         print(json.dumps([asdict(r) for r in results], indent=2))
@@ -1611,6 +1618,10 @@ def main(argv: list[str] | None = None) -> int:
         return _run_tadf_xtb_subcommand(arg_list[1:])
     if arg_list and arg_list[0] in {"hyperpol", "hyperpol_xtb"}:
         return _run_hyperpol_subcommand(arg_list[1:])
+    if arg_list and arg_list[0] == "chain":
+        from delfin.cli_chain import main as _chain_main
+
+        return _chain_main(arg_list[1:])
 
     _load_full_cli_dependencies()
 

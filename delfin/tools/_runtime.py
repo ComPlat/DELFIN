@@ -30,6 +30,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from delfin.agent.state_file import write_json_atomic
+
 
 class RunStatus(str, Enum):
     PENDING = "pending"
@@ -285,9 +287,12 @@ class RunStore:
 
     def save(self, rec: RunRecord) -> None:
         with self._lock:
-            self._path(rec.id).write_text(
-                json.dumps(asdict(rec), indent=2, default=str), encoding="utf-8"
-            )
+            # Atomic temp-file + rename: a plain write_text truncates first,
+            # so a crash or a full disk mid-write leaves a record the readers
+            # answer None to while the run may still execute.  0o600: the
+            # store lives under ~/.delfin and holds work dirs and metrics.
+            write_json_atomic(self._path(rec.id), asdict(rec), indent=2,
+                              default=str)
 
     def get(self, run_id: str) -> Optional[RunRecord]:
         p = self._path(run_id)

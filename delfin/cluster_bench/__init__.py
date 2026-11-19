@@ -13,7 +13,8 @@ reports progress and merges the chunks into one archive in DELFIN's multi-frame 
     repeat-stats -> byte identity of a subset built twice
 
 Tools: ``manta`` (the shipped MANTA construction, one child process per system), and the
-external builders ``architector``, ``molsimplify`` and ``mace`` (epic-MACE).  An external builder
+external builders ``architector``, ``molsimplify``, ``mace`` (epic-MACE), ``rxembed``, ``molassembler`` and
+``metallogen``.  An external builder
 runs in its own Python environment: its worker (``tool_workers/``) is started with that
 environment's interpreter and imports nothing from DELFIN.
 

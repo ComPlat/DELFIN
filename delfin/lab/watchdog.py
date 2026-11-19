@@ -46,25 +46,34 @@ def sweep(kernel, *, now: Optional[float] = None) -> list[str]:
         age = now - float(act.get("heartbeat", 0))
         dead = (act.get("host") == here and act.get("pid")
                 and not _store.pid_alive(act["pid"]))
-        if age <= d.deadman_s and not dead:
+        # A heartbeat dated after ``now`` is impossible without a backward
+        # wall-clock jump; fail safe and trip instead of waiting for the
+        # clock to reach the timestamp again.
+        if 0 <= age <= d.deadman_s and not dead:
             continue
         why = (f"dead-man: owner process {act.get('pid')} is gone" if dead
                else f"dead-man: no heartbeat from {act.get('person')} "
                     f"(session {act.get('session')}) for {age:.0f} s "
                     f"(limit {d.deadman_s:g} s)")
-        kernel.safe(dev_id, why, latch=True)
+        res = kernel.safe(dev_id, why, latch=True)
         _audit.record("deadman", device=dev_id, reason=why,
                       person=act.get("person"), session=act.get("session"))
-        _audit.alert("lab_deadman", f"{dev_id}: {why}")
-        tripped.append(dev_id)
+        if res.get("ok"):
+            tripped.append(dev_id)
+        else:
+            _audit.alert("lab_deadman", f"{dev_id}: dead-man could not put "
+                         "the device in its safe state; it is latched and "
+                         "needs manual attention")
     with _store.state() as doc:
         for dev_id, lock in list(doc["locks"].items()):
             d = kernel.manifest.devices.get(dev_id)
             limit = d.deadman_s if d else 30.0
             if dev_id in doc["active"]:
                 continue
-            if now - float(lock.get("heartbeat", 0)) > limit:
-                doc["locks"].pop(dev_id, None)
+            hb = float(lock.get("heartbeat", 0))
+            if not 0 <= now - hb > limit:
+                continue
+            doc["locks"].pop(dev_id, None)
     return tripped
 
 
@@ -83,8 +92,9 @@ def enforce_estop(kernel) -> list[str]:
         if kernel._at_safe(d, kernel._fresh(d)):
             continue
         res = kernel.safe(d.id, "e-stop re-asserted", latch=False)
-        fixed.append(d.id)
-        if not res.get("ok"):
+        if res.get("ok"):
+            fixed.append(d.id)
+        else:
             _audit.alert("lab_estop", f"{d.id}: safe state does not hold "
                          "under the e-stop")
     return fixed

@@ -374,14 +374,15 @@ def test_a_page_csp_names_where_scripts_styles_and_connections_may_come_from(
         assert directive in csp, (path, csp)
 
 
-def test_the_typesetting_stand_in_is_an_empty_script_on_the_same_origin(server):
+def test_the_typesetting_stand_in_is_a_constant_script_on_the_same_origin(server):
     from delfin.dashboard import web_security
 
     route = web_security.NO_TYPESETTING_ROUTE + "?config=TeX-AMS_HTML"
     status, headers, body = _owner(server["port"], route)
     assert status == 200, status
     assert headers["content-type"].startswith("text/javascript")
-    assert body.strip().startswith(b"//") and b"\n" not in body.strip()
+    # The constant, whatever the query: a MathJax that typesets nothing.
+    assert body == web_security.NO_TYPESETTING_JS.encode()
 
 
 # -- the login cookie ------------------------------------------------------------

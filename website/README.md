@@ -1,0 +1,118 @@
+# DELFIN website draft
+
+Local review only. Nothing has been published or configured on GitHub Pages.
+
+## Preview
+
+Open `index.html` in a browser directly, or serve this folder from the repository:
+
+```sh
+python -m http.server 8080 --bind 127.0.0.1 --directory website
+```
+
+Then visit `http://localhost:8080` **on the same computer**. If the repository is
+on a remote machine, forward the port with SSH, or copy the `website` folder
+to your computer and open `index.html`. No installation or build step is needed.
+
+## Change and extend
+
+- `content.js`: hero text, workflow stages, research areas, Animal Loop and videos.
+- `index.html`: section order, mission text, interface descriptions, installation,
+  metadata and links. New sections can be added without changing the others.
+- `styles.css`: design tokens, responsive layouts and motion. Brand colours are
+  at the beginning. Existing logos are copied unchanged into `assets/`.
+- `app.js`: canvas illustration, selectors, scroll reveals, motion control,
+  copy button and video dialog. No external runtime dependencies.
+- `PLAN.md`: concept and source material behind the draft.
+
+All page copy is editable draft copy. The site is English in this first version.
+The molecular viewer displays actual MANTA-generated fac-Ir(ppy)3 coordinates;
+see `assets/STRUCTURE.md` for the reproducible command and provenance. It is a
+starting geometry, not a DFT result. The terminal sequence remains illustrative.
+WEDDELL is included as part of the Animal Loop without an invented capability.
+Personal profile teasers and links have been removed at the user's request.
+
+The second visual direction uses a dark scientific structure explorer, sans-serif
+editorial headings and restrained motion. The original blue identity, mission and
+Animal Loop remain. The DELFIN wordmark has no trailing full stop.
+
+The purpose section features a slowly rotating, gently floating Earth in the site
+palette. `assets/earth.js` projects the inline, stylised SVG world map onto
+a sphere, without external libraries or requests. It stops rendering offscreen,
+in hidden tabs and when motion is paused; reduced-motion preferences are honoured.
+A static map remains visible if JavaScript or canvas is unavailable.
+
+## Agent framework guide
+
+`framework.html` is a detailed, source-linked guide to the agent runtime,
+task execution, memory, self-validation, improvement paths, experiment design
+and permission boundaries. It shares the site's visual identity through
+`styles.css` and its page-specific `framework.css`. The navigation and the
+framework introduction on the landing page link to it. The header navigation
+is the only page navigation: its "The agent" entry carries the page and is
+marked current there.
+
+Arrow glyphs carry one meaning each, so a reader can tell where a link
+goes before clicking it. `↗` means the link LEAVES the site: an external
+URL, or a raw file the browser opens on its own. Inside the site the
+direction of travel is shown instead -- `↓` for an anchor further down
+this page, `→` onward to another page, `←` back. Before this, `↗` sat on
+18 external and 8 internal links, so it meant nothing, and "The agent"
+read as a link that opens a new tab. A second Overview / Agent framework tab row was
+removed -- two controls that lead to the same page leave a reader guessing
+which one means the page level.
+Reading content, tables and expandable explanations work without JavaScript;
+`framework.js` enhances the architecture map, task-stage explorer and validation
+links. The memory, improvement and paired-comparison diagrams are static, with
+their conceptual status stated in their captions. No diagram represents live
+telemetry or a measured benchmark result.
+
+The guide was checked against source revision
+`de880cbb9eda4085ff5d6665c6818cbba4c7d75b` on 18 November 2026. Its implementation
+links are pinned to that revision. When updating the guide, recheck the claims
+and source links together, including defaults, backend-dependent coverage,
+human adoption steps and the distinction between replay and live evaluation.
+The illustrative candidate is not a claimed benchmark result. The existing
+Pages workflow includes the new page and stylesheet automatically.
+
+### Add videos
+
+Add an entry to `videos` in `content.js`. The section appears automatically when
+the array is nonempty. A local video example:
+
+```js
+videos: [
+  {
+    title: 'Your first DELFIN calculation',
+    description: 'From molecular input to a documented result.',
+    type: 'file',
+    src: 'assets/videos/first-calculation.mp4',
+    poster: 'assets/videos/first-calculation.webp',
+    captions: 'assets/videos/first-calculation.en.vtt',
+    language: 'en',
+    captionLabel: 'English'
+  }
+]
+```
+
+Place the actual files at those paths. Use a local poster and captions. For large
+videos, use an external video host rather than storing recordings in Git history.
+YouTube entries use `type: 'youtube'` and
+`src: 'https://www.youtube-nocookie.com/embed/VIDEO_ID'`, with a local poster.
+The player is created only after a click; closing it stops playback and removes
+the iframe. YouTube captions are managed in YouTube. The site itself does not
+autoplay videos or contact YouTube before the visitor opens one.
+
+### Later growth
+
+Add tutorial pages, a publications list or a changelog as ordinary HTML pages,
+using the shared stylesheet. No need to replace the landing page. Keep media
+paths relative so the site works at `/DELFIN/` on GitHub Pages. If the volume of
+documentation grows substantially, a separate documentation generator can be
+introduced later without changing the landing page’s visual identity.
+
+## Review and release
+
+Review text, applications, the Animal Loop, motion and mobile presentation with
+Max before release. After approval, a Pages workflow can publish **only this
+folder**. No deployment workflow is enabled in this draft.

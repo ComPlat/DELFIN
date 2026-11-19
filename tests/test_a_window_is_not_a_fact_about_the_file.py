@@ -133,10 +133,11 @@ def test_a_narrow_table_needs_no_paging_note(tmp_path):
 def test_the_tool_offers_start_col():
     """A remedy the model cannot reach is not a remedy."""
     import pathlib
-    src = (pathlib.Path(__file__).resolve().parents[1] / "delfin" / "agent"
-           / "api_client.py").read_text(encoding="utf-8")
-    i = src.index('"start_row": {')
-    assert '"start_col"' in src[i:i + 1200]
+    agent = pathlib.Path(__file__).resolve().parents[1] / "delfin" / "agent"
+    schema = (agent / "tool_catalog.py").read_text(encoding="utf-8")
+    i = schema.index('"start_row": {')
+    assert '"start_col"' in schema[i:i + 1200]
+    src = (agent / "api_client.py").read_text(encoding="utf-8")
     assert 'start_col=_as_int(arguments.get("start_col"), 1)' in src
 
 

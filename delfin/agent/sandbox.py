@@ -1136,14 +1136,121 @@ _HOME_SECRET_DIRS = (
     # The account key and the MCP pins (trust_store): read by DELFIN's
     # own processes, never by a command an agent runs.
     ".delfin/trust_store",
+    # cluster-tunnel (delfin.remote): its config with the ssh options and
+    # budget scripts DELFIN's own process uses, the pinned host keys, and
+    # the control sockets of the logged-in masters -- the user's identity
+    # on every cluster. The default locations; ``runtime_masked_dirs`` adds
+    # the real ones wherever ctun keeps them.
+    ".config/cluster-tunnel",
+    ".cache/cluster-tunnel",
     ".delfin/messenger_sessions",
+    # Phone pairing requests and the gateway's answers, invitation links
+    # among them (delfin.messenger.pairing): the person's, never an agent's.
+    ".delfin/messenger_pairing",
     # The user's schedules (delfin.agent.schedules): what runs unattended
     # is the user's to write and confirm, never an agent's.
     ".delfin/user_schedules",
     # The workspace freedom profiles (delfin.agent.workspace_profiles)
     # share the schedules directory.
     ".delfin/user_schedules/workspace_profiles.json",
+    # Rootless messenger (delfin.messenger.rootless): one user with the
+    # agent, so its daemon database, gateway store and units are masked.
+    ".local/share/delfin-messenger",
+    ".config/systemd/user/delfin-messenger-chat.service",
+    ".config/systemd/user/delfin-messenger-bridge.service",
+    ".config/systemd/user/delfin-messenger-gateway.service",
 )
+
+
+def _account_homes(home: Path) -> list[Path]:
+    """The account homes a cage of this HOME must consider: HOME itself,
+    and in people mode (HOME is ``<account>/people/<name>``) the account's."""
+    out = [home]
+    if home.parent.name == "people":
+        out.append(home.parent.parent)
+    defaults = os.environ.get("DELFIN_SETTINGS_DEFAULTS", "").strip()
+    if defaults:
+        out.append(Path(defaults).parent)
+    seen, unique = set(), []
+    for h in out:
+        try:
+            key = str(h.resolve())
+        except OSError:
+            continue
+        if key not in seen:
+            seen.add(key)
+            unique.append(Path(key))
+    return unique
+
+
+def people_secret_paths(home: Path | None = None) -> list[str]:
+    """People mode's messenger state of every person and of the account,
+    for every cage on this account: ``<account>/.delfin/messenger_pairing``
+    and ``.../messenger_sessions``, and for each ``<account>/people/<name>``
+    the same two plus its runtime directory ``.run`` (agent service socket,
+    pairing doors). Existing paths only (a mount point must exist), resolved.
+    Same Unix user: this hides them from agents' commands, it does not
+    separate people. Never raises."""
+    home = Path(home) if home is not None else Path.home()
+    out: list[str] = []
+
+    def add(p: Path) -> None:
+        try:
+            if os.path.islink(p) or not p.exists():
+                return
+            r = str(p.resolve())
+        except OSError:
+            return
+        if r not in out:
+            out.append(r)
+
+    for account in _account_homes(home):
+        for rel in (".delfin/messenger_pairing", ".delfin/messenger_sessions"):
+            add(account / rel)
+        try:
+            people = sorted((account / "people").iterdir())
+        except OSError:
+            people = []
+        for person in people:
+            if person.is_symlink() or not person.is_dir():
+                continue
+            for rel in (".delfin/messenger_pairing", ".delfin/messenger_sessions", ".run"):
+                add(person / rel)
+    return out
+
+
+def home_secret_paths(home: Path | None = None) -> list[str]:
+    """Every home secret a cage masks: ``_HOME_SECRET_DIRS`` under HOME
+    (resolved) and :func:`people_secret_paths`. Existing or not for the
+    first part (callers check), resolved."""
+    home = Path(home) if home is not None else Path.home()
+    out: list[str] = []
+    for rel in _HOME_SECRET_DIRS:
+        try:
+            r = str((home / rel).resolve())
+        except OSError:
+            continue
+        if r not in out:
+            out.append(r)
+    out += [p for p in people_secret_paths(home) if p not in out]
+    return out
+
+
+def _bwrap_home_mask_args(home: Path | None = None) -> list[str]:
+    """bubblewrap masks for :func:`home_secret_paths`: tmpfs over a
+    directory, /dev/null over a file. Placed AFTER every bind by both
+    builders: a bind of a parent (the repository at $HOME, a granted
+    ~/.delfin or ~/people) would otherwise cover the mask again."""
+    args: list[str] = []
+    for p in home_secret_paths(home):
+        try:
+            if os.path.isdir(p):
+                args += ["--tmpfs", p]
+            elif os.path.isfile(p):
+                args += ["--ro-bind", "/dev/null", p]
+        except OSError:
+            continue
+    return args
 
 
 #: Paths a run hides from its own cage: absolute paths joined by
@@ -1212,6 +1319,14 @@ def runtime_masked_dirs() -> list[str]:
             out.append(str(d.resolve()))
     except Exception:
         pass
+    try:
+        # cluster-tunnel's config, cache and socket directories, at their
+        # real (possibly redirected) locations, created so that nothing can
+        # be planted there before the user writes ctun's config.
+        from delfin.remote import state_dirs as _ctun_dirs
+        out += [d for d in _ctun_dirs() if d not in out]
+    except Exception:
+        pass
     # Not the messenger's activation records: they live in
     # ~/.delfin/messenger_sessions, masked with the other home secrets
     # (_HOME_SECRET_DIRS) and refused by the path deny globs, like the trust
@@ -1241,21 +1356,7 @@ def _bwrap_argv(cmd: str, repo_dir: Path, allow_network: bool) -> list[str]:
         "--tmpfs", "/tmp",
         "--tmpfs", "/root",
     ]
-    # Mask each secret path individually if it exists on the host. tmpfs
-    # only works on directories; for single files we mask with /dev/null
-    # (read-only bind of an empty source). Missing paths are skipped.
     late_masks = runtime_masked_dirs()
-    for rel in _HOME_SECRET_DIRS:
-        p = Path(home) / rel
-        try:
-            is_dir = p.is_dir()
-            is_file = p.is_file()
-        except OSError:
-            continue
-        if is_dir:
-            args += ["--tmpfs", str(p)]
-        elif is_file:
-            args += ["--ro-bind", "/dev/null", str(p)]
     args += ["--bind", repo, repo]
     # The session scratch dir: bound read-write, TMPDIR/TMP/TEMP point at
     # it (in-cage path == host path, "/" is bound at itself), so a file
@@ -1269,6 +1370,10 @@ def _bwrap_argv(cmd: str, repo_dir: Path, allow_network: bool) -> list[str]:
                  "--setenv", "TEMP", scratch]
     except Exception:
         pass
+    # Each secret path masked if it exists on the host, AFTER the binds (a
+    # repository at $HOME covered masks placed before its bind): tmpfs for a
+    # directory, /dev/null for a file; missing paths are skipped.
+    args += _bwrap_home_mask_args(Path(home))
     for d in late_masks:
         args += ["--tmpfs", d]
     # The run's own hidden paths, after every bind like the masks above.

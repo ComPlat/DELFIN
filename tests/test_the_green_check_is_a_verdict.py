@@ -23,9 +23,11 @@ import ast
 import inspect
 import pathlib
 
-from delfin.dashboard import tab_agent as T
+from delfin.agent import code_citation_guard as T
+from delfin.dashboard import tab_agent as _TAB
 
 _SRC = pathlib.Path(inspect.getfile(T)).read_text(encoding="utf-8")
+_TAB_SRC = pathlib.Path(inspect.getfile(_TAB)).read_text(encoding="utf-8")
 
 
 class _Flag:
@@ -41,12 +43,12 @@ class _Flag:
 # ---------------------------------------------------------------------------
 
 def test_a_clean_rescan_earns_the_check():
-    note = T._correction_verdict_note(lambda text: [], "the corrected answer")
+    note = T.correction_verdict_note(lambda text: [], "the corrected answer")
     assert note.startswith("✓")
 
 
 def test_a_correction_that_left_the_claims_ungrounded_says_so():
-    note = T._correction_verdict_note(
+    note = T.correction_verdict_note(
         lambda text: [_Flag()], "the corrected answer")
     assert "✓" not in note
     assert "unconfirmed" in note
@@ -61,7 +63,7 @@ def test_a_correction_that_raised_a_new_claim_is_not_a_verification():
         seen.append(text)
         return [_Flag()] if "src/nope.py" in text else []
 
-    note = T._correction_verdict_note(_scan, "now see src/nope.py:12")
+    note = T.correction_verdict_note(_scan, "now see src/nope.py:12")
     assert seen == ["now see src/nope.py:12"]
     assert "✓" not in note
 
@@ -72,13 +74,13 @@ def test_a_scanner_that_raises_is_not_a_pass():
     def _boom(text):
         raise RuntimeError("scanner died")
 
-    assert "✓" not in T._correction_verdict_note(_boom, "text")
+    assert "✓" not in T.correction_verdict_note(_boom, "text")
 
 
 def test_the_soft_flags_do_not_deny_the_check():
     """The citation scan also returns 'unread' flags. Those never forced
     the correction, so they must not veto its verdict either."""
-    note = T._correction_verdict_note(
+    note = T.correction_verdict_note(
         lambda text: [_Flag("unread")], "text",
         keep=lambda f: f.kind == "nonexistent")
     assert note.startswith("✓")
@@ -94,8 +96,8 @@ def test_the_scanner_keeps_its_keyword_arguments():
         got.update(kwargs)
         return []
 
-    T._correction_verdict_note(_scan, "text", observed_files={"a.py"},
-                               evidence_tools_used={"bash"})
+    T.correction_verdict_note(_scan, "text", observed_files={"a.py"},
+                              evidence_tools_used={"bash"})
     assert got == {"observed_files": {"a.py"},
                    "evidence_tools_used": {"bash"}}
 
@@ -105,17 +107,18 @@ def test_the_scanner_keeps_its_keyword_arguments():
 # ---------------------------------------------------------------------------
 
 def test_the_line_exists_in_exactly_one_place():
-    """Three of the four sites were literals. A literal cannot be wrong
-    about the verdict because it never asks."""
+    """The verdict lives in code_citation_guard (moved out of the tab); a
+    literal cannot be wrong about the verdict because it never asks."""
     assert _SRC.count("✓ Self-verification") == 1
+    assert _TAB_SRC.count("✓ Self-verification") == 0
     assert "✓ Self-verification" in inspect.getsource(
-        T._self_verification_note)
+        T.self_verification_note)
 
 
 def test_no_chat_message_states_the_verdict_as_a_constant():
     """Read off the calls, not off a line: no _append_system_message may
     hand the user a hard-coded self-verification claim."""
-    tree = ast.parse(_SRC)
+    tree = ast.parse(_TAB_SRC)
     bad: list[str] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -134,14 +137,14 @@ def test_no_chat_message_states_the_verdict_as_a_constant():
 
 
 def test_each_forced_correction_asks_for_a_verdict():
-    """One call per dashboard-driven correction turn: citation, keyword,
-    quantity. Fewer means a retry that reports itself."""
-    tree = ast.parse(_SRC)
+    """The tab drives its own verdict for keyword and quantity; the code-
+    citation correction moved into the engine, so its scan is no longer a
+    tab-driven call."""
+    tree = ast.parse(_TAB_SRC)
     calls = [n for n in ast.walk(tree)
              if isinstance(n, ast.Call)
              and getattr(n.func, "id", "") == "_correction_verdict_note"]
-    assert len(calls) >= 3
+    assert len(calls) >= 2
     scanners = {getattr(c.args[0], "attr", "") for c in calls}
-    assert scanners == {"scan_for_ungrounded_code_claims",
-                        "scan_for_unverified_keywords",
+    assert scanners == {"scan_for_unverified_keywords",
                         "scan_for_unsourced_quantities"}

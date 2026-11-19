@@ -89,11 +89,22 @@ def test_the_engine_hands_the_ledger_to_the_prompt():
 
 
 def test_the_dashboard_says_it_is_an_automatic_check():
+    """The person is told a check is automatic, and the observed-files
+    ledger is handed over with it.
+
+    The nonexistent-path scan moved into the engine, and the announcement
+    moved with it: the engine's [Verify] row IS the automatic-check
+    announcement ("Automatic check, not a message from the user"), built
+    by verify_guard.code_claim_feedback with the ledger clause. This pin
+    follows the guard to its new home instead of deleting it."""
     src = Path(__file__).resolve().parents[1].joinpath(
-        "delfin", "dashboard", "tab_agent.py").read_text()
-    assert "🔎 Automatic check:" in src
-    i = src.index("_vg.code_claim_feedback(")
+        "delfin", "agent", "engine.py").read_text()
+    assert "code_claim_feedback(" in src
+    i = src.index("code_claim_feedback(")
     assert '"_last_observed_files"' in src[i:i + 300]
+    guard = Path(__file__).resolve().parents[1].joinpath(
+        "delfin", "agent", "verify_guard.py").read_text()
+    assert "Automatic check, not a message from the user" in guard
     assert "the answer is being corrected" not in src
 
 
