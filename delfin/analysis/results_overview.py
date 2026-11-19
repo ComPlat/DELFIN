@@ -305,7 +305,7 @@ def smiles_png_bytes(smiles: str, size: int = 260, fmt: str = "png"):
     except Exception:
         pass
     return _render_skeleton(sym, pos, pairs, size,
-                            bond_orders=orders, fmt=fmt)
+                            bond_orders=orders, fmt=fmt, colored=True)
 
 
 
@@ -837,7 +837,7 @@ def _find_rings(sym, bonds):
 
 
 def _render_skeleton(sym, rotated, bonds, size,
-                     bond_orders=None, fmt="png"):
+                     bond_orders=None, fmt="png", colored=False):
     """Wireframe of the rotated structure in RDKit-2D style (PNG bytes).
 
     Same geometry as the ball-and-stick column (positions kept, no
@@ -899,6 +899,7 @@ def _render_skeleton(sym, rotated, bonds, size,
     # complexes (acid OH / ester O-alkyl chain end): label it "OH"
     # instead of a bare "O" (user request, 406).
     _degree = [0] * len(sym)
+    _dbl_here = {tuple(sorted(p)) for p in (bond_orders or {})}
     for i, j in bonds:
         _degree[i] += 1
         _degree[j] += 1
@@ -908,7 +909,14 @@ def _render_skeleton(sym, rotated, bonds, size,
         if s == "H":
             continue  # heteroatom protons were kept by the caller; C-H are gone
         if s == "O" and _degree[idx] <= 1:
-            s = "OH"
+            # A carbonyl O (double bond to its only neighbour) must
+            # NOT be labeled OH - only a single-bonded hydroxyl O
+            # carries the proton.
+            on_double = any(
+                idx in (a, b) and tuple(sorted((a, b))) in _dbl_here
+                for a, b in bonds)
+            if not on_double:
+                s = "OH"
         if s in _implicit:
             continue
         x, y = rotated[idx][0], rotated[idx][1]
@@ -916,7 +924,8 @@ def _render_skeleton(sym, rotated, bonds, size,
         ax.add_patch(mpatches.Circle(
             (x, y), r_data, facecolor="white", edgecolor="none", zorder=2))
         ax.text(x, y, s, ha="center", va="center", fontsize=11,
-                color="black", zorder=3)
+                color=(colored and _XYZ_COLORS.get(s, "black")
+                       or "black"), zorder=3)
     # Double / triple bonds: parallel offset lines per order.
     if bond_orders:
         import math
