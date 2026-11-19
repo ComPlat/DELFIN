@@ -48,7 +48,7 @@ def test_the_diagnosis_names_each_quarantined_dashboard_store(monkeypatch,
 
     rows = doctor._check_state_files({})
 
-    kept = [r for r in rows if "kept aside" in r.get("detail", "")]
+    kept = [r for r in rows if "damaged state file(s) kept aside" in r.get("detail", "")]
     assert kept, f"no row reports the files kept aside: {rows}"
     detail = kept[0]["detail"]
     assert "3 damaged state file(s)" in detail, detail
@@ -59,6 +59,39 @@ def test_the_diagnosis_names_each_quarantined_dashboard_store(monkeypatch,
             "the person is then told nothing. " + detail)
 
 
+def test_a_store_quarantined_one_level_down_is_named_too(monkeypatch,
+                                                         tmp_path):
+    """The stores that are NOT in the doctor's named list live a level
+    below the state root -- session records in agent_sessions/, the
+    service's files in agent_service/. The scan missed them entirely,
+    which made a writer there unable to point a person at this report.
+    """
+    root = _redirect(monkeypatch, tmp_path)
+    (root / "agent_sessions").mkdir()
+    (root / "agent_sessions" / "abc.json.unreadable-20261119-050000").write_text(
+        "{torn", encoding="utf-8")
+
+    rows = doctor._check_state_files({})
+
+    kept = [r for r in rows if "damaged state file(s) kept aside" in r.get("detail", "")]
+    assert kept, f"a quarantine one level down must be reported: {rows}"
+    assert "abc.json" in kept[0]["detail"], kept[0]["detail"]
+
+
+def test_the_scan_does_not_walk_the_whole_state_root(monkeypatch, tmp_path):
+    """Two levels down is not searched, on purpose: the state root also
+    holds workspaces and caches. This pins the boundary, so widening it
+    later is a decision rather than an accident."""
+    root = _redirect(monkeypatch, tmp_path)
+    deep = root / "workspaces" / "a" / "b"
+    deep.mkdir(parents=True)
+    (deep / "x.json.unreadable-20261119-050000").write_text("{", encoding="utf-8")
+
+    rows = doctor._check_state_files({})
+
+    assert not [r for r in rows if "damaged state file(s) kept aside" in r.get("detail", "")], rows
+
+
 def test_an_undamaged_state_root_reports_nothing_to_act_on(monkeypatch,
                                                            tmp_path):
     """The control: the check must not cry about a healthy machine."""
@@ -66,5 +99,5 @@ def test_an_undamaged_state_root_reports_nothing_to_act_on(monkeypatch,
 
     rows = doctor._check_state_files({})
 
-    assert all("kept aside" not in r.get("detail", "")
+    assert all("damaged state file(s) kept aside" not in r.get("detail", "")
                or r["status"] == doctor.PASS for r in rows), rows
