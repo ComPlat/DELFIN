@@ -31420,6 +31420,125 @@ def _is_stream_unsupported_error(exc: Exception) -> bool:
 _STREAM_RETRY_MAX = int(os.environ.get("DELFIN_STREAM_RETRY_MAX", "7") or 7)
 
 
+#: The furthest a server's own Retry-After may park a round. Longer than
+#: this and the header is not a hint any more: a turn that sleeps for half
+#: an hour on a header nobody checked is indistinguishable from a hang, and
+#: a shared service answering with an hour is more likely misconfigured
+#: than serious. Beyond the cap the ladder decides instead.
+_RETRY_AFTER_MAX_S = 300.0
+
+#: Below this a Retry-After is treated as "immediately, but not instantly":
+#: honouring a literal 0 would retry inside the same millisecond.
+_RETRY_AFTER_MIN_S = 1.0
+
+
+def _retry_after_stated_seconds(exc: Any, *, now: float | None = None
+                                ) -> Optional[float]:
+    """What the server asked for, in seconds, with no ceiling applied.
+
+    Input: the exception a failed request raised. Output: the wait the
+    SERVER asked for, floored at _RETRY_AFTER_MIN_S but NOT capped, or
+    None when there is no usable header.
+
+    The two callers want different things from the same number, and the
+    difference matters: :func:`_retry_after_seconds` wants a wait it is
+    willing to sleep, while :func:`_retry_after_outlasts_patience` wants
+    to know that the stated wait is longer than that. Parsing it once
+    keeps the two from disagreeing about what the header said.
+
+    Why read it at all: the backoff ladder is a guess made here, while
+    Retry-After is the one number the service actually knows. On a shared
+    research endpoint (Blablador, KIT) guessing long wastes the user's
+    turn and guessing short adds load to something already struggling.
+
+    Both forms RFC 9110 allows are accepted: delta-seconds, and an
+    HTTP-date, which is resolved against *now*. A date in the past yields
+    the floor rather than a negative wait.
+
+    Never raises and never trusts: an exception that carries no response,
+    no headers, or a header that is not a number or a date, answers None,
+    and the caller falls back to the ladder. A quota 429 is NOT handled
+    here -- that one carries its own reset (``_quota_429_reset``) and
+    parks the run until it, which is a different and longer decision.
+    """
+    try:
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers is None:
+            return None
+        raw = headers.get("retry-after") or headers.get("Retry-After")
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    seconds: Optional[float] = None
+    try:
+        seconds = float(text)
+    except ValueError:
+        try:
+            from email.utils import parsedate_to_datetime
+            when = parsedate_to_datetime(text)
+        except Exception:
+            return None
+        if when is None:
+            return None
+        try:
+            import datetime as _dt
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=_dt.timezone.utc)
+            seconds = when.timestamp() - (now if now is not None
+                                          else time.time())
+        except Exception:
+            return None
+    if seconds is None or seconds != seconds:          # NaN
+        return None
+    return max(_RETRY_AFTER_MIN_S, float(seconds))
+
+
+def _retry_after_seconds(exc: Any, *, now: float | None = None
+                         ) -> Optional[float]:
+    """A Retry-After this client is willing to sleep, or None.
+
+    None means "no usable number, let the ladder decide" -- including a
+    stated wait beyond _RETRY_AFTER_MAX_S, because a turn that sleeps for
+    half an hour is indistinguishable from a hang. A caller that retries
+    on None must first ask :func:`_retry_after_outlasts_patience`,
+    since retrying SOONER than the server asked is the one response that
+    makes a rate limit worse.
+    """
+    seconds = _retry_after_stated_seconds(exc, now=now)
+    if seconds is None or seconds > _RETRY_AFTER_MAX_S:
+        return None
+    return seconds
+
+
+def _retry_after_outlasts_patience(exc: Any, *, now: float | None = None
+                                   ) -> Optional[float]:
+    """The stated wait when it is longer than we will sleep, else None.
+
+    Such a wait must end the attempt rather than shorten it. Blablador's
+    documented behaviour is the case that makes this concrete: exceeding
+    a per-minute limit blocks that model for 60 s, and EVERY further
+    violation doubles the block, to a maximum of 3600 s. The ladder's
+    longest step is 240 s, so a 20-minute block would be retried into
+    four times, each retry a fresh violation -- turning a 20-minute block
+    into an hour. The ladder is built for a proxy hiccup, where retrying
+    is free; against a counter that punishes retries it is the wrong
+    instrument.
+
+    Returns the number so the caller can name it: a person told "the
+    service asked for 18 minutes" can decide, while an unexplained
+    failure after four silent retries tells them nothing.
+    """
+    seconds = _retry_after_stated_seconds(exc, now=now)
+    if seconds is not None and seconds > _RETRY_AFTER_MAX_S:
+        return seconds
+    return None
+
+
 def _transient_retry_delay(attempt: int) -> float:
     """Seconds to wait before transient-retry ``attempt`` (1-based).
 
@@ -34068,15 +34187,37 @@ class OpenAIClient(_BaseClient):
                     # is discarded so nothing duplicates into the context.
                     # Killing the generator here instead would discard EVERY
                     # completed round's progress mid-turn.
+                    # A wait the server stated and we will not sit out ends
+                    # the attempt instead of shortening it. Retrying sooner
+                    # than asked is a fresh violation, and on an endpoint
+                    # whose block doubles per violation that converts a
+                    # wait into a longer one. See
+                    # _retry_after_outlasts_patience.
+                    _stated_wait = _retry_after_outlasts_patience(_stream_exc)
+                    if _stated_wait is not None:
+                        yield StreamEvent(type="notice", text=(
+                            f"The service asked to be left alone for "
+                            f"{_stated_wait / 60:.0f} min "
+                            f"({_stated_wait:.0f} s) and this round is not "
+                            f"retried: asking again sooner counts as another "
+                            f"violation and lengthens the block. Pick another "
+                            f"model, or come back after that."))
                     if (_is_transient_api_error(_stream_exc)
-                            and _stream_attempt < _STREAM_RETRY_MAX):
+                            and _stream_attempt < _STREAM_RETRY_MAX
+                            and _stated_wait is None):
                         _had_partial = bool(_text_chunks or _tool_calls)
                         _text_chunks = []
                         _tool_calls = {}
                         _round_in = 0
                         finish_reason = None
                         _stream_attempt += 1
-                        _delay = _transient_retry_delay(_stream_attempt)
+                        # The server's own Retry-After outranks the ladder:
+                        # the ladder is a guess made here, the header is the
+                        # one number the service knows. Absent, unusable or
+                        # absurdly long, the ladder decides as before.
+                        _delay = _retry_after_seconds(_stream_exc)
+                        if _delay is None:
+                            _delay = _transient_retry_delay(_stream_attempt)
                         yield StreamEvent(type="notice", text=_retry_notice(
                             type(_stream_exc).__name__,
                             time.monotonic() - _round_t0, _had_partial,
