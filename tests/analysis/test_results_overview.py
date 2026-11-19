@@ -554,6 +554,9 @@ def test_latex_contains_all_ticked_images_side_by_side(tmp_path):
     calc = make_calc(tmp_path, "412", data=data, rss=(
         "4.0 -1.0\n3.5 -0.5\n2.0 -1.2\n"), pngs=("scan_relative.png",))
     (calc / "initial.xyz").write_text(_WATER_XYZ, encoding="utf-8")
+    # Column 2 embeds the calc's own SMILES.png (fixture: reuse the
+    # constructed 1x1 PNG), otherwise the 2D image is skipped.
+    (calc / "SMILES.png").write_bytes(_tiny_png())
     table = ro.build_table([str(calc)], ["rss_delta_kj"])
     panel = _latex_panel(table, opt=True)
     tex = panel._latex_bytes().decode("utf-8")
