@@ -4730,9 +4730,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         value=(
             '<span style="color:#757575;font-size:12px;">'
             '<b>CLI backend</b> uses your Anthropic subscription via OAuth (no API key needed).<br>'
-            '<b>API backend</b> requires the <code>ANTHROPIC_API_KEY</code> environment variable '
-            '(set it in your shell before launching the dashboard). '
-            'Keys are never stored on disk.'
+            '<b>API backend</b> requires <code>ANTHROPIC_API_KEY</code>. '
+            'Set it under <b>Diagnosis &amp; API key</b> in this tab, or '
+            'export it before launching the dashboard.'
             '</span>'
         ),
     )
