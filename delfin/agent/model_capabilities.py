@@ -96,6 +96,49 @@ _KIT_PREFERENCE: tuple[str, ...] = (
     # Multimodal MoE, the base model behind the ``standard-local`` alias.
     "kit.mistral-small-4-119b-a8b",
 )
+# Blablador, ranked by measurement rather than by name. Twelve candidates
+# on the roster were given four code-reasoning items on 2026-11-19, each
+# a defect found in this repository that day reduced to the smallest
+# snippet that still carries it, with one fixed token as the answer:
+#
+#   deepseek-v4.1-flash-at-hzdr  4/4    6.5 s   60 req/min
+#   alias-huge   (MiMo-V2.6-Pro) 4/4   21.0 s   30 req/min   1M context
+#   alias-code   (Qwen3.8-27B)   4/4   34.7 s   40 req/min
+#   alias-mimo-v2.6-pro          4/4   41.7 s   20 req/min
+#   alias-fast   (GPT-OSS-120b)  3/4    9.3 s   60 req/min
+#   alias-large  (Qwen3.8-Flash) 3/4   36.6 s   40 req/min
+#   alias-muse-spark (816B)      4/4  184.0 s   20 req/min
+#   alias-kimi-k3-1m             3/4  452.3 s   20 req/min
+#   alias-glm-5.3-flash          2/4   53.7 s
+#   alias-qwen3.8-flash-next     2/4   45.0 s
+#
+# Ordered by score first and measured latency second, which is why the
+# 27B model outranks the 125B one and the 816B model is far down: a
+# fallback is taken mid-turn, so a model that answers in three minutes
+# turns a recovery into a stall. The two that scored 2/4 are left out
+# entirely -- continuing a turn on a model that misreads the code is not
+# a recovery. kimi is left out for its 452 s.
+#
+# Every entry chains tool calls (measured: all twelve do), which a
+# fallback must, since a sub-agent drives tools.
+_BLABLADOR_PREFERENCE: tuple[str, ...] = (
+    "deepseek-v4.1-flash-at-hzdr",
+    "alias-huge",
+    "alias-code",
+    "alias-fast",
+    "alias-large",
+    "alias-mimo-v2.6-pro",
+)
+
+#: Ranked rosters per provider, for continuing a turn whose model stopped
+#: being served. Only providers that bill no USD appear: switching the
+#: model of a PAID provider spends the person's money on a model they did
+#: not choose, which is a decision and not a repair.
+MODEL_PREFERENCE_BY_PROVIDER: dict[str, tuple[str, ...]] = {
+    "kit": _KIT_PREFERENCE,
+    "blablador": _BLABLADOR_PREFERENCE,
+}
+
 KIT_BEST_MODEL = _KIT_PREFERENCE[0]
 _KIT_RECOMMENDED: frozenset[str] = frozenset(_KIT_PREFERENCE)
 
