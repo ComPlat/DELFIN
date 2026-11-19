@@ -50,9 +50,12 @@ its safe state; the coordinator does not undo that.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from pathlib import Path
 from typing import Callable, Optional
+
+from delfin.agent import state_file
 
 from . import audit as _audit
 from . import store as _store
@@ -73,11 +76,33 @@ def _save(run_id: str, cp: dict) -> None:
 
 
 def load_checkpoint(run_id: str) -> Optional[dict]:
+    """The run's checkpoint, or None when there is none.
+
+    Damaged and absent are NOT the same: a damaged file is kept aside and a
+    :class:`~delfin.agent.state_file.StateFileUnreadable` is raised, so a
+    resume cannot silently rebuild a run's history over it (samples are on
+    the bench; the file is the only record of where).  A caller that only
+    reads -- ``abandon`` -- catches this and answers, it does not write.
+    """
     path = run_dir(run_id) / "checkpoint.json"
+    if not path.exists():
+        return None
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
+    except (OSError, ValueError) as exc:
+        aside = state_file.quarantine(path)
+        _report_checkpoint_loss(run_id, exc, aside)
+        raise state_file.StateFileUnreadable(
+            f"checkpoint.json of run {run_id} is unreadable ({exc}); the "
+            f"file was kept at {aside}") from None
+
+
+def _report_checkpoint_loss(run_id, exc, aside) -> None:
+    logging.getLogger(__name__).warning(
+        "The checkpoint of lab run %s is unreadable (%s); it was moved to %s "
+        "and kept -- a checkpoint (done steps, sample positions, approvals) "
+        "is not reconstructable from the workflow document.",
+        run_id, exc, aside)
 
 
 class Coordinator:
@@ -111,7 +136,31 @@ class Coordinator:
 
     def run(self, wf: dict, run_id: str) -> dict:
         actor = {"person": self.person, "session": run_id}
-        cp = load_checkpoint(run_id) or {
+        try:
+            cp = load_checkpoint(run_id)
+        except state_file.StateFileUnreadable as exc:
+            # A damaged checkpoint must never be rebuilt over: it holds the
+            # physical truth of the run (done steps, sample positions).  The
+            # damaged file is already aside; the failure is recorded so the
+            # run does not claim 'completed' over a history it lost.
+            logging.getLogger(__name__).error(
+                "Refusing to resume lab run %s over a damaged checkpoint: %s",
+                run_id, exc)
+            failed = {
+                "run_id": run_id, "workflow": wf, "status": "failed",
+                "done": [], "samples": {}, "log": [], "measurements": [],
+                "deviations": [{"step": None, "reason": str(exc),
+                                "ts": self.clock()}],
+                "pending": None, "started": self.clock(),
+                "coordinator": self.name, "person": self.person,
+                "manifest": {"version": self.manifest.version,
+                             "checksum": self.manifest.checksum},
+            }
+            _save(run_id, failed)
+            from . import record as _record
+            _record.write(failed, self.manifest)   # a loss is data too
+            return failed
+        cp = cp or {
             "run_id": run_id, "workflow": wf, "status": "new", "done": [],
             "samples": json.loads(json.dumps(wf.get("samples") or {})),
             "log": [], "measurements": [], "deviations": [], "pending": None,
@@ -172,7 +221,12 @@ class Coordinator:
         """End a failed or waiting run: release its device and module locks
         (a hazardous device goes to its safe state first) and mark it
         ``abandoned``. A person's decision; nothing resumes it."""
-        cp = load_checkpoint(run_id)
+        try:
+            cp = load_checkpoint(run_id)
+        except state_file.StateFileUnreadable as exc:
+            # A reader, not a writer: answer, do not decide the file's fate
+            # (the damaged file was already moved aside by the quarantine).
+            return {"ok": False, "reason": str(exc)}
         if cp is None:
             return {"ok": False, "reason": f"no run {run_id}"}
         actor = {"person": self.person, "session": run_id}
