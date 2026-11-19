@@ -208,3 +208,134 @@ def test_the_classifier_choice_never_answers_empty():
         assert mc.classifier_choice(
             served=served, session_model="", cfg_model="kit.deepseek-v4-flash",
             cfg_explicit=False), f"no classifier for served={served!r}"
+
+
+# --- driven through the real stream loop ----------------------------------
+#
+# Everything above exercises the chooser. The defect was in the TURN: a
+# provider other than KIT got "" and the round ended. A chooser that
+# answers correctly while the loop never reaches it would leave that in
+# place, so the switch is driven here through stream_message itself.
+
+
+class _Delta:
+    def __init__(self, content=None):
+        self.content = content
+        self.tool_calls = None
+
+
+class _Choice:
+    def __init__(self, delta, finish=None):
+        self.delta = delta
+        self.finish_reason = finish
+        self.index = 0
+
+
+class _Usage:
+    prompt_tokens = 5
+    completion_tokens = 3
+
+
+class _Chunk:
+    def __init__(self, choices, usage=None):
+        self.choices = choices
+        self.usage = usage
+
+
+class _Stream:
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    def __iter__(self):
+        return iter(self._chunks)
+
+    def close(self):
+        pass
+
+
+class _EmptyReg:
+    def discover_all(self): return []
+    def discover_resources(self): return []
+    def discover_prompts(self): return []
+
+
+@pytest.fixture
+def blablador_client(monkeypatch, tmp_path):
+    from delfin.agent import mcp_client as M
+
+    monkeypatch.setenv("DELFIN_STREAM_RETRY_DELAY_SCALE", "0")
+    monkeypatch.setenv("BLABLADOR_API_KEY", "not-a-real-key")
+    caps = mc.ModelCapabilities(model="alias-large", provider="blablador",
+                                context_window=200_000, supports_tools=True)
+    monkeypatch.setattr(mc, "resolve", lambda *a, **k: caps)
+    monkeypatch.setattr(M, "get_registry", lambda *a, **k: _EmptyReg())
+    # The roster the switch picks from, so the test does not depend on a
+    # live listing.
+    monkeypatch.setattr(mc, "_fetch_openai_models", lambda *a, **k: [
+        {"id": "alias-large"}, {"id": "alias-code"}])
+    monkeypatch.setattr(mc, "MODEL_PREFERENCE_BY_PROVIDER",
+                        {"blablador": ("alias-code", "alias-large")})
+    cl = A.create_client(provider="blablador", model="alias-large",
+                         cwd=str(tmp_path))
+    cl.set_permissions(A.KitToolPermissions(
+        workspace=tmp_path, mode="default", task_session_id="sess-succ"))
+    return cl
+
+
+def _unavailable(model: str):
+    """What the gateway answers for a model it is not serving now."""
+    openai = pytest.importorskip("openai")
+    try:
+        import httpx2 as transport
+    except ImportError:                      # pragma: no cover
+        transport = pytest.importorskip("httpx")
+    request = transport.Request(
+        "POST", "https://api.blablador.fz-juelich.de/v1/chat/completions")
+    response = transport.Response(400, request=request)
+    return openai.BadRequestError(
+        f"Model '{model}' is temporarily unavailable. Please try again later.",
+        response=response, body=None)
+
+
+def test_a_turn_continues_on_the_successor(blablador_client):
+    """The round that used to end: the model goes away mid-turn and the
+    answer still arrives, on another model."""
+    asked = []
+
+    def _create(**kw):
+        asked.append(kw.get("model"))
+        if kw.get("model") == "alias-large":
+            raise _unavailable("alias-large")
+        return _Stream([_Chunk([_Choice(_Delta("Hallo."), finish="stop")],
+                               usage=_Usage())])
+
+    blablador_client.client.chat.completions.create = _create
+    events = list(blablador_client.stream_message(
+        "sys", [{"role": "user", "content": "hi"}], max_tokens=50))
+    text = "".join(getattr(e, "text", "") or "" for e in events
+                   if getattr(e, "type", "") == "text_delta")
+
+    assert "alias-code" in asked, (
+        f"the turn never reached the successor; it asked {asked}")
+    assert text == "Hallo.", "and the answer arrives on it"
+
+
+def test_the_switch_is_visible_and_recorded(blablador_client):
+    """A silent model change is its own defect: the person must be able
+    to see which model answered."""
+    def _create(**kw):
+        if kw.get("model") == "alias-large":
+            raise _unavailable("alias-large")
+        return _Stream([_Chunk([_Choice(_Delta("Hallo."), finish="stop")],
+                               usage=_Usage())])
+
+    blablador_client.client.chat.completions.create = _create
+    events = list(blablador_client.stream_message(
+        "sys", [{"role": "user", "content": "hi"}], max_tokens=50))
+    notices = "".join(getattr(e, "text", "") or "" for e in events
+                      if getattr(e, "type", "") == "notice")
+
+    assert "alias-code" in notices, f"the switch is announced: {notices!r}"
+    switches = getattr(blablador_client, "_turn_model_switches", [])
+    assert any(s.get("after") == "alias-code" for s in switches), (
+        "and recorded on the turn, not only printed")
