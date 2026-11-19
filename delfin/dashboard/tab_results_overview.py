@@ -177,7 +177,7 @@ class ResultsOverviewPanel:
             self._png_size, self._png_cols])
         self._csv_btn = widgets.Button(description="Export CSV")
         self._xlsx_btn = widgets.Button(description="Export XLSX")
-        self._zip_btn = widgets.Button(description="LaTeX-ZIP (tex + Bilder)")
+        self._zip_btn = widgets.Button(description="LaTeX (tex+pngs)")
         self._export_status = widgets.HTML()
         # Custom columns section (semantics shared with the calculations
         # browser table panel: text/regex/jsonpath per arbitrary file).
@@ -782,7 +782,11 @@ class ResultsOverviewPanel:
             width = {1: 0.9, 2: 0.45, 3: 0.30}.get(n_struct, 0.22)
             struct_blocks = []
             if want_2d and smiles:
-                png = smiles_png_bytes(smiles, fmt="pdf")
+                # The calc's own SMILES.png, unchanged (raster): the
+                # redrawn vector variant is dropped - user request.
+                _smp = _os.path.join(row["path"], "SMILES.png")
+                png = (open(_smp, "rb").read()
+                       if _os.path.exists(_smp) else None)
                 if png:
                     struct_blocks.append(
                         rf"\includegraphics[width={width}\textwidth]"
