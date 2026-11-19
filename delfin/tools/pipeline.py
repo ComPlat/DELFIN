@@ -1640,8 +1640,15 @@ class Pipeline:
                 _beat = (cstep.runner or {}).get("heartbeat") if cstep is not None else None
                 from delfin.tools import chain_liveness as _cl
 
+                def _ended_by(sig_name, _c=cstep, _ch=chain):
+                    # JC3: a step told to end says so at once, not only once
+                    # its heartbeat is stale.
+                    if _c is not None and _ch is not None and _c.runner:
+                        _c.runner["ended"] = sig_name
+                        _ch.save()
+
                 try:
-                    with _cl.beating(_beat):
+                    with _cl.beating(_beat), _cl.ended_on_signal(_ended_by):
                         result = run_step(
                             spec.step_name,
                             geometry=geom,
