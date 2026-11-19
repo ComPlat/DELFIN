@@ -16,6 +16,16 @@ gate every shell write target passes):
   the outbox path of THIS session as the pointer;
 * control: a plain file in this session's own outbox is written;
 * control: reading a file the phone sent (inbox) still works.
+
+Outbox write-route parity (live 2026-11-12, Pi, a session told to send an
+image): write_file into the outbox passed, but a shell route to the SAME
+place -- ``python -c "os.makedirs(outbox)"`` or a ``cp x outbox/`` naming
+the directory as its destination -- was refused with "read-only". The
+rule whitelisted only a plain FILE in the outbox (three parts below
+ROOT), never the outbox directory itself, so any tool whose write target
+resolves to the directory was told the outbox is read-only while another
+tool was told the opposite. These tests hold every route to the same
+answer.
 """
 from __future__ import annotations
 
@@ -25,6 +35,7 @@ import json
 import pytest
 
 from delfin.agent.api_client import KitToolPermissions, _doc_executor
+from delfin.messenger.media import internal_write_refusal
 
 SID = "s-office"
 OWN = hashlib.sha256(SID.encode()).hexdigest()[:24]
@@ -82,6 +93,35 @@ def test_a_file_offered_in_the_own_outbox_is_written(ws):
     out = _write(perms, f".delfin-messenger/{OWN}/outbox/report.txt")
     assert "error" not in out, out
     assert (root / ".delfin-messenger" / OWN / "outbox" / "report.txt").read_text() == "x\n"
+
+
+def test_the_outbox_directory_itself_is_writable_like_a_file_in_it(ws):
+    """The outbox folder is not read-only to its own session: every route
+    that resolves its write target to the directory -- the mkdir a fresh
+    session runs, a cp whose destination is the folder -- is allowed,
+    exactly as a write to a file in it is."""
+    _root, perms = ws
+    outbox_dir = f".delfin-messenger/{OWN}/outbox"
+    assert internal_write_refusal(outbox_dir, SID) is None, internal_write_refusal(outbox_dir, SID)
+
+
+def test_shell_mkdir_into_the_own_outbox_passes_the_bash_write_gate(ws):
+    """The route that failed live: a python payload creating the outbox
+    directory went through _gate_bash_write_targets, whose per-target gate
+    refused the folder. A mkdir of the outbox must pass like write_file."""
+    _root, perms = ws
+    outbox_dir = f".delfin-messenger/{OWN}/outbox"
+    cmd = f"python3 -c \"import os; os.makedirs('{outbox_dir}', exist_ok=True)\""
+    why = _doc_executor._gate_bash_write_targets(cmd, {}, perms)
+    assert why is None, why
+
+
+def test_shell_cp_whose_destination_is_the_outbox_passes_the_bash_write_gate(ws):
+    _root, perms = ws
+    outbox_dir = f".delfin-messenger/{OWN}/outbox"
+    cmd = f"cp result.png {outbox_dir}/"
+    why = _doc_executor._gate_bash_write_targets(cmd, {}, perms)
+    assert why is None, why
 
 
 def test_a_file_the_phone_sent_is_read(ws):
