@@ -556,7 +556,17 @@ def test_latex_contains_all_ticked_images_side_by_side(tmp_path):
     (calc / "initial.xyz").write_text(_WATER_XYZ, encoding="utf-8")
     # Column 2 embeds the calc's own SMILES.png (fixture: reuse the
     # constructed 1x1 PNG), otherwise the 2D image is skipped.
-    (calc / "SMILES.png").write_bytes(_tiny_png())
+    # Minimal valid 1x1 PNG (placeholder bytes are not an image).
+    import struct, zlib as _zlib
+    _ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    _idat = _zlib.compress(b"\x00\xff\x00\x00")
+    def _chunk(tag, payload):
+        return (struct.pack(">I", len(payload)) + tag + payload
+                + struct.pack(">I", _zlib.crc32(tag + payload)
+                             & 0xFFFFFFFF))
+    _png = (b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", _ihdr)
+            + _chunk(b"IDAT", _idat) + _chunk(b"IEND", b""))
+    (calc / "SMILES.png").write_bytes(_png)
     table = ro.build_table([str(calc)], ["rss_delta_kj"])
     panel = _latex_panel(table, opt=True)
     tex = panel._latex_bytes().decode("utf-8")
