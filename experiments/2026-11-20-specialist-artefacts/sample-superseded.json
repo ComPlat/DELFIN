@@ -1,0 +1,238 @@
+{
+  "allocation": {
+    "chem": {
+      "nowhere": 5,
+      "test-only": 5
+    },
+    "infra": {
+      "nowhere": 5,
+      "test-only": 5
+    }
+  },
+  "allocation_rule": "balanced",
+  "drawn_at": "2026-11-20T18:55:00+00:00",
+  "drawn_counts": {
+    "chem": {
+      "nowhere": 5,
+      "test-only": 5
+    },
+    "infra": {
+      "nowhere": 5,
+      "test-only": 5
+    }
+  },
+  "n_tasks": 20,
+  "per_pool": 10,
+  "pool_counts": {
+    "chem": 99,
+    "infra": 80
+  },
+  "pool_counts_by_tier": {
+    "chem": {
+      "nowhere": 70,
+      "test-only": 29
+    },
+    "infra": {
+      "nowhere": 27,
+      "test-only": 53
+    }
+  },
+  "pools_file": "/tmp/claude-1001/-home-qmchem-max-DELFIN-AGENT-DELFIN-2-DELFIN/ae827ab8-7b73-4dad-a097-6504f7495d0a/scratchpad/pools6.json",
+  "pools_file_sha256": "e8a484b8f29872371a1f90b451c7e67f94e7f4deecd20e991af7ea1dc0a742d8",
+  "pools_scanned_at": "2026-11-20T18:54:24+00:00",
+  "pools_tree": "/tmp/claude-1001/-home-qmchem-max-DELFIN-AGENT-DELFIN-2-DELFIN/ae827ab8-7b73-4dad-a097-6504f7495d0a/scratchpad/ab",
+  "pools_tree_sha": "0eb187ff9f6afa76eb390d53549b8f01493f96be",
+  "replaced": {
+    "at": "2026-11-20T18:55:00+00:00",
+    "sha256": "225e5772d1dc73bd0529554d8478503a85d9960688d533c901f7711233ca46b0"
+  },
+  "seed": 20261120,
+  "task_sentence": "connect this capability to the product, or delete it together with its tests",
+  "tasks": [
+    {
+      "file": "delfin/manta/polyhedra.py",
+      "line": 234,
+      "module": "delfin.manta.polyhedra",
+      "name": "_max_heavy_bond_order",
+      "pool": "chem",
+      "task": "connect this capability to the product, or delete it together with its tests",
+      "tier": "nowhere"
+    },
+    {
+      "file": "delfin/manta/_prescribed_isomer_enumerator.py",
+      "line": 445,
+      "module": "delfin.manta._prescribed_isomer_enumerator",
+      "name": "_orbit_burnside_selftest",
+      "pool": "chem",
+      "task": "connect this capability to the product, or delete it together with its tests",
+      "tier": "nowhere"
+    },
+    {
+      "file": "delfin/xtb_crest.py",
+      "line": 56,
+      "module": "delfin.xtb_crest",
+      "name": "_orca_ok",
+      "pool": "chem",
+      "task": "connect this capability to the product, or delete it together with its tests",
+      "tier": "nowhere"
+    },
+    {
+      "file": "delfin/mlp_tools/__init__.py",
+      "line": 23,
+      "module": "delfin.mlp_tools.__init__",
+      "name": "describe_mlp_backends",
+      "pool": "chem",
+      "task": "connect this capability to the product, or delete it together with its tests",
+      "tier": "nowhere"
+    },
+    {
+      "file": "delfin/workflows/engine/occupier.py",
+      "line": 1395,
+      "module": "delfin.workflows.engine.occupier",
+      "name": "log_orca_job_plan",
+      "pool": "chem",
+      "task": "connect this capability to the product, or delete it together with its tests",
+      "tier": "nowhere"
+    },
+    {
+      "file": "delfin/mlp_tools/goat_e2e_check.py",
+      "line": 68,
+      "module": "delfin.mlp_tools.goat_e2e_check",
+      "name": "check_goat_e2e",
+      "pool": "chem",
+      "task": "connect this capability to the product, or delete it together with its tests",
+      "tier": "test-only"
+    },
+    {
+      "file": "delfin/common/esd_numerics.py",
+      "line": 231,
+      "module": "delfin.common.esd_numerics",
+      "name": "est_reference_comparison",
+      "pool": "chem",
+      "task": "connect this capability to the product, or delete it together with its tests",
+      "tier": "test-only"
+    },
+    {
+      "file": "delfin/fukui.py",
+      "line": 312,
+      "module": "delfin.fukui",
+      "name": "load_fukui_result",
+      "pool": "chem",
+      "task": "connect this capability to the product, or delete it together with its tests",
+      "tier": "test-only"
+    },
+    {
+      "file": "delfin/tools/adapters/orca_relspin_opi.py",
+      "line": 220,
+      "module": "delfin.tools.adapters.orca_relspin_opi",
+      "name": "validate_relspin",
+      "pool": "chem",
+      "task": "connect this capability to the product, or delete it together with its tests",
+      "tier": "test-only"
+    },
+    {
+      "file": "delfin/tools/co2_coordinator_opi.py",
+      "line": 636,
+      "module": "delfin.tools.co2_coordinator_opi",
+      "name": "write_co2_scan_opi_input",
+      "pool": "chem",
+      "task": "connect this capability to the product, or delete it together with its tests",
+      "tier": "test-only"
+    },
+    {
+      "file": "delfin/agent/mcp_client.py",
+      "line": 144,
+      "module": "delfin.agent.mcp_client",
+      "name": "_project_config_path",
+      "pool": "infra",
+      "task": "connect this capability to the product, or delete it together with its tests",
+      "tier": "nowhere"
+    },
+    {
+      "file": "delfin/agent/durable.py",
+      "line": 128,
+      "module": "delfin.agent.durable",
+      "name": "_step_finished",
+      "pool": "infra",
+      "task": "connect this capability to the product, or delete it together with its tests",
+      "tier": "nowhere"
+    },
+    {
+      "file": "delfin/agent/loop_commands.py",
+      "line": 298,
+      "module": "delfin.agent.loop_commands",
+      "name": "controller_hint",
+      "pool": "infra",
+      "task": "connect this capability to the product, or delete it together with its tests",
+      "tier": "nowhere"
+    },
+    {
+      "file": "delfin/agent/principles_guard.py",
+      "line": 51,
+      "module": "delfin.agent.principles_guard",
+      "name": "expected_digest",
+      "pool": "infra",
+      "task": "connect this capability to the product, or delete it together with its tests",
+      "tier": "nowhere"
+    },
+    {
+      "file": "delfin/agent/harness_rows.py",
+      "line": 74,
+      "module": "delfin.agent.harness_rows",
+      "name": "is_harness_text",
+      "pool": "infra",
+      "task": "connect this capability to the product, or delete it together with its tests",
+      "tier": "nowhere"
+    },
+    {
+      "file": "delfin/agent/shared_tmp.py",
+      "line": 248,
+      "module": "delfin.agent.shared_tmp",
+      "name": "bwrap_substitution",
+      "pool": "infra",
+      "task": "connect this capability to the product, or delete it together with its tests",
+      "tier": "test-only"
+    },
+    {
+      "file": "delfin/agent/memory_distill.py",
+      "line": 380,
+      "module": "delfin.agent.memory_distill",
+      "name": "distill_for_shipping",
+      "pool": "infra",
+      "task": "connect this capability to the product, or delete it together with its tests",
+      "tier": "test-only"
+    },
+    {
+      "file": "delfin/agent/office.py",
+      "line": 3514,
+      "module": "delfin.agent.office",
+      "name": "pdf_xfa_data",
+      "pool": "infra",
+      "task": "connect this capability to the product, or delete it together with its tests",
+      "tier": "test-only"
+    },
+    {
+      "file": "delfin/agent/swarm/lead.py",
+      "line": 49,
+      "module": "delfin.agent.swarm.lead",
+      "name": "status_validate",
+      "pool": "infra",
+      "task": "connect this capability to the product, or delete it together with its tests",
+      "tier": "test-only"
+    },
+    {
+      "file": "delfin/agent/cli_resume.py",
+      "line": 291,
+      "module": "delfin.agent.cli_resume",
+      "name": "step_resume_note",
+      "pool": "infra",
+      "task": "connect this capability to the product, or delete it together with its tests",
+      "tier": "test-only"
+    }
+  ],
+  "tree_sha_at_draw": "0eb187ff9f6afa76eb390d53549b8f01493f96be",
+  "underpowered": {
+    "chem": false,
+    "infra": false
+  }
+}
