@@ -185,6 +185,7 @@ class ResultsOverviewPanel:
         # this DOM node's textContent and assembles the Blob.
         self._export_buffer = widgets.HTML(
             value="", layout=widgets.Layout(display="none"))
+        self._export_buffer.add_class("export-buffer")
         # Custom columns section (semantics shared with the calculations
         # browser table panel: text/regex/jsonpath per arbitrary file).
         self._custom_acc = widgets.Accordion(children=[widgets.VBox()])
@@ -680,15 +681,24 @@ class ResultsOverviewPanel:
         # (only the last script ran -> empty Blob, no download).  The
         # payload itself travels in the widget state of _export_buffer,
         # which Voila syncs reliably regardless of output clearing.
-        # ONE run_js call, payload ALWAYS inlined: the buffer-widget
-        # transport failed in voila because run_js clears the shared
-        # JS output (and with it the just-set widget state sync) before
-        # the browser executed the script (empty DOM node -> empty b64);
-        # and the .export-buffer class was added only after run_js, so
-        # the first export found no node at all.  The voila transport
-        # delivers one script message reliably at multi-MB sizes (the
-        # CSV inlined path always worked), so everything rides in it.
-        data_js = f"const b64={_json.dumps(b64)};"
+        # ONE run_js call, payload via the buffer WIDGET: an inlined
+        # multi-MB script does NOT survive the voila transport (CSV
+        # small enough inline always worked; XLSX/LaTeX at ~4 MB b64
+        # never arrived).  The widget state syncs to the browser
+        # independently of the JS-output channel; the script POLLS for
+        # a filled node for up to ~20 s, so the sync race that broke
+        # the first widget attempt (run_js firing before the state
+        # arrived) is gone.  The window.__roBuffer reference is set at
+        # page init so the class-based lookup can never miss.
+        self._export_buffer.value = _json.dumps({tid: b64})
+        data_js = (
+            "const b64=(function(){"
+            "const node=document.querySelector('.export-buffer');"
+            "for(let t=0;t<200;t++){"
+            "const txt=node?node.textContent:'';"
+            "if(txt&&txt.length>100){try{const o=JSON.parse(txt);"
+            "for(const k in o){return o[k];}}catch(e){}}"
+            "continue;},50);return '';})()")
         js = (
             "(function(){"
             f"const fileName={_json.dumps(filename)};"
