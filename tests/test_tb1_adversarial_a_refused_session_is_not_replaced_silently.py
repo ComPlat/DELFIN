@@ -375,6 +375,21 @@ def _choose_new_session(tab, env):
     _type_and_send(tab, labels[0])
 
 
+def _choose_wait(tab):
+    """Take the "Wait" choice, however the patch offers it.
+
+    Same two honest forms as ``_choose_new_session``: a button carrying the
+    label, or the label sent as a line. A patch that offers a button and a
+    patch that reads the line are both correct; a test that knew only one
+    would pin the patch instead of the contract.
+    """
+    for w in _walk(tab["tab"]):
+        if isinstance(w, widgets.Button) and str(w.description or "").strip() == "Wait":
+            w.click()
+            return
+    _type_and_send(tab, "Wait")
+
+
 def test_choosing_a_new_session_writes_exactly_one_from_the_held_history(env):
     """The first choice: a real new session that starts from the held history.
 
@@ -389,7 +404,18 @@ def test_choosing_a_new_session_writes_exactly_one_from_the_held_history(env):
         state = tab["refs"]["state"]
         try:
             _open_held_conversation(tab, env)
-            assert "held by a live session" in _chat_text(state)
+            said = _chat_text(state).lower()
+            assert "held by a live session" in said
+            # The offer must be visible to the person WHILE the refusal
+            # stands -- that is the moment they decide. Asserted here, not
+            # after the choice: choosing loads the forked session, so the
+            # refusal text is correctly gone by then (operator finding 2 on
+            # my test, 2026-11-20; the earlier placement measured the wrong
+            # moment and would have failed a correct patch).
+            assert "start a new session from it" in said, (
+                f"the refusal never offers the choice it accepts:\n{said}")
+            assert "wait" in said, (
+                f"the refusal never offers the waiting choice:\n{said}")
 
             _choose_new_session(tab, env)
 
@@ -407,14 +433,6 @@ def test_choosing_a_new_session_writes_exactly_one_from_the_held_history(env):
                 "the held conversation must not be taken from its holder")
             assert state.get("active_session_id") == forked, (
                 "after choosing, the tab must hold the new session")
-            # The offer itself, asserted last: a target asks for the two
-            # choices on one line, but the BEHAVIOUR is what a red test must
-            # name, so it is checked only once the behaviour has passed.
-            # Lower-cased, because the existing refusal already ends "...
-            # or start a new session from it" and a patch may keep its words.
-            said = _chat_text(state).lower()
-            assert "start a new session from it" in said, (
-                f"the refusal never offers the choice it accepted:\n{said}")
         finally:
             tab["refs"]["shutdown"](save=False)
     finally:
@@ -426,9 +444,13 @@ def test_wait_opens_the_held_conversation_once_the_holder_ends(env):
     """The second choice: keep the tab; when the holder ends, it opens itself.
 
     Red on main: there is no refused state to wait in, so the tab never opens
-    the held conversation on its own. It leans on the tab's existing
-    background tick (``_background_tick``, :11605, every 10 s), which is the
-    only periodic path the tab has -- a bounded wait, with a deadline.
+    the held conversation on its own. The mechanism is NOT asserted here --
+    F7 showed the tab's `_background_tick` cannot serve a refused tab (both
+    its registration sites are in `_wire_phase5_callbacks`, `:11474`, reached
+    only from `_ensure_engine`'s mint path, `:12831-12836`), so a patch must
+    bring its own watch. This case names the OUTCOME and stays neutral about
+    how the patch watches: a bounded deadline, then the two facts a person
+    cares about.
     """
     _write_session(env, SID, "held job", "held-turn")
     proc = _held_by_a_live_process(env)
@@ -439,9 +461,11 @@ def test_wait_opens_the_held_conversation_once_the_holder_ends(env):
         try:
             _open_held_conversation(tab, env)
             assert "held by a live session" in _chat_text(state)
-            # The person decides to wait and then does nothing. The choice
-            # label is asserted at the END, with the first choice's, so this
-            # red names a behaviour (a send minted a session) and not a word.
+            # The person decides to WAIT -- the choice the refusal offers.
+            # Without taking it there is nothing to wait in, and a test that
+            # skipped the choice would measure an intent the person never
+            # expressed (operator finding 1 on my test, 2026-11-20).
+            _choose_wait(tab)
 
             # The holder goes away; nothing else happens.
             proc.kill()
@@ -449,12 +473,12 @@ def test_wait_opens_the_held_conversation_once_the_holder_ends(env):
             (env["SS"]._SESSIONS_DIR / f"{SID}.lock").unlink(missing_ok=True)
 
             # Diagnostic only, never an assertion: a wait that cannot work
-            # must fail on the OUTCOME, not on my guess about why. The tab's
-            # periodic path is started by _wire_phase5_callbacks (:11474,
-            # timer at :11636-11643), which _ensure_engine calls only when it
-            # mints an engine (:12831-12836) -- a tab refused on load has no
-            # engine, so on main there is no timer at all.
-            had_timer = state.get("_background_timer") is not None
+            # must fail on the OUTCOME, not on my guess about why. It reads
+            # whichever watch key the tab holds, so it reports the patch's
+            # own state instead of a name this test assumed.
+            had_timer = any(key.endswith("_timer")
+                            and state.get(key) is not None
+                            for key in list(state) if isinstance(key, str))
             deadline = time.monotonic() + 20.0
             while time.monotonic() < deadline:
                 if state.get("active_session_id") == SID:
