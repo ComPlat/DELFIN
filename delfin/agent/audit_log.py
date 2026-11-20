@@ -583,9 +583,11 @@ def _scan(log_path: Optional[Path] = None) -> tuple[list[dict], dict]:
         # ``_append_chained`` writes the line and then the head file, so an
         # append in flight leaves the log longer than the head for an
         # instant. Calling that tampering cried wolf on a log that is
-        # written all day: measured at 204 of 1666 reads under a live
-        # writer. It is only benign when the extra bytes CONTINUE the chain
-        # from where the head says it ended; anything else stays a finding.
+        # written all day: 16.6 % of reads under a live writer
+        # (test-evidence/live-writer-race/), all of them this ``head``
+        # finding. It is only benign when the extra bytes CONTINUE the
+        # chain from where the head says it ended; anything else stays a
+        # finding.
         rep["notes"].append(
             f"the log is longer than its head file ({head.get('size')} bytes "
             f"then, {len(data)} now) and continues the chain from there: a "

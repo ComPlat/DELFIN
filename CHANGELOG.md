@@ -19,9 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first line of `list_changes_made` and `/changes`, instead of listing what
   the tampering left as an ordinary answer.
 - **A write in flight is no longer read as a cut tail.** The head file is
-  written after its line, so `verify` reported 204 of 1666 reads of a live log
-  as not intact (all `head`). It now accepts the gap only when the extra bytes
-  continue the chain: 0 of 1378 after.
+  written after its line, so `verify` called a live log tampered: 16.6 % of
+  reads under a writer that was appending (all `head`), against 0.1 % now —
+  and the remainder is a torn last line, not the head. It accepts the gap only
+  when the extra bytes continue the chain. Measured on one host; see
+  `test-evidence/live-writer-race/`.
 - **`_diff_line_counts` and `make_record`'s `diff_lines_added` /
   `diff_lines_removed` are removed** — nothing ever called the function or
   supplied the arguments, in the product or in the tests.
