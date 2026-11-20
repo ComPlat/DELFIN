@@ -4,9 +4,12 @@ The dominant defect shape in this repository is a mechanism whose parts are
 each tested and which is wired to nothing. The commit trailer was one: a
 line builder, a quote-aware and heredoc-aware ``--trailer`` rewriter, a
 setting that defaults to on, and a passing test file of its own -- and
-nothing in ``delfin/`` ever called ``set_commit_trailer_model``, so no
-commit any agent made carried the line. The parts were covered. The whole
-was unreachable, for months, in silence.
+nothing in ``delfin/`` ever called ``set_commit_trailer_model``, so the
+rewrite never fired. The line appeared on 1,858 commits all the same,
+because the system prompt asks the model to type it; three of those carry
+the template unexpanded, which is the signature of an instruction rather
+than a mechanism. The parts were covered, the guarantee was not, and
+nothing said so.
 
 This asks the question for the whole tree. For every module-level callable
 in ``delfin/agent/``, is its name mentioned anywhere else in the product?

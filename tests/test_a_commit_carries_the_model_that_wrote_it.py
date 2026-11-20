@@ -6,12 +6,27 @@ every ``git commit`` in a command string -- quote-aware, heredoc-aware,
 deduplicating on ``--amend`` -- and ``agent.commit_coauthor`` defaults to on.
 But ``set_commit_trailer_model`` was called by NOTHING in the product: a grep
 over delfin/ found the definition and no caller, so the context variable was
-always empty, ``_commit_trailer_enabled`` was always false, and no commit any
-agent ever made carried the line.
+always empty and ``_commit_trailer_enabled`` was always false. The REWRITE
+therefore never fired.
+
+What did fire was the prompt. The system prompt tells the model to end its
+commits with the line (tests/test_a_commit_names_the_agent_and_its_model.py),
+and main holds 1,858 commits that carry it -- 1,208 naming
+kit.glm-5.3-flash, 499 kit.deepseek-v4-flash, 228 kit.glm-5.3, the last of
+them 2026-11-19. Three carry the template unexpanded, as
+``DELFIN-Agent (<model>)`` and ``DELFIN-Agent (model)``, which is what an
+instruction produces and a rewrite cannot: the model copied the shape of the
+line instead of filling it in.
+
+So the line was never guaranteed, only asked for. A model that did not
+write it left no record, and an orchestrator that told its agents to write
+no trailers switched the whole thing off -- which is what happened to the
+swarm waves of 2026-11-20: their commits carry nothing.
 
 Its own tests passed throughout, because they call the setter themselves
-(tests/test_commit_trailer.py) and then check the rewrite. That is the shape:
-a mechanism whose parts are each tested and which is wired to nothing.
+(tests/test_commit_trailer.py) and then check the rewrite. That is the
+shape: a mechanism whose parts are each tested, whose guarantee is wired to
+nothing, and whose effect therefore depends on the model remembering.
 
 So this file tests the wiring, not the parts:
 
