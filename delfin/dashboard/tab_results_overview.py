@@ -178,6 +178,14 @@ class ResultsOverviewPanel:
         self._csv_btn = widgets.Button(description="Export CSV")
         self._xlsx_btn = widgets.Button(description="Export XLSX")
         self._zip_btn = widgets.Button(description="LaTeX (tex+pngs)")
+        # RO-MEASURE(TEMP): size-measurement buttons for the export
+        # transport (0.5/3/15 MB dummy downloads); removed after the
+        # user's click measurement.
+        self._measure_btns = [
+            widgets.Button(description=f"Test {mb} MB")
+            for mb in ("0.5", "3", "15")]
+        for _mb, _btn in zip(("0.5", "3", "15"), self._measure_btns):
+            _btn.on_click(self._make_measure_click(_mb))
         self._export_status = widgets.HTML()
         # Chunked export transport: the widget state reaches the browser
         # reliably (Voila syncs it), unlike a stream of run_js messages
@@ -234,6 +242,7 @@ class ResultsOverviewPanel:
             widgets.HBox([
                 self._csv_btn, self._xlsx_btn, self._zip_btn,
                 self._latex_btn,
+                *self._measure_btns,
                 self._export_status],
                 layout=widgets.Layout(gap="10px", align_items="center")),
             self._show_pngs,
@@ -739,6 +748,16 @@ class ResultsOverviewPanel:
             f"Download angesto&szlig;en ({len(payload) // 1024} KB) "
             "&mdash; bei Misserfolg erscheint eine Meldung hier oder in "
             "der Browser-Konsole (F12).</span>")
+
+    def _make_measure_click(self, mb_label):
+        """RO-MEASURE(TEMP): dummy download through the real transport."""
+        def _click(_btn=None):
+            size_mb = float(mb_label)
+            self._export_bytes(
+                f"measure_{mb_label}MB.bin",
+                b"x" * int(size_mb * 1024 * 1024),
+                "application/octet-stream")
+        return _click
 
     def _on_export_csv(self, _btn=None) -> None:
         if self._table is None:
