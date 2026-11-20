@@ -453,6 +453,12 @@ class SlurmJobBackend(JobBackend):
         # "warn" finding rides in stderr and the submit proceeds.
         try:
             refused, warned = hpc_io_check.check_submit(submit_script)
+        except FileNotFoundError:
+            # A submit script that does not exist is sbatch's own error
+            # ("No such file"), unchanged below — nothing was checked
+            # and nothing passed the check: sbatch will not run it.
+            refused, warned = [], []
+            _warn_text = ''
         except OSError as problem:
             return subprocess.CompletedProcess(
                 args=['sbatch'], returncode=1, stdout='',
