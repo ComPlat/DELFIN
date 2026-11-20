@@ -169,3 +169,145 @@ def test_the_placeholder_is_one_constant_not_a_retold_literal():
     assert getattr(memory_store, "REDACT_FAILED_PLACEHOLDER", "") == PLACEHOLDER
     assert task_state._scrub("plain text") == "plain text"
     assert session_index._scrub("plain text") == "plain text"
+
+
+# -- the guard must catch every ordinary spelling, not one shape -----------
+# Driving fail_open_redactors() over a synthetic tree, as the guard itself
+# runs in CI. The first guard walked module-level functions only and
+# matched a bare `return text`, so `return str(text)`, an alias and a
+# wrapper written as a class method all went unseen (review findings 4-5).
+
+FAIL_OPEN_SPELLINGS = {
+    "direct": (
+        "def f(text):\n"
+        "    try:\n"
+        "        return scrub_secrets(text)\n"
+        "    except Exception:\n"
+        "        return text\n"),
+    "str()": (
+        "def f(text):\n"
+        "    try:\n"
+        "        return scrub_secrets(text)\n"
+        "    except Exception:\n"
+        "        return str(text)\n"),
+    "strip()": (
+        "def f(text):\n"
+        "    try:\n"
+        "        return scrub_secrets(text)\n"
+        "    except Exception:\n"
+        "        return text.strip()\n"),
+    "f-string": (
+        "def f(text):\n"
+        "    try:\n"
+        "        return scrub_secrets(text)\n"
+        "    except Exception:\n"
+        "        return f'{text}'\n"),
+    "alias": (
+        "def f(text):\n"
+        "    try:\n"
+        "        return scrub_secrets(text)\n"
+        "    except Exception:\n"
+        "        out = text\n"
+        "        return out\n"),
+    "second positional argument": (
+        "def f(a, text):\n"
+        "    try:\n"
+        "        return scrub_secrets(text)\n"
+        "    except Exception:\n"
+        "        return text\n"),
+    "swallowed then returned": (
+        "def f(text):\n"
+        "    try:\n"
+        "        return scrub_secrets(text)\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    return text\n"),
+}
+
+SAFE_WRAPPERS = {
+    "placeholder": (
+        "def f(text):\n"
+        "    try:\n"
+        "        return scrub_secrets(text)\n"
+        "    except Exception:\n"
+        "        return '[redaction failed -- text withheld]'\n"),
+    "empty": (
+        "def f(text):\n"
+        "    try:\n"
+        "        return scrub_secrets(text)\n"
+        "    except Exception:\n"
+        "        return ''\n"),
+    "detection only": (
+        "def f(text):\n"
+        "    try:\n"
+        "        return scrub_secrets(text) != text\n"
+        "    except Exception:\n"
+        "        return False\n"),
+    "re-raises": (
+        "def f(text):\n"
+        "    try:\n"
+        "        return scrub_secrets(text)\n"
+        "    except Exception:\n"
+        "        raise\n"),
+    "no redactor": (
+        "def f(text):\n"
+        "    try:\n"
+        "        return other(text)\n"
+        "    except Exception:\n"
+        "        return text\n"),
+}
+
+SUBPACKAGE_FAIL_OPEN = (
+    "class R:\n"
+    "    def text(self, t):\n"
+    "        try:\n"
+    "            return scrub_secrets(t)\n"
+    "        except Exception:\n"
+    "            return t\n")
+
+
+def _guard():
+    import importlib.util
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parent.parent
+    path = repo / "tests" / "test_fs1_no_fail_open_redactors.py"
+    assert path.is_file(), f"the guard file is missing: {path.name}"
+    spec = importlib.util.spec_from_file_location("fs1_guard", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _scan(tmp_path, monkeypatch, sources, sub_source=None):
+    guard = _guard()
+    root = tmp_path / "agent"
+    (root / "service").mkdir(parents=True)
+    for i, src in enumerate(sources):
+        (root / f"mod{i}.py").write_text(src, encoding="utf-8")
+    if sub_source is not None:
+        (root / "service" / "smod.py").write_text(sub_source, encoding="utf-8")
+    monkeypatch.setattr(guard, "AGENT", root)
+    return set(guard.fail_open_redactors())
+
+
+def test_the_guard_finds_every_fail_open_spelling(tmp_path, monkeypatch):
+    hits = _scan(tmp_path, monkeypatch, list(FAIL_OPEN_SPELLINGS.values()))
+    missed = sorted(s for s in FAIL_OPEN_SPELLINGS
+                    if not any(name == "f" for _, name in hits))
+    assert not missed, f"the guard misses these spellings: {missed}"
+
+
+def test_the_guard_flags_no_safe_wrapper(tmp_path, monkeypatch):
+    """Nothing new is refused: a wrapper that withholds, re-raises or only
+    tests for a secret must stay green."""
+    hits = _scan(tmp_path, monkeypatch, list(SAFE_WRAPPERS.values()))
+    assert not hits, f"false positives: {sorted(hits)}"
+
+
+def test_the_guard_scans_a_subpackage_and_its_methods(tmp_path, monkeypatch):
+    """delfin/agent/service/ holds a fail-open redactor, and a wrapper there
+    is written as a class method: a glob('*.py') scan of the package dir
+    with a module-level walk saw neither."""
+    hits = _scan(tmp_path, monkeypatch, [], SUBPACKAGE_FAIL_OPEN)
+    assert ("smod.py", "text") in hits
