@@ -293,6 +293,16 @@ def _apply_run_budget(engine, args: argparse.Namespace) -> None:
         turns = 0
     if turns > 0:
         engine.run_budget_turns = turns
+    # The token ceiling, which unlike the USD one is measurable whatever
+    # the model costs. A flag is what makes the refusal's resume hint
+    # true: a run stopped on this dimension has to be resumable by
+    # raising the dial that stopped it.
+    try:
+        tokens = int(getattr(args, "max_run_tokens", 0) or 0)
+    except (TypeError, ValueError):
+        tokens = 0
+    if tokens > 0:
+        engine.run_budget_tokens = tokens
 
     # `--max-turns` bounds the tool ROUNDS inside one turn, which is a
     # different dimension from the two above: a session can be cheap and
@@ -1836,6 +1846,12 @@ def _usd_ceiling_measurable(engine) -> bool:
     (``_unmeasured_budget_block``); asked here it can be said BEFORE the
     money is spent, which is the only moment the user can still pick a
     dimension that is measurable.
+
+    The dimension this line points at is the TOKEN ceiling, not the wall
+    clock it used to offer. A wall clock is measurable but bounds the
+    wrong thing: the three field sessions that proved this warning
+    insufficient ran 27 M, 124 M and 363 M input tokens, and the broken
+    one's last turn alone carried 1,031,096 of them in 10.7 minutes.
     """
     model = str(getattr(getattr(engine, "client", None), "model", "") or "")
     provider = str(getattr(engine, "provider", "") or "")
@@ -2018,6 +2034,16 @@ def _bounds_in_force(engine) -> list[str]:
         secs = 0.0
     if secs > 0:
         parts.append(f"{int(secs)}s of wall clock")
+    # The token ceiling is ON by default, so it belongs on the line that
+    # says what bounds this run: a bound the user cannot see is a bound
+    # they will meet as a surprise.
+    try:
+        tok_cap = int(engine._run_budget_tokens())
+    except Exception:
+        tok_cap = 0
+    if tok_cap > 0:
+        from .budget_ledger import format_tokens as _ft
+        parts.append(f"{_ft(tok_cap)} tokens for the session")
     if parts:
         lines.append("bounds     " + " · ".join(parts))
 
@@ -2072,8 +2098,28 @@ def _bounding_notices(args: argparse.Namespace, engine) -> list[str]:
         line = (f"budget     ${usd:.2f} REQUESTED but not enforceable — "
                 f"{model} has no published rate, so spend cannot be "
                 f"measured and the ceiling can never fire")
-        line += ("; the wall-clock ceiling IS in force"
-                 if secs > 0 else " (--max-run-seconds is measurable)")
+        # What to offer instead. It used to be the wall clock, which is
+        # measurable but does not bound GROWTH: a field session's last
+        # turn bought 1,031,096 input tokens in 10.7 minutes, so a time
+        # ceiling generous enough to let the work finish is no ceiling on
+        # the size of the context being paid for. The token ceiling binds
+        # the dimension that actually grew, and it is on by default.
+        try:
+            tok_cap = int(engine._run_budget_tokens())
+        except Exception:
+            tok_cap = 0
+        if tok_cap > 0:
+            from .budget_ledger import format_tokens as _ft
+            line += ("; the token ceiling IS in force "
+                     f"({_ft(tok_cap)} tokens, agent.run_budget_tokens)")
+            if secs > 0:
+                line += " alongside the wall clock"
+        else:
+            line += ("; set agent.run_budget_tokens (--max-run-tokens) for "
+                     "a ceiling that is measurable on every model"
+                     + ("; the wall-clock ceiling IS in force, but a wall "
+                        "clock does not bound token growth" if secs > 0
+                        else ""))
         notes.append(line)
 
     # Tool lists the constructed client did not take. Asked of the client
@@ -5486,6 +5532,12 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Turn ceiling for this session (0: the "
                            "configured one; an unattended run without one: "
                            "agent.unattended_budget, 200)")
+    chat.add_argument("--max-run-tokens", type=int, default=0,
+                      dest="max_run_tokens", metavar="N",
+                      help="Token ceiling for this session — the dimension "
+                           "that is measurable on every model, and the one "
+                           "that bounds context growth (0: "
+                           "agent.run_budget_tokens, default 200 M)")
     # The consumer existed without the producer: ReplOptions.color has been
     # read as getattr(args, "color", "auto") since the first version, and no
     # parser ever declared the flag — so the one setting that decides

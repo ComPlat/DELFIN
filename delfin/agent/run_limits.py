@@ -58,6 +58,7 @@ _RAISING_FLAG = {
     "run_budget_s": "--max-run-seconds",
     "run_budget_usd": "--max-budget-usd",
     "run_budget_turns": "--max-run-turns",
+    "run_budget_tokens": "--max-run-tokens",
 }
 
 
