@@ -1,4 +1,4 @@
-"""Skip reasons that name every missing precondition, not only the first.
+"""One skip reason that names every missing precondition, not only the first.
 
 A module-level ``pytest.importorskip`` fires at collection, so a file with
 two independent preconditions reports only the one that was checked first.
@@ -6,12 +6,12 @@ The per-test reason is then never shown, on any machine -- including one
 that satisfies the module-level condition, where it is the only reason
 there is.
 
-Input: a reason per precondition, ``None`` for the ones that are in place.
-Output: nothing when none is missing, else a ``pytest.skip`` whose reason
-names every missing one, joined with ``"; "``.
+Input: one reason per precondition, ``None`` for the ones that are in place.
+Output: from ``missing()``, ``None`` when none is missing, else every
+missing reason joined with ``"; "``.
 
 Semantics pinned here: a missing precondition is named, *every* missing one
-is named, and nothing is skipped when all are in place.
+is named, and nothing is missing when all are in place.
 
 Rejected alternative: checking them in order with an early return. That
 gives the same answer for every case except the one that matters -- two
@@ -19,14 +19,26 @@ missing -- and there it hides one behind the other, which is the masking
 this module removes. ``tests/test_skip_names_every_precondition.py`` pins
 that difference as a failing case.
 
-Kept in one place rather than copied into each file: eleven test modules
-need this construct, and an eleventh copy is an eleventh place to drift.
+``missing()`` returns the reason and the caller raises the skip itself,
+rather than doing the ``pytest.skip`` here. Measured: with the skip raised
+from inside a helper, pytest reports the skip's location as this file
+(``SKIPPED [1] tests/_skip_reasons.py:71``), so the reader loses which
+test skipped; raising it in the test keeps the test in that line. The rule
+is therefore two lines at each call site::
+
+    reason = missing(absent_reason("opi"), orca_reason())
+    if reason:
+        pytest.skip(reason)
+
+Kept in one place rather than copied into each file because eleven test
+modules need this construct, and an eleventh copy is an eleventh place to
+drift.
 """
 from __future__ import annotations
 
-from typing import Iterable, Optional
+from typing import Optional
 
-import pytest
+SEPARATOR = "; "
 
 
 def absent_reason(module: str) -> Optional[str]:
@@ -59,13 +71,11 @@ def orca_reason() -> Optional[str]:
     return None
 
 
-def skip_listing_all(reasons: Iterable[Optional[str]]) -> None:
-    """Skip naming every reason that is not ``None``; return if none is.
+def missing(*reasons: Optional[str]) -> Optional[str]:
+    """One reason naming every precondition that is missing, or ``None``.
 
-    Raises ``pytest.skip``, which goes through ``BaseException``: a caller
-    that means to READ the reason must catch ``pytest.skip.Exception``, not
-    ``Exception``, or it is skipped instead of asserting.
+    Falsy entries are the preconditions that are in place and contribute
+    nothing. The order of the arguments does not decide what is reported.
     """
-    missing = [reason for reason in reasons if reason]
-    if missing:
-        pytest.skip("; ".join(missing))
+    present = [reason for reason in reasons if reason]
+    return SEPARATOR.join(present) if present else None

@@ -30,39 +30,25 @@ from __future__ import annotations
 
 import pytest
 
-from _skip_reasons import absent_reason, skip_listing_all
+from _skip_reasons import absent_reason, missing
 
 OPI = "opi is not importable (ModuleNotFoundError: No module named 'opi')"
 ORCA = "no ORCA binary for the parser probe ($ORCA_BINARY unset, ...)"
 
 
-def _reason_for(opi: bool, orca: bool) -> str | None:
-    """The skip reason for one combination, or None when nothing skips.
-
-    pytest.skip raises through BaseException, not Exception: caught as
-    ``except Exception`` it propagates and SKIPS this test instead of being
-    read -- and a skipped test asserts nothing.
-    """
-    try:
-        skip_listing_all([OPI if opi else None, ORCA if orca else None])
-    except pytest.skip.Exception as exc:
-        return str(getattr(exc, "msg", exc))
-    return None
-
-
-def test_nothing_skips_when_both_are_in_place():
-    assert _reason_for(opi=False, orca=False) is None
+def test_nothing_is_missing_when_both_are_in_place():
+    assert missing(None, None) is None
 
 
 def test_a_missing_package_is_named():
-    why = _reason_for(opi=True, orca=False)
+    why = missing(OPI, None)
     assert why and "opi" in why
     assert "ORCA" not in why, "it is there; do not say it is not"
 
 
 def test_a_missing_binary_is_named():
     """The case the module-level skip hid on a machine that has opi."""
-    why = _reason_for(opi=False, orca=True)
+    why = missing(None, ORCA)
     assert why and "ORCA" in why
     assert "opi" not in why, "it is importable; do not say it is not"
 
@@ -73,7 +59,7 @@ def test_both_missing_are_named_together():
     Ordering passes the three cases above and fails here: whichever is
     checked first returns its own reason and hides the other.
     """
-    why = _reason_for(opi=True, orca=True)
+    why = missing(OPI, ORCA)
     assert why
     assert "opi" in why
     assert "ORCA" in why
@@ -81,13 +67,29 @@ def test_both_missing_are_named_together():
 
 def test_the_order_of_the_reasons_does_not_decide_the_answer():
     """Neither precondition may be an early return: swap and read again."""
-    forward = _reason_for(opi=True, orca=True)
-    try:
-        skip_listing_all([ORCA, OPI])
-    except pytest.skip.Exception as exc:
-        reverse = str(getattr(exc, "msg", exc))
+    forward = missing(OPI, ORCA)
+    reverse = missing(ORCA, OPI)
     assert forward and reverse
     assert "opi" in reverse and "ORCA" in reverse
+
+
+def test_the_skip_is_raised_where_the_reader_can_see_the_test():
+    """The reason is returned, and the test raises the skip itself.
+
+    Measured with the skip raised from inside a helper: pytest reported
+    ``SKIPPED [1] tests/_skip_reasons.py:71``, naming the helper instead of
+    the test. A skip reason that cannot be attributed to a test is half of
+    the problem this fixes, so the helper returns and the test raises.
+
+    pytest.skip raises through BaseException, not Exception: caught as
+    ``except Exception`` it propagates and SKIPS this test instead of being
+    read -- and a skipped test asserts nothing.
+    """
+    why = missing(OPI, ORCA)
+    with pytest.raises(pytest.skip.Exception) as caught:
+        if why:
+            pytest.skip(why)
+    assert str(caught.value.msg) == why
 
 
 def test_a_package_that_is_really_absent_is_named_by_its_own_error():
@@ -105,3 +107,17 @@ def test_a_package_that_is_really_absent_is_named_by_its_own_error():
 
 def test_a_package_that_is_present_has_no_reason():
     assert absent_reason("json") is None
+
+
+def test_a_package_this_host_may_lack_is_measured_not_assumed():
+    """``absent_reason`` answers about the package, never about the host.
+
+    Both directions are read here -- whichever one this host happens to be
+    in, the answer has to agree with a fresh import of the same name. A
+    hard-coded "opi is absent" would pass on CI and lie on a machine that
+    has it, which is the mistake this whole change is about.
+    """
+    import importlib.util
+
+    installed = importlib.util.find_spec("opi") is not None
+    assert (absent_reason("opi") is None) is installed
