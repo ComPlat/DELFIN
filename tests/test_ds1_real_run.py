@@ -22,11 +22,6 @@ Omega in [0, 4*pi] <-> Theta in [0, 360] deg. This fixture gives
 Theta = 285.4 deg.
 """
 from pathlib import Path
-import pytest
-
-@pytest.fixture(autouse=True)
-def _require_morfeus():
-    pytest.importorskip("morfeus", reason="morfeus not installed")
 
 ROOT = Path(__file__).resolve().parent.parent
 GEOMETRY = ROOT / ".gate" / "practice" / "znh2o2cl2.xyz"
@@ -48,25 +43,38 @@ def _run_workflow():
 
 
 def _needs_geometry():
-    """Ensure required external resources are available.
+    """Skip unless this machine can run the real chain, naming what is missing.
 
-    The test suite depends on the optional ``morfeus`` package and on a
-    practice geometry file that is not committed to the repository.  Both
-    conditions can cause a test to be skipped.  To preserve *both* reasons we
-    check ``morfeus`` first and raise a skip with its message; if ``morfeus``
-    is present we then check for the geometry file and raise a second, more
-    specific skip if it is missing.
+    Two preconditions, and they are independent: the optional ``morfeus``
+    package, and the practice geometry
+    ``.gate/practice/znh2o2cl2.xyz``, which was never committed.
+
+    This was a module-level ``pytest.importorskip("morfeus")``. It fired at
+    collection, so the whole file came out as ONE skip naming the package,
+    and the geometry reason -- the one that applies to a machine which has
+    morfeus -- was never shown. Checking them in order here would only move
+    the masking: whichever is checked first hides the other.
+
+    So the skip names every precondition that is actually missing. Output:
+    nothing when the chain can run, else a skip whose reason lists each
+    missing one. ``morfeus`` is imported rather than merely looked for,
+    because the chain ends in it and a broken install must read as a skip
+    here, not as a ModuleNotFoundError out of the registry import.
     """
     import pytest
-    # Module‑level requirement – skip the test if morfeus is unavailable.
-    pytest.importorskip("morfeus", reason="morfeus not installed")
-    # Per‑test precondition – the geometry file must exist.
+
+    missing = []
+    try:
+        import morfeus                                      # noqa: F401
+    except Exception as exc:
+        missing.append(f"morfeus (morfeus-ml) is not importable: {exc}")
     if not GEOMETRY.exists():
-        pytest.skip(
+        missing.append(
             "scratch geometry .gate/practice/znh2o2cl2.xyz absent in this "
-            "tree (never committed); see .gate/PR.md — value-pinning works "
-            "on any tree that has a tetrahedral Zn complex there"
-        )
+            "tree (never committed); see .gate/PR.md -- value-pinning works "
+            "on any tree that has a tetrahedral Zn complex there")
+    if missing:
+        pytest.skip("; ".join(missing))
 
 
 def test_real_end_to_end_steric_screening():
@@ -109,20 +117,3 @@ def test_real_output_values_are_physical():
             )
     assert seen_buried, "no numeric %Vbur in any step result"
     assert seen_cone, "no numeric cone angle in any step result"
-
-
-def test_missing_practice_geometry():
-    """Ensure the practice geometry file is present.
-
-    This test isolates the geometry‑missing condition so that its skip
-    reason is reported even when the module‑level ``morfeus`` requirement
-    causes the other tests to be skipped.
-    """
-    import pytest
-    if not GEOMETRY.exists():
-        pytest.skip(
-            "scratch geometry .gate/practice/znh2o2cl2.xyz absent in this "
-            "tree (never committed); see .gate/PR.md — value-pinning works "
-            "on any tree that has a tetrahedral Zn complex there"
-        )
-    assert True
