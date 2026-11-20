@@ -452,6 +452,67 @@ def test_a_dense_but_tiny_file_is_not_a_chemistry_file():
     assert sig["chemistry"] is False
 
 
+def test_a_small_file_whose_identifiers_are_chemistry_is_a_chemistry_file():
+    """S3: the clause for the module whose subject is chemistry and whose
+    text is too short to reach S2's floor."""
+    text = (
+        "def read_orca_hess(orca_out):\n"
+        "    xyz_path = orca_out + '.xyz'\n"
+        "    hess_block = xyz_path\n"
+        "    nmr_shieldings = hess_block\n"
+        "    fukui_values = nmr_shieldings\n"
+        "    return fukui_values, xyz_path, hess_block\n")
+    sig = pools_mod.chemistry_signals(text)
+    assert sig["s1"] is False
+    assert sig["s2"] is False, sig
+    assert sig["s3"] is True, sig
+    assert sig["chemistry"] is True
+
+
+def test_chemistry_words_in_a_string_literal_alone_are_not_enough():
+    """The control for S3, and the file that made the rule read identifiers.
+
+    A licence notice names ORCA, xTB and CREST over and over inside one
+    string and has no chemistry identifier at all. The string carries more
+    chemistry names than S3's fragment floor asks for, so a reading that
+    took them for identifiers would promote the file -- that is the
+    mutation this test has to fail on. S3 reads identifiers and refuses it;
+    S2's absolute floor refuses the text.
+    """
+    text = ('BANNER = """\n' + "Install ORCA and xTB; CREST is optional. "
+            * 5 + '\n"""\n\n\ndef show(out):\n    out.write(BANNER)\n')
+    sig = pools_mod.chemistry_signals(text)
+    # The text reading sees more than S3's floor asks for and still
+    # refuses, because S2's own floor is higher.
+    assert sig["hits"] >= pools_mod.S3_MIN_HITS, sig
+    assert sig["hits"] < pools_mod.S2_MIN_HITS, sig
+    assert sig["per_1k"] > pools_mod.S2_MIN_PER_1K, sig
+    assert sig["s2"] is False
+    # Not one of those names is an identifier of this file.
+    assert sig["id_hits"] == 0, sig
+    assert sig["s3"] is False
+    assert sig["chemistry"] is False
+
+
+def test_a_tiny_module_with_a_high_identifier_share_is_refused():
+    """The share carries its own absolute floor, for the same reason the
+    rate does: a delegating stub of 22 identifiers reached 18 %."""
+    text = ("from delfin.orca import run\n\n\n"
+            "def main(xyz):\n    return run(xyz)\n")
+    sig = pools_mod.chemistry_signals(text)
+    assert sig["id_share"] > pools_mod.S3_MIN_SHARE * 5
+    assert sig["id_hits"] < pools_mod.S3_MIN_HITS
+    assert sig["s3"] is False
+
+
+_S3_BODY = (
+    "    xyz_path = source + '.xyz'\n"
+    "    hess_block = xyz_path\n"
+    "    nmr_shieldings = hess_block\n"
+    "    fukui_values = nmr_shieldings\n"
+    "    return fukui_values, xyz_path, hess_block\n")
+
+
 def test_a_plain_infrastructure_file_is_not_a_chemistry_file():
     sig = pools_mod.chemistry_signals(
         "import json\n\n\ndef read(path):\n    return json.loads(path)\n")
@@ -502,6 +563,47 @@ def test_the_pools_are_separate_and_the_exclusions_each_fire(tmp_path):
     assert "ab" not in infra
     assert "documented_orphan" not in infra
     assert "test_only_defined_here" not in infra
+
+
+def test_the_document_records_the_rule_that_produced_the_pools(tmp_path):
+    """A pools file read later has to say which rule drew it.
+
+    The rule has already changed once -- S3 was added on 2026-11-20 and
+    widened ``chem`` by 20 candidates -- so two pools files can differ in
+    their pools and agree in every other field. The thresholds and the
+    per-signal tally are therefore in the document, and the tally counts
+    what S3 admitted *alone*, which is the number that says whether the
+    clause earned its place.
+    """
+    repo = _pool_repo(tmp_path)
+    # Chemistry by its identifiers only, text far below S2's floor.
+    _write(repo / "delfin" / "small_chem.py",
+           "def read_orca_hess(source):\n" + _S3_BODY)
+    # Chemistry by import as well, so S3 and "S3 alone" cannot be equal.
+    _write(repo / "delfin" / "both_chem.py",
+           "import rdkit\n\n\ndef parse_orca_nmr(source):\n" + _S3_BODY)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "chemistry files")
+
+    doc = pools_mod.build_pools(repo, "HEAD")
+    rule = doc["chemistry_rule"]
+    assert rule["s2_min_hits"] == pools_mod.S2_MIN_HITS
+    assert rule["s2_min_per_1k"] == pools_mod.S2_MIN_PER_1K
+    assert rule["s3_min_hits"] == pools_mod.S3_MIN_HITS
+    assert rule["s3_min_share"] == pools_mod.S3_MIN_SHARE
+    assert "fukui" in rule["observable_terms"]
+    assert "ir" in rule["identifier_only_terms"]
+
+    tally = rule["files_by_signal"]
+    assert tally["scanned"] == len(list((repo / "delfin").rglob("*.py")))
+    # chem_in_agent.py and both_chem.py import rdkit; small_chem.py and
+    # both_chem.py reach S3; nothing in this tree reaches S2.
+    assert tally["s1"] == 2
+    assert tally["s2"] == 0
+    assert tally["s3"] == 2
+    assert tally["s3_only"] == 1
+    assert tally["chemistry"] == 3
+    assert rule["chemistry_files_under_delfin"] == 3
 
 
 def test_a_name_whose_module_is_absent_from_the_comparison_ref_is_removed(
