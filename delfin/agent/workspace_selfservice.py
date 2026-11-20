@@ -79,18 +79,6 @@ def _inside(path: str, workspace: str) -> bool:
     return root in p.parents  # strictly inside; the workspace root itself is not a target
 
 
-def _all_targets_inside(cmd: str, workspace: str) -> bool:
-    """False when the write-target extractor yields a target outside the
-    workspace, or yields no targets at all for a shape that is pinned by its
-    write-target check (S1 -- the pip command line must produce at least the
-    requirements path it names, or the extractor missed something and the
-    write gate gets to see the command instead)."""
-    targets = _write_targets(cmd)
-    if not targets:
-        return False
-    return all(_inside(t, workspace) for t in targets)
-
-
 def _no_target_outside(cmd: str, workspace: str) -> bool:
     """True when the extractor yields NO target that resolves outside the
     workspace. Used by the shapes whose pinned command forms produce no
