@@ -440,3 +440,74 @@ And the instrument built to find uncalled callables had produced one of its
 own — `is_chemistry_file`, orphaned by Change 3 and deleted.
 
 Instrument state: **42 tests passed, 35 mutations applied, 35 caught.**
+
+---
+
+## Addendum 3, 2026-11-20, a prediction recorded before the run
+
+A prediction written down before the data so the measurement can refute it.
+It is not a hypothesis of the protocol and no endpoint is changed; it is on
+record so that agreement afterwards cannot be mistaken for evidence.
+
+### The prediction
+
+> **A second independent reviewer wins clearly. A domain specialist against
+> a generalist comes out flat or marginal.**
+
+### Why, from the day this was written
+
+Six defects were found in this author's own work on 2026-11-20 by delegated
+agents: four in the specialist foundation itself, an endless loop in a
+shell-word scanner that would have hung every agent command containing
+`2>&1`, and eleven problems in the first draft of this protocol.
+
+**Every one was found by independence, not by domain knowledge.** A
+chemistry specialist would not have found a loop in a shell-word scanner.
+The common factor was that somebody else looked, with the same files and
+without the author's conclusion.
+
+So the lever may not be the number of specialist roles but **whether a
+second agent looks at all** -- which would be an uncomfortable answer for
+the direction this architecture is being built in, and is the reason to
+write it down rather than discover it as a feeling later.
+
+### What would refute it
+
+The `chem` arm completing materially more than the `infra` arm within arm S,
+while arm G shows no such gap: that would be domain specialisation doing
+work independently of a second pair of eyes. A flat result everywhere
+refutes nothing and means the design could not distinguish the two.
+
+### The framing this prediction implies, and why both are kept
+
+"Which one wins" is the wrong question, because the two are not measured on
+the same axis. Three axes, measured separately and never summed:
+
+1. **Outcome** -- what gets completed. This protocol's primary endpoint. The
+   prediction above is about this axis and expects it to be flat.
+2. **Confinement** -- what the agent *can* touch. Here a specialist is not a
+   better thinker but a **smaller one**: `metal-smiles-builder` declares 7
+   tools and `xyz-editor` 23, against a generalist's full surface, and a
+   preset's `write_globs` can be refused entry to the security core
+   entirely. That is a measurable property of the preset and needs no A/B --
+   blast radius, refused actions, scope violations.
+3. **Cost** -- tokens and wall seconds per completed task, the registered
+   second axis of section 4. Note what the prefix-cache measurement of the
+   same day does to the naive version of this argument: the tool schema is
+   11,718 tokens per request, and on a host that caches a stable head a
+   repeated large head costs almost nothing (measured 31x on KIT), while on
+   a host that routes around its own cache it costs full price every turn.
+   So "a specialist is cheaper because it sends fewer tools" is
+   **host-dependent** and must be measured per host, not assumed.
+
+A generalist is kept because the work does not arrive sorted by domain, and
+most of it is not chemistry: of 246 unmounted capabilities in this
+repository, 80 are agent infrastructure. A specialist is kept for axis 2,
+which is a security property rather than a quality one, and which holds
+whatever axis 1 shows.
+
+If the prediction is right, the conclusion is **not** "drop the
+specialists". It is that their value was on the axis nobody was measuring,
+and that the roster should grow for confinement and be judged on
+confinement -- while the thing to invest in for outcome is that a second
+agent reviews at all.
