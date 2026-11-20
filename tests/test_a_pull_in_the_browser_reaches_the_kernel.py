@@ -127,7 +127,9 @@ def _grab(page, box):
 
 def test_a_pull_on_the_canvas_reaches_the_kernel_and_a_still_mouse_does_not():
     playwright = pytest.importorskip(
-        'playwright.sync_api', reason='needs a browser to press an atom')
+        'playwright.sync_api',
+        reason='needs the playwright package and its Chromium browser '
+               'to press an atom')
     if not _BUNDLE.is_file():
         pytest.skip('vendored 3Dmol bundle is not present')
     from delfin.dashboard.molecule_forcefield import export_forcefield_terms
