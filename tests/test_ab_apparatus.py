@@ -558,11 +558,15 @@ def test_the_pools_are_separate_and_the_exclusions_each_fire(tmp_path):
     assert "chem_orphan_in_agent" in chem
     removed = doc["exclusions_removed"]
     assert removed.get("short_name", 0) >= 1          # "ab"
-    assert removed.get("documented_only", 0) >= 1     # named only in docs/
     assert removed.get("defined_in_test", 0) >= 1     # delfin/agent/test_*
     assert "ab" not in infra
-    assert "documented_orphan" not in infra
     assert "test_only_defined_here" not in infra
+    # A name that only docs/ mentions stays a candidate: the scan never
+    # reads docs/, so the mention is not reachability, and removing the
+    # candidate would instead be removing it for being documented.
+    assert "documented_orphan" in infra
+    assert "documented_orphan" in doc["candidates_named_in_docs"]["infra"]
+    assert "documented_only" not in removed
 
 
 def test_the_document_records_the_rule_that_produced_the_pools(tmp_path):

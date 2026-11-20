@@ -130,13 +130,24 @@ Exclusions
 ----------
 Applied in the order below, each counted and reported:
 
-1. ``documented_only`` -- tier ``nowhere`` and the name occurs under
-   ``docs/`` or ``test-evidence/``. A documented entry point is a reference,
-   not a caller, and it is also the shape that makes deletion wrong.
-2. ``defined_in_test`` -- the definition itself sits in a test file.
-3. ``module_absent`` -- the defining file does not exist in the comparison
+1. ``defined_in_test`` -- the definition itself sits in a test file.
+2. ``module_absent`` -- the defining file does not exist in the comparison
    tree (``--main-ref``).
-4. ``short_name`` -- fewer than 4 characters, so a grep for it is ambiguous.
+3. ``short_name`` -- fewer than 4 characters, so a grep for it is ambiguous.
+
+All three removed nothing from this corpus, and the zero is reported
+rather than the filter being dropped: a filter that removed nothing and
+says so is a fact about the corpus, and these three guard a later one.
+
+A fourth, ``documented_only`` (tier ``nowhere`` and the name occurs under
+``docs/`` or ``test-evidence/``), was written and removed on 2026-11-20.
+Its justification was that a doc mention is not a caller, which is already
+true: the scan never reads ``docs/``, so a documented name is in tier
+``nowhere`` regardless. As a filter it did the opposite -- it removed a
+candidate *for being documented*, treating a doc mention as evidence of an
+external entry point. It had removed exactly one name,
+``describe_mlp_backends`` (``delfin/mlp_tools/``), which is therefore in
+the ``chem`` pool from that date on.
 
 A fifth exclusion was written and then dropped: a name defined in both
 pools, which no name-based scan could attribute to one domain. It is
@@ -587,9 +598,10 @@ def build_pools(root: Path, main_ref: str = "origin/main") -> dict:
         }
         raw[pool + "__ndefs"] = len(defs)      # type: ignore[assignment]
 
-    # Names mentioned in prose. Needed for exclusion 1, and the scan does
-    # not read these trees, so a documented name is in tier `nowhere`.
-    prose_names: set[str] = set()
+    # Candidates named under docs/, as a diagnosis only. A doc mention is
+    # not reachability -- the scan does not read docs/ -- and it is not
+    # grounds for removal either (see the docstring on documented_only).
+    documented: set[str] = set()
     wanted = set(raw["infra"]) | set(raw["chem"])
     for sub in ("docs", "test-evidence"):
         tree = root / sub
@@ -604,23 +616,20 @@ def build_pools(root: Path, main_ref: str = "origin/main") -> dict:
                 continue
             for word in _WORD.findall(text):
                 if word in wanted:
-                    prose_names.add(word)
+                    documented.add(word)
 
     tracked = _tracked_paths(root, main_ref)
     twins = _twin_definitions(root)
 
     removed = Counter()
     removed_names: dict[str, list[str]] = {k: [] for k in (
-        "documented_only", "defined_in_test", "module_absent",
-        "short_name")}
+        "defined_in_test", "module_absent", "short_name")}
     pools: dict[str, list[dict]] = {}
     for pool in ("infra", "chem"):
         kept = []
         for name, row in sorted(raw[pool].items()):
             reason = None
-            if row["tier"] == "nowhere" and name in prose_names:
-                reason = "documented_only"
-            elif _is_test_file(row["file"]):
+            if _is_test_file(row["file"]):
                 reason = "defined_in_test"
             elif tracked is not None and row["file"] not in tracked:
                 reason = "module_absent"
@@ -663,6 +672,9 @@ def build_pools(root: Path, main_ref: str = "origin/main") -> dict:
         "task_sentence": ("connect this capability to the product, or delete "
                           "it together with its tests"),
         "callables_scanned": {p: raw[p + "__ndefs"] for p in ("infra", "chem")},
+        "candidates_named_in_docs": {
+            p: sorted(r["name"] for r in pools[p]
+                      if r["name"] in documented) for p in pools},
         "candidates_with_a_twin": {
             p: sorted(r["name"] for r in pools[p] if r["name"] in twins)
             for p in pools},
@@ -704,11 +716,14 @@ def report(doc: dict) -> None:
             print(f"    {n:4}  {pkg}")
     print()
     print("exclusions removed:")
-    for key in ("documented_only", "defined_in_test", "module_absent",
-                "short_name"):
+    for key in ("defined_in_test", "module_absent", "short_name"):
         print(f"    {doc['exclusions_removed'].get(key, 0):4}  {key}"
               f"   (infra {doc['exclusions_removed'].get(f'infra:{key}', 0)},"
               f" chem {doc['exclusions_removed'].get(f'chem:{key}', 0)})")
+    named = doc["candidates_named_in_docs"]
+    print(f"    candidates also named under docs/: "
+          f"{ {p: len(v) for p, v in named.items()} } (a diagnosis; a doc "
+          "mention is not a caller and is not grounds for removal)")
     twins = {p: v for p, v in doc["candidates_with_a_twin"].items() if v}
     print(f"    candidates with a second module-level definition: "
           f"{twins or 'none'}")
