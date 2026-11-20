@@ -1,14 +1,28 @@
-"""Guards on the `sbatch --wrap=` route: the green half of round 8/9.
+"""Guards on the `sbatch --wrap=` route: the green half of rounds 8/9.
 
-The red half of this investigation -- a wrap TEXT shaped like a script
-name (hpc_io_check.py:540-546 reads it as a PATH and FileNotFoundError
-escapes at :651) -- lives in the reviewer's uncommitted probe, because a
-test that is red against the code cannot be committed. The finding is
-with the builder and the QS with file:line and the fix shape.
+The red half of this investigation lives in the reviewer's uncommitted
+probe, because a test that is red against the code cannot be committed:
 
-What IS committed here is the other half: the three behaviours a fix for
-that crash must NOT destroy. Each passes on 8c97b4085, so a fix that
-breaks one is caught rather than celebrated.
+- a wrap TEXT shaped like a script name (`hpc_io_check.py:540-546` reads
+  it as a PATH and FileNotFoundError escapes at :651);
+- a walk that sits behind a separator inside the wrap text (the split at
+  `hpc_io_check.py:632` is not quote-aware).
+
+Both findings are with the builder and the QS with file:line and the fix
+shape.
+
+What IS committed here is the half a fix must not destroy: a wrap text
+that carries a Lustre walk must keep being refused, and a harmless wrap
+must keep running. Both pass on 8c97b4085, so a fix that breaks one is
+caught rather than celebrated.
+
+A third case was dropped after the QS ruled requirement (a) for
+`sbatch --wrap='bash run.sh'`. It had asserted that a wrap text NAMING an
+existing walking script must be refused, which is requirement (b) --
+resolving the named file -- and the brief never asks for it. The ruling
+is that the wrap TEXT is the unit: a wrap whose text carries no walk is
+allowed even when a file of that name walks. That assertion is red
+today, so it sits in the probe with the rest of the acceptance criteria.
 """
 from __future__ import annotations
 
@@ -48,42 +62,3 @@ def test_a_clean_wrap_without_a_suffix_still_runs(mounts, tmp_path, monkeypatch)
         "sbatch --wrap='make -j8'", env=ENV, mounts_path=mounts)
     assert verdict == "allow"
     assert may_run is True
-
-
-@pytest.mark.parametrize("spelling", ["run.sh", "./run.sh"])
-def test_a_wrap_naming_a_walking_script_is_still_refused(
-        mounts, tmp_path, monkeypatch, spelling):
-    """The fix must not turn every wrap text into a pure TEXT check.
-
-    Today the shape heuristic gives this for free: the wrap text names a
-    file, the file is read, its content walks Lustre, the submit is
-    refused. A fix that simply passes is_text=True from
-    hpc_io_check.py:651 keeps the crash away but LOSES this refusal --
-    the check then sees the literal characters "run.sh" and allows.
-
-    So this is the guard that separates "checks the text" from "checks
-    the text AND, when it names a real script, that script". A correct
-    fix refuses both spellings; a naive is_text fix allows both.
-
-    Deliberately NOT parametrised over "bash run.sh": that wrap text
-    MENTIONS a file rather than naming one, so resolving it would need
-    shell-word parsing the brief never asked for. I raised it with the
-    QS as an open design question instead of asserting a requirement
-    the package does not state.
-    """
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "run.sh").write_text(
-        "#!/bin/bash\n" + WALK + "\n", encoding="utf-8")
-
-    # What the two readings do with the same string, measured: the pure
-    # TEXT reading finds nothing (that is the trap), the FILE reading
-    # finds the walk. If check() ever starts refusing a bare "run.sh" as
-    # text, this test no longer discriminates and must be revisited.
-    assert hpc_io_check.check(spelling, env=ENV, mounts_path=mounts) == []
-
-    verdict, finding, may_run = hpc_io_check.sbatch_gate(
-        f"sbatch --wrap={spelling!r}", env=ENV, mounts_path=mounts)
-    assert verdict == "refuse", (
-        f"wrap text {spelling!r} names an existing walking script; the "
-        "submit must be judged on that script's content")
-    assert may_run is False
