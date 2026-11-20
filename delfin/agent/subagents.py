@@ -1805,9 +1805,12 @@ def _build_preset_registry() -> dict[str, SubagentPreset]:
             system_prompt = body.strip() or description or name
             enabled = (meta.get("enabled_setting") or "").strip()
             if enabled and not _setting_on(enabled):
-                # A department behind a switch defaults to off: not
-                # loaded into the registry, so the model is never offered
-                # the type and a call hits the unknown-type refusal.
+                # A department switched OFF is not loaded into the
+                # registry, so the model is never offered the type and a
+                # call hits the unknown-type refusal. The two shipped
+                # departments default ON (user_settings DEFAULT_SETTINGS);
+                # a setting that is absent entirely still reads as off,
+                # which is what _setting_on promises.
                 continue
             # The check that exists for exactly this moment. It had no
             # caller: a preset naming an unknown tool, or claiming a
