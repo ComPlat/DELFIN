@@ -39,6 +39,8 @@ def _kekule_orders(smiles):
         from rdkit import Chem
     except ImportError:
         return None
+    if not smiles:
+        return None
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return None
