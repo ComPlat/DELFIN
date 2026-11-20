@@ -37,9 +37,10 @@ logger = get_logger(__name__)
 
 
 def _find_repo_root(start: Path) -> Path | None:
+    from delfin.agent import safe_git
     cur = start.resolve()
     for _ in range(8):
-        if (cur / ".git").exists():
+        if safe_git.is_checkout(cur):
             return cur
         if cur == cur.parent:
             break

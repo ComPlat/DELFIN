@@ -25010,8 +25010,9 @@ def create_tab(ctx):
         # Find the enclosing git repo by walking up.
         repo_root = None
         cur = fpath if fpath.is_dir() else fpath.parent
+        from delfin.agent import safe_git as _sg
         while True:
-            if (cur / ".git").exists():
+            if _sg.is_checkout(cur):
                 repo_root = cur
                 break
             if cur == cur.parent:
