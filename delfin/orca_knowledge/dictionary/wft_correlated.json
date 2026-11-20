@@ -19,7 +19,7 @@
   },
   "parser": "accepted",
   "opi": "Wft.MP2",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "rimp2",
@@ -42,7 +42,7 @@
   },
   "parser": "unavailable",
   "opi": "Wft.RIMP2",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "scs-mp2",
@@ -76,7 +76,7 @@
   },
   "parser": "accepted",
   "opi": "Wft.SCS_MP2",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "dlpno-mp2",
@@ -105,7 +105,7 @@
   },
   "parser": "accepted",
   "opi": "Wft.DLPNO_MP2",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "oo-ri-mp2",
@@ -134,7 +134,7 @@
   },
   "parser": "accepted",
   "opi": "Wft.OO_RI_MP2",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "mp2-reg",
@@ -160,7 +160,7 @@
   },
   "parser": "accepted",
   "opi": "BlockMp2.DoRegMP2",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "mp2.scs-factors",
@@ -180,7 +180,7 @@
   },
   "parser": "accepted",
   "opi": "BlockMp2.PS",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "mp2.natorb",
@@ -200,7 +200,7 @@
   },
   "parser": "accepted",
   "opi": "BlockMp2.NatOrb",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "mp2.f12",
@@ -220,7 +220,7 @@
   },
   "parser": "accepted",
   "opi": "BlockMp2.F12",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "mp2.mp2solver",
@@ -240,7 +240,7 @@
   },
   "parser": "accepted",
   "opi": "BlockMp2.MP2Solver",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "mp2.ewin",
@@ -260,7 +260,7 @@
   },
   "parser": "accepted",
   "opi": "BlockMp2.EWin",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "ccsd",
@@ -286,7 +286,7 @@
   },
   "parser": "accepted",
   "opi": "Wft.CCSD",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "ccsd-t",
@@ -312,7 +312,7 @@
   },
   "parser": "accepted",
   "opi": "Wft.CCSD_T",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "ccsd-f12",
@@ -338,7 +338,7 @@
   },
   "parser": "accepted",
   "opi": "Wft.CCSD_F12",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "qcisd",
@@ -364,7 +364,7 @@
   },
   "parser": "accepted",
   "opi": "BlockMdci.CIType",
-  "status": "grounded",
+  "status": "draft",
   "note": "QCISD is not an OPI simple-keyword enum; it is set via the MDCI CIType option (block option)."
  },
  {
@@ -400,7 +400,7 @@
   },
   "parser": "accepted",
   "opi": "BlockMdci.CIType",
-  "status": "grounded",
+  "status": "draft",
   "note": "CEPA/n spellings are not OPI simple-keyword enums; they are set via the MDCI CIType option (block option)."
  },
  {
@@ -423,7 +423,7 @@
   },
   "parser": "accepted",
   "opi": "Wft.MP3",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "cisd",
@@ -445,7 +445,7 @@
   },
   "parser": "accepted",
   "opi": "Wft.CISD",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "cc2",
@@ -465,7 +465,7 @@
   },
   "parser": "accepted",
   "opi": "Wft.CC2",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "eom-ccsd",
@@ -485,7 +485,7 @@
   },
   "parser": "accepted",
   "opi": "Wft.EOM_CCSD",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "steom-ccsd",
@@ -507,7 +507,7 @@
   },
   "parser": "accepted",
   "opi": "Wft.STEOM_CCSD",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "mdci.citype",
@@ -533,7 +533,7 @@
   },
   "parser": "accepted",
   "opi": "BlockMdci.CIType",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "mdci.tcutpno",
@@ -553,7 +553,7 @@
   },
   "parser": "accepted",
   "opi": "BlockMdci.TCutPNO",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "mdci.tcutpairs",
@@ -573,7 +573,7 @@
   },
   "parser": "accepted",
   "opi": "BlockMdci.TCutPairs",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "mdci.tcutmkn",
@@ -593,7 +593,7 @@
   },
   "parser": "accepted",
   "opi": "BlockMdci.TCutMKN",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "mdci.tcutdo",
@@ -613,7 +613,7 @@
   },
   "parser": "accepted",
   "opi": "BlockMdci.TCutDO",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "mdci.triples",
@@ -633,7 +633,7 @@
   },
   "parser": "accepted",
   "opi": "BlockMdci.Triples",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "mdci.ewin",
@@ -653,7 +653,7 @@
   },
   "parser": "accepted",
   "opi": "BlockMdci.EWin",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "mdci.maxiter",
@@ -673,7 +673,7 @@
   },
   "parser": "accepted",
   "opi": "BlockMdci.MaxIter",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "mdci.stol",
@@ -693,7 +693,7 @@
   },
   "parser": "accepted",
   "opi": "BlockMdci.STol",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "mdci.denmat",
@@ -713,7 +713,7 @@
   },
   "parser": "accepted",
   "opi": "BlockMdci.Denmat",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "mdci.brueckner",
@@ -733,7 +733,7 @@
   },
   "parser": "accepted",
   "opi": "BlockMdci.Brueckner",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "mdci.maxcore",
@@ -753,7 +753,7 @@
   },
   "parser": "accepted",
   "opi": "BlockMdci.MaxCore",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "mdci.incore",
@@ -773,7 +773,7 @@
   },
   "parser": "accepted",
   "opi": "BlockMdci.InCore",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "mdci.locmet",
@@ -793,7 +793,7 @@
   },
   "parser": "accepted",
   "opi": "BlockMdci.LocMet",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "mdci.localize",
@@ -813,7 +813,7 @@
   },
   "parser": "accepted",
   "opi": "BlockMdci.Localize",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "loosepno",
@@ -833,7 +833,7 @@
   },
   "parser": "accepted",
   "opi": "Dlpno.LOOSEPNO",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "normalpno",
@@ -853,7 +853,7 @@
   },
   "parser": "accepted",
   "opi": "Dlpno.NORMALPNO",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "tightpno",
@@ -873,7 +873,7 @@
   },
   "parser": "accepted",
   "opi": "Dlpno.TIGHTPNO",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "dlpno-ccsd",
@@ -899,7 +899,7 @@
   },
   "parser": "accepted",
   "opi": "Wft.DLPNO_CCSD",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "dlpno-ccsd-t",
@@ -925,7 +925,7 @@
   },
   "parser": "accepted",
   "opi": "Wft.DLPNO_CCSD_T",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "dlpno-hfc",
@@ -947,7 +947,7 @@
   },
   "parser": "accepted",
   "opi": "Dlpno.LOOSEPNO",
-  "status": "grounded",
+  "status": "draft",
   "note": "DLPNO-HFC1/2 are not OPI enum members; they select PNO threshold presets like the LoosePNO/NormalPNO/TightPNO family."
  },
  {
@@ -970,7 +970,7 @@
   },
   "parser": "accepted",
   "opi": "Dlpno.LED",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "hfld",
@@ -992,7 +992,7 @@
   },
   "parser": "accepted",
   "opi": "Dlpno.HFLD",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "pnoextrapolation",
@@ -1012,7 +1012,7 @@
   },
   "parser": "accepted",
   "opi": "Dlpno.PNOEXTRAPOLATION",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "casscf",
@@ -1032,7 +1032,7 @@
   },
   "parser": "accepted",
   "opi": "Casscf.CASSCF",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "casscf.nel",
@@ -1052,7 +1052,7 @@
   },
   "parser": "accepted",
   "opi": "BlockCasscf.NEl",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "casscf.norb",
@@ -1072,7 +1072,7 @@
   },
   "parser": "accepted",
   "opi": "BlockCasscf.NOrb",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "casscf.mult",
@@ -1092,7 +1092,7 @@
   },
   "parser": "accepted",
   "opi": "BlockCasscf.Mult",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "casscf.irrep",
@@ -1112,7 +1112,7 @@
   },
   "parser": "accepted",
   "opi": "BlockCasscf.Irrep",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "casscf.nroots",
@@ -1132,7 +1132,7 @@
   },
   "parser": "accepted",
   "opi": "BlockCasscf.NRoots",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "casscf.cistep",
@@ -1152,7 +1152,7 @@
   },
   "parser": "accepted",
   "opi": "BlockCasscf.CIStep",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "casscf.orbstep",
@@ -1172,7 +1172,7 @@
   },
   "parser": "accepted",
   "opi": "BlockCasscf.OrbStep",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "casscf.switchconv",
@@ -1192,7 +1192,7 @@
   },
   "parser": "accepted",
   "opi": "BlockCasscf.SwitchConv",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "casscf.maxiter",
@@ -1212,7 +1212,7 @@
   },
   "parser": "accepted",
   "opi": "BlockCasscf.MaxIter",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "casscf.etol",
@@ -1232,7 +1232,7 @@
   },
   "parser": "accepted",
   "opi": "BlockCasscf.ETol",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "casscf.iroot",
@@ -1252,7 +1252,7 @@
   },
   "parser": "accepted",
   "opi": "BlockCasscf.IRoot",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "casscf.ptmethod",
@@ -1276,7 +1276,7 @@
   },
   "parser": "accepted",
   "opi": "BlockCasscf.PTMethod",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "casscf.trafostep",
@@ -1296,7 +1296,7 @@
   },
   "parser": "accepted",
   "opi": "BlockCasscf.TrafoStep",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "casscf.bweight",
@@ -1316,7 +1316,7 @@
   },
   "parser": "accepted",
   "opi": "BlockCasscf.BWeight",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "casscf.actorbs",
@@ -1336,7 +1336,7 @@
   },
   "parser": "accepted",
   "opi": "BlockCasscf.ActOrbs",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "nevpt2",
@@ -1358,7 +1358,7 @@
   },
   "parser": "accepted",
   "opi": "Wft.NEVPT2",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "sc-nevpt2",
@@ -1378,7 +1378,7 @@
   },
   "parser": "accepted",
   "opi": "Wft.SC_NEVPT2",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "dlpno-nevpt2",
@@ -1398,7 +1398,7 @@
   },
   "parser": "accepted",
   "opi": "Wft.DLPNO_NEVPT2",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "caspt2",
@@ -1421,7 +1421,7 @@
   },
   "parser": "accepted",
   "opi": "Wft.CASPT2",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "avas-valence-d",
@@ -1445,7 +1445,7 @@
   },
   "parser": "accepted",
   "opi": "Avas.AVAS_VALENCE_D",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "avas-double-d",
@@ -1467,7 +1467,7 @@
   },
   "parser": "accepted",
   "opi": "Avas.AVAS_DOUBLE_D",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "avas-valence-f",
@@ -1490,7 +1490,7 @@
   },
   "parser": "accepted",
   "opi": "Avas.AVAS_VALENCE_F",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "avas-valence-ds",
@@ -1540,7 +1540,7 @@
   },
   "parser": "accepted",
   "opi": "AutoCI.AUTOCI_CCSD",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "autoci.citype",
@@ -1560,7 +1560,7 @@
   },
   "parser": "accepted",
   "opi": "BlockAutoCI.CIType",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "autoci.stol",
@@ -1580,7 +1580,7 @@
   },
   "parser": "accepted",
   "opi": "BlockAutoCI.STol",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "autoci.maxiter",
@@ -1600,7 +1600,7 @@
   },
   "parser": "accepted",
   "opi": "BlockAutoCI.MaxIter",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "autoci.maxdiis",
@@ -1620,7 +1620,7 @@
   },
   "parser": "accepted",
   "opi": "BlockAutoCI.MaxDIIS",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "autoci.levelshift",
@@ -1640,7 +1640,7 @@
   },
   "parser": "accepted",
   "opi": "BlockAutoCI.LevelShift",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "autoci.nel",
@@ -1660,7 +1660,7 @@
   },
   "parser": "accepted",
   "opi": "BlockAutoCI.NEl",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "autoci.norb",
@@ -1680,7 +1680,7 @@
   },
   "parser": "accepted",
   "opi": "BlockAutoCI.NOrb",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "autoci.mult",
@@ -1700,7 +1700,7 @@
   },
   "parser": "accepted",
   "opi": "BlockAutoCI.Mult",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "autoci.nroots",
@@ -1720,7 +1720,7 @@
   },
   "parser": "accepted",
   "opi": "BlockAutoCI.NRoots",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "autoci.irrep",
@@ -1740,7 +1740,7 @@
   },
   "parser": "accepted",
   "opi": "BlockAutoCI.Irrep",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "autoci.density",
@@ -1760,7 +1760,7 @@
   },
   "parser": "accepted",
   "opi": "BlockAutoCI.Density",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "autoci.runrohfasuhf",
@@ -1780,7 +1780,7 @@
   },
   "parser": "accepted",
   "opi": "BlockAutoCI.RunROHFasUHF",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "autoci.keepints",
@@ -1800,7 +1800,7 @@
   },
   "parser": "accepted",
   "opi": "BlockAutoCI.KeepInts",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "autoci.useoldints",
@@ -1820,7 +1820,7 @@
   },
   "parser": "accepted",
   "opi": "BlockAutoCI.UseOldInts",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "ice",
@@ -1844,7 +1844,7 @@
   },
   "parser": "accepted",
   "opi": "BlockIce",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "ice.tgen",
@@ -1864,7 +1864,7 @@
   },
   "parser": "accepted",
   "opi": "BlockIce.TGen",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "ice.tvar",
@@ -1884,7 +1884,7 @@
   },
   "parser": "accepted",
   "opi": "BlockIce.TVar",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "ice.icetype",
@@ -1904,7 +1904,7 @@
   },
   "parser": "accepted",
   "opi": "BlockIce.ICEType",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "ice.integrals",
@@ -1924,7 +1924,7 @@
   },
   "parser": "accepted",
   "opi": "BlockIce.Integrals",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "ice.nel",
@@ -1944,7 +1944,7 @@
   },
   "parser": "accepted",
   "opi": "BlockIce.NEl",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "ice.norb",
@@ -1964,7 +1964,7 @@
   },
   "parser": "accepted",
   "opi": "BlockIce.NOrb",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "ice.nroots",
@@ -1984,7 +1984,7 @@
   },
   "parser": "accepted",
   "opi": "BlockIce.NRoots",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "ice.mult",
@@ -2004,7 +2004,7 @@
   },
   "parser": "accepted",
   "opi": "BlockIce.Mult",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "ice.irrep",
@@ -2024,7 +2024,7 @@
   },
   "parser": "accepted",
   "opi": "BlockIce.Irrep",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "ice.etol",
@@ -2044,7 +2044,7 @@
   },
   "parser": "accepted",
   "opi": "BlockIce.ETol",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "casscf.ciconv",
@@ -2064,7 +2064,7 @@
   },
   "parser": "rejected",
   "opi": "BlockCasscf.CIConv",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "mp2.maxitpno",
@@ -2084,7 +2084,7 @@
   },
   "parser": "rejected",
   "opi": "BlockMp2.MaxPNOIter",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "mp2.tolx",
@@ -2104,7 +2104,7 @@
   },
   "parser": "rejected",
   "opi": "BlockMp2",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "mdci.trcutpno",
@@ -2124,6 +2124,6 @@
   },
   "parser": "rejected",
   "opi": "BlockMdci.TCutPNO",
-  "status": "grounded"
+  "status": "draft"
  }
 ]
