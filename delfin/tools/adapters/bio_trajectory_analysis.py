@@ -73,6 +73,7 @@ class TrajectoryAnalysis(StepAdapter):
               ParamSpec('alignment', 'str', required=True, enum=('none', 'fit')),
               ParamSpec('weighting', 'str', required=True, enum=('uniform', 'mass')),
               ParamSpec('discard_frames', 'int', required=True), ParamSpec('stride', 'int', required=True),
+              ParamSpec('periodic_policy', 'str', default='reject', enum=('reject', 'as_stored')),
               ParamSpec('timeout', 'float', default=600.), ParamSpec('python', 'path', default=sys.executable))
     data_keys = (DataKeySpec('runtime', 'dict'), DataKeySpec('frame_count', 'int'), DataKeySpec('frames', 'list'))
     example_kwargs = dict(trajectory_file='trajectory.json', system_file='simulation_system.json', expected_version='2.9.0',
@@ -87,6 +88,8 @@ class TrajectoryAnalysis(StepAdapter):
             raise ValueError('atom_indices must be a unique nonempty list of zero-based indices')
         if kwargs['alignment'] not in ('none', 'fit') or kwargs['weighting'] not in ('uniform', 'mass'):
             raise ValueError('explicit alignment and weighting policies required')
+        if kwargs.get('periodic_policy', 'reject') not in ('reject', 'as_stored'):
+            raise ValueError('invalid periodic analysis policy')
         if kwargs['alignment'] == 'fit' and len(indices) < 3:
             raise ValueError('fitting requires at least three selected atoms')
         for name, minimum in [('discard_frames', 0), ('stride', 1)]:
@@ -105,6 +108,8 @@ class TrajectoryAnalysis(StepAdapter):
             self.validate_params(**kwargs)
             trajectory_path = Path(kwargs['trajectory_file']).resolve()
             details = validate_trajectory(trajectory_path)
+            if details['periodic'] and kwargs.get('periodic_policy', 'reject') != 'as_stored':
+                raise ValueError('periodic trajectory analysis requires explicit periodic_policy=as_stored; no unwrapping is performed')
             trajectory = read_json(trajectory_path)
             if system_identity(kwargs['system_file']) != trajectory['system_identity']:
                 raise ValueError('analysis system differs from trajectory system')
@@ -121,6 +126,7 @@ class TrajectoryAnalysis(StepAdapter):
             shutil.copyfile(frames, root / 'frames.jsonl')
             options = {key: kwargs[key] for key in ('atom_indices', 'alignment', 'weighting', 'discard_frames', 'stride')}
             options['masses'] = masses
+            options['periodic_policy'] = kwargs.get('periodic_policy', 'reject')
             runtime = run_worker(_WORKER, options, {'mdanalysis': kwargs['expected_version']}, python=kwargs.get('python', sys.executable),
                                  work_dir=root, timeout=kwargs.get('timeout', 600.))
             data = read_json(root / 'analysis.json')

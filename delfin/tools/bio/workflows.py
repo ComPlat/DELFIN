@@ -132,8 +132,8 @@ BACKENDS = tuple(
              {"complex": "complex_structure"}, ("explicit pose ID", "common coordinate frame", "atom mapping"),
              _GH + "ComPlat/DELFIN", "Assemble a selected pose and receptor without coordinate realignment"),
     _backend("parameterize", "simulation", {"complex": "complex_structure"}, {"system": "simulation_system"},
-             ("OpenMM version", "canonical hydrogenated protein", "explicit ff14SB/vacuum/constraints/charge policies"),
-             "https://docs.openmm.org/latest/userguide/", "Checked system bundle; current execution subset is protein-only ff14SB in vacuum, without ligand/solvent parameterization"),
+             ("OpenMM version", "canonical hydrogenated protein", "explicit ff14SB/environment/constraints/charge policies"),
+             "https://docs.openmm.org/latest/userguide/", "Checked protein-only ff14SB system in vacuum or explicit TIP3P/ion orthorhombic PME solvent; ligand parameterization remains unsupported"),
     *tuple(_backend(id, "simulation", {"system": "simulation_system"}, {"trajectory": "trajectory", "checkpoint": "checkpoint"},
                     ("engine-specific system conversion", "integrator/ensemble", "resources", "restart state"), url,
                     "Molecular dynamics; engine-specific parameters and trajectory provenance", commands)

@@ -51,10 +51,13 @@ else:
     context.setTime(0*unit.picosecond); context.setStepCount(0)
 def frame():
     state=context.getState(getPositions=True,getEnergy=True)
-    return dict(step=context.getStepCount(),time_ps=state.getTime().value_in_unit(unit.picosecond),
+    value=dict(step=context.getStepCount(),time_ps=state.getTime().value_in_unit(unit.picosecond),
         potential_kj_mol=state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole),
         kinetic_kj_mol=state.getKineticEnergy().value_in_unit(unit.kilojoule_per_mole),
         positions_nm=[list(p) for p in state.getPositions().value_in_unit(unit.nanometer)])
+    if system.usesPeriodicBoundaryConditions():
+        value['box_vectors_nm']=[list(v) for v in state.getPeriodicBoxVectors().value_in_unit(unit.nanometer)]
+    return value
 with open('frames.jsonl','w') as stream:
     stream.write(json.dumps(frame(),allow_nan=False)+'\\n'); stream.flush()
     remaining=options['steps']
@@ -164,6 +167,7 @@ class OpenMMRun(StepAdapter):
                     raise ValueError('minimization energy is invalid or increased')
             count = 1 + (kwargs['steps'] + kwargs['report_interval'] - 1) // kwargs['report_interval']
             trajectory = dict(schema_version=1, format='delfin_openmm_jsonl', units=UNITS, system=file_record(root, system),
+                              periodic=details.get('periodic', False),
                               system_identity=identity, frames=file_record(root, root / 'frames.jsonl'), frame_count=count,
                               start_step=start_step, start_time_ps=start_time, steps=kwargs['steps'], report_interval=kwargs['report_interval'],
                               timestep_ps=kwargs['timestep_ps'], protocol=protocol, runtime=runtime)

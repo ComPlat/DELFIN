@@ -1,5 +1,10 @@
 # Biomolecular foundation — draft scope and next steps
 
+This document records the initial scaffold and its historical review. For the
+current detailed implementation, installer coverage and remaining QM-parity
+requirements, see [the foundation specification](BIOMOLECULAR_FOUNDATION/README.md)
+and [current workflow reference](BIOMOLECULAR_WORKFLOWS.md).
+
 This draft extends DELFIN's existing, composable tool layer to biomolecular
 work. The goal is one vocabulary and one execution/reporting interface for
 structures, ligands, binding sites and poses. Docking and structure prediction

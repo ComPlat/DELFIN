@@ -13,10 +13,10 @@ from delfin.tools._types import StepStatus, ErrorKind
 from delfin.tools.bio import read_structure
 from delfin.tools.bio.artifacts import file_hash, write_json
 from delfin.tools.bio.optional_runtime import probe_distribution, run_worker
-from delfin.tools.bio.simulation import validate_system
+from delfin.tools.bio.simulation import validate_system, validate_solvation
 
 
-_WORKER = '''import json,sys,shutil
+_WORKER = '''import json,sys,shutil,random
 from pathlib import Path
 import xml.etree.ElementTree as ET
 import openmm
@@ -29,8 +29,29 @@ source=Path(app.__file__).parent/'data'/'amber14'/'protein.ff14SB.xml'
 if ET.parse(source).getroot().find('Include') is not None:
     raise ValueError('force field includes require an explicitly versioned dependency bundle')
 shutil.copyfile(source,'forcefield.xml')
-forcefield=app.ForceField('forcefield.xml')
-system=forcefield.createSystem(pdb.topology,nonbondedMethod=app.NoCutoff,
+forcefield_files=['forcefield.xml']
+if options['environment']=='tip3p_pme':
+    solvent=Path(app.__file__).parent/'data'/'amber14'/'tip3p.xml'
+    if ET.parse(solvent).getroot().find('Include') is not None:
+        raise ValueError('solvent force field must be self-contained')
+    shutil.copyfile(solvent,'solvent_forcefield.xml'); forcefield_files.append('solvent_forcefield.xml')
+forcefield=app.ForceField(*forcefield_files)
+settings=options.get('solvation')
+nonbonded={'nonbondedMethod':app.NoCutoff}
+if settings:
+    random.seed(settings['seed'])
+    model=app.Modeller(pdb.topology,pdb.positions)
+    model.addSolvent(forcefield,model='tip3p',boxSize=openmm.Vec3(*settings['box_size_nm'])*unit.nanometer,
+        ionicStrength=settings['ionic_strength_m']*unit.molar,neutralize=settings['neutralize'],
+        positiveIon=settings['positive_ion'],negativeIon=settings['negative_ion'])
+    if model.topology.getNumAtoms()>99999 or any(len(c.id)!=1 for c in model.topology.chains()) or any(not r.id.isdigit() or not 1<=int(r.id)<=9999 for r in model.topology.residues()):
+        raise ValueError('solvated system exceeds the supported PDB identity limits')
+    with open('solvated.pdb','w') as stream:
+        app.PDBFile.writeFile(model.topology,model.positions,stream,keepIds=True)
+    # Use the stored coordinate precision consistently in all bundle members.
+    pdb=app.PDBFile('solvated.pdb')
+    nonbonded=dict(nonbondedMethod=app.PME,nonbondedCutoff=settings['cutoff_nm']*unit.nanometer,ewaldErrorTolerance=settings['ewald_tolerance'])
+system=forcefield.createSystem(pdb.topology,**nonbonded,
     constraints=app.HBonds if options['constraints']=='HBonds' else None,
     rigidWater=False,removeCMMotion=False)
 if system.getNumParticles()!=pdb.topology.getNumAtoms() or any(system.isVirtualSite(i) for i in range(system.getNumParticles())):
@@ -52,7 +73,7 @@ for name,value in [('topology.json',{'atoms':atoms,'bonds':bonds}),
 
 class OpenMMSystem(StepAdapter):
     name = 'bio_openmm_parameterize'
-    description = 'Parameterize an explicitly hydrogenated canonical protein in vacuum with ff14SB; export a hashed OpenMM system bundle'
+    description = 'Parameterize an explicitly hydrogenated canonical protein with ff14SB in vacuum or an explicit TIP3P/PME box; export a checked system bundle'
     category = 'structure'
     produces_geometry = False
     consumes = ('complex_structure',)
@@ -61,7 +82,8 @@ class OpenMMSystem(StepAdapter):
     required_artifacts = produces
     params = (ParamSpec('structure_file', 'path', required=True), ParamSpec('expected_version', 'str', required=True),
               ParamSpec('forcefield', 'str', required=True, enum=('amber14/protein.ff14SB.xml',)),
-              ParamSpec('environment', 'str', required=True, enum=('vacuum',)),
+              ParamSpec('environment', 'str', required=True, enum=('vacuum', 'tip3p_pme')),
+              ParamSpec('solvation', 'dict'),
               ParamSpec('constraints', 'str', required=True, enum=('none', 'HBonds')),
               ParamSpec('expected_charge', 'int', required=True),
               ParamSpec('python', 'path', default=sys.executable), ParamSpec('timeout', 'float', default=600.0))
@@ -73,8 +95,15 @@ class OpenMMSystem(StepAdapter):
         for param in self.params:
             if param.required and (kwargs.get(param.name) is None or kwargs.get(param.name) == ''):
                 raise ValueError(f'{param.name} is required')
-        if kwargs['forcefield'] != 'amber14/protein.ff14SB.xml' or kwargs['environment'] != 'vacuum' or kwargs['constraints'] not in ('none', 'HBonds'):
-            raise ValueError('explicit ff14SB/vacuum/constraints policies required')
+        if kwargs['forcefield'] != 'amber14/protein.ff14SB.xml' or kwargs['environment'] not in ('vacuum', 'tip3p_pme') or kwargs['constraints'] not in ('none', 'HBonds'):
+            raise ValueError('explicit ff14SB/environment/constraints policies required')
+        if kwargs['environment'] == 'tip3p_pme':
+            validate_solvation(kwargs.get('solvation'))
+            expected = 0 if kwargs['solvation']['neutralize'] else kwargs['solvation']['solute_charge']
+            if kwargs['expected_charge'] != expected:
+                raise ValueError('expected final charge contradicts solvation policy')
+        elif kwargs.get('solvation') is not None:
+            raise ValueError('vacuum construction does not accept solvation settings')
         if type(kwargs['expected_charge']) is not int:
             raise ValueError('expected_charge must be an integer in elementary charge units')
         timeout = kwargs.get('timeout', 600.0)
@@ -96,23 +125,34 @@ class OpenMMSystem(StepAdapter):
             if not any(a.element == 'H' for a in structure.first_model.atoms):
                 raise ValueError('protein must already contain explicit hydrogens; no protonation changes are made')
             if any(line.startswith('CRYST1') for line in Path(kwargs['structure_file']).read_text().splitlines()):
-                raise ValueError('vacuum parameterization refuses a periodic input box')
+                raise ValueError('parameterization requires an unboxed prepared protein; existing periodic boxes are not silently replaced')
+            if kwargs['environment'] == 'tip3p_pme':
+                for axis, length in enumerate(kwargs['solvation']['box_size_nm']):
+                    values = [atom.position[axis] / 10 for atom in structure.first_model.atoms]
+                    if max(values) - min(values) >= length:
+                        raise ValueError('requested periodic box is smaller than the source protein extent')
             root.mkdir(parents=True, exist_ok=True)
             if any(root.iterdir()):
                 raise ValueError('parameterization requires an empty step directory')
             shutil.copyfile(kwargs['structure_file'], root / 'input.pdb')
-            runtime = run_worker(_WORKER, {'constraints': kwargs['constraints']}, {'openmm': kwargs['expected_version']},
+            runtime = run_worker(_WORKER, {'constraints': kwargs['constraints'], 'environment': kwargs['environment'], 'solvation': kwargs.get('solvation')}, {'openmm': kwargs['expected_version']},
                                  python=kwargs.get('python', sys.executable), work_dir=root, timeout=kwargs.get('timeout', 600.0))
-            files = {key: {'path': filename, 'sha256': file_hash(root / filename)} for key, filename in
-                     dict(structure='input.pdb', system='system.xml', topology='topology.json', positions='positions.json', forcefield='forcefield.xml').items()}
-            bundle = dict(schema_version=1, engine='openmm', files=files, particle_count=len(structure.first_model.atoms),
+            periodic = kwargs['environment'] == 'tip3p_pme'
+            names = dict(structure='input.pdb', system='system.xml', topology='topology.json', positions='positions.json', forcefield='forcefield.xml')
+            if periodic:
+                names.update(structure='solvated.pdb', source='input.pdb', solvent_forcefield='solvent_forcefield.xml')
+            files = {key: {'path': filename, 'sha256': file_hash(root / filename)} for key, filename in names.items()}
+            prepared = read_structure(root / names['structure'])
+            bundle = dict(schema_version=2 if periodic else 1, engine='openmm', files=files, particle_count=len(prepared.first_model.atoms),
                           forcefield_name=kwargs['forcefield'], environment=kwargs['environment'], constraints=kwargs['constraints'],
-                          nonbonded_method='NoCutoff', expected_charge=kwargs['expected_charge'], runtime=runtime,
+                          nonbonded_method='PME' if periodic else 'NoCutoff', expected_charge=kwargs['expected_charge'], runtime=runtime,
                           provenance_origin='engine_run', scientific_validation='not_performed')
+            if periodic:
+                bundle['solvation'] = kwargs['solvation']
             output = root / 'simulation_system.json'
             write_json(output, bundle)
             validation = validate_system(output)
-            report = dict(runtime=runtime, validation=validation, scope='Protein-only vacuum parameterization; no minimization, dynamics, solvent or ligand parameters')
+            report = dict(runtime=runtime, validation=validation, scope='Protein-only ff14SB parameterization with explicit vacuum or TIP3P/PME policy; no ligand parameter assignment')
             write_json(root / 'report.json', report)
             return self._make_result(self.name, StepStatus.SUCCESS, root, start, data=report,
                                      artifacts={'simulation_system': output, 'json_report': root / 'report.json'})

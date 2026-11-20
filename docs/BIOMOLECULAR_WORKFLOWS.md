@@ -1,5 +1,8 @@
 # Biomolecular workflow foundation
 
+The detailed foundation specification, installer coverage and acceptance matrix
+are maintained in [BIOMOLECULAR_FOUNDATION/README.md](BIOMOLECULAR_FOUNDATION/README.md).
+
 This layer provides typed planning, native predictor inputs, executable processing
 and selected external engine adapters. Execution can provision supported missing tools through the central installer;
 read-only planning never installs. Model weights are not downloaded by this layer. Unimplemented backends remain explicit execution blockers.
@@ -63,7 +66,7 @@ therefore never claim `execution_ready=true`.
 | Docking | Vina, GNINA, smina adapters with exact version banner, explicit seed/box/CPU count, timeout, checked outputs | Vina 1.2.5 synthetic live I/O smoke passed; GNINA/smina not installed/tested live; no scientific benchmark |
 | Preparation/export | Meeko ligand/receptor PDBQT and pose SDF export in a selected Python environment | Implemented optional adapters; Meeko absent locally. Receptor subset: one prepared canonical PDB model, no unresolved altlocs/cofactors/metals |
 | Validation | PoseBusters redocking checks retaining raw per-pose CSV values | Mocked boundary tests; package absent locally; failed checks remain visible even when report execution succeeds |
-| Simulation setup | OpenMM ff14SB protein-only vacuum parameterization with an explicit constraints/charge policy | Checked system/topology/coordinates/force-field bundle; mocked engine boundary, no real parameterization validated here |
+| Simulation setup | OpenMM ff14SB protein-only vacuum or TIP3P/PME parameterization with an explicit constraints/charge policy | Checked system/topology/coordinates/force-field bundle; mocked engine boundary, no real parameterization validated here |
 | Prediction | ESMFold v1 single-protein inference, verified local weights, explicit device and runtime versions | Mocked engine boundary; no inference or GPU validation performed here |
 | Interactions | ProLIF fingerprints with molecule sidecars, atom mapping and parent contact indices | Canonical hydrogenated PDB subset; mocked engine boundary; chemistry/coordinates/completeness checked |
 | Interactions | PLIP XML report for an explicitly assembled PDB complex | Implemented optional adapter; package absent locally |
@@ -101,8 +104,8 @@ DAG itself is not a generic DELFIN pipeline spec.
 
 Predictor execution (AlphaFold family, ColabFold, Boltz, Chai and
 RoseTTAFold), automatic model asset acquisition, GPU scheduling, richer receptor chemistry support,
-Molscrub, ligand/solvent/periodic MD parameterization and
-GROMACS/Amber/NAMD execution remain unimplemented bindings. OpenMM minimization/dynamics and MDAnalysis statistics now have bounded adapters for the checked vacuum system/JSONL trajectory subset.
+Molscrub, ligand MD parameterization and additional solvent/force-field models and
+GROMACS/Amber/NAMD execution remain unimplemented bindings. OpenMM minimization/dynamics and MDAnalysis statistics have bounded adapters for checked vacuum or fixed-volume TIP3P/PME systems and JSONL trajectories. Periodic analysis requires explicit `as_stored` coordinate policy; unwrapping is not implemented.
 The same applies to DiffDock, HADDOCK3, licensed docking, protein design and
 QM/MM-region construction. Existing native predictor input generation does not
 remove these blockers. Scientific reference datasets and installed-engine tests
@@ -489,3 +492,47 @@ submitted during development.
 References: [OpenMM Context/checkpoints](https://docs.openmm.org/latest/api-python/generated/openmm.openmm.Context.html),
 [OpenMM minimization](https://docs.openmm.org/latest/api-python/generated/openmm.openmm.LocalEnergyMinimizer.html),
 [MDAnalysis fitting](https://docs.mdanalysis.org/stable/documentation_pages/analysis/align.html).
+
+### Explicit TIP3P solvent and fixed periodic boxes
+
+`bio_openmm_parameterize` also accepts `environment="tip3p_pme"` with the
+following `solvation` object (values below illustrate the schema, not a validated
+production protocol):
+
+```json
+{"box_size_nm": [4.0, 4.0, 4.0], "ionic_strength_m": 0.15,
+ "neutralize": true, "positive_ion": "Na+", "negative_ion": "Cl-",
+ "seed": 7, "solute_charge": 0, "cutoff_nm": 0.9,
+ "ewald_tolerance": 0.0005}
+```
+
+The input is still one already hydrogenated canonical protein without an existing
+periodic box. The worker uses the packaged Amber14 TIP3P/ion definition and
+OpenMM Modeller; Na+ or K+ with Cl- are supported. The final expected charge must
+match the explicit neutralization policy. The box must contain the protein's
+coordinate extent, and the cutoff must be less than half its shortest side.
+Protein atoms keep their identities, ordering and positions. Added water/ions,
+ion charges/counts, both force-field files, orthorhombic box vectors and PME
+parameters are checked. Ion-count validation follows the pinned OpenMM Modeller
+water-concentration convention, including rounding and neutralization ions.
+
+Version 2 system bundles retain both original protein and solvated PDB plus the
+actual solvent force-field XML. The worker rereads its written PDB so topology,
+coordinates and system consistently use its stored precision. PDB atom, residue
+and chain-ID limits are checked; larger systems requiring mmCIF are refused.
+Water flexibility follows the explicitly chosen `none`/`HBonds` constraints;
+no additional rigid-water or barostat policy is silently introduced.
+
+The dynamics adapter supports these fixed-volume periodic systems and records
+box vectors in every frame. Changed/missing boxes and checkpoint disagreement
+fail validation. NPT/barostats and varying-box trajectories are not supported.
+MDAnalysis rejects periodic input by default; `periodic_policy="as_stored"`
+explicitly opts into analysis of stored coordinates without periodic unwrapping.
+Select appropriate whole-molecule coordinates for the scientific question.
+The plan builder accepts `--environment tip3p_pme --solvation-file policy.json
+--periodic-policy as_stored`.
+
+Tests mock the OpenMM boundary and reject source changes, charge/box/cutoff errors
+and invalid policies. No real solvation or PME calculation has been run here.
+References: [OpenMM Modeller](https://docs.openmm.org/latest/api-python/generated/openmm.app.modeller.Modeller.html)
+and [OpenMM 8.4 Modeller implementation](https://github.com/openmm/openmm/blob/8.4.0/wrappers/python/openmm/app/modeller.py).

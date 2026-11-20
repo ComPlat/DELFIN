@@ -49,6 +49,25 @@ def number(value):
     return type(value) in (int, float) and math.isfinite(value)
 
 
+def system_box(path):
+    path = Path(path).resolve()
+    bundle = read_json(path)
+    root = ET.parse(child_path(path.parent, bundle['files']['system']['path'])).getroot()
+    vectors = []
+    for name in 'ABC':
+        element = root.find(f'./PeriodicBoxVectors/{name}')
+        if element is None:
+            raise ValueError('periodic system has no complete box vectors')
+        vectors.append([float(element.get(k, 'nan')) for k in 'xyz'])
+    return vectors
+
+
+def same_box(actual, expected):
+    return (isinstance(actual, list) and len(actual) == 3 and all(
+        isinstance(row, list) and len(row) == 3 and all(number(a) and math.isclose(a, b, abs_tol=1e-7) for a, b in zip(row, target))
+        for row, target in zip(actual, expected)))
+
+
 def validate_frame(frame, particles):
     if not isinstance(frame, dict) or type(frame.get('step')) is not int or frame['step'] < 0:
         raise ValueError('invalid trajectory step')
@@ -88,6 +107,10 @@ def validate_trajectory(path):
         raise ValueError('unsupported trajectory schema, format or units')
     system = checked_file(path.parent, value.get('system'))
     details = validate_system(system)
+    periodic = details.get('periodic', False)
+    if value.get('periodic', False) is not periodic:
+        raise ValueError('trajectory periodicity differs from system')
+    box = system_box(system) if periodic else None
     if value.get('system_identity') != system_identity(system):
         raise ValueError('trajectory system identity mismatch')
     frames = checked_file(path.parent, value.get('frames'))
@@ -102,6 +125,8 @@ def validate_trajectory(path):
     count, final = 0, None
     for frame in iter_frames(frames):
         validate_frame(frame, details['particles'])
+        if periodic and not same_box(frame.get('box_vectors_nm'), box):
+            raise ValueError('trajectory box differs from fixed-volume system')
         wanted = next(expected, None)
         if frame['step'] != wanted:
             raise ValueError('trajectory has missing, duplicate or out-of-order steps')
@@ -112,7 +137,7 @@ def validate_trajectory(path):
         final = frame
     if next(expected, None) is not None or count != value.get('frame_count'):
         raise ValueError('trajectory is incomplete')
-    return {'frames': count, 'particles': details['particles'], 'final_step': final['step'], 'final_time_ps': final['time_ps']}
+    return {'frames': count, 'particles': details['particles'], 'final_step': final['step'], 'final_time_ps': final['time_ps'], 'periodic': periodic}
 
 
 def validate_checkpoint(path):
@@ -162,4 +187,11 @@ def validate_checkpoint(path):
         raise ValueError('checkpoint positions differ from final trajectory frame')
     if not math.isclose(value['time_ps'], verified['final_time_ps'], abs_tol=1e-7):
         raise ValueError('checkpoint time differs from trajectory')
+    if trajectory.get('periodic'):
+        vectors = state.find('PeriodicBoxVectors')
+        if vectors is None or any(vectors.find(k) is None for k in 'ABC'):
+            raise ValueError('periodic checkpoint has no box vectors')
+        state_box = [[float(vectors.find(name).get(k, 'nan')) for k in 'xyz'] for name in 'ABC']
+        if not same_box(state_box, final['box_vectors_nm']):
+            raise ValueError('checkpoint box differs from trajectory')
     return value

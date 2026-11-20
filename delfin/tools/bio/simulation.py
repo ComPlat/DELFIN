@@ -9,10 +9,13 @@ from delfin.tools.bio.artifacts import child_path, file_hash, read_json
 def validate_system(path):
     path = Path(path).resolve()
     bundle = read_json(path)
-    if not isinstance(bundle, dict) or bundle.get('schema_version') != 1 or bundle.get('engine') != 'openmm':
+    if not isinstance(bundle, dict) or bundle.get('schema_version') not in (1, 2) or bundle.get('engine') != 'openmm':
         raise ValueError('invalid simulation system schema or engine')
     files = bundle.get('files')
     required = {'structure', 'system', 'topology', 'positions', 'forcefield'}
+    periodic = bundle['schema_version'] == 2
+    if periodic:
+        required |= {'source', 'solvent_forcefield'}
     if not isinstance(files, dict) or set(files) != required:
         raise ValueError('simulation system requires structure, system, topology, positions and forcefield')
     paths = {}
@@ -80,7 +83,9 @@ def validate_system(path):
     expected = bundle.get('expected_charge')
     if type(expected) is not int or not all(math.isfinite(q) for q in charges) or abs(sum(charges) - expected) > 1e-4:
         raise ValueError('simulation charge differs from explicit expected charge')
-    if bundle.get('environment') != 'vacuum' or bundle.get('nonbonded_method') != 'NoCutoff' or nonbonded[0].get('method') != '0':
+    if periodic:
+        _validate_periodic(bundle, paths, system, nonbonded[0], source, coordinates, charges)
+    elif bundle.get('environment') != 'vacuum' or bundle.get('nonbonded_method') != 'NoCutoff' or nonbonded[0].get('method') != '0':
         raise ValueError('only explicit vacuum NoCutoff systems are currently supported')
     if bundle.get('forcefield_name') != 'amber14/protein.ff14SB.xml':
         raise ValueError('unsupported force field')
@@ -102,4 +107,89 @@ def validate_system(path):
         raise ValueError('invalid force field XML') from exc
     if forcefield.tag != 'ForceField' or forcefield.find('Include') is not None:
         raise ValueError('force field must be a self-contained XML artifact')
-    return {'particles': count, 'bonds': len(bonds), 'charge_e': sum(charges), 'engine': 'openmm'}
+    return {'particles': count, 'bonds': len(bonds), 'charge_e': sum(charges), 'engine': 'openmm', 'periodic': periodic}
+
+
+def _validate_periodic(bundle, paths, system, nonbonded, prepared, coordinates, charges):
+    from delfin.tools.bio import read_structure
+    if bundle.get('environment') != 'tip3p_pme' or bundle.get('nonbonded_method') != 'PME' or nonbonded.get('method') != '4':
+        raise ValueError('periodic system requires explicit TIP3P/PME policy')
+    settings = bundle.get('solvation')
+    validate_solvation(settings)
+    if any(system.find(f'./PeriodicBoxVectors/{name}') is None for name in 'ABC'):
+        raise ValueError('serialized periodic box is incomplete')
+    vectors = [[float(system.find(f'./PeriodicBoxVectors/{name}').get(k, 'nan')) for k in 'xyz'] for name in 'ABC']
+    expected = [[settings['box_size_nm'][i] if i == j else 0. for j in range(3)] for i in range(3)]
+    if any(not math.isclose(a, b, abs_tol=0.00006) for row, target in zip(vectors, expected) for a, b in zip(row, target)):
+        raise ValueError('serialized periodic box differs from requested orthorhombic box')
+    if not math.isclose(float(nonbonded.get('cutoff', 'nan')), settings['cutoff_nm'], abs_tol=1e-10) or not math.isclose(float(nonbonded.get('ewaldTolerance', 'nan')), settings['ewald_tolerance'], abs_tol=1e-12):
+        raise ValueError('PME cutoff/tolerance differs from requested policy')
+    original = read_structure(paths['source'])
+    original_atoms = [(r, a) for r in original.first_model.residues for a in r.atoms]
+    count = len(original_atoms)
+    if len(original.models) != 1 or len(prepared) <= count:
+        raise ValueError('solvation must retain the source and add explicit solvent')
+    for i, ((r, a), (new_r, new_a)) in enumerate(zip(original_atoms, prepared)):
+        if (r.chain_id, r.seq_id, r.insertion_code, r.name, a.name, a.element) != (new_r.chain_id, new_r.seq_id, new_r.insertion_code, new_r.name, new_a.name, new_a.element):
+            raise ValueError('solvation changed source atom identity or ordering')
+        if any(abs(x / 10 - y) > 0.000011 for x, y in zip(a.position, coordinates[i])):
+            raise ValueError('solvation moved source atoms')
+    if abs(sum(charges[:count]) - settings['solute_charge']) > 1e-4:
+        raise ValueError('solute parameter charge differs from requested charge')
+    allowed_elements = {'O', 'H', 'Cl', 'Na' if settings['positive_ion'] == 'Na+' else 'K'}
+    if any(r.name not in {'HOH', 'NA', 'CL', 'K'} or a.element not in allowed_elements for r, a in prepared[count:]):
+        raise ValueError('unexpected added solvent/ion chemistry')
+    if not any(r.name == 'HOH' for r, a in prepared[count:]):
+        raise ValueError('solvated system contains no water')
+    residues = {}
+    for index, (r, a) in enumerate(prepared[count:], count):
+        residues.setdefault((r.chain_id, r.seq_id, r.insertion_code, r.name), []).append((a, charges[index]))
+    waters, positive, negative = 0, 0, 0
+    for key, members in residues.items():
+        if key[-1] == 'HOH':
+            if sorted(a.element for a, _ in members) != ['H', 'H', 'O'] or abs(sum(q for _, q in members)) > 1e-5:
+                raise ValueError('TIP3P water requires neutral H2O residues')
+            waters += 1
+        else:
+            if len(members) != 1:
+                raise ValueError('ion residue must contain exactly one atom')
+            atom, charge = members[0]
+            sign = -1 if atom.element == 'Cl' else 1
+            if abs(charge - sign) > 1e-5:
+                raise ValueError('ion charge differs from declared monovalent model')
+            positive += sign == 1
+            negative += sign == -1
+    neutral = abs(settings['solute_charge']) if settings['neutralize'] else 0
+    pairs = math.floor((waters + positive + negative - neutral) * settings['ionic_strength_m'] / 55.4 + 0.5)
+    expected_positive = pairs + (max(-settings['solute_charge'], 0) if settings['neutralize'] else 0)
+    expected_negative = pairs + (max(settings['solute_charge'], 0) if settings['neutralize'] else 0)
+    if (positive, negative) != (expected_positive, expected_negative):
+        raise ValueError('ion counts differ from explicit neutralization and concentration policy')
+    if settings['neutralize'] and bundle['expected_charge'] != 0:
+        raise ValueError('neutralized system requires zero final charge')
+    if not settings['neutralize'] and bundle['expected_charge'] != settings['solute_charge']:
+        raise ValueError('non-neutralized system must retain solute net charge')
+    try:
+        solvent = ET.parse(paths['solvent_forcefield']).getroot()
+    except ET.ParseError as exc:
+        raise ValueError('invalid solvent force field XML') from exc
+    if solvent.tag != 'ForceField' or solvent.find('Include') is not None:
+        raise ValueError('solvent force field must be self-contained')
+
+
+def validate_solvation(settings):
+    required = {'box_size_nm', 'ionic_strength_m', 'neutralize', 'positive_ion', 'negative_ion', 'seed', 'solute_charge', 'cutoff_nm', 'ewald_tolerance'}
+    if not isinstance(settings, dict) or set(settings) != required:
+        raise ValueError('solvation requires explicit box, ions, concentration, neutralization, seed, solute charge and PME settings')
+    box = settings['box_size_nm']
+    if not isinstance(box, list) or len(box) != 3 or any(type(v) not in (int, float) or not math.isfinite(v) or v <= 0 for v in box):
+        raise ValueError('box_size_nm requires three positive finite lengths')
+    if settings['positive_ion'] not in ('Na+', 'K+') or settings['negative_ion'] != 'Cl-' or type(settings['neutralize']) is not bool:
+        raise ValueError('explicit Na+/K+, Cl- and neutralization policy required')
+    if type(settings['solute_charge']) is not int or type(settings['seed']) is not int or not 1 <= settings['seed'] < 2**31:
+        raise ValueError('solute charge and nonzero solvation seed must be integers')
+    for key in ('ionic_strength_m', 'cutoff_nm', 'ewald_tolerance'):
+        if type(settings[key]) not in (int, float) or not math.isfinite(settings[key]) or settings[key] < 0:
+            raise ValueError(f'invalid {key}')
+    if not 0 < settings['cutoff_nm'] < min(box) / 2 or not 0 < settings['ewald_tolerance'] < 1:
+        raise ValueError('PME requires positive cutoff below half the shortest box length and tolerance in (0,1)')

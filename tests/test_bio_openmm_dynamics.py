@@ -34,12 +34,22 @@ def mock_dynamics(monkeypatch, mode='success'):
         frames = [dict(step=step, time_ps=options['start_time_ps'] + (step-options['start_step'])*protocol['timestep_ps'],
                        potential_kj_mol=-10., kinetic_kj_mol=1., positions_nm=positions)
                   for step in frame_steps(options['start_step'], options['steps'], options['report_interval'])]
+        box = None
+        if bundle['environment'] == 'tip3p_pme':
+            from delfin.tools.bio.dynamics import system_box
+            box = system_box(root / 'system/simulation_system.json')
+            for frame in frames:
+                frame['box_vectors_nm'] = box
         final = frames[-1]
         state = ET.Element('State', time=str(final['time_ps']), stepCount=str(final['step']))
         for group, tag in [('Positions', 'Position'), ('Velocities', 'Velocity')]:
             collection = ET.SubElement(state, group)
             for row in positions:
                 ET.SubElement(collection, tag, **dict(zip('xyz', map(str, row))))
+        if box is not None:
+            vectors = ET.SubElement(state, 'PeriodicBoxVectors')
+            for name, row in zip('ABC', box):
+                ET.SubElement(vectors, name, **dict(zip('xyz', map(str, row))))
         if mode == 'bad_state':
             state.set('stepCount', '999')
         ET.ElementTree(state).write(root / 'state.xml')
@@ -54,6 +64,8 @@ def mock_dynamics(monkeypatch, mode='success'):
         if options['minimize']:
             minimized.update(before_kj_mol=-5., after_kj_mol=5. if mode == 'energy_increase' else -10.)
         (root / 'worker_report.json').write_text(json.dumps(dict(final=final, platform=protocol['platform'], minimization=minimized)))
+        if mode == 'bad_box':
+            frames[1]['box_vectors_nm'] = [[9., 0., 0.], [0., 9., 0.], [0., 0., 9.]]
         if mode == 'missing_frame':
             frames.pop(1)
         if mode == 'bad_time':
