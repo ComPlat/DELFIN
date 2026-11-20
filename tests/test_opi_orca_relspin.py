@@ -19,10 +19,7 @@ import json
 
 import pytest
 
-# The main py3.11 CI jobs run ALL tests without OPI installed; skip there.
-# The OPI job (DELFIN_OPI_REQUIRED=1, tests/conftest.py) turns that skip
-# into a failure, so the OPI-required job still gates on these tests.
-pytest.importorskip("opi")
+from _skip_reasons import absent_reason, orca_reason, missing  # noqa: E402
 
 from delfin.tools.adapters.orca_relspin_opi import (  # noqa: E402
     read_rel_sp_result,
@@ -45,6 +42,35 @@ ZFS_ELS = ["H"]
 
 def _read_inp(path):
     return path.read_text()
+
+
+def _needs_opi() -> None:
+    """Skip when opi is absent, naming it.
+
+    This file was gated by a module-level ``pytest.importorskip("opi")``.
+    Twenty-four of its fifty-eight tests build or validate an input through
+    OPI's blocks and do need it; the other thirty-four -- the keyword and
+    multiplicity validation, the property-file readers, the soc-state
+    parsing, the registry -- never import it. The collection skip discarded
+    those thirty-four on every machine without the package. Asking here
+    keeps that coverage and still names the reason, and the CI job that sets
+    DELFIN_OPI_REQUIRED=1 still turns this skip into a failure, because the
+    reason contains "No module named 'opi'" (tests/conftest.py).
+    """
+    reason = absent_reason("opi")
+    if reason:
+        pytest.skip(reason)
+
+
+def _needs_opi_and_orca() -> None:
+    """Skip naming every missing precondition of a parser probe.
+
+    OPI writes the input and an ORCA binary reads it: two independent
+    conditions. Checking them in order would show only the first.
+    """
+    reason = missing(absent_reason("opi"), orca_reason())
+    if reason:
+        pytest.skip(reason)
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +138,7 @@ class TestValidateRelspin:
         assert errors == []
 
     def test_unknown_epr_option_is_an_error(self):
+        _needs_opi()
         errors, _ = validate_relspin(
             functional="B3LYP", job="zfs", basis="def2-TZVP", mult=2,
             epr_options={"dtensor": "nonsense"},
@@ -156,6 +183,7 @@ class TestValidateRelspin:
         assert errors == []
 
     def test_unknown_dsoc_value_is_refused(self):
+        _needs_opi()
         """OPI's BlockEprnmr model allows only qro|pk|cp|pcp|cvw."""
         errors, _ = validate_relspin(
             functional="B3LYP", job="zfs", basis="def2-TZVP", mult=2,
@@ -177,6 +205,7 @@ class TestValidateRelspin:
 
 class TestBuildRelSpInput:
     def test_zora_builds_recontracted_basis_and_rel_block(self, tmp_path):
+        _needs_opi()
         path = build_rel_sp_input(
             tmp_path, functional="B3LYP", hamiltonian="ZORA", basis="ZORA-def2-TZVP",
             elements=ELS, coordinates=XYZ, charge=0, mult=1,
@@ -189,6 +218,7 @@ class TestBuildRelSpInput:
         assert "nprocs 2" in text
 
     def test_dkh2_builds_dkh_basis_and_rel_block(self, tmp_path):
+        _needs_opi()
         path = build_rel_sp_input(
             tmp_path, functional="B3LYP", hamiltonian="DKH2", basis="DKH-def2-TZVP",
             elements=ELS, coordinates=XYZ, charge=0, mult=1,
@@ -200,6 +230,7 @@ class TestBuildRelSpInput:
         assert "method dkh" in text
 
     def test_picture_change_and_order_reach_the_rel_block(self, tmp_path):
+        _needs_opi()
         path = build_rel_sp_input(
             tmp_path, functional="B3LYP", hamiltonian="DKH2", basis="DKH-def2-TZVP",
             elements=ELS, coordinates=XYZ, charge=0, mult=1,
@@ -238,6 +269,7 @@ class TestBuildRelSpInput:
 
 class TestBuildZfsInput:
     def test_triplet_builds_eprnmr_block(self, tmp_path):
+        _needs_opi()
         path = build_zfs_input(
             tmp_path, functional="PBE", basis="def2-TZVP", elements=ZFS_ELS, coordinates=XYZ,
             charge=0, mult=2, maxcore=1000, ncores=1, base_name="zfs_h",
@@ -248,6 +280,7 @@ class TestBuildZfsInput:
         assert "nprocs 1" in text
 
     def test_epr_options_reach_the_block(self, tmp_path):
+        _needs_opi()
         path = build_zfs_input(
             tmp_path, functional="PBE", basis="def2-TZVP", elements=ZFS_ELS, coordinates=XYZ,
             charge=0, mult=2, epr_options={"dsoc": "cp"},
@@ -257,6 +290,7 @@ class TestBuildZfsInput:
         assert "dsoc cp" in text
 
     def test_zora_hamiltonian_adds_rel_block(self, tmp_path):
+        _needs_opi()
         path = build_zfs_input(
             tmp_path, functional="PBE", basis="ZORA-def2-TZVP", hamiltonian="ZORA",
             elements=ZFS_ELS, coordinates=XYZ, charge=0, mult=2,
@@ -276,6 +310,7 @@ class TestBuildZfsInput:
             )
 
     def test_unknown_epr_option_raises(self, tmp_path):
+        _needs_opi()
         with pytest.raises(ValueError, match="dtensor"):
             build_zfs_input(
                 tmp_path, functional="PBE", basis="def2-TZVP", elements=ZFS_ELS,
@@ -287,6 +322,7 @@ class TestBuildZfsInput:
 
 class TestBuildSocTddftInput:
     def test_typical_builds_tddft_block_with_soc(self, tmp_path):
+        _needs_opi()
         path = build_soc_tddft_input(
             tmp_path, functional="PBE", basis="def2-TZVP", nroots=8, elements=ELS,
             coordinates=XYZ, charge=0, mult=1,
@@ -314,6 +350,7 @@ class TestBuildSocTddftInput:
             )
 
     def test_dkh2_adds_rel_block(self, tmp_path):
+        _needs_opi()
         path = build_soc_tddft_input(
             tmp_path, functional="PBE", basis="DKH-def2-TZVP", hamiltonian="DKH2", nroots=6,
             elements=ELS, coordinates=XYZ, charge=0, mult=1,
@@ -412,6 +449,7 @@ class TestAdapterRegistration:
 # ---------------------------------------------------------------------------
 
 def test_probe_orca_parser_accepts_the_relspin_input(tmp_path):
+    _needs_opi_and_orca()
     from delfin.orca_knowledge.probe import probe_input
 
     path = build_rel_sp_input(
@@ -429,6 +467,7 @@ def test_probe_orca_parser_accepts_the_relspin_input(tmp_path):
 
 
 def test_probe_orca_parser_accepts_the_zfs_input(tmp_path):
+    _needs_opi_and_orca()
     from delfin.orca_knowledge.probe import probe_input
 
     path = build_zfs_input(
@@ -460,6 +499,7 @@ class TestRealRunFindings:
             )
 
     def test_rel_sp_writes_the_functional(self, tmp_path):
+        _needs_opi()
         path = build_rel_sp_input(
             tmp_path, functional="B3LYP", hamiltonian="ZORA", basis="ZORA-def2-TZVP",
             elements=ELS, coordinates=XYZ, charge=0,
@@ -468,6 +508,7 @@ class TestRealRunFindings:
         assert "!b3lyp" in _read_inp(path).lower()
 
     def test_zfs_writes_the_functional(self, tmp_path):
+        _needs_opi()
         path = build_zfs_input(
             tmp_path, basis="def2-TZVP", functional="PBE",
             elements=ZFS_ELS, coordinates=XYZ, charge=0, mult=2,
@@ -476,6 +517,7 @@ class TestRealRunFindings:
         assert "!pbe" in _read_inp(path).lower()
 
     def test_soc_tddft_writes_the_functional(self, tmp_path):
+        _needs_opi()
         path = build_soc_tddft_input(
             tmp_path, basis="def2-TZVP", functional="PBE", nroots=5,
             elements=ZFS_ELS, coordinates=XYZ, charge=0, mult=2,
@@ -484,6 +526,7 @@ class TestRealRunFindings:
         assert "!pbe" in _read_inp(path).lower()
 
     def test_soc_tddft_input_has_no_tddft_simple_keyword(self, tmp_path):
+        _needs_opi()
         # ORCA: "UNRECOGNIZED OR DUPLICATED KEYWORD(S) IN SIMPLE INPUT LINE
         # TDDFT" -- TDDFT is selected by the %tddft block only.
         path = build_soc_tddft_input(
@@ -519,6 +562,7 @@ class TestRealRunFindings:
         assert err is not None and "orca gone" in err
 
     def test_read_rel_sp_result_never_imports_a_missing_reader(self, tmp_path):
+        _needs_opi()
         # The reader must not depend on a non-existent orca_read symbol;
         # a bogus .out yields ok=False, not an ImportError.
         (tmp_path / "j.out").write_text("# SYNTHETIC test fixture written for DELFIN -- not ORCA output\n")
@@ -550,6 +594,7 @@ class TestLiveRunFindings:
     @pytest.mark.parametrize("job", sorted(_JOB_KWARGS))
     def test_execute_passes_the_functional_to_the_input(
             self, job, tmp_path, monkeypatch):
+        _needs_opi()
         # The builders require a functional, so the step path must accept
         # one and hand it on; before, run_* had no such parameter and every
         # execute() call failed with an unexpected-keyword TypeError.
@@ -596,6 +641,7 @@ class TestLiveRunFindings:
         assert res.zfs_E_over_D == pytest.approx(0.1)
 
     def test_a_failed_rel_sp_read_says_why(self, tmp_path):
+        _needs_opi()
         (tmp_path / "j.out").write_text(
             "# SYNTHETIC test fixture written for DELFIN -- not ORCA output\n")
         self._opi_rejected_jsons(tmp_path, "j")
@@ -605,6 +651,7 @@ class TestLiveRunFindings:
 
     def test_execute_reports_fosc_and_spin_label_of_each_soc_state(
             self, tmp_path, monkeypatch):
+        _needs_opi()
         import delfin.tools.adapters.orca_relspin_opi as mod
 
         def fake_launch(wdir, base):
@@ -622,6 +669,7 @@ class TestLiveRunFindings:
 
     def test_soc_tddft_without_the_soc_table_is_a_failed_step(
             self, tmp_path, monkeypatch):
+        _needs_opi()
         # Fail closed: ORCA ended normally but no SOC-corrected states were
         # printed -> FAILED with the reason, never SUCCESS with no data.
         import delfin.tools.adapters.orca_relspin_opi as mod

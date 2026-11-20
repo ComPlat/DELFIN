@@ -5906,7 +5906,7 @@ def _read_only_reason(resolved, perms) -> str:
         path = Path(resolved)
         workspace = Path(getattr(perms, "workspace", "") or ".")
         for parent in (path, *path.parents):
-            if (parent / ".git").exists():
+            if safe_git.is_checkout(parent):
                 if parent != workspace:
                     return (f"the repository checkout at {parent}, which is "
                             "not your workspace — work inside your own "
@@ -9755,7 +9755,41 @@ def _commit_trailer_value() -> str:
         email = (
             (DEFAULT_SETTINGS.get("agent") or {})
             .get("commit_coauthor_email", "") or "")
-    return f"Co-Authored-By: DELFIN-Agent ({model}) <{email}>"
+    line = f"Co-Authored-By: DELFIN-Agent ({model}) <{email}>"
+    label = _agent_label()
+    return f"{line}\nAgent: {label}" if label else line
+
+
+#: Characters a swarm label may carry into a commit message. Everything
+#: else is dropped, so an environment variable cannot write a second
+#: trailer, a newline or shell metacharacters into the message.
+_LABEL_OK = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    " ._/-@+")
+
+
+def _agent_label() -> str:
+    """Which run produced the commit, from ``DELFIN_AGENT_LABEL``, or "".
+
+    Input: the environment variable, set by whatever started this agent
+    (the swarm writes "<wave>/<id> via <provider>"). Output: one line's
+    worth of it, at most 120 characters, restricted to ``_LABEL_OK``.
+
+    Why it is sanitised rather than passed through: the value lands in a
+    commit message, which is text other tools parse. A newline in it would
+    end the trailer block and let the rest be read as a trailer of its own,
+    and a label is not a place from which to write one.
+
+    Why an environment variable at all: the model is DELFIN's own
+    knowledge, but which agent of which wave is the orchestrator's, and
+    the orchestrator is not part of this repository. The variable is the
+    seam. Absent, the trailer is the co-author line alone, exactly as
+    before.
+    """
+    import os as _os
+    raw = str(_os.environ.get("DELFIN_AGENT_LABEL", "") or "")
+    kept = "".join(c for c in raw.split("\n")[0] if c in _LABEL_OK).strip()
+    return kept[:120]
 
 
 def _commit_trailer_rewrite(cmd: str) -> str:
@@ -9836,6 +9870,17 @@ def _rewrite_segments_for_trailer(cmd: str, trailer: str) -> str:
         start = i
         while i < n and cmd[i] not in " \t\n;|&'\"\\":
             i += 1
+        if i == start:
+            # A breaking character that no branch above consumes, so no
+            # word begins here and the offset would never move: a lone
+            # `&` (the redirect in `2>&1`, or a background `&`, neither of
+            # which is the `&&` the branch above takes) or a `\` with
+            # nothing left to escape. Stepping over it ends the word
+            # instead of the walk; `2>&1` is then read as the two words
+            # `2>` and `1`, which changes nothing for _commit_sub_pos,
+            # since it reads the LEADING tokens of a segment.
+            i += 1
+            continue
         seg_words.append(start)
     pos = _commit_sub_pos(cmd, seg_words)
     if pos is not None:
