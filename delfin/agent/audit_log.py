@@ -13,7 +13,6 @@ appends one JSON line to ``~/.delfin/audit.log``. Records carry:
   ``confirmed`` (user clicked Erlauben) / ``denied`` (gate blocked or
   user clicked Ablehnen) / ``error`` (tool raised)
 * ``persistence`` — for remember_* calls, what got written and where
-* ``diff_lines_added`` / ``diff_lines_removed`` — for write/edit tools
 * ``pid`` — the calling process pid (helps trace bash_background jobs)
 
 Lines are written atomically (single ``write`` call with a final
@@ -440,19 +439,45 @@ def _predecessor(path: Path) -> Optional[Path]:
 def verify(log_path: Optional[Path] = None) -> dict:
     """Check one log's hash chain and head. Never raises.
 
-    Output: ``{"path", "ok", "records", "chained", "legacy", "problems",
-    "notes"}``; each problem is ``{"line", "kind", "detail"}`` (1-based
-    line). Kinds: ``unparseable`` (a torn or edited line), ``chain`` (a
+    Input: the path of an audit log. Output: the report ``_scan`` produces
+    (``{"path", "ok", "records", "chained", "legacy", "problems",
+    "notes"}``) -- see that function for the problem kinds. This is the
+    report alone; a reader that wants the records too calls ``_scan``, so
+    that what it returns and what was checked are the same bytes.
+    """
+    return _scan(log_path)[1]
+
+
+def _scan(log_path: Optional[Path] = None) -> tuple[list[dict], dict]:
+    """Read one log once: its records and the verification of its bytes.
+
+    Input: the path of an audit log. Output: ``(records, report)`` -- the
+    records in file order that parsed as JSON objects, and the ``verify``
+    report of the SAME byte string they were parsed from.
+
+    Semantics: the one reader of this log. Every consumer goes through it,
+    so a record handed out is a record that was checked, and there is no
+    second parse of the file that could disagree with the first. It reads
+    with ``_read_private``: a link, a non-regular file or one owned by
+    another account is refused rather than followed.
+
+    Problem kinds: ``unparseable`` (a torn or edited line), ``chain`` (a
     line's ``prev`` does not match the line before it: that line was
     edited, or lines were removed or inserted), ``unchained`` (a line
     without ``prev`` after the chain started), ``link`` (the first line
-    does not continue the log it names), ``head`` (the log does not end
-    where the last write left it: lines were cut off or appended outside
-    DELFIN), ``head_at_write`` (a write found the head out of step and
-    said so in ``chain_break``). ``ok`` is True when there is no
-    problem; notes say what could not be checked.
+    does not continue the log it names), ``head`` / ``anchor`` (the log
+    does not end where the last write left it: lines were cut off), and
+    ``head_at_write`` (a write found the head out of step and said so in
+    ``chain_break``). ``ok`` is True when there is no problem; notes say
+    what could not be checked.
+
+    Rejected: giving ``verify`` a ``with_records`` switch. A reader that
+    asks for the records and a reader that asks for the verdict would then
+    be two shapes of one answer, and the natural mistake -- parse here,
+    verify there -- is what this signature makes impossible.
     """
     path = Path(log_path or _default_log_path())
+    records: list[dict] = []
     rep: dict = {"path": str(path), "ok": True, "records": 0, "chained": 0,
                  "legacy": 0, "keyed": 0, "unkeyed": 0, "problems": [],
                  "notes": []}
@@ -473,11 +498,11 @@ def verify(log_path: Optional[Path] = None) -> dict:
         else:
             rep["notes"].append("no log at this path")
         rep["ok"] = not rep["problems"]
-        return rep
+        return records, rep
     except OSError as exc:
         problem(0, "unreadable", f"{type(exc).__name__}: {exc}")
         rep["ok"] = False
-        return rep
+        return [], rep
     lines = data.split(b"\n")
     if lines and lines[-1] == b"":
         lines.pop()
@@ -494,6 +519,7 @@ def verify(log_path: Optional[Path] = None) -> dict:
             prev_hash = _line_hash(raw)
             continue
         rep["records"] += 1
+        records.append(rec)
         if "prev" not in rec:
             if started:
                 problem(i, "unchained", "a record without prev after the "
@@ -553,6 +579,17 @@ def verify(log_path: Optional[Path] = None) -> dict:
     if head is None:
         if started:
             rep["notes"].append("no head file: a cut tail cannot be shown")
+    elif _just_grew(head, data):
+        # ``_append_chained`` writes the line and then the head file, so an
+        # append in flight leaves the log longer than the head for an
+        # instant. Calling that tampering cried wolf on a log that is
+        # written all day: measured at 204 of 1666 reads under a live
+        # writer. It is only benign when the extra bytes CONTINUE the chain
+        # from where the head says it ended; anything else stays a finding.
+        rep["notes"].append(
+            f"the log is longer than its head file ({head.get('size')} bytes "
+            f"then, {len(data)} now) and continues the chain from there: a "
+            "write was in flight when it was read")
     elif head.get("last") != prev_hash or head.get("size") != len(data):
         problem(len(lines), "head", "the log does not end where the last "
                 f"write left it ({head.get('size')} bytes then, {len(data)} "
@@ -566,6 +603,13 @@ def verify(log_path: Optional[Path] = None) -> dict:
         if not signed:
             problem(len(lines), "anchor", "the trust store's anchor for this "
                     "log does not carry a valid signature")
+        elif _just_grew({"last": a_last, "size": a_size}, data):
+            # Same in-flight window as the head file: the anchor is written
+            # after the line, from the same lock.
+            rep["notes"].append(
+                f"the log is longer than its anchor ({a_size} bytes then, "
+                f"{len(data)} now) and continues the chain from there: a "
+                "write was in flight when it was read")
         elif a_last != prev_hash or a_size != len(data):
             problem(len(lines), "anchor", "the log does not end where the "
                     f"trust store's anchor says ({a_size} bytes then, "
@@ -580,7 +624,35 @@ def verify(log_path: Optional[Path] = None) -> dict:
                             "an agent session, or the trust store is "
                             "refused): the signatures were not checked")
     rep["ok"] = not rep["problems"]
-    return rep
+    return records, rep
+
+
+def _just_grew(end_marker: dict, data: bytes) -> bool:
+    """Whether ``data`` is its end marker's last line plus one linked line.
+
+    The end marker is the head file or the trust-store anchor: the last
+    hash written and the size the log had at that moment. Both are written
+    AFTER the line they describe, so a reader can catch the log a few bytes
+    longer than the marker. That gap is only the harmless one when the
+    bytes past the marker are exactly one parseable record whose ``prev``
+    is the marker's hash -- otherwise the log grew for some other reason,
+    and the caller reports it.
+    """
+    try:
+        size = int(end_marker.get("size") or 0)
+        last = str(end_marker.get("last") or "")
+    except (TypeError, ValueError):
+        return False
+    if not last or size <= 0 or len(data) <= size:
+        return False
+    body = data[size:]
+    if not body.endswith(b"\n"):
+        return False
+    try:
+        rec = json.loads(body.split(b"\n", 1)[0].decode("utf-8"))
+    except Exception:
+        return False
+    return isinstance(rec, dict) and str(rec.get("prev") or "") == last
 
 
 def _is_active_log(path: Path) -> bool:
@@ -619,42 +691,28 @@ def format_verify(reports: list[dict]) -> str:
 
 
 def read_last_n(n: int = 100, *, log_path: Optional[Path] = None) -> list[dict]:
-    """Return the last ``n`` parseable records (utility for the dashboard)."""
-    path = log_path or _default_log_path()
-    if not path.exists():
-        return []
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except Exception:
-        return []
-    out: list[dict] = []
-    for line in lines[-(n * 2):]:        # over-read a little for parse errors
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            out.append(json.loads(line))
-        except Exception:
-            continue
-    return out[-n:]
+    """The last ``n`` records, read through ``_scan`` -- the one reader.
 
+    Input: a count and an optional log path. Output: at most ``n`` record
+    dicts, newest last; ``[]`` when the log is absent, unreadable or not a
+    private regular file. ``n < 1`` returns ``[]``.
 
-def _diff_line_counts(old: str, new: str) -> tuple[int, int]:
-    """Quick added / removed line counts for the audit record.
+    Semantics: the records are the ones ``_scan`` verified, so a caller
+    reads the same bytes ``delfin-agent audit verify`` would report on,
+    rather than a second parse of the file that could disagree with it.
+    Only JSON OBJECTS are records: a line holding ``[1, 2]`` or ``42``
+    parses but is not an audit record, and this used to hand those back as
+    if they were.
 
-    Not a real diff — just compares line sets to avoid bringing
-    difflib into a hot path. Good enough for "approximately how big
-    was this change" telemetry.
+    Rejected: keeping a private parse loop for the speed of a tail read.
+    The full scan of a 1 MB log measured 19.5 ms against 4.0 ms for the
+    tail-only read, and this function's callers read a test's log, not the
+    user's live one. A second parser is how the two answers drift.
     """
-    old_lines = old.splitlines() if old else []
-    new_lines = new.splitlines() if new else []
-    added = max(0, len(new_lines) - len(old_lines))
-    removed = max(0, len(old_lines) - len(new_lines))
-    # If the line counts match, count the actually-different lines.
-    if added == 0 and removed == 0 and old_lines != new_lines:
-        diffs = sum(1 for a, b in zip(old_lines, new_lines) if a != b)
-        return diffs, diffs
-    return added, removed
+    if n < 1:
+        return []
+    records, _ = _scan(log_path)
+    return records[-n:]
 
 
 def make_record(
@@ -664,8 +722,6 @@ def make_record(
     mode: str = "",
     path: str = "",
     command: str = "",
-    diff_lines_added: int = 0,
-    diff_lines_removed: int = 0,
     persistence: Optional[dict] = None,
     session_id: str = "",
     reason: str = "",
@@ -695,9 +751,6 @@ def make_record(
         rec["path"] = path
     if command:
         rec["command"] = command[:500]
-    if diff_lines_added or diff_lines_removed:
-        rec["diff_lines_added"] = diff_lines_added
-        rec["diff_lines_removed"] = diff_lines_removed
     if persistence:
         rec["persistence"] = persistence
     if extra:
@@ -793,25 +846,12 @@ _DENIED_DECISIONS = frozenset({"denied", "error", "block"})
 
 
 def _parse_log(path: Path) -> list[dict]:
-    """Every parseable record of one log file, in file order."""
-    if not path.exists():
-        return []
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except Exception:
-        return []
-    out: list[dict] = []
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = json.loads(line)
-        except Exception:
-            continue
-        if isinstance(rec, dict):
-            out.append(rec)
-    return out
+    """Every record of one log file, in file order -- ``_scan``'s records.
+
+    Kept because two call sites read a rotated log by path; it holds no
+    parse of its own, so there is one reader in this module.
+    """
+    return _scan(path)[0]
 
 
 def latest_rotated_log(path: Path) -> Optional[Path]:
@@ -825,8 +865,8 @@ def latest_rotated_log(path: Path) -> Optional[Path]:
 
 def _read_all_records(
     log_path: Optional[Path] = None, *, with_rotated: bool = False,
-) -> tuple[list[dict], str]:
-    """Records oldest first, plus the name of the rotated file consulted.
+) -> tuple[list[dict], str, dict]:
+    """Records oldest first, the rotated file consulted, and its verdict.
 
     The weekly rotation keeps the active file small, so a full parse is
     cheap. It also means that on the first day of a new week the active
@@ -835,17 +875,50 @@ def _read_all_records(
     ``with_rotated`` is set the immediately preceding rotated file is
     read as well, and its name is returned so the report can say which
     history it looked at.
+
+    Both files are read through ``_scan`` ONCE, so each record returned
+    here is a record whose chain was checked, and the third element is the
+    verdict on those same bytes -- not a second read of the file that could
+    land on different content.
     """
     path = log_path or _default_log_path()
     out: list[dict] = []
     consulted = ""
+    verdicts: list[dict] = []
+    targets: list[Path] = []
     if with_rotated:
         prev = latest_rotated_log(path)
         if prev is not None:
-            out.extend(_parse_log(prev))
+            targets.append(prev)
             consulted = prev.name
-    out.extend(_parse_log(path))
-    return out, consulted
+    targets.append(path)
+    for target in targets:
+        records, rep = _scan(target)
+        out.extend(records)
+        verdicts.append({
+            "name": target.name,
+            "ok": bool(rep.get("ok")),
+            "problems": list(rep.get("problems") or [])[:20],
+            "notes": list(rep.get("notes") or [])[:20],
+        })
+    return out, consulted, _integrity(verdicts)
+
+
+def _integrity(verdicts: list[dict]) -> dict:
+    """What the scan said about the files the report quoted.
+
+    Input: one verdict per file read (``{"name", "ok", "problems",
+    "notes"}``). Output: ``{"ok", "files"}`` -- ``ok`` is True only when
+    every quoted file is intact.
+
+    Semantics: the changes report answers "what did you change" from the
+    log, and a log that was edited, cut or rewritten outside DELFIN gives a
+    different answer than the one it recorded. ``verify`` is what knows
+    that; before this the report quoted the records and said nothing about
+    their chain, so a tampered log read exactly like an untouched one.
+    """
+    return {"ok": bool(verdicts) and all(v["ok"] for v in verdicts),
+            "files": verdicts}
 
 
 def _same_dir(a: str, b: str) -> bool:
@@ -960,7 +1033,15 @@ def build_changes_report(
          "denied":               [{"tool", "target", "decision", "reason"}],
          "permissions_persisted":[{"tool", "persistence"}],
          "unjournalled":         [paths written with no pre-image],
-         "window": {"from_ts", "to_ts", "records", "rotated"}}
+         "window": {"from_ts", "to_ts", "records", "rotated"},
+         "integrity": {"ok", "files": [{"name", "ok", "problems",
+                                        "notes"}]}}
+
+    ``integrity`` is what ``verify`` said about the files this report
+    quoted: a log rewritten, edited or cut outside DELFIN answers "what
+    did you change" differently than it recorded, and the report has to
+    carry that with the answer instead of presenting a tampered log as an
+    untouched one.
 
     Never raises — on any failure the empty skeleton comes back.
     """
@@ -968,6 +1049,7 @@ def build_changes_report(
         "files_written": [], "commands": [], "hooks_fired": [], "denied": [],
         "permissions_persisted": [], "unjournalled": [],
         "window": {"from_ts": "", "to_ts": "", "records": 0, "rotated": ""},
+        "integrity": {"ok": False, "files": []},
     }
     try:
         undoable_paths = _journal_paths(session_id, journal_paths)
@@ -999,14 +1081,15 @@ def build_changes_report(
                 out.append(rec)
             return out
 
-        records, rotated = _read_all_records(log_path)
+        records, rotated, integrity = _read_all_records(log_path)
         picked = _matching(records)
         if not picked:
             # An empty answer from the active log alone is the normal
             # state on the first day of a new ISO week, and reporting it
             # as "no recorded changes" is how a whole week of history
             # became invisible with no notice that rotation happened.
-            records, rotated = _read_all_records(log_path, with_rotated=True)
+            records, rotated, integrity = _read_all_records(
+                log_path, with_rotated=True)
             picked = _matching(records)
         try:
             cap = max(1, int(last_n))
@@ -1087,17 +1170,48 @@ def build_changes_report(
                 "records": len(picked),
                 "rotated": rotated,
             },
+            "integrity": integrity,
         }
     except Exception:
         return empty
+
+
+def _integrity_note(report: dict) -> str:
+    """The report's verdict on its own source, as one line, or ``""``.
+
+    Input: a ``build_changes_report`` dict. Output: a warning line when the
+    log the report quoted is NOT intact, else ``""`` (an intact log and an
+    older report dict that carries no verdict say nothing).
+
+    Semantics: it goes FIRST, above the changes, because a list of changes
+    read under a false premise is worse than no list -- the reader would
+    otherwise take a log that was edited or cut outside DELFIN for an
+    untouched one, and the answer to "what did you change" would be
+    whatever the tampering left behind.
+    """
+    integrity = report.get("integrity") or {}
+    if not isinstance(integrity, dict) or integrity.get("ok"):
+        return ""
+    files = integrity.get("files") or []
+    broken = [f for f in files if isinstance(f, dict) and not f.get("ok")]
+    if not broken:
+        return ("**The audit log could not be checked** — this report is "
+                "built from it and its integrity is unknown.")
+    names = ", ".join(str(f.get("name", "?")) for f in broken)
+    return (f"**NOT INTACT: {names}** — this log was edited, cut or "
+            "rewritten outside DELFIN, so the records below are not "
+            "necessarily what was recorded. Run `delfin-agent audit "
+            "verify` for the lines that do not check out.\n")
 
 
 def format_changes_report(report: dict) -> str:
     """Render a build_changes_report() dict as compact markdown.
 
     Chat-display companion of the report dict; tolerates missing keys
-    and never raises.
+    and never raises. When the report's ``integrity`` says the log was
+    not intact, that warning is the first line -- see ``_integrity_note``.
     """
+    report = report if isinstance(report, dict) else {}
     try:
         files = report.get("files_written") or []
         commands = report.get("commands") or []
@@ -1106,13 +1220,14 @@ def format_changes_report(report: dict) -> str:
         persisted = report.get("permissions_persisted") or []
         window = report.get("window") or {}
         rotated = str(window.get("rotated", "") or "")
+        warn = _integrity_note(report)
         if not (files or commands or hooks_fired or denied or persisted):
             tail = (f" Rotated history ({rotated}) was consulted too."
                     if rotated else
                     " Rotated weekly history was NOT consulted.")
-            return ("No recorded changes — the audit log has no matching "
-                    "records for this session/window." + tail)
-        lines: list[str] = ["### Changes made"]
+            return (warn + "No recorded changes — the audit log has no "
+                    "matching records for this session/window." + tail)
+        lines: list[str] = [warn + "### Changes made"]
         if files:
             lines.append("Files written:")
             for f in files:
