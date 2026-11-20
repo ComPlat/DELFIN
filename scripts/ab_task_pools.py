@@ -91,9 +91,10 @@ A file under ``delfin/`` is a *chemistry file* when any signal holds:
 What each signal admits is reported in the document under
 ``chemistry_rule.files_by_signal`` rather than left to be re-derived, so
 that a reader of a pools file can tell which rule produced it. Measured on
-``6fcc5895c``, of 1,273 ``.py`` files under ``delfin/``: S1 135, S2 203,
-S3 196, of which **52 are admitted by S3 alone**, which raises the
-chemistry set from 270 to 322. Of the six modules S3 was written for, two
+``0eb187ff9``, of 1,273 ``.py`` files under ``delfin/``: S1 135, S2 203,
+S3 218, of which **58 are admitted by S3 alone**, which raises the
+chemistry set from 270 to 328 (249 under the rule before this clause, whose
+vocabulary was narrower). Of the six modules S3 was written for, two
 (``ts_finder.py``, ``nmr_spectrum.py``) are admitted by the widened S2
 text reading as well, and four (``fukui.py``, ``ir_spectrum.py``,
 ``uv_vis_spectrum.py``, ``turbomole_version.py``) only by S3.
