@@ -156,7 +156,19 @@ def tick(*, now: Optional[float] = None, probe_every_s: Optional[float] = None) 
     with _locked() as held:
         if not held:
             return out             # another process ticks right now
-        state = _load()
+        # The writer's read: a damaged store is kept (quarantine) and this
+        # tick REFUSES to write -- rebuilding the file from a lenient read's
+        # {} is how every job outcome it held is silently lost. The store
+        # is gone, so the next tick writes a fresh one safely; the doctor's
+        # state-file check is what tells the person.
+        state, moved = _load_for_write()
+        if moved is not None:
+            from delfin.common.logging import get_logger
+            get_logger(__name__).warning(
+                "remote-watch store %s could not be read; kept at %s, "
+                "this tick stored nothing", _state_path(), moved)
+            return out
+        state = state if isinstance(state, dict) else {}
         known = state.setdefault("jobs", {})
         open_by_cluster: dict[str, list[dict]] = {}
         for record in _jobs.records():
@@ -666,11 +678,33 @@ def _lock_path() -> Path:
 
 
 def _load() -> dict:
+    """The watcher state, or none where the file is absent OR unreadable.
+
+    Lenient on purpose: a reader (``outcome``/``seen_state``/``followed``)
+    asks what is known, and a damaged store must not crash whatever asked.
+    It does not touch the file. A WRITER may not build on this answer --
+    see :func:`_load_for_write`.
+    """
     try:
         data = json.loads(_state_path().read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+def _load_for_write() -> tuple[dict, Path | None]:
+    """What the tick may modify, and where a damaged file was moved to.
+
+    A WRITER's read, distinct from :func:`_load`, which may answer a
+    damaged file with "nothing is known" -- true for a reader and
+    destructive for a writer that would rebuild the file from it and drop
+    every job outcome it held. On damage the file is moved to the dated
+    ``.unreadable-`` quarantine of ``agent/state_file.py`` (bytes kept);
+    the store is gone, so the next tick writes a fresh one safely, and
+    the doctor's state-file check lists the quarantine.
+    """
+    from delfin.agent import state_file as _sf
+    return _sf.read_json_for_write(_state_path(), default=None)
 
 
 def _save(state: dict) -> None:

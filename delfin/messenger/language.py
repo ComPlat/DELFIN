@@ -118,12 +118,43 @@ def _file():
 
 
 def _load() -> dict:
+    """The stored states, or none where the file is absent OR unreadable.
+
+    Lenient on purpose: a reader (``of_contact``/``of_person``) asks what
+    is known, and a damaged store must not crash message handling. It
+    does not touch the file. A WRITER may not build on this answer --
+    see :func:`_load_for_write`.
+    """
     import json
     try:
         value = json.loads(_file().read_text())
         return value if isinstance(value, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+def _load_for_write() -> dict:
+    """The store to modify, or raise: a damaged store is kept, not
+    written over.
+
+    A WRITER's read, distinct from :func:`_load`, which may answer a
+    damaged file with "nothing is known" -- true for a reader and
+    destructive for a writer that would rebuild the file from it and drop
+    every contact it held. On damage the file is moved to the dated
+    ``.unreadable-`` quarantine of ``agent/state_file.py`` (bytes kept)
+    and :class:`agent.state_file.StateFileUnreadable` is raised: a store
+    that cannot be read cannot be safely replaced, so the write is
+    refused rather than proceeding to empty it. The store is gone, so the
+    next message writes a fresh one safely.
+    """
+    from delfin.agent import state_file as _sf
+    data, moved = _sf.read_json_for_write(_file(), default=None)
+    if moved is not None:
+        raise _sf.StateFileUnreadable(
+            f"{_file()} cannot be read; it was kept at {moved}. "
+            f"Refusing to write over it -- open it and copy out what "
+            f"you need, or delete it to start fresh.")
+    return data if isinstance(data, dict) else {}
 
 
 def _save(data: dict) -> None:
@@ -140,9 +171,14 @@ def of_contact(cid: str) -> str:
 
 def set_contact(cid: str, lang: str, *, mode: str = "fixed") -> None:
     """Set contact ``cid``'s language (``mode`` fixed: no automatic
-    switching until ``auto``)."""
+    switching until ``auto``).
+
+    A damaged store is kept (quarantine) and the write refused with
+    :class:`agent.state_file.StateFileUnreadable`, not emptied by writing
+    a store that holds only this contact.
+    """
     import time
-    data = _load()
+    data = _load_for_write()
     data[str(cid)] = {"lang": lang if lang in LANGS else default(), "mode": mode,
                       "streak": 0, "at": time.time()}
     _save(data)
@@ -161,9 +197,15 @@ def choose(cid: str, setting: str) -> str:
 
 def observe(cid: str, text: str) -> str:
     """One message of contact ``cid``: the state after it (written only
-    when it changed), and the language now in force."""
+    when it changed), and the language now in force.
+
+    Like :func:`set_contact`, a damaged store is kept (quarantine) and
+    the write refused with
+    :class:`agent.state_file.StateFileUnreadable`, not emptied by writing
+    a store that holds only this contact.
+    """
     import time
-    data = _load()
+    data = _load_for_write()
     old = data.get(str(cid)) or {}
     new = next_state(old, text)
     if {k: old.get(k) for k in new} != new or time.time() - float(old.get("at") or 0) > 60:

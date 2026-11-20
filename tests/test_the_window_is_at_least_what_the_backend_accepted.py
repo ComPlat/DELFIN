@@ -55,7 +55,16 @@ class TestTheFloor:
         assert OW.floor("m") == 0
         floors.write_text("not json")
         assert OW.floor("m") == 0
-        OW.note("m", 7)                       # rewrites the broken file
+        # A WRITER may not build on the reader's lenient answer: note keeps
+        # the broken file in the dated .unreadable- quarantine (bytes kept)
+        # and refuses the write instead of silently replacing the store.
+        OW.note("m", 7)
+        assert OW.floor("m") == 0, "no floor is invented over a broken store"
+        kept = sorted(p for p in floors.parent.iterdir()
+                      if "unreadable" in p.name)
+        assert len(kept) == 1
+        assert kept[0].read_text() == "not json"
+        OW.note("m", 7)                       # the store is gone now: fresh
         assert OW.floor("m") == 7
 
 
