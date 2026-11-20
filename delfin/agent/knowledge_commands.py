@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from . import knowledge as kn
+from . import safe_git
 from . import knowledge_private as kp
 from . import knowledge_share as ks
 
@@ -244,7 +245,7 @@ def _share(words, *, workspace, ask=None, say=None, **_):
         i += 1
     if not layer:
         layer = les.prepared_layer or (
-            "project" if (kn.repo_root_of(workspace) / ".git").exists()
+            "project" if safe_git.is_checkout(kn.repo_root_of(workspace))
             and not kn.is_delfin_repo(workspace) else "global")
     d = ks.start_share(les.id, layer, workspace=workspace, scope=scope,
                        topic=topic, handle=handle, releasable=release,

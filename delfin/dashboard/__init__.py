@@ -1484,7 +1484,8 @@ def _installed_copy_hint(repo_dir):
     nothing, on every page load -- with Pull and Rollback aimed at a
     repository that is not there.
     """
-    if (Path(repo_dir) / '.git').exists():
+    from delfin.agent import safe_git
+    if safe_git.is_checkout(repo_dir):
         return None
     try:
         from delfin import __version__

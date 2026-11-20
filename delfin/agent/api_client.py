@@ -5906,7 +5906,7 @@ def _read_only_reason(resolved, perms) -> str:
         path = Path(resolved)
         workspace = Path(getattr(perms, "workspace", "") or ".")
         for parent in (path, *path.parents):
-            if (parent / ".git").exists():
+            if safe_git.is_checkout(parent):
                 if parent != workspace:
                     return (f"the repository checkout at {parent}, which is "
                             "not your workspace — work inside your own "
