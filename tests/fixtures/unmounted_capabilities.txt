@@ -32,7 +32,6 @@ test-only	_locator_value	delfin/agent/cited_retrieval.py:218
 nowhere	_now_minus	delfin/agent/session_health.py:79
 nowhere	_project_config_path	delfin/agent/mcp_client.py:144
 nowhere	_project_settings_paths	delfin/agent/hooks.py:164
-nowhere	_redirect_targets_safe	delfin/agent/refusal_memory.py:161
 test-only	_release_mine	delfin/agent/scratch.py:75
 test-only	_scoped_test_cmd_for_edits	delfin/agent/api_client.py:13237
 nowhere	_seed_indices	delfin/agent/campaign.py:233
@@ -50,13 +49,11 @@ test-only	decide_recovery	delfin/agent/durable.py:142
 test-only	distill_for_shipping	delfin/agent/memory_distill.py:380
 test-only	enforce_quota	delfin/agent/shared_tmp.py:307
 nowhere	estimated_tokens	delfin/agent/memory_nudge.py:147
-nowhere	expected_digest	delfin/agent/principles_guard.py:51
 test-only	for_files	delfin/agent/verify_recipe.py:327
 test-only	forget_pin_decisions	delfin/agent/mcp_client.py:429
 test-only	format_member_message	delfin/agent/swarm/lead.py:198
 test-only	format_prompt_size_report	delfin/agent/prompt_loader.py:2873
 test-only	friction_summary	delfin/agent/session_report.py:849
-test-only	generate_stub	delfin/agent/code_mode.py:292
 nowhere	home_owner	delfin/agent/swarm/policy.py:183
 test-only	hostile_reach	delfin/agent/prompt_head.py:144
 nowhere	is_harness_text	delfin/agent/harness_rows.py:74
@@ -87,7 +84,6 @@ test-only	resolve_pending	delfin/agent/skill_usage.py:247
 test-only	resources_within	delfin/agent/pack/benchmark/accept/w20_common.py:111
 test-only	role_tool_surface_report	delfin/agent/api_client.py:12107
 test-only	scan_for_dishonest_tests	delfin/agent/verify_guard.py:3554
-test-only	serve_request	delfin/agent/code_mode.py:108
 test-only	set_caveat_language	delfin/agent/verify_guard.py:1062
 nowhere	set_for_workspace_words	delfin/agent/workspace_profiles.py:220
 test-only	stable_prefix_len	delfin/agent/prompt_head.py:44
