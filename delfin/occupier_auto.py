@@ -86,6 +86,14 @@ def _state_path(root: Path) -> Path:
 
 
 def _load_state(root: Path) -> Dict[str, Any]:
+    """The recorded preferences, or none where the file is absent OR
+    unreadable.
+
+    Lenient on purpose: a reader (``_preferred_index_from_state`` and the
+    state_cache read) asks what is known, and a damaged store must not crash
+    the step that consumes it. It does not touch the file. A WRITER may not
+    build on this answer -- see :func:`_load_state_for_write`.
+    """
     path = _state_path(root)
     if not path.exists():
         return {}
@@ -97,6 +105,30 @@ def _load_state(root: Path) -> Dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         logger.debug("Failed to read auto-state %s: %s", path, exc)
     return {}
+
+
+def _load_state_for_write(root: Path) -> Dict[str, Any]:
+    """What the writer may modify, or raise: a damaged store is kept, not
+    written over.
+
+    A WRITER's read, distinct from :func:`_load_state`, which may answer a
+    damaged file with "nothing is recorded" -- true for a reader and
+    destructive for a writer that would rebuild the file from it and drop
+    every preference it held. On damage the file is moved to the dated
+    ``.unreadable-`` quarantine of ``agent/state_file.py`` (bytes kept) and
+    :class:`agent.state_file.StateFileUnreadable` is raised: a store that
+    cannot be read cannot be safely replaced, so the write is refused
+    rather than proceeding to empty it. The store is gone, so the next
+    record writes a fresh one safely.
+    """
+    from delfin.agent import state_file as _sf
+    data, moved = _sf.read_json_for_write(_state_path(root), default=None)
+    if moved is not None:
+        raise _sf.StateFileUnreadable(
+            f"{_state_path(root)} cannot be read; it was kept at {moved}. "
+            f"Refusing to write over it -- open it and copy out what "
+            f"you need, or delete it to start fresh.")
+    return data if isinstance(data, dict) else {}
 
 
 def _save_state(state: Dict[str, Any], root: Path) -> None:
@@ -144,7 +176,10 @@ def record_auto_preference(parity: str, preferred_index: Optional[int], delta: i
     if preferred_index is None:
         return
     root_path = _resolve_root(root)
-    state = _load_state(root_path)
+    # A writer: a damaged store is kept (quarantine) and the record
+    # refused with StateFileUnreadable, not emptied by writing a store
+    # that holds only this delta's preference.
+    state = _load_state_for_write(root_path)
     entry = state.setdefault(str(delta), {})
 
     # Store full winner info for own mode rule-based generation

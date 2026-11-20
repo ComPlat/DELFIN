@@ -1633,7 +1633,7 @@ _SLOW_TEST_FILES = frozenset({
     "test_welle5l_t3b_daqiwaz_pyridine_coverage.py",
     # (b) order-dependent (pass only in the full serial context)
     "test_no_regression_undefined_names.py", "test_post_optimizer.py",
-    "test_theorem_d_asymmetric.py", "test_welle5p_c_hotfix.py",
+    "test_theorem_d_asymmetric.py",
 })
 
 

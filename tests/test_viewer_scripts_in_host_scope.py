@@ -71,7 +71,9 @@ def _script_blocks():
 
 def test_every_shipped_script_survives_a_module_scope():
     playwright = pytest.importorskip(
-        "playwright.sync_api", reason="needs a browser to evaluate the scripts"
+        "playwright.sync_api",
+        reason="needs the playwright package and its Chromium browser "
+               "to evaluate the scripts"
     )
     if not _BUNDLE.is_file():
         pytest.skip("vendored 3Dmol bundle is not present")

@@ -253,12 +253,42 @@ def _host_of(url: str) -> str:
         return ""
 
 
+#: ``(host, port)`` of each model endpoint this process talks to. Kept
+#: separately from ``_ENDPOINT_HOSTS`` because the port gate runs before
+#: any host reasoning: a known host on an unlisted port never reaches it.
+_ENDPOINT_ADDRESSES: set = set()
+
+
 def note_endpoint(url: str) -> None:
-    """Register the host of a model endpoint this process talks to, so a
-    script the agent starts can call the same endpoint."""
+    """Register a model endpoint this process talks to, so a script the
+    agent starts can call the same endpoint.
+
+    The host AND the port: a local model server listens on neither 80 nor
+    443 (Ollama 11434, vLLM 8000, llama.cpp 8080), and the port gate
+    refuses before the host is considered. Registering the host alone
+    therefore left every local endpoint unreachable from anything the
+    agent starts, while the configured remote endpoints on 443 worked --
+    so the gap appeared only in a local-only installation.
+    """
     host = _host_of(url)
-    if host:
-        _ENDPOINT_HOSTS.add(host)
+    if not host:
+        return
+    _ENDPOINT_HOSTS.add(host)
+    try:
+        parts = urlsplit(str(url or "").strip())
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+    except ValueError:
+        return
+    _ENDPOINT_ADDRESSES.add((host, int(port)))
+
+
+def _is_endpoint_address(host: str, port: int) -> bool:
+    """Whether ``(host, port)`` is a model endpoint this process uses.
+
+    Exact pair only: a configured endpoint on 11434 does not open 11434
+    on any other host, and does not open another port on its own host.
+    """
+    return (str(host or "").lower(), int(port)) in _ENDPOINT_ADDRESSES
 
 
 def _index_urls() -> list[str]:
@@ -778,7 +808,11 @@ class EgressProxy:
         # and host go on below.
         if _own_server(perms, host, port, peer_pid):
             return "allow", "", False
-        if port not in self.allowed_ports:
+        # The port of a model endpoint the session is configured to use,
+        # for that host only. Everything below still judges it as any
+        # known host: the administrator's ceiling, the host allow-list and
+        # the upload rules are unchanged, and no other host gains the port.
+        if port not in self.allowed_ports and not _is_endpoint_address(host, port):
             return "deny", (
                 f"blocked by DELFIN's egress proxy: port {port} is not allowed "
                 f"(allowed: {', '.join(map(str, self.allowed_ports))}; "
