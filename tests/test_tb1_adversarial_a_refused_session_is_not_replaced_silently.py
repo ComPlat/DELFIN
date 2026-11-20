@@ -702,3 +702,72 @@ def test_a_wait_that_cannot_read_the_lock_ends_visibly_not_silently(env):
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=30)
+
+
+def test_a_wait_whose_timer_cannot_start_says_so_instead_of_dying_quietly(env):
+    """The second half of the QS amendment: the watch timer itself fails.
+
+    ``_tick_wait`` guards its whole re-arming body with ``except Exception:
+    pass`` (tab_agent.py:14627-14628). If the wait's timer copies that shape,
+    a timer that cannot start leaves the person waiting on nothing at all --
+    the refusal stands, no check ever runs, and the screen says nothing.
+
+    The discriminating assertion is the VISIBLE LINE: on main no message can
+    name a failed wait, because no wait exists. "No session was created" is
+    asserted too, but it is the weaker half -- on main it can hold for the
+    wrong reason (the send tripping over the broken timer before it mints),
+    so it guards a patch that ends the wait by starting a session, and it is
+    never the reason this test is red.
+
+    The timer is broken through the ``threading`` module object rather than
+    through a local alias, because the patch chooses its own alias name
+    (``import threading as _threading`` inside the function); every alias
+    binds the same module, so this holds whichever name it picks.
+    """
+    _write_session(env, SID, "held job", "held-turn")
+    proc = _held_by_a_live_process(env)
+    tab = None
+    try:
+        tab = _tab(env)
+        state = tab["refs"]["state"]
+        _open_held_conversation(tab, env)
+        assert "held by a live session" in _chat_text(state), (
+            "the fixture must reach the refusal first")
+
+        import threading as _threading_real
+
+        class _ATimerThatCannotStart:
+            def __init__(self, *args, **kwargs):
+                raise RuntimeError("timer cannot start for this test")
+
+        real_timer = _threading_real.Timer
+        raised = None
+        _threading_real.Timer = _ATimerThatCannotStart
+        try:
+            _choose_wait(tab)
+        except Exception as exc:          # recorded, then judged as behaviour
+            raised = exc
+        finally:
+            _threading_real.Timer = real_timer
+
+        said = "\n".join(str(m.get("content") or "")
+                         for m in state.get("chat_messages") or []
+                         if str(m.get("role") or "") != "user")
+        assert ("wait" in said.lower()
+                and ("fail" in said.lower() or "error" in said.lower()
+                     or "could not" in said.lower()
+                     or "cannot" in said.lower())), (
+            "a wait whose timer cannot start must say so in one line instead "
+            f"of dying quietly; the tab said: {said[-400:]!r} "
+            f"(the choice raised: {raised!r})")
+        assert env["created"] == [], (
+            "a wait that could not start must not fall through to a session")
+    finally:
+        if tab is not None:
+            try:
+                tab["refs"]["shutdown"](save=False)
+            except Exception:
+                pass
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=30)
