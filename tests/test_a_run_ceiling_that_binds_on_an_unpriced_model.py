@@ -485,6 +485,135 @@ def test_a_turn_whose_provider_reports_no_tokens_is_caught_by_the_engine(
 
 
 # ---------------------------------------------------------------------------
+# 5b. The zero that wore a measurement's clothes
+#
+# ``_note_turn_price_state`` counts a reported spend as measured whatever
+# the rate card says, and that rule is right: a subscription's $0.00 is a
+# real observation. It is also how the broken session escaped every USD
+# gate -- it ran ``backend: cli``, so it counted ZERO unpriced turns,
+# reported its ceiling as enforced, and would have shown
+# ``$0.00 of $10.00 (0 %)`` through 363 M tokens. The two zeros are
+# identical by value, so the dimension that IS measured decides.
+# ---------------------------------------------------------------------------
+
+def test_a_cli_backend_zero_after_a_material_run_is_not_a_measurement():
+    """The field session's own shape: measured turns, cost 0.00, 363 M
+    tokens. The pinned rule stands; the ceiling is not called enforced."""
+    eng = _StandIn(run_budget_usd=10.0, cost_usd=0.0, backend="cli",
+                   _measured_cost_turns=114,
+                   token_usage={"input": BROKE, "output": 505_054})
+    led = _ledger(eng)
+    assert led._usd_budget_enforced() is False
+    assert led._usd_zero_is_unexplained() is True
+
+
+def test_a_small_zero_cost_run_is_left_alone():
+    """Below the floor the zero is still allowed to mean thrift: a run
+    that has carried 1,500 tokens tells nothing either way, which is why
+    the spec file's cli-backend pin keeps passing."""
+    eng = _StandIn(run_budget_usd=10.0, cost_usd=0.0, backend="cli",
+                   _measured_cost_turns=1,
+                   token_usage={"input": 1_000, "output": 500})
+    led = _ledger(eng)
+    assert led._usd_budget_enforced() is True
+    assert led._usd_zero_is_unexplained() is False
+    assert led._unmeasured_budget_block() == ""
+
+
+def test_a_non_zero_report_is_measured_however_large_the_run():
+    """The pinned rule, unchanged: an observation outranks the rate card
+    when the backend actually observed something."""
+    eng = _StandIn(run_budget_usd=10.0, cost_usd=0.01, backend="cli",
+                   _measured_cost_turns=114,
+                   token_usage={"input": BROKE, "output": 0})
+    assert _ledger(eng)._usd_budget_enforced() is True
+
+
+def test_a_quota_funded_run_is_never_cross_checked():
+    """A provider that bills nothing produces a zero that is a fact.
+    Checked BEFORE the token count, so a 363 M-token KIT run stays
+    silent -- calling it unmeasured is the false statement in the other
+    direction."""
+    eng = _StandIn(run_budget_usd=10.0, cost_usd=0.0, provider="kit",
+                   _non_billing_turns=114,
+                   token_usage={"input": BROKE, "output": 0})
+    led = _ledger(eng)
+    assert led._usd_budget_enforced() is True
+    assert led._usd_zero_is_unexplained() is False
+    assert led._unmeasured_budget_block() == ""
+
+
+def test_the_floor_is_derived_from_the_rate_card_and_the_sessions():
+    """2 M tokens is $0.20 at the cheapest published input rate and
+    $30.00 at the most expensive, so an exact 0.00 past it is not a
+    priced run being cheap."""
+    from delfin.agent import pricing
+    assert BL.DEFAULT_ZERO_COST_TOKEN_FLOOR == 2_000_000
+    rates = [r[0] for r in list(pricing.ANTHROPIC_RATES.values())
+             + list(pricing.OPENAI_RATES.values()) if r[0] > 0]
+    cheapest = min(rates)
+    assert cheapest == pytest.approx(0.10)
+    floor_cost = BL.DEFAULT_ZERO_COST_TOKEN_FLOOR / 1_000_000 * cheapest
+    assert floor_cost >= 0.05, "the floor must clear the $0.005 rounding"
+    # ...and the basis is written where the number is.
+    import pathlib
+    source = pathlib.Path(BL.__file__).read_text(encoding="utf-8")
+    basis = source[:source.index("DEFAULT_ZERO_COST_TOKEN_FLOOR =")]
+    for figure in ("$0.10/MTok", "363.5 M", "2,331", "21,211"):
+        assert figure in basis, figure
+
+
+def test_the_notice_names_the_backend_and_not_the_rate_card():
+    """Two reasons a ceiling cannot fire, one sentence each: a notice
+    that said "no published rate" here would send its reader to the model
+    picker when the fix is the backend's own reporting."""
+    eng = _StandIn(run_budget_usd=10.0, cost_usd=0.0, backend="cli",
+                   _measured_cost_turns=114,
+                   token_usage={"input": BROKE, "output": 0})
+    block = _ledger(eng)._unmeasured_budget_block()
+    assert block.startswith("# Run budget NOT enforceable in USD")
+    assert "The cli backend reported exactly $0.00" in block
+    assert "no published rate" not in block
+    assert "ABSENCE of a measurement, not a cheap run" in block
+    # ...with the figure that proves it, and the ceiling that holds.
+    assert "363.5 M tokens" in block
+    assert "$36.35" in block            # 363.5 M at the cheapest rate
+    assert "agent.run_budget_tokens" in block
+
+
+def test_the_zero_cost_notice_is_said_once():
+    eng = _StandIn(run_budget_usd=10.0, cost_usd=0.0, backend="cli",
+                   _measured_cost_turns=114,
+                   token_usage={"input": BROKE, "output": 0})
+    led = _ledger(eng)
+    assert led._unmeasured_budget_block() != ""
+    assert led._unmeasured_budget_block() == ""
+
+
+def test_the_unpriced_reason_still_wins_when_both_apply():
+    """A run with unpriced turns gets the rate-card sentence: that is the
+    first thing to fix, and the block is said once."""
+    eng = _StandIn(run_budget_usd=10.0, cost_usd=0.0, backend="cli",
+                   _unpriced_turns=3, _measured_cost_turns=114,
+                   token_usage={"input": BROKE, "output": 0})
+    block = _ledger(eng)._unmeasured_budget_block()
+    assert "no published rate" in block
+    assert "reported exactly $0.00" not in block
+
+
+def test_the_dimension_list_marks_the_unexplained_zero_too():
+    """The USD line already carried — UNMEASURED for an unpriced run; the
+    cross-checked zero reaches the same suffix, through the same
+    predicate, so the two cannot drift."""
+    eng = _StandIn(run_budget_usd=10.0, cost_usd=0.0, backend="cli",
+                   _measured_cost_turns=114,
+                   token_usage={"input": BROKE, "output": 0})
+    line = next(ln for ln in _ledger(eng)._budget_dimension_lines()
+                if "$" in ln)
+    assert line == "$0.00 of $10.00 (0 %) — UNMEASURED"
+
+
+# ---------------------------------------------------------------------------
 # 6. Every figure with its denominator
 # ---------------------------------------------------------------------------
 

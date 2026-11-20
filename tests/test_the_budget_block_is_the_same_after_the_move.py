@@ -178,11 +178,18 @@ def test_the_budget_block_at_50_percent_is_silent():
 # The block now carries every ceiling in force as ``spent of ceiling``,
 # so its text depends on which dials are set and a single pinned string
 # can no longer stand for all of them. The invariant halves are pinned
-# instead: the heading, the percentage, and the instruction. The reversed
-# decision is deliberate -- a notice reading "105% of this run's budget
-# is spent" named neither the figure nor what it was against, so its
-# reader could not tell a run out of money from one out of tokens, nor
-# decide which dial to raise.
+# instead: the heading, the percentage, and the instruction.
+#
+# This REVERSES the decision recorded below as "the ceiling list goes to
+# the attention detail, not [the block]". The reversal is not a
+# preference; it is a correction, and the evidence is three field
+# sessions on models with no published rate (27.3 M, 124.1 M and 363.5 M
+# input tokens, every one recording cost_usd 0.0, the last ending
+# "session korrupt"). On the third, a $10.00 ceiling read 0 % for 363 M
+# tokens and 1,696 tool calls. A bare "105% of this run's budget is
+# spent" cannot be checked against anything: it names neither the figure
+# nor what the figure is against, so nobody reading it could see that
+# the denominator was a dollar amount nothing was ever measured in.
 def _wind_down(dims: str) -> str:
     return (
         "# Run budget wind-down (auto-injected)\n"

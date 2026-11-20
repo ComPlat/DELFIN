@@ -8169,8 +8169,21 @@ class AgentEngine:
         A quota-funded or locally served run is NOT this case: its zero is
         a measurement, its ceiling holds, and calling it unmeasured would
         be a false statement in the other direction.
+
+        False in a second case the token dimension made checkable: an
+        exact ``cost_usd`` of 0.00 after a material number of tokens. A
+        backend's reported spend outranks the rate card, which is right
+        for a subscription's real $0.00 and wrong for the identical 0.00
+        a backend reports when it observed nothing. See
+        ``BudgetLedger._usd_budget_enforced``.
         """
         return self._budget_ledger()._usd_budget_enforced()
+
+    def _usd_zero_is_unexplained(self) -> bool:
+        """Whether this run's $0.00 is the unexplained kind: no unpriced
+        turn, no non-billing provider, and a material token count behind
+        it. See ``BudgetLedger._usd_zero_is_unexplained``."""
+        return self._budget_ledger()._usd_zero_is_unexplained()
 
     def _note_turn_token_state(self, input_delta: int = 0,
                                produced: bool = True) -> None:
