@@ -172,6 +172,25 @@ def _attempt(tmp_path: Path, scenario: str) -> dict:
                "def used_helper():\n"
                "    return 1\n")
         _drop_from_fixture(repo)
+    elif scenario == "callback_only":
+        # A genuine connection the primary endpoint cannot see: the
+        # capability is handed to another function as a value and put in a
+        # dispatch dict of function objects. No ast.Call names it.
+        # `shadow` writes and deletes a local of the same spelling, which
+        # is not a use of the capability: a store is not a load. Without
+        # that clause the diagnosis would report two more sites.
+        _write(repo / "delfin" / "agent" / "caller.py",
+               "from delfin.agent.widget import orphan_capability, "
+               "used_helper\n\n\n"
+               "HANDLERS = {'orphan': orphan_capability}\n\n\n"
+               "def shadow(value):\n"
+               "    orphan_capability = value\n"
+               "    del orphan_capability\n"
+               "    return value\n\n\n"
+               "def run():\n"
+               "    handler = HANDLERS['orphan']\n"
+               "    return used_helper() if handler else 0\n")
+        _drop_from_fixture(repo)
     elif scenario == "scorer_edited":
         _connect_capability(repo)
         _drop_from_fixture(repo)
@@ -291,6 +310,34 @@ def test_a_capability_that_only_calls_itself_is_not_connected(tmp_path):
     # `string_only`: the secondary is the lenient one in both cases.
     assert rec["route_secondary"] == "connected"
     assert rec["variants_disagree"] is True
+    # The diagnosis does not rescue it either: a self-reference is inside
+    # the definition and is not recorded.
+    assert rec["ast_references"]["sites"] == []
+
+
+def test_a_callback_connection_is_recorded_although_it_scores_zero(tmp_path):
+    """Correction E: the third reading is a diagnosis, not a score.
+
+    The capability is put in a dispatch dict of function objects and
+    handed on as a value. That is a genuine connection and no ``ast.Call``
+    names it, so the primary endpoint scores it zero. The attempt is not
+    rescued -- the score stays 0 -- and the loads are recorded so the case
+    is visible in the row instead of being argued about afterwards.
+    """
+    rec = _score(_attempt(tmp_path, "callback_only"))
+    assert rec["route_detail"]["call_sites"] == []
+    assert rec["route"] == "still_unreachable"
+    assert rec["score"] == 0
+    # Nothing here is a third score; the two scored readings are unchanged.
+    assert rec["score_secondary"] == 1        # the import line is a mention
+    assert set(rec["checks_secondary"]) == set(rec["checks"])
+    refs = rec["ast_references"]
+    # The dict value is a load. The name in the import statement is an
+    # alias, and `shadow` only stores and deletes a local of the same
+    # spelling; none of the three is a use, so the count is exactly one.
+    assert refs["count"] == 1, refs
+    assert refs["sites"] == refs["beyond_call_sites"]
+    assert refs["sites"][0].startswith("delfin/agent/caller.py:")
 
 
 def test_a_deletion_is_judged_the_same_way_under_both_readings(tmp_path):

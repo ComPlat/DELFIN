@@ -32,6 +32,26 @@ The four checks
    * **secondary** -- the scan's own rule from ``ab_task_pools.py``, which
      counts a name in a string literal as a reference. ``score_secondary``
      is this one.
+   * **a third reading that scores nothing** -- ``ast_references``, every
+     AST load of the name outside its own definition. A decorator, a
+     callback and a dict of function objects connect a capability without
+     calling it, and the primary scores all three zero; the field records
+     them per attempt so the gap is visible in the rows. It is not a
+     third score, because a rule chosen after the sample is drawn is a
+     rule chosen for its answer (Addendum 2, Correction E).
+
+   The secondary is not a weaker endpoint kept for comfort: name-based
+   dispatch is real in this product, a scan that ignored it called two live
+   functions unreachable, and an attempt that wires a capability into a
+   genuine dispatch table has done the work. Scoring both lets that case be
+   seen instead of argued about. ``variants_disagree`` marks the attempts
+   where the two differ; the per-arm count of those is a result about the
+   corpus, not a rounding error.
+
+   The two readings differ only in the *connected* direction. For deletion
+   both require that nothing names the capability any more, string literals
+   included -- a leftover dispatch string pointing at a deleted function is
+   a break, and being stricter in that direction cannot be gamed.
 2. ``tests_still_pass`` -- the consuming suites of the touched files, chosen
    from the tree **before** the attempt, run in both trees. Per test:
    passed, failed, skipped, missing. Charged to the attempt are only the
@@ -356,15 +376,61 @@ def _call_sites(root: Path, name: str) -> list[str]:
     return out
 
 
+def _reference_sites(root: Path, name: str) -> list[str]:
+    """Where ``name`` is *loaded* in the product, by syntax tree.
+
+    Input: the tree and the capability name. Output: ``file:line`` for
+    every ``ast.Name`` or ``ast.Attribute`` in a load context under
+    ``delfin/``, outside test files, that spells the capability, excluding
+    the nodes inside its own definition. A name inside a string literal is
+    not an AST load and does not appear here; that reading is the
+    secondary endpoint.
+
+    This is a **diagnosis and never a score** (Addendum 2, Correction E).
+    A decorator, a callback argument and a dict of function objects are
+    genuine connections that the primary endpoint scores zero, because
+    none of them is a call. Recording them per attempt is what lets that
+    be seen in the rows instead of argued about after the aggregate; it is
+    deliberately not a third scoring rule, because choosing one after the
+    sample is drawn is how an endpoint gets picked for the answer it
+    gives. Calls are loads too, so this list is a superset of
+    ``_call_sites``.
+    """
+    out = []
+    for path in _product_files(root):
+        try:
+            tree = ast.parse(path.read_text(errors="replace"))
+        except SyntaxError:
+            continue
+        inside = _own_definition_nodes(tree, name)
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Name, ast.Attribute)):
+                continue
+            if id(node) in inside or not isinstance(node.ctx, ast.Load):
+                continue
+            spelled = (node.id if isinstance(node, ast.Name)
+                       else node.attr) == name
+            if spelled:
+                out.append(f"{path.relative_to(root)}:{node.lineno}")
+    return out
+
+
 def capability_route(root: Path, task: dict) -> dict:
     """Where the capability stands in the attempt tree.
 
     Input: the attempt tree and the task row. Output: ``{"route",
-    "route_secondary", "mentions", "call_sites", "definitions"}``, each
-    route in ``connected``, ``deleted``, ``still_unreachable``,
+    "route_secondary", "mentions", "call_sites", "reference_sites",
+    "references_beyond_calls", "definitions"}``, each route in
+    ``connected``, ``deleted``, ``still_unreachable``,
     ``deleted_but_named``. ``route`` is the primary reading (a call site in
     the syntax tree), ``route_secondary`` the scan's string-inclusive one.
 
+    ``reference_sites`` is the third reading and scores nothing: every AST
+    load of the name outside its own definition, so a decorator, a
+    callback or a dict of function objects is visible although the primary
+    endpoint scores it zero. ``references_beyond_calls`` holds exactly
+    those -- the loads that are not call sites -- which is the set that
+    tells the two readings apart without being allowed to decide anything.
     """
     name = task["name"]
     defs_here = _defined_anywhere(root, name)
@@ -376,6 +442,7 @@ def capability_route(root: Path, task: dict) -> dict:
     skip = {root / BASELINE_FIXTURE}
     mentions = _mentions(root / "delfin", defs, True, root, skip)[name]
     calls = _call_sites(root, name)
+    references = _reference_sites(root, name)
     if defs_here:
         primary = "connected" if calls else "still_unreachable"
         secondary = "connected" if mentions else "still_unreachable"
@@ -386,6 +453,9 @@ def capability_route(root: Path, task: dict) -> dict:
         primary = secondary = "deleted_but_named" if mentions else "deleted"
     return {"route": primary, "route_secondary": secondary,
             "mentions": mentions, "call_sites": calls,
+            "reference_sites": references,
+            "references_beyond_calls": [r for r in references
+                                        if r not in set(calls)],
             "definitions": defs_here}
 
 
@@ -691,6 +761,13 @@ def score_attempt(attempt_dir: Path, post_tree: Path, pre_tree: Path,
                              "capability_resolved": resolved_secondary},
         "route_secondary": route["route_secondary"],
         "variants_disagree": route["route"] != route["route_secondary"],
+        # The third reading, beside the two that score. A diagnosis: it is
+        # reported per attempt and never summed into a verdict.
+        "ast_references": {
+            "sites": route["reference_sites"],
+            "count": len(route["reference_sites"]),
+            "beyond_call_sites": route["references_beyond_calls"],
+        },
         "reasons": reasons,
         "route": route["route"],
         "route_detail": route,
