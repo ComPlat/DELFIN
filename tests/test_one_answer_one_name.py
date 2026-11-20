@@ -94,8 +94,15 @@ def test_the_directory_change_guard_still_refuses_to_resolve_redirect_words():
     assert R._command_changes_directory("cd sub && ./tool > f.txt") is True
 
 
-def _tracked_tree_mentions(symbol: str) -> list[str]:
-    """Tracked-tree hits for *symbol* as a WHOLE WORD, from this checkout.
+def _production_mentions(symbol: str) -> list[str]:
+    """Whole-word mentions of *symbol* in the shipped package, ``delfin/``.
+
+    The population is production code on purpose. A scan over the whole tree
+    cannot answer "does anything call this" for a name a test names: this
+    file talks about both deleted names, so once it is committed it reports
+    itself. That is not a corner case -- it is the difference between the
+    measurement and the thing measured, and an earlier version of this file
+    passed only because it was still untracked when it was run.
 
     ``-w`` is required, not cosmetic: `expected_digest` is a prefix of the
     surviving `expected_digests` parameter and of `EXPECTED_DIGEST`, and a
@@ -103,7 +110,8 @@ def _tracked_tree_mentions(symbol: str) -> list[str]:
     positive control is in `test_the_scanner_finds_a_name_that_is_there`.
     """
     out = subprocess.run(
-        ["git", "-c", "grep.threads=1", "grep", "-nw", symbol, "--", "."],
+        ["git", "-c", "grep.threads=1", "grep", "-nw", symbol,
+         "--", "delfin/"],
         cwd=_REPO, capture_output=True, text=True, check=False,
     )
     if out.returncode not in (0, 1):  # 1 = no match, which is the answer
@@ -115,11 +123,12 @@ def test_the_scanner_finds_a_name_that_is_there():
     """A negative result from a scanner nobody checked is not evidence.
 
     The deleted accessors are reported as "no mention"; that only means
-    something if the same call finds a name that is present.
+    something if the same call finds a name that is present, and if it still
+    tells a deleted name from the surviving one it prefixes.
     """
-    hits = _tracked_tree_mentions("expected_digests")
+    hits = _production_mentions("expected_digests")
     assert hits, "the scanner found nothing for a name that must be there"
-    assert not _tracked_tree_mentions("expected_digest"), (
+    assert not _production_mentions("expected_digest"), (
         "the scanner does not distinguish expected_digest from "
         "expected_digests, so its 'no caller' result means nothing")
 
@@ -127,12 +136,12 @@ def test_the_scanner_finds_a_name_that_is_there():
 @pytest.mark.parametrize("symbol", ["_redirect_targets_safe",
                                     "expected_digest"])
 def test_the_removed_predicate_has_no_caller(symbol):
-    """No caller exists -- measured, not assumed.
+    """No production code reaches the name -- measured, not assumed.
 
-    A hit here means the tracked tree still reaches the name, so deleting
-    it would remove something reachable.
+    A hit here means the shipped package still refers to the deleted name,
+    so removing it removed something reachable.
     """
-    hits = _tracked_tree_mentions(symbol)
+    hits = _production_mentions(symbol)
     assert hits == [], (
-        f"{symbol} is still referenced in the tracked tree, so removing it "
-        f"removes something reachable:\n" + "\n".join(hits[:12]))
+        f"{symbol} is still referenced in delfin/, so removing it removes "
+        f"something reachable:\n" + "\n".join(hits[:12]))
