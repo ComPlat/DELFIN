@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 # How many commits render() keeps, newest first. A long session commits a lot;
 # the box stays small by dropping the oldest once the cap is hit.
@@ -288,19 +289,36 @@ class TaskState:
         return _scrub(block)
 
     def _as_dict(self) -> dict:
-        """Current state as a JSON-serialisable dict."""
+        """Current state as a JSON-serialisable dict.
+
+        Every free-text field is scrubbed BEFORE it is written: the file
+        on disk is a consumer the redactor must protect too, not only the
+        rendered recap (a planted credential reached the JSON verbatim
+        before this fix, even with a healthy redactor).
+        """
         return {
-            "task": self.task,
-            "waiting_for": self.waiting_for,
+            "task": self._scrub_field(self.task),
+            "waiting_for": self._scrub_field(self.waiting_for),
             "phases": list(self.phases),
-            "commits": list(self.commits),
-            "findings": list(self.findings),
-            "success_criterion": self.success_criterion,
-            "decisions": list(self.decisions),
-            "done": list(self.done),
-            "person_instruction": self.person_instruction,
+            "commits": [self._scrub_field(c) for c in self.commits],
+            "findings": [self._scrub_field(f) for f in self.findings],
+            "success_criterion": self._scrub_field(self.success_criterion),
+            "decisions": [
+                {**d, "decision": self._scrub_field(d.get("decision", "")),
+                 "reason": self._scrub_field(d.get("reason", ""))}
+                for d in self.decisions],
+            "done": [
+                {**d, "what": self._scrub_field(d.get("what", "")),
+                 "evidence": self._scrub_field(d.get("evidence", ""))}
+                for d in self.done],
+            "person_instruction": self._scrub_field(self.person_instruction),
             "person_instruction_is_fresh": self.person_instruction_is_fresh,
         }
+
+    @staticmethod
+    def _scrub_field(text: Any) -> str:
+        """One free-text field through the house redactor (fail closed)."""
+        return _scrub(str(text or ""))
 
 
 def _scrub(text: str) -> str:
