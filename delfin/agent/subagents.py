@@ -1649,6 +1649,42 @@ def _load_md_presets() -> dict[str, SubagentPreset]:
     return discovered
 
 
+#: Problems that do NOT keep a preset out of the registry.
+#:
+#: The distinction is what a problem makes the preset: UNSAFE or
+#: UNRESOLVABLE on one side -- a tool that does not exist, a write scope
+#: on a protected path, a delegation target that is not a type, a
+#: malformed schema, a name that shadows another preset -- and merely
+#: POORER on the other. A missing description and an empty body make a
+#: specialist worse to choose between; they do not make it dangerous, and
+#: refusing to load it costs the person a specialist for a cosmetic
+#: reason. They are recorded, and CI requires them of a shipped preset.
+#:
+#: Matched on the text ``validate_preset`` produces, which is why
+#: tests/test_a_preset_is_validated_before_it_becomes_a_type.py pins
+#: these two strings against it: a reworded message would silently turn
+#: an advisory problem into a blocking one.
+_ADVISORY_PROBLEMS: tuple[str, ...] = (
+    "field 'description' is required",
+    "system prompt) is empty",
+)
+
+
+def _blocking(problems) -> tuple[str, ...]:
+    """The problems that keep a preset out of the registry."""
+    return tuple(p for p in problems
+                 if not any(a in p for a in _ADVISORY_PROBLEMS))
+
+
+#: Why a markdown preset did not become a live type: ``{path: problems}``.
+#: Filled by :func:`_build_preset_registry`. A preset that fails its own
+#: validation is not loaded -- and a silent skip would be worse than no
+#: check at all, because the person sees a specialist documented and
+#: absent with no reason anywhere. The doctor and the session status read
+#: this; ``validate_preset`` had no caller in the product before.
+PRESET_LOAD_PROBLEMS: dict[str, tuple[str, ...]] = {}
+
+
 def _build_preset_registry() -> dict[str, SubagentPreset]:
     """Compose the live preset registry: built-ins first, then md overrides.
 
@@ -1702,6 +1738,37 @@ def _build_preset_registry() -> dict[str, SubagentPreset]:
                 # loaded into the registry, so the model is never offered
                 # the type and a call hits the unknown-type refusal.
                 continue
+            # The check that exists for exactly this moment. It had no
+            # caller: a preset naming an unknown tool, or claiming a
+            # protected path as its write scope, became a live type.
+            # Validated here rather than in a separate pass, because a
+            # pass that runs somewhere else is a pass that can be
+            # forgotten -- a specialist is one dropped-in file and the
+            # set of them is meant to grow.
+            #
+            # The PATH is passed, not the text: the anti-override rule
+            # discards the file's own stem from the pack ids, and it can
+            # only do that when it knows which file this is. Given the
+            # text, every pack preset reports that it overrides itself.
+            #
+            # What a problem costs depends on where the file comes from.
+            # A USER preset is refused: it is new, nobody depends on it,
+            # and loading a preset whose tool list names tools that do
+            # not exist gives the model a type that cannot work. A PACK
+            # preset is kept and recorded: it ships with the product, the
+            # person sees it documented, and making it vanish at runtime
+            # would be a worse failure than an invalid field. CI is where
+            # a broken pack preset is refused
+            # (tests/test_every_shipped_preset_is_valid.py), which is a
+            # place a person reads.
+            problems = tuple(validate_preset(str(p)))
+            if problems:
+                PRESET_LOAD_PROBLEMS[str(p)] = problems
+                # A user preset is refused for a problem that makes it
+                # unsafe or unresolvable, and kept for one that only makes
+                # it poorer (see _ADVISORY_PROBLEMS).
+                if allow_override and _blocking(problems):
+                    continue
             registry[name] = SubagentPreset(
                 name=name,
                 description=description or f"Custom subagent '{name}'",
@@ -1720,8 +1787,12 @@ def _build_preset_registry() -> dict[str, SubagentPreset]:
     return registry
 
 
-# Composed at import time: built-ins + any user/pack md files.
-SUBAGENT_PRESETS: dict[str, SubagentPreset] = _build_preset_registry()
+# Composed at import time, at the END of this module: the builder now
+# validates each markdown preset, and ``validate_preset`` is defined below.
+# Declared here so a reader meets the name where the builder is, and bound
+# at the bottom. Nothing between here and there reads it at import time
+# (every later use is inside a function), which is what makes the move safe.
+SUBAGENT_PRESETS: dict[str, SubagentPreset] = {}
 
 
 def reload_subagent_presets() -> dict[str, SubagentPreset]:
@@ -1811,24 +1882,40 @@ def _known_preset_tool_names() -> frozenset[str]:
                 names.add(n)
     except Exception:
         pass
-    # The ops server's structure/geometry tools: a preset may list them
-    # bare (geometry_renumber) or namespaced (mcp__delfin-ops__
-    # geometry_renumber). Derive from the server module so a NEW
-    # tool_geometry_* the server registers stays known automatically —
-    # never a hand list, and a made-up name is still refused below.
+    # The ops server's tools: a preset may list one bare
+    # (geometry_renumber) or namespaced
+    # (mcp__delfin-ops__parse_orca_output). Derived from the server module
+    # so a tool it registers later stays known automatically — never a
+    # hand list, and a made-up name is still refused below.
+    #
+    # EVERY tool_*, not only tool_geometry_*. Measured 2026-11-20: the
+    # server defines 102 and the geometry prefix derives 19, so 83 real
+    # tools were missing from the catalogue and a preset listing one was
+    # called invalid. method-reviewer lists seven of them
+    # (parse_orca_output, compare_calculations, compare_across_functionals,
+    # extract_scf_convergence, extract_imaginary_frequencies,
+    # extract_delfin_json, find_orca_errors) and all seven exist.
     try:
         from delfin.ops_server import server as _ops_server
         for _n in dir(_ops_server):
-            if _n.startswith("tool_geometry_"):
+            if _n.startswith("tool_"):
                 _base = _n[len("tool_"):]
                 names.add(_base)
                 names.add(f"mcp__delfin-ops__{_base}")
     except Exception:
         pass
-    # The union of tools every shipped preset actually lists: these are
-    # registered by construction (their presets execute today).
-    for p in SUBAGENT_PRESETS.values():
-        names |= set(p.tools or ())
+    # The read-only surface the looking presets share, from the constant
+    # that defines it.
+    #
+    # NOT a union over SUBAGENT_PRESETS, which is what stood here. That
+    # made the catalogue self-referential: a preset's own tools entered
+    # the list of names a preset may use, so an unknown tool in a LOADED
+    # preset could never be caught -- it legitimised itself -- while the
+    # same name in a new preset was refused, and which happened depended
+    # on load order. Measured during this change: with presets refused at
+    # load the catalogue shrank from 141 names to 134 and other presets
+    # then failed on tools the first had justified.
+    names |= set(_READ_ONLY_PRESET_TOOLS)
     names.add("subagent_message")
     names.discard("")
     return frozenset(names)
@@ -1930,17 +2017,37 @@ def validate_preset(path_or_text: str) -> list[str]:
         try:
             pack_ids = {p.stem.replace("_subagent", "") for p in
                         pack_dir.glob("*_subagent.md")}
-            # A preset validated by path is the file being introduced; its
-            # own stem is not an "existing pack preset" it overrides.
-            if not source.strip().startswith("---"):
-                try:
-                    own = Path(source).stem.replace("_subagent", "")
-                    pack_ids.discard(own)
-                except Exception:
-                    pass
             pack_ids |= {n for n in SUBAGENT_PRESETS
                          if n not in _BUILTIN_PRESETS
                          and n not in pack_ids}
+            # A preset validated by path is the file being introduced; its
+            # own stem is not an "existing pack preset" it overrides.
+            #
+            # Discarded AFTER the union, not before: the union re-adds any
+            # name already in the live registry, so discarding first put
+            # the file's own name straight back. Harmless while the
+            # registry was empty -- which it is on the first build at
+            # import -- and wrong on every rebuild, where every pack
+            # preset reported that it overrides itself. Found by calling
+            # this check from the registry builder, which is a second
+            # call.
+            if not source.strip().startswith("---"):
+                try:
+                    here = Path(source).resolve()
+                    pack_ids.discard(here.stem.replace("_subagent", ""))
+                    # ... and by its DECLARED name, when the file being
+                    # validated IS the pack file. A preset may declare a
+                    # name its filename does not carry
+                    # (metal-smiles-builder lives in
+                    # smiles-builder_subagent.md), and the stem alone then
+                    # exempts the wrong id, so the pack file reported that
+                    # it overrides itself. Only for a file inside the pack
+                    # directory: a USER file declaring a pack name is
+                    # exactly the override this rule exists to refuse.
+                    if name and here.parent == pack_dir.resolve():
+                        pack_ids.discard(name)
+                except Exception:
+                    pass
         except OSError:
             pack_ids = set()
         if name in pack_ids and name not in _BUILTIN_PRESETS:
@@ -4968,3 +5075,10 @@ __all__ = [
     "drain_finished_subagents",
     "reap_pending_reports",
 ]
+
+
+# The live registry, bound last: _build_preset_registry calls
+# validate_preset, which is defined above this line and below its caller.
+# A preset that fails its own check does not become a type, and why is in
+# PRESET_LOAD_PROBLEMS rather than nowhere.
+SUBAGENT_PRESETS.update(_build_preset_registry())
