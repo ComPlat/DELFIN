@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — the answer to "what did you change" is verified, not just parsed
+
+- **One reader of the audit log.** `read_last_n` and the report's own parse
+  loop are gone; both go through `audit_log._scan`, which returns the records
+  together with the `verify` report of the same bytes. Two answers about one
+  file could disagree — a log line holding `[1, 2, 3]` made `read_last_n`
+  return it where the report dropped it — and neither checked the chain.
+- **The changes report says when the log it quoted is not intact.** An edited
+  record, a cut tail or an emptied log now puts `NOT INTACT: <file>` on the
+  first line of `list_changes_made` and `/changes`, instead of listing what
+  the tampering left as an ordinary answer.
+- **A write in flight is no longer read as a cut tail.** The head file is
+  written after its line, so `verify` reported 204 of 1666 reads of a live log
+  as not intact (all `head`). It now accepts the gap only when the extra bytes
+  continue the chain: 0 of 1378 after.
+- **`_diff_line_counts` and `make_record`'s `diff_lines_added` /
+  `diff_lines_removed` are removed** — nothing ever called the function or
+  supplied the arguments, in the product or in the tests.
+
 ## [1.4.0] - 2026-11-16
 
 ### Changed — a new commit's install holds no turn, and keeps to the login node's share
