@@ -468,6 +468,10 @@ def test_wait_opens_the_held_conversation_once_the_holder_ends(env):
             # skipped the choice would measure an intent the person never
             # expressed (operator finding 1 on my test, 2026-11-20).
             _choose_wait(tab)
+            # Text the person types while the tab waits: it must survive and
+            # must reach no session.
+            typed = "typed while waiting"
+            tab["input"].value = typed
 
             # The holder goes away; nothing else happens.
             proc.kill()
@@ -491,10 +495,19 @@ def test_wait_opens_the_held_conversation_once_the_holder_ends(env):
                 "by itself; it stayed on "
                 f"{state.get('active_session_id')!r} for 20 s "
                 f"(a periodic timer existed: {had_timer})")
-            assert env["created"] == [], (
-                "waiting must not create a session of its own")
+            # NOT "no engine was minted". Opening a saved session legitimately
+            # builds one to restore its state: a refused tab has none, so the
+            # first open MUST mint exactly one (_ensure_engine, :12195 ->
+            # :12551). Asserting otherwise imposed a mechanism the outcome
+            # does not require, and no correct patch could satisfy it --
+            # measured: this assertion, not the wait, was the failure.
+            # What the person cares about is asserted next: the store is
+            # unchanged, and their text reached no session at all.
             assert set(_session_files(env)) == before, (
                 "waiting must not write a second session")
+            assert _sessions_holding(env, typed) == [], (
+                "waiting must not send the typed text anywhere: it was "
+                "written into a session")
             assert "wait" in _chat_text(state).lower(), (
                 "the refusal never offered the wait choice it is expected to")
         finally:
