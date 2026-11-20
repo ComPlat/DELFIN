@@ -9,12 +9,14 @@ Phase 1 is READ-ONLY tools only. Every rule tested here:
   not silently;
 - the allow-list is enforced PER CALL: one connection may not smuggle a
   second, different call through after a first allowed one;
-- results are size-capped before they reach the program;
-- a runaway program is killed by the wall-clock limit.
+- results are size-capped before they reach the program.
+
+The wall-clock limit and the stdout cap are no longer tested here: the launcher
+that owned them locally (``run_program``) is gone, and the bash tool enforces
+both for every command it runs. ``test_cm1_the_bash_route_runs_a_program.py``
+holds that route to the ceiling it inherits.
 """
 import json
-
-import pytest
 
 from delfin.agent import code_mode
 
@@ -55,18 +57,16 @@ class _FakeExecutor:
 
 def test_read_only_call_reaches_the_executor_and_returns():
     ex = _FakeExecutor()
-    result = code_mode.serve_request(
-        {"tool": "get_calc_info", "arguments": {"calc_id": "c1"}},
-        ex, permissions=None)
+    result = code_mode.Connection(ex, permissions=None).handle(
+        {"tool": "get_calc_info", "arguments": {"calc_id": "c1"}})
     assert ex.calls == [("get_calc_info", {"calc_id": "c1"})]
     assert json.loads(result)["energy"] == -1.0
 
 
 def test_write_tool_refused_and_names_the_direct_route():
     ex = _FakeExecutor()
-    result = json.loads(code_mode.serve_request(
-        {"tool": "write_file", "arguments": {"path": "x", "content": "y"}},
-        ex, permissions=None))
+    result = json.loads(code_mode.Connection(ex, permissions=None).handle(
+        {"tool": "write_file", "arguments": {"path": "x", "content": "y"}}))
     assert "error" in result
     assert ex.calls == []  # never dispatched
     assert "write_file" in result["error"]
@@ -74,17 +74,16 @@ def test_write_tool_refused_and_names_the_direct_route():
 
 def test_submit_tool_refused_by_name():
     ex = _FakeExecutor()
-    result = json.loads(code_mode.serve_request(
-        {"tool": "submit_calculation", "arguments": {"folder": "f"}},
-        ex, permissions=None))
+    result = json.loads(code_mode.Connection(ex, permissions=None).handle(
+        {"tool": "submit_calculation", "arguments": {"folder": "f"}}))
     assert "error" in result
     assert ex.calls == []
 
 
 def test_gate_refusal_surfaces_as_error_not_silence():
     ex = _FakeExecutor()
-    result = json.loads(code_mode.serve_request(
-        {"tool": "nonexistent_tool", "arguments": {}}, ex, permissions=None))
+    result = json.loads(code_mode.Connection(ex, permissions=None).handle(
+        {"tool": "nonexistent_tool", "arguments": {}}))
     assert "error" in result
 
 
@@ -108,20 +107,13 @@ def test_result_is_size_capped(tmp_path):
             return json.dumps(
                 {"blob": "x" * (code_mode.MAX_RESULT_BYTES + 1000)})
 
-    result = json.loads(code_mode.serve_request(
-        {"tool": "get_calc_info", "arguments": {}}, _BigExecutor(),
-        permissions=None))
+    result = json.loads(code_mode.Connection(_BigExecutor(),
+                                             permissions=None).handle(
+        {"tool": "get_calc_info", "arguments": {}}))
     assert "error" in result
     assert "truncated" in result["error"]
     assert len(json.dumps(result)) < code_mode.MAX_RESULT_BYTES
     assert "xxx" not in json.dumps(result)
-
-
-def test_runaway_program_hits_the_time_limit(tmp_path):
-    prog = tmp_path / "loop.py"
-    prog.write_text("while True:\n    pass\n")
-    with pytest.raises(code_mode.ProgramTimeout):
-        code_mode.run_program(str(prog), timeout_s=2.0)
 
 
 def test_program_without_rpc_env_gets_no_client():
