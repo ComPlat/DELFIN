@@ -440,6 +440,16 @@ class OrcaQmmmOpiAdapter(StepAdapter):
     """OPI-backed additive QM/MM single-point step (``orca_qmmm_opi``)."""
 
     name = "orca_qmmm_opi"
+    description = (
+        "OPI-built additive QM/MM single point: the solute region by atom "
+        "indices in an explicit-solvent cluster, the environment by a "
+        "reference force field"
+    )
+    category = "dft"
+    produces_geometry = False
+    consumes = ("geometry",)
+    produces = ("qc_output",)
+    requires_python = ("opi",)
 
     def __init__(self) -> None:
         pass
