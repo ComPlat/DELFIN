@@ -39,8 +39,14 @@ Four ways of asking this were measured and three were wrong:
 
 * scanning ``tests/`` without excluding the baseline file makes every name
   in it read as reached, because the file lists them: the ``nowhere`` tier
-  came out empty and all 90 looked merely test-only. The instrument was
+  came out empty and all of them looked merely test-only. The instrument was
   measuring itself;
+* reading only the exact spelling misses a dotted dispatch:
+  ``getattr(swarm_rpc, method.replace(".", "_"))`` means the protocol
+  declares ``"swarm.observe.feed"`` and ``swarm_observe_feed`` appears
+  nowhere. Two names were called unreachable for that reason, and the
+  first attempt to find them used a grep with an unescaped dot, which
+  matches every name against itself and reported all 31;
 
 * counting identifier tokens only reports false orphans, because
   ``doctor.py`` dispatches its checks from a table of
@@ -140,7 +146,39 @@ def _mentions(tree_root: Path, defs: dict, skip_own_definition: bool) -> dict:
         for word in _WORD.findall(text):
             if word in hits:
                 hits[word] += 1
+    _count_dotted_dispatch(tree_root, hits)
     return hits
+
+
+def _count_dotted_dispatch(tree_root: Path, hits: dict) -> None:
+    """Also count a name spelled with dots instead of underscores.
+
+    ``supervisor`` dispatches a request with
+    ``getattr(swarm_rpc, method.replace(".", "_"))``, so the protocol
+    declares ``"swarm.observe.feed"`` and the underscored function name
+    appears nowhere. Measured: exactly two of the 31 names this scan called
+    unreachable were reached that way, and a grep that leaves the dot
+    unescaped matches every name against itself, so this compares literal
+    text.
+    """
+    dotted = {n.replace("_", "."): n for n in hits if "_" in n}
+    if not dotted:
+        return
+    # Pull the dotted sequences out of each file once and look them up,
+    # rather than searching every candidate in every file: the second shape
+    # is 5,187 names against 1,500 files and does not finish.
+    runs = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+")
+    for path in sorted(tree_root.rglob("*")):
+        if not path.is_file() or path.suffix.lower() in _BINARY or path == BASELINE:
+            continue
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        for run in set(runs.findall(text)):
+            name = dotted.get(run)
+            if name:
+                hits[name] += 1
 
 
 @pytest.fixture(scope="module")
@@ -217,12 +255,12 @@ def test_the_tier_of_each_name_is_right(measured):
 
 
 def test_the_count_only_goes_down(measured):
-    """A ratchet. 90 on 2026-11-20, of which 31 are named nowhere at all.
+    """A ratchet. 86 on 2026-11-20, of which 29 are named nowhere at all.
 
     Paid down, not raised: a change that needs the ceiling lifted is a
     change that leaves another capability unreachable.
     """
     _defs, unmounted, _in_suite = measured
-    assert len(unmounted) <= 90, (
+    assert len(unmounted) <= 86, (
         f"{len(unmounted)} capabilities the product does not reach, against "
-        "a ceiling of 90")
+        "a ceiling of 86")
