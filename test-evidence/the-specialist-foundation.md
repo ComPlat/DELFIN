@@ -30,7 +30,7 @@ from inside a worktree, and for the registry counts
 | shipped presets with a validation problem | 13 of 13 (unseen) | **0** |
 | ops-server tools the catalogue derives | 19 of 102 | **102 of 102** |
 | presets validated at load | 0 | all |
-| per-request tool schema | 11,678 tokens | 11,721 (budget paid, not raised) |
+| per-request tool schema | 11,678 tokens | **11,718** (budget paid, not raised) |
 
 The registry count was taken with an **empty HOME**. This host's own
 `~/.delfin_settings.json` already sets both department switches true, so an
@@ -62,6 +62,11 @@ check, the label helper, the departments default, the protected-list pair,
 the preset tools suite, `sa0_validate_preset`, `sa0_invariants`,
 `sa0_adversarial_invariants`, `test_subagents`. Ruff clean on
 `F821,F811,F601,F402,F823`.
+
+The schema total was re-derived from `tool_schema_token_report()` at
+the branch head rather than carried over: an earlier draft of this file
+stated 11,721, measured before `subagent_message` was added to two
+presets, and the figure is 11,718.
 
 ## What was NOT verifiable from here
 
