@@ -483,3 +483,100 @@ def test_an_ordinary_send_still_starts_its_session(env):
             "the tab must hold the session the send started")
     finally:
         tab["refs"]["shutdown"](save=False)
+
+
+# ---------------------------------------------------------------------------
+# The QS's angles: exact match, a live holder, a closed tab
+# ---------------------------------------------------------------------------
+
+def test_an_innocent_sentence_naming_the_choice_does_not_fork(env):
+    """The choice must be an EXACT match on the trimmed message.
+
+    QS condition 1. If the guard tests `"..." in text`, a person who writes
+    "I would like to start a new session from it" gets a fork they never
+    asked for -- a wrong session, from an innocent sentence. Red on main for
+    the simpler reason (the send mints a session at all); red on a substring
+    guard for this reason.
+    """
+    _write_session(env, SID, "held job", "held-turn")
+    proc = _held_by_a_live_process(env)
+    try:
+        before = set(_session_files(env))
+        tab = _tab(env)
+        state = tab["refs"]["state"]
+        try:
+            _open_held_conversation(tab, env)
+            assert "held by a live session" in _chat_text(state)
+
+            typed = "I would like to start a new session from it"
+            _type_and_send(tab, typed)
+
+            new = sorted(set(_session_files(env)) - before)
+            assert new == [], (
+                "an innocent sentence naming the choice must not fork or "
+                f"start anything; it wrote {new}")
+            assert env["created"] == [], (
+                "an innocent sentence must not start a session: a substring "
+                "match on the choice would fork on it")
+            assert tab["input"].value == typed, (
+                "the sentence must stay in the box, unsent")
+            assert _sessions_holding(env, typed) == [], (
+                "the sentence was written into a session after a refusal")
+        finally:
+            tab["refs"]["shutdown"](save=False)
+    finally:
+        proc.kill()
+        proc.wait(timeout=30)
+
+
+def test_a_live_holder_is_never_opened_and_a_closed_tab_writes_nothing(env):
+    """QS conditions 2 and 3: a live holder means no open; a closed tab, no write.
+
+    The first half needs the tab's own periodic path to run with the holder
+    still alive -- two ticks of ``_background_tick`` (10 s each,
+    tab_agent.py:11605/:836) -- and nothing may happen. The second half
+    closes the tab, ends the holder, lets the tick's period pass again, and
+    requires that the closed tab wrote no session: a timer outliving its tab
+    would write into the store with nobody looking.
+    """
+    _write_session(env, SID, "held job", "held-turn")
+    proc = _held_by_a_live_process(env)
+    try:
+        before = set(_session_files(env))
+        tab = _tab(env)
+        state = tab["refs"]["state"]
+        try:
+            _open_held_conversation(tab, env)
+            assert "held by a live session" in _chat_text(state)
+            typed = "kept while I wait"
+            tab["input"].value = typed
+
+            # (2a) The holder is alive; two ticks pass. Nothing may happen.
+            time.sleep(22.0)
+            assert state.get("active_session_id") != SID, (
+                "a live holder's conversation must not be opened")
+            assert env["created"] == [], (
+                "a tick with a live holder must not start a session")
+            assert tab["input"].value == typed, (
+                "a tick must not touch the text the person is typing")
+            assert set(_session_files(env)) == before, (
+                "a tick with a live holder must not write a session")
+
+            # (3) The tab closes, then the holder ends, then a tick's period
+            # passes: the closed tab must write nothing.
+            tab["refs"]["shutdown"](save=False)
+            proc.kill()
+            proc.wait(timeout=30)
+            (env["SS"]._SESSIONS_DIR / f"{SID}.lock").unlink(missing_ok=True)
+            time.sleep(22.0)
+            assert set(_session_files(env)) == before, (
+                "a closed tab wrote a session while waiting on a holder")
+            assert env["created"] == [], (
+                "a closed tab started a session while waiting on a holder")
+        finally:
+            if not state.get("_closed"):
+                tab["refs"]["shutdown"](save=False)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=30)
