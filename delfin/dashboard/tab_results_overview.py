@@ -675,56 +675,70 @@ class ResultsOverviewPanel:
         self._export_seq = getattr(self, "_export_seq", 0) + 1
         tid = f"ro{self._export_seq}"
 
-        # ONE run_js call for the whole download: every run_js clears
-        # the shared JS output first, so a stream of per-chunk messages
-        # wipes the previous chunks before the browser executes them
-        # (only the last script ran -> empty Blob, no download).  The
-        # payload itself travels in the widget state of _export_buffer,
-        # which Voila syncs reliably regardless of output clearing.
         # ONE run_js call, payload via the buffer WIDGET: an inlined
-        # multi-MB script does NOT survive the voila transport (CSV
-        # small enough inline always worked; XLSX/LaTeX at ~4 MB b64
-        # never arrived).  The widget state syncs to the browser
-        # independently of the JS-output channel; the script POLLS for
-        # a filled node for up to ~20 s, so the sync race that broke
-        # the first widget attempt (run_js firing before the state
-        # arrived) is gone.  The window.__roBuffer reference is set at
-        # page init so the class-based lookup can never miss.
+        # multi-MB script does NOT survive the voila transport, and a
+        # stream of per-chunk run_js messages wipes itself through the
+        # shared JS output.  The widget state syncs to the browser
+        # independently; the script POLLS for the filled node with
+        # setInterval (async, never blocking, ~30 s timeout) so the
+        # run_js/widget-state sync race is gone.  Python cannot know
+        # whether the browser ran the download, so the status line
+        # never claims "heruntergeladen" (honest wording after run_js).
         self._export_buffer.value = _json.dumps({tid: b64})
-        data_js = (
-            "const b64=(function(){"
-            "const node=document.querySelector('.export-buffer');"
-            "for(let t=0;t<200;t++){"
-            "const txt=node?node.textContent:'';"
-            "if(txt&&txt.length>100){try{const o=JSON.parse(txt);"
-            "for(const k in o){return o[k];}}catch(e){}}"
-            "continue;},50);return '';})()")
         js = (
             "(function(){"
             f"const fileName={_json.dumps(filename)};"
             f"const mimeType={_json.dumps(mime)};"
-            + data_js +
+            f"const exportId={_json.dumps(tid)};"
+            "let attempts=0;"
+            "const timer=setInterval(function(){"
+            "attempts=attempts+1;"
+            "if(attempts>300){"
+            "clearInterval(timer);"
+            "console.error('Download failed: buffer payload never arrived');"
+            "return;"
+            "}"
+            "const node=document.querySelector('.export-buffer');"
+            "const txt=node?node.textContent:'';"
+            "if(!txt||txt.length<100){return;}"
+            "clearInterval(timer);"
+            "let payload=null;"
             "try{"
-            "const bin=atob(b64);"
+            "payload=JSON.parse(txt)[exportId];"
+            "}catch(err){"
+            "console.error('Download failed: bad buffer payload', err);"
+            "return;"
+            "}"
+            "if(!payload){return;}"
+            "try{"
+            "const bin=atob(payload);"
             "const len=bin.length;"
             "const bytes=new Uint8Array(len);"
             "for(let i=0;i<len;i++){bytes[i]=bin.charCodeAt(i);}"
             "const blob=new Blob([bytes],{type:mimeType});"
             "const url=URL.createObjectURL(blob);"
             "const a=document.createElement('a');"
-            "a.href=url;a.download=fileName;"
-            "document.body.appendChild(a);a.click();"
-            "setTimeout(function(){URL.revokeObjectURL(url);"
-            "if(a.parentNode){a.parentNode.removeChild(a);}},1500);"
-            "if (window.__roBuffer) window.__roBuffer.textContent='';"
-            "}catch(err){console.error('Download failed:', err);"
-            "throw err;}"
+            "a.href=url;"
+            "a.download=fileName;"
+            "document.body.appendChild(a);"
+            "a.click();"
+            "setTimeout(function(){"
+            "URL.revokeObjectURL(url);"
+            "if(a.parentNode){a.parentNode.removeChild(a);}"
+            "},1500);"
+            "node.textContent='';"
+            "}catch(err){"
+            "console.error('Download failed:', err);"
+            "}"
+            "},100);"
             "})();"
         )
         run_js(js)
         self._export_status.value = (
             f"<span style='color:#28a745'>{_html.escape(filename)} "
-            f"heruntergeladen ({len(payload) // 1024} KB).</span>")
+            f"Download angesto&szlig;en ({len(payload) // 1024} KB) "
+            "&mdash; bei Misserfolg erscheint eine Meldung hier oder in "
+            "der Browser-Konsole (F12).</span>")
 
     def _on_export_csv(self, _btn=None) -> None:
         if self._table is None:

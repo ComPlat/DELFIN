@@ -300,19 +300,77 @@ def test_export_bytes_large_payload_single_run_js(tmp_path):
     panel._export_bytes("big.bin", payload, "application/octet-stream")
     assert len(ctx.scripts) == 1, (
         f"expected ONE run_js call, got {len(ctx.scripts)}")
-    expected_b64 = base64.b64encode(payload).decode("ascii")
     script = ctx.scripts[0]
+    # The widget carries the full base64 payload as a tid-keyed JSON
+    # object; the script never inlines it (the voila transport drops
+    # multi-MB script messages).
     stored = json.loads(panel._export_buffer.value)
     assert base64.b64decode(stored[next(iter(stored))]) == payload
-    # The script must poll the buffer node and assemble a Blob.
+    # The script polls the buffer node with setInterval and assembles
+    # a Blob download once the payload arrives.
     assert ".export-buffer" in script
-    assert "for(let t=0;t<200" in script
+    assert "setInterval" in script
+    assert "clearInterval" in script
     assert "atob" in script
     assert "a.download" in script
 
-    # Small payload: still one call, data inlined, buffer unused.
+    # Small payload: still one call, same buffer transport.
     panel._export_bytes("small.bin", b"abc", "application/octet-stream")
     assert len(ctx.scripts) == 2
+
+
+def _extract_export_js(monkeypatch):
+    """Build the js exactly as _export_bytes does, via a fake ctx."""
+    pytest.importorskip("ipywidgets")
+    from delfin.dashboard import tab_results_overview as tab
+
+    class FakeCtx:
+        archive_dir = ""
+        calc_dir = ""
+        scripts = []
+
+        def run_js(self, script, *, keep=False):
+            self.scripts.append(script)
+
+    import os
+    os.makedirs(FakeCtx.archive_dir, exist_ok=True)
+    os.makedirs(FakeCtx.calc_dir, exist_ok=True)
+    widget, refs = tab.create_tab(FakeCtx())
+    panel = refs["results_overview"]
+    ctx = FakeCtx()
+    panel._export_bytes("out.pdf", b"PDFDATA", "application/pdf")
+    return ctx.scripts[0]
+
+
+def test_export_bytes_script_is_valid_javascript(monkeypatch):
+    """The generated download script must parse as real JavaScript.
+
+    The browser received a script with a syntax error once (the data_js
+    IIFE ended without a semicolon before the try block; the browser
+    console showed "Unexpected token ','" and nothing downloaded while
+    the status line claimed success).  This test pins script validity
+    with node --check, the same parser the browser's engine family
+    uses; RED on the old broken script, GREEN from the setInterval
+    rewrite on.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+    import os
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available: JS validity checked nowhere")
+    script = _extract_export_js(monkeypatch)
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "export_script.js")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(script)
+        r = subprocess.run([node, "--check", path],
+                           capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, (
+        "export script is not valid JavaScript:\n"
+        + (r.stderr or r.stdout)[:800])
 
 
 def test_extract_custom_regex_occurrences(tmp_path):
