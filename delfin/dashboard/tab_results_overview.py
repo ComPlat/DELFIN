@@ -647,7 +647,7 @@ class ResultsOverviewPanel:
                     zf.writestr(f"{label}/{p['rel']}", data)
         return out.getvalue()
 
-    _EXPORT_CHUNK_B64 = 512 * 1024  # base64 chars per transport message
+    _EXPORT_CHUNK_B64 = 1_000_000  # base64 chars per widget sync
 
     def _progress_html(self, done: int, total: int, filename: str) -> str:
         """Status line with a progress bar (transfer phase)."""
@@ -693,7 +693,25 @@ class ResultsOverviewPanel:
         # run_js/widget-state sync race is gone.  Python cannot know
         # whether the browser ran the download, so the status line
         # never claims "heruntergeladen" (honest wording after run_js).
-        self._export_buffer.value = _json.dumps({tid: b64})
+        # Chunked widget transfer (measured 2026-11-20: single-shot
+        # widget sync carried 0.5 MB and 3 MB but NOT 15 MB, and a
+        # second export in the same page needed a reload because the
+        # first download emptied the node).  The payload is split into
+        # ~1 MB base64 slices; Python writes ALL slices into the SAME
+        # tid entry, each assignment is its own widget-state sync, and
+        # the script assembles the entry only once every expected part
+        # is present.  The node is NOT emptied afterwards: stale
+        # content can never match a fresh export because each export
+        # uses a fresh tid key.  The 30 s window covers 20 MB at
+        # several syncs per second; the poll stays async (setInterval,
+        # never blocking).
+        parts = [b64[k:k + _EXPORT_CHUNK_B64]
+                 for k in range(0, len(b64), _EXPORT_CHUNK_B64)]
+        self._export_buffer.value = _json.dumps(
+            {tid: {"n": len(parts), "p0": parts[0]}})
+        for k in range(1, len(parts)):
+            self._export_buffer.value = _json.dumps(
+                {tid: {"n": len(parts), **{f"p{k}": parts[k]}}})
         js = (
             "(function(){"
             f"const fileName={_json.dumps(filename)};"
@@ -709,18 +727,21 @@ class ResultsOverviewPanel:
             "}"
             "const node=document.querySelector('.export-buffer');"
             "const txt=node?node.textContent:'';"
-            "if(!txt||txt.length<100){return;}"
-            "clearInterval(timer);"
-            "let payload=null;"
+            "if(!txt||txt.length<50){return;}"
+            "let entry=null;"
             "try{"
-            "payload=JSON.parse(txt)[exportId];"
-            "}catch(err){"
-            "console.error('Download failed: bad buffer payload', err);"
-            "return;"
+            "entry=JSON.parse(txt)[exportId];"
+            "}catch(err){return;}"
+            "if(!entry){return;}"
+            "let parts=[];"
+            "for(let k=0;entry['p'+k]!==undefined;k++){"
+            "parts.push(entry['p'+k]);"
             "}"
-            "if(!payload){return;}"
+            "if(!entry.n||parts.length<entry.n){return;}"
+            "clearInterval(timer);"
             "try{"
-            "const bin=atob(payload);"
+            "const b64=parts.join('');"
+            "const bin=atob(b64);"
             "const len=bin.length;"
             "const bytes=new Uint8Array(len);"
             "for(let i=0;i<len;i++){bytes[i]=bin.charCodeAt(i);}"
@@ -735,7 +756,6 @@ class ResultsOverviewPanel:
             "URL.revokeObjectURL(url);"
             "if(a.parentNode){a.parentNode.removeChild(a);}"
             "},1500);"
-            "node.textContent='';"
             "}catch(err){"
             "console.error('Download failed:', err);"
             "}"
