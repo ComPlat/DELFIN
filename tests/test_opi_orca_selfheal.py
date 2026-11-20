@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-pytest.importorskip("opi")
+from _skip_reasons import absent_reason, orca_reason, missing  # noqa: E402
 
 from delfin.tools.adapters import orca_selfheal_opi as heal  # noqa: E402
 from delfin.orca_knowledge import known_block_option, known_keyword  # noqa: E402
@@ -325,6 +325,15 @@ class TestProbe:
         from delfin.orca_knowledge.probe import probe_input
         from delfin.tools.opi_chain import build_orca_input
 
+        # Two independent preconditions, and this was a module-level
+        # importorskip("opi") that fired at collection: the whole file came
+        # out as ONE skip naming the package, so neither the ORCA reason nor
+        # the twenty-seven tests below that use no OPI ever ran. Both are
+        # named here; checking them in order would hide one behind the other.
+        reason = missing(absent_reason("opi"), orca_reason())
+        if reason:
+            pytest.skip(reason)
+
         plan = heal.plan_escalation(
             heal.SelfHealFailure.GEOMETRY_NOT_CONVERGED, 2, job_kind="OPT")
         geom = heal.compose_overrides(None, plan.geom_options)
@@ -342,8 +351,6 @@ class TestProbe:
             moread=None,
         )
         result = probe_input(inp.read_text())
-        if result["verdict"] == "unavailable":
-            pytest.skip("ORCA binary not available for probe")
         assert result["verdict"] in ("parsed", "finished"), result
 
 
@@ -355,6 +362,10 @@ class TestProbe:
 class TestInputBuild:
     def test_mathced_opt_geometry_block_emitted(self, tmp_path, elements, coords):
         from delfin.tools.opi_chain import build_orca_input
+
+        reason = absent_reason("opi")   # build_orca_input writes on OPI blocks
+        if reason:
+            pytest.skip(reason)
 
         plan = heal.plan_escalation(
             heal.SelfHealFailure.GEOMETRY_NOT_CONVERGED, 1, job_kind="OPT")
@@ -377,6 +388,10 @@ class TestInputBuild:
 
     def test_sp_escalated_scf_block_emitted(self, tmp_path, elements, coords):
         from delfin.tools.opi_chain import build_orca_input
+
+        reason = absent_reason("opi")   # build_orca_input writes on OPI blocks
+        if reason:
+            pytest.skip(reason)
 
         plan = heal.plan_escalation(
             heal.SelfHealFailure.SCF_NOT_CONVERGED, 1, job_kind="SP")
