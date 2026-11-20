@@ -292,9 +292,12 @@ def _scan(tmp_path, monkeypatch, sources, sub_source=None):
 
 
 def test_the_guard_finds_every_fail_open_spelling(tmp_path, monkeypatch):
-    hits = _scan(tmp_path, monkeypatch, list(FAIL_OPEN_SPELLINGS.values()))
-    missed = sorted(s for s in FAIL_OPEN_SPELLINGS
-                    if not any(name == "f" for _, name in hits))
+    """One file per spelling, one assertion per spelling: a scan that finds
+    ANY of them must not be able to stand in for the ones it misses."""
+    sources = list(FAIL_OPEN_SPELLINGS.values())
+    hits = _scan(tmp_path, monkeypatch, sources)
+    missed = [name for i, name in enumerate(FAIL_OPEN_SPELLINGS)
+              if (f"mod{i}.py", "f") not in hits]
     assert not missed, f"the guard misses these spellings: {missed}"
 
 
