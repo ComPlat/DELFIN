@@ -593,17 +593,56 @@ def sbatch_gate(cmd: str, env: dict | None = None,
     Pure over text; the same mounts-source rules as :func:`check`.
     """
     import shlex
-    # The LAST segment the shell would run, stripped of wrappers: the
-    # gate asks about the sbatch command the shell actually executes
-    # (a `cd /tmp && sbatch ...` runs sbatch from /tmp).
+    # The shell would run EVERY segment; a `sbatch run.sh && echo ok`
+    # must not let the suffix hide the submit. So each segment is
+    # gated, and the worst verdict wins: refuse > warn > allow.
     segments = re.split(r"&&|\|\||;|\|", cmd)
-    target = _strip_wrappers(segments[-1] if segments else cmd)
-    tokens = target.split()
-    if not tokens or tokens[0] != "sbatch":
-        return "allow", "", True
+    verdicts: list[str] = []
+    texts: list[str] = []
+    may_run = True
     if env is None:
         import os as _os
         env = dict(_os.environ)
+    for segment in segments:
+        verdict, text, runs = _gate_sbatch_segment(
+            segment, env=env, mounts_path=mounts_path)
+        if verdict != "allow":
+            verdicts.append(verdict)
+            texts.append(text)
+            may_run = may_run and runs
+    if not verdicts:
+        return "allow", "", True
+    if "refuse" in verdicts:
+        return "refuse", texts[verdicts.index("refuse")], False
+    return "warn", texts[0], may_run
+
+
+def _gate_sbatch_segment(segment: str, env: dict,
+                         mounts_path: MountsSource | None
+                         ) -> tuple[str, str, bool]:
+    """The gate for ONE shell segment (between ``;`` ``&&`` ``|``)."""
+    import shlex
+    target = _strip_wrappers(segment)
+    try:
+        # shlex: a quoted path with a space is ONE argument, not a
+        # split of the last word (reviewer round 6, the quoted-path
+        # hole: `sbatch "my dir/run.sh"` split on the space, the last
+        # token named nothing, and the missing-file rule let it pass).
+        tokens = shlex.split(target)
+    except ValueError:
+        # Unbalanced quotes: fall back to the raw split; sbatch itself
+        # would fail the same way and no script is hidden either way.
+        tokens = target.split()
+    if not tokens or tokens[0] != "sbatch":
+        return "allow", "", True
+    # Drop redirections and everything after them: `sbatch run.sh
+    # 2>&1` or `sbatch run.sh > log` must not leave the redirect (or
+    # its target) as the last positional "script path".
+    argv: list[str] = []
+    for t in tokens[1:]:
+        if ">" in t or "<" in t:
+            break
+        argv.append(t)
     # --wrap=<text> or --wrap <text>: the wrapped text IS the script.
     wrap = re.search(r"--wrap(?:=(?:'([^']*)'|\"([^\"]*)\"|(\S+))|\s+('([^']*)'|\"([^\"]*)\"|(\S+)))",
                      target)
@@ -619,7 +658,7 @@ def sbatch_gate(cmd: str, env: dict | None = None,
         # is not the script either: the value after the single-letter
         # flag is stripped before the positional scan.
         stripped = []
-        for t in tokens[1:]:
+        for t in argv:
             m = re.match(r"^-([A-Za-z])(\S.*)$", t)
             if m and m.group(1) in "oe":  # -o outfile, -e errfile
                 continue  # attached option VALUE, not a positional
@@ -632,7 +671,7 @@ def sbatch_gate(cmd: str, env: dict | None = None,
             # path is checked conservatively -- if it exists and would
             # be refused, refuse (a wrong -o path is never a walk, so
             # this can only fire on a real script path).
-            for t in tokens[1:]:
+            for t in argv:
                 m = re.match(r"^-([A-Za-z])(\S.*)$", t)
                 if m and m.group(1) in "oe" and Path(m.group(2)).is_file():
                     script_arg = m.group(2)
