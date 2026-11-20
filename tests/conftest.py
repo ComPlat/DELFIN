@@ -341,6 +341,22 @@ def child_env(tmp_path) -> dict:
     # login stores there). A short private one of the child's own:
     env.pop("JUPYTER_RUNTIME_DIR", None)
     env["XDG_RUNTIME_DIR"] = _child_runtime_dir()
+    # The child loads the same interpreter's extension modules, and
+    # LD_LIBRARY_PATH decides which libstdc++ they find. A chemistry
+    # workstation puts the QM programs' own libraries there: measured on one
+    # with ORCA, /opt/orca/lib comes first, its libstdc++ is older than the
+    # interpreter's, and `import sqlite3` in the child dies with
+    # "CXXABI_1.3.15 not found" while the parent process is fine -- a suite
+    # green on CI and red on the machine DELFIN is built for. The
+    # interpreter's own lib directory goes first so a child resolves its own
+    # libraries; nothing is removed, so a program that needs the host's
+    # entries still finds them behind it.
+    import sys
+    own_lib = os.path.join(sys.prefix, "lib")
+    if os.path.isdir(own_lib):
+        rest = [q for q in env.get("LD_LIBRARY_PATH", "").split(os.pathsep)
+                if q and q != own_lib]
+        env["LD_LIBRARY_PATH"] = os.pathsep.join([own_lib, *rest])
     return env
 
 

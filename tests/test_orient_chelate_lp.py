@@ -114,6 +114,32 @@ def _spun(mol, X, metal, donors, deg):
     return Y
 
 
+#: How far over the admissible fold the measured value may land, in deg.
+#:
+#: The claim is geometric: the placement brings the chelate's fold into the
+#: 20 deg window the placer admits (``_CHELATE_PLANE_TOL_DEG``). It was
+#: written as ``20.0 + 1e-6``, which is a claim about arithmetic instead,
+#: and it held on CI and failed on a workstation -- the same five
+#: parameters, the same code.
+#:
+#: Measured, where mode 2 drives the fold onto the window exactly:
+#: the unspun fixture is already 1.4798e-06 deg from planar, and the placed
+#: structure carries 1.6898e-06 deg, so 2.1e-07 deg of the residue comes
+#: from the placement's own arithmetic and the rest from the fixture. Both
+#: depend on the host's libm, which the reference environment documents for
+#: exactly this reason. Neither is a fold: 1e-03 deg is four orders below
+#: any difference in a structure, and seven above the drift.
+#:
+#: Rejected: computing the fold with ``atan2`` of the cross and the dot
+#: instead of ``acos`` of the normalised dot. The stabler form is right in
+#: principle -- ``acos`` is ill-conditioned where these vectors nearly meet
+#: -- but measured here it agreed with ``acos`` to twelve digits, so it
+#: would have been a change that fixes nothing. Also rejected: calibrating
+#: the bound on the unspun fixture's residue, which leaves the 2.1e-07 deg
+#: the placement adds and fails just as host-dependently.
+_FOLD_TOL_DEG = 1e-3
+
+
 @pytest.mark.parametrize("deg,mode", [(0.0, "1"), (50.0, "1"), (120.0, "1"), (50.0, "2"), (120.0, "2")])
 def test_chelate_plane_unfolds_the_chelate(monkeypatch, deg, mode):
     mol, X, metal, donors = _phen_zn_nh3()
@@ -121,7 +147,7 @@ def test_chelate_plane_unfolds_the_chelate(monkeypatch, deg, mode):
     monkeypatch.setenv("DELFIN_FFFREE_ORIENT_CARRY_H", "1")
     monkeypatch.setenv("DELFIN_FFFREE_ORIENT_CHELATE_PLANE", mode)
     Y = _run(mol, X, metal, donors)
-    assert _fold(mol, Y, metal, donors[:2]) <= 20.0 + 1e-6
+    assert _fold(mol, Y, metal, donors[:2]) <= 20.0 + _FOLD_TOL_DEG
     for d in donors:
         assert np.allclose(Y[d], X[d])
 
