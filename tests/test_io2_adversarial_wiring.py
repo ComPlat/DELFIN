@@ -92,16 +92,19 @@ def test_a_warning_is_visible_to_the_caller_of_a_successful_submit(
         "reads; today it is only in stderr, which is shown on failure")
 
 
-def test_the_wiring_passes_the_environment_so_the_home_rule_can_fire(
-        backend, lustre, no_sbatch, tmp_path):
-    """_sbatch calls ``check_submit(submit_script)`` with no ``env``, and
-    ``env`` defaults to None, which disables ``_path_is_lustre_home``
-    (:47). So the dashboard route silently cannot see the $HOME rule that
-    the agent route (cluster_tools passes dict(os.environ)) does see. A
-    script whose only offence is $HOME on Lustre is submitted here."""
+def test_the_wiring_does_not_lose_the_home_rule(
+        backend, lustre, no_sbatch, tmp_path, monkeypatch):
+    """The dashboard route must not be weaker than the agent route on the
+    $HOME rule. ``_sbatch`` calls ``check_submit(submit_script)`` without an
+    env; that is fine only because ``env=None`` now expands from
+    ``os.environ`` (H4). Pin the MECHANISM, not this host's HOME: with a
+    Lustre HOME in the process env the route must refuse, with a node-local
+    one it must submit -- either way the two routes agree."""
     script = _script(tmp_path, '#!/bin/bash\nfind "$HOME/work" -type f\n')
-    result = backend._sbatch(tmp_path, "", "01:00:00", 2, 1000, "j", script)
-    assert no_sbatch["ran"] is False, (
-        "with HOME on Lustre this walk must be refused on the dashboard "
-        "route too; the route must pass an env to check_submit")
-    assert result.returncode != 0
+
+    monkeypatch.setenv("HOME", "/pfs/home/user")
+    refused = backend._sbatch(tmp_path, "", "01:00:00", 2, 1000, "j", script)
+    assert refused.returncode != 0, (
+        "with HOME on Lustre the dashboard route must refuse this walk, as "
+        "the agent route (which passes os.environ) does")
+    assert not no_sbatch["ran"], "sbatch must not run for a refused script"
