@@ -55,18 +55,16 @@ class _FakeExecutor:
 
 def test_read_only_call_reaches_the_executor_and_returns():
     ex = _FakeExecutor()
-    result = code_mode.serve_request(
-        {"tool": "get_calc_info", "arguments": {"calc_id": "c1"}},
-        ex, permissions=None)
+    result = code_mode.Connection(ex, permissions=None).handle(
+        {"tool": "get_calc_info", "arguments": {"calc_id": "c1"}})
     assert ex.calls == [("get_calc_info", {"calc_id": "c1"})]
     assert json.loads(result)["energy"] == -1.0
 
 
 def test_write_tool_refused_and_names_the_direct_route():
     ex = _FakeExecutor()
-    result = json.loads(code_mode.serve_request(
-        {"tool": "write_file", "arguments": {"path": "x", "content": "y"}},
-        ex, permissions=None))
+    result = json.loads(code_mode.Connection(ex, permissions=None).handle(
+        {"tool": "write_file", "arguments": {"path": "x", "content": "y"}}))
     assert "error" in result
     assert ex.calls == []  # never dispatched
     assert "write_file" in result["error"]
@@ -74,17 +72,16 @@ def test_write_tool_refused_and_names_the_direct_route():
 
 def test_submit_tool_refused_by_name():
     ex = _FakeExecutor()
-    result = json.loads(code_mode.serve_request(
-        {"tool": "submit_calculation", "arguments": {"folder": "f"}},
-        ex, permissions=None))
+    result = json.loads(code_mode.Connection(ex, permissions=None).handle(
+        {"tool": "submit_calculation", "arguments": {"folder": "f"}}))
     assert "error" in result
     assert ex.calls == []
 
 
 def test_gate_refusal_surfaces_as_error_not_silence():
     ex = _FakeExecutor()
-    result = json.loads(code_mode.serve_request(
-        {"tool": "nonexistent_tool", "arguments": {}}, ex, permissions=None))
+    result = json.loads(code_mode.Connection(ex, permissions=None).handle(
+        {"tool": "nonexistent_tool", "arguments": {}}))
     assert "error" in result
 
 
@@ -108,9 +105,9 @@ def test_result_is_size_capped(tmp_path):
             return json.dumps(
                 {"blob": "x" * (code_mode.MAX_RESULT_BYTES + 1000)})
 
-    result = json.loads(code_mode.serve_request(
-        {"tool": "get_calc_info", "arguments": {}}, _BigExecutor(),
-        permissions=None))
+    result = json.loads(code_mode.Connection(_BigExecutor(),
+                                             permissions=None).handle(
+        {"tool": "get_calc_info", "arguments": {}}))
     assert "error" in result
     assert "truncated" in result["error"]
     assert len(json.dumps(result)) < code_mode.MAX_RESULT_BYTES

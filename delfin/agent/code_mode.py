@@ -105,12 +105,6 @@ class Connection:
             name, arguments, self._permissions))
 
 
-def serve_request(request: dict, executor: Any,
-                  permissions: Any = None) -> str:
-    """One-shot request handling (no connection state kept)."""
-    return Connection(executor, permissions).handle(request)
-
-
 def runner_program_path(cmd: str) -> Optional[str]:
     """The program path if ``cmd`` is a Code Mode runner invocation, else None.
 
