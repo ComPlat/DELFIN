@@ -31,8 +31,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
-__all__ = ["Finding", "MountsSource", "lustre_paths", "check", "main"]
+__all__ = ["Finding", "MountsSource", "lustre_paths", "check",
+           "check_submit", "main"]
 
 # The mounts file the production check reads by default (L1 fix: the
 # default wiring must READ this file, never treat the path as text).
@@ -370,6 +372,45 @@ def _format(findings: list[Finding], name: str) -> str:
         out.append(f"  line {f.line} [{f.severity}] {f.rule}: {f.why}")
         out.append(f"           instead: {f.instead}")
     return "\n".join(out)
+
+
+def check_submit(script, env: dict | None = None,
+                 mounts_path: MountsSource | None = None
+                 ) -> tuple[list[str], list[str]]:
+    """The shared submit-time check: ONE helper both submit routes call.
+
+    ``script`` is a path to a submit script (Path or str) or the script
+    TEXT itself. Returns ``(refused, warned)`` -- formatted finding
+    strings split by severity, in the same form
+    ``cluster_tools.submit`` has reported them since IO1, so the
+    dashboard backend, the agent's bash gate and ``cluster_submit``
+    cannot drift apart in what they call a refusal.
+
+    Cost: one text read (a path) plus the regex passes of :func:`check`;
+    the mounts source is one /proc/mounts read per call, injectable for
+    tests. Raises OSError when a script path cannot be read -- the check
+    never fails open. Callers may catch OSError and refuse the submit
+    on their own wording.
+    """
+    # A Path (or a str that names an existing file) is a script path;
+    # everything else is script text. A str is only treated as a path
+    # when it names an existing file, so text is never mistaken for a
+    # missing path: a str that names nothing is checked as text.
+    if isinstance(script, Path):
+        text = script.read_text(encoding="utf-8", errors="replace")
+    elif (isinstance(script, str) and "\n" not in script
+          and Path(script).is_file()):
+        text = Path(script).read_text(encoding="utf-8", errors="replace")
+    else:
+        text = str(script)
+    findings = check(text, env=env, mounts_path=mounts_path)
+
+    def _fmt(f: Finding) -> str:
+        return f"[{f.rule}] {f.why} instead: {f.instead}"
+
+    refused = [_fmt(f) for f in findings if f.severity == "refuse"]
+    warned = [_fmt(f) for f in findings if f.severity == "warn"]
+    return refused, warned
 
 
 def main(argv: list[str] | None = None) -> int:
