@@ -203,16 +203,30 @@ def test_the_program_inherits_the_cage_and_ceiling_from_the_bash_tool():
             return real(cmd, run_cwd, perms_, mode, extra_write,
                         caged_unasked)
 
+        # The PRODUCT must make this call. The first version of this test
+        # installed the spy and then called _bash_isolation_argv ITSELF, so
+        # `assert seen` was satisfied by the test's own call and the bash
+        # tool was never driven. After run_program, ProgramTimeout and
+        # test_cm1_adversarial_limits.py were deleted, this was the only
+        # coverage left for the cage and the ceiling on a runner command.
+        engine = api_client._DocToolExecutor.__new__(
+            api_client._DocToolExecutor)
+        engine._permissions = perms
         api_client._bash_isolation_argv = _spy
         try:
-            argv = api_client._bash_isolation_argv(
-                "python3 -m delfin.agent.code_mode run prog.py", workspace,
+            out = engine._execute_bash(
+                {"command": "python3 -m delfin.agent.code_mode run prog.py",
+                 "timeout": 5},
                 perms)
         finally:
             api_client._bash_isolation_argv = real
-        assert seen, "the cage argv must be built for a runner command"
-        assert isinstance(argv, list) and argv
-        # The ceiling the tool applies to every command, program or not.
+        assert out, "the bash tool returned nothing for a runner command"
+        assert seen, (
+            "the bash tool built no cage argv for a runner command; the "
+            "cage is decided in _bash_isolation_argv and nothing else")
+        assert any("code_mode" in str(c) for c in seen), seen
+        # The ceiling the tool applies to every command, program or not --
+        # read off the permissions the tool was given, not off a default.
         assert perms.bash_timeout_s == 120
         assert perms.bash_max_timeout_s > perms.bash_timeout_s
     finally:
