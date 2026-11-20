@@ -1738,10 +1738,31 @@ def subagent_type_names() -> list[str]:
     return list(SUBAGENT_PRESETS.keys())
 
 
-# Paths an expert must never claim as its write scope: the safety frame
-# (SA0 package brief). A glob is refused when its literal prefix enters
-# one of these files or the pack directory — the model may not widen,
-# shadow or rewrite any of them through a delegated writer.
+#: Extra prefixes this check refuses beyond the gate's own list, for the
+#: delegated-writer case specifically: the pack directory (a preset that
+#: rewrites presets) and two entry points that are not individually
+#: protected paths but are how the safety frame is reached.
+#:
+#: The LIST THAT DECIDES is the write gate's,
+#: ``api_client._DEFAULT_PATH_PROTECTED_GLOBS``, read through
+#: :func:`_protected_write_prefixes`. This tuple used to be the whole
+#: answer and had drifted from it: measured 2026-11-20, 17 prefixes here
+#: against 43 globs there, of which 33 were not covered -- ``.github/**``,
+#: ``.delfin/settings.json``, ``.delfin/skills/**``,
+#: ``.delfin/trusted_workspaces.json``, ``.git``, ``HEAD``,
+#: ``delfin/agent/terminal_confirm.py``, ``file_confirm.py``,
+#: ``approval_answers.py``, ``cli_gate.py``, ``delfin/user_settings.py``
+#: and ``delfin/dashboard/tab_agent.py`` among them. A preset whose
+#: ``write_globs`` was ``.github/**`` would have passed this check: a
+#: workflow file is code CI runs.
+_EXTRA_PROTECTED_PREFIXES: tuple[str, ...] = (
+    "delfin/agent/pack/",
+    "delfin/api.py",
+    "delfin/smiles_converter",
+)
+
+# Kept for the name check below and for callers that read it; the write
+# scope is decided by _protected_write_prefixes().
 _PROTECTED_GLOB_PREFIXES: tuple[str, ...] = (
     "delfin/agent/api_client",
     "delfin/agent/engine",
@@ -1815,6 +1836,43 @@ def _known_preset_tool_names() -> frozenset[str]:
 
 def _kebab_case(name: str) -> bool:
     return bool(re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", name))
+
+
+def _protected_write_prefixes() -> tuple[str, ...]:
+    """Prefixes a preset's ``write_globs`` may never enter.
+
+    Input: nothing. Output: the write gate's own protected globs
+    (``api_client._DEFAULT_PATH_PROTECTED_GLOBS``), stripped of their
+    glob tails so a prefix comparison works, plus
+    ``_EXTRA_PROTECTED_PREFIXES``.
+
+    One source of truth on purpose. This check used to carry its own copy
+    and the two had drifted: 17 prefixes here against 43 globs in the
+    gate, 33 of them uncovered, so a preset claiming ``.github/**`` or
+    ``delfin/agent/terminal_confirm.py`` as its write scope passed. The
+    gate is the list that already decides what a write may touch; asking
+    it means a path protected there cannot be claimed here either, and a
+    path added there later is covered without a second edit.
+
+    Falls back to the local tuple if the gate's list cannot be read, so
+    the check never becomes a no-op: fewer prefixes would silently admit
+    more.
+    """
+    try:
+        from .api_client import _DEFAULT_PATH_PROTECTED_GLOBS as _gate
+    except Exception:
+        return tuple(_PROTECTED_GLOB_PREFIXES) + _EXTRA_PROTECTED_PREFIXES
+    out = set(_EXTRA_PROTECTED_PREFIXES) | set(_PROTECTED_GLOB_PREFIXES)
+    for glob in _gate or ():
+        g = str(glob)
+        # "**/x" and "x" protect the same thing for a repo-relative glob;
+        # the trailing /** or /* is a subtree, and its root is the prefix.
+        if g.startswith("**/"):
+            g = g[3:]
+        g = g.rstrip("*").rstrip("/")
+        if g:
+            out.add(g)
+    return tuple(sorted(out))
 
 
 def validate_preset(path_or_text: str) -> list[str]:
@@ -1909,7 +1967,7 @@ def validate_preset(path_or_text: str) -> list[str]:
                 f"write_globs: {glob!r} points outside the repository")
             continue
         if any(g.startswith(pre) or g.startswith(pre.replace("/", ""))
-               for pre in _PROTECTED_GLOB_PREFIXES):
+               for pre in _protected_write_prefixes()):
             problems.append(
                 f"write_globs: {glob!r} covers a protected path "
                 "(the safety frame is never an expert's write scope)")
