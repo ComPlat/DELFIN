@@ -630,9 +630,33 @@ class ResultsOverviewPanel:
                     zf.writestr(f"{label}/{p['rel']}", data)
         return out.getvalue()
 
+    _EXPORT_CHUNK_B64 = 512 * 1024  # base64 chars per transport message
+
+    def _progress_html(self, done: int, total: int, filename: str) -> str:
+        """Status line with a progress bar (transfer phase)."""
+        pct = int(100 * done / max(total, 1))
+        return (
+            "<div style='font-family:sans-serif'>"
+            f"<div style='font-size:13px;margin-bottom:4px'>"
+            f"{_html.escape(filename)}: {done}/{total} Teile "
+            f"({pct} %)</div>"
+            "<div style='background:#e9ecef;border-radius:4px;"
+            "height:10px;width:280px'>"
+            f"<div style='background:#28a745;height:10px;"
+            f"width:{pct}%;border-radius:4px'></div></div></div>")
+
     def _export_bytes(self, filename: str, payload: bytes,
                       mime: str) -> None:
-        """Download via the same base64-blob route the browser tab uses."""
+        """Download via chunked base64 transfer through the JS bridge.
+
+        One huge message (whole file as one base64 blob) exceeds what
+        the notebook transport reliably delivers at 20+ calculations:
+        the "downloaded" status appears, but the browser never gets
+        the data. Splitting into ~512 kB chunks keeps every message
+        small; the browser accumulates the pieces and assembles the
+        Blob at the end. Progress is shown per chunk in the status
+        line -- build phase is reported separately by the handlers.
+        """
         run_js = getattr(self._ctx, "run_js", None)
         if not callable(run_js):
             self._export_status.value = (
@@ -640,12 +664,64 @@ class ResultsOverviewPanel:
                 "im Dashboard nicht moeglich.</span>")
             return
         b64 = _base64.b64encode(payload).decode("ascii")
-        js = (
+        total = (len(b64) + self._EXPORT_CHUNK_B64 - 1) // self._EXPORT_CHUNK_B64
+        self._export_seq = getattr(self, "_export_seq", 0) + 1
+        tid = f"ro{self._export_seq}"
+
+        if total <= 1:  # small export: single shot as before
+            js = (
+                "(function(){"
+                f"const fileName={_json.dumps(filename)};"
+                f"const mimeType={_json.dumps(mime)};"
+                f"const b64={_json.dumps(b64)};"
+                "try{"
+                "const bin=atob(b64);"
+                "const len=bin.length;"
+                "const bytes=new Uint8Array(len);"
+                "for(let i=0;i<len;i++){bytes[i]=bin.charCodeAt(i);}"
+                "const blob=new Blob([bytes],{type:mimeType});"
+                "const url=URL.createObjectURL(blob);"
+                "const a=document.createElement('a');"
+                "a.href=url;a.download=fileName;"
+                "document.body.appendChild(a);a.click();"
+                "setTimeout(function(){URL.revokeObjectURL(url);"
+                "if(a.parentNode){a.parentNode.removeChild(a);}},1500);"
+                "}catch(err){console.error('Download failed:', err);}"
+                "})();"
+            )
+            run_js(js)
+            self._export_status.value = (
+                f"<span style='color:#28a745'>{_html.escape(filename)} "
+                f"heruntergeladen ({len(payload) // 1024} KB).</span>")
+            return
+
+        # transfer phase: register buffer, stream chunks, assemble
+        init_js = (
             "(function(){"
+            "window.__roChunks = window.__roChunks || {};"
+            f"window.__roChunks[{_json.dumps(tid)}] = [];"
+            "})();"
+        )
+        run_js(init_js)
+        for i in range(total):
+            chunk = b64[i * self._EXPORT_CHUNK_B64:
+                        (i + 1) * self._EXPORT_CHUNK_B64]
+            run_js(
+                "(function(){"
+                f"window.__roChunks[{_json.dumps(tid)}].push("
+                f"{_json.dumps(chunk)});"
+                "})();"
+            )
+            self._export_status.value = self._progress_html(
+                i + 1, total, filename)
+        final_js = (
+            "(function(){"
+            f"const tid={_json.dumps(tid)};"
             f"const fileName={_json.dumps(filename)};"
             f"const mimeType={_json.dumps(mime)};"
-            f"const b64={_json.dumps(b64)};"
             "try{"
+            "const parts=window.__roChunks[tid]||[];"
+            "const b64=parts.join('');"
             "const bin=atob(b64);"
             "const len=bin.length;"
             "const bytes=new Uint8Array(len);"
@@ -657,13 +733,15 @@ class ResultsOverviewPanel:
             "document.body.appendChild(a);a.click();"
             "setTimeout(function(){URL.revokeObjectURL(url);"
             "if(a.parentNode){a.parentNode.removeChild(a);}},1500);"
+            "delete window.__roChunks[tid];"
             "}catch(err){console.error('Download failed:', err);}"
             "})();"
         )
-        run_js(js)
+        run_js(final_js)
         self._export_status.value = (
             f"<span style='color:#28a745'>{_html.escape(filename)} "
-            f"downloaded ({len(payload) // 1024} KB).</span>")
+            f"heruntergeladen ({len(payload) // 1024} KB, "
+            f"{total} Teile).</span>")
 
     def _on_export_csv(self, _btn=None) -> None:
         if self._table is None:
@@ -696,12 +774,22 @@ class ResultsOverviewPanel:
                 "<span style='color:#dc3545'>Build a table first "
                 "(select calculations).</span>")
             return
+        self._export_status.value = (
+            "<span style='color:#856404'>LaTeX-Quelltext wird "
+            "erstellt ...</span>")
         tex = self._latex_bytes()
+        n_img = len(self._latex_images)
+        self._export_status.value = (
+            "<span style='color:#856404'>Bilder werden gepackt "
+            f"({n_img} Dateien) ...</span>")
         out = _io.BytesIO()
         with _zipfile.ZipFile(out, "w", _zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("results.tex", tex)
-            for name, data in self._latex_images:
+            for i, (name, data) in enumerate(self._latex_images, 1):
                 zf.writestr(name, data)
+                self._export_status.value = (
+                    "<span style='color:#856404'>Bilder werden "
+                    f"gepackt ({i}/{n_img}) ...</span>")
         self._export_bytes("results_overview_latex.zip",
                            out.getvalue(), "application/zip")
 
@@ -859,8 +947,14 @@ class ResultsOverviewPanel:
             self._export_status.value = (
                 "<span style='color:#dc3545'>Build a table first.</span>")
             return
+        self._export_status.value = (
+            "<span style='color:#856404'>LaTeX-Quelltext wird "
+            "erstellt ...</span>")
         tex = self._latex_bytes().decode("utf-8")
         # PDF when pdflatex is available; else the source alone.
+        self._export_status.value = (
+            "<span style='color:#856404'>PDF wird kompiliert "
+            "(pdflatex) ...</span>")
         pdf = None
         try:
             import subprocess
@@ -897,7 +991,10 @@ class ResultsOverviewPanel:
         # PDF only: the editable source ships in the LaTeX-ZIP button
         # (results.tex + all referenced images, consistent names).
         if pdf:
-            self._export_bytes("results_overview.pdf", pdf, "application/pdf")
+            self._export_status.value = (
+                "<span style='color:#856404'>PDF wird übertragen ...</span>")
+            self._export_bytes("results_overview.pdf",
+                               pdf, "application/pdf")
         else:
             self._export_status.value = (
                 "<span style='color:#dc3545'>pdflatex unavailable - "
