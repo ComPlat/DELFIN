@@ -21,6 +21,7 @@ what is measured here.
 """
 import json
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import sys
@@ -28,6 +29,7 @@ import tempfile
 
 from delfin.agent import api_client
 from delfin.agent import code_mode
+from conftest import child_env
 
 #: The import root the program subprocess gets, so the child imports THIS
 #: tree's delfin rather than whatever is installed.
@@ -113,7 +115,12 @@ def test_a_real_program_reaches_a_tool_through_the_product_route():
             "import json, tools_api as api\n"
             "print('RESULT', json.dumps(api.list_docs()))\n")
 
-        env = dict(os.environ)
+        # conftest.child_env, not the local _child_env in this file:
+        # that one wraps api_client._code_mode_child_env and says
+        # nothing about HOME. These children run
+        # `python -m delfin.agent.code_mode`, so each resolves its own
+        # ~/.delfin sinks at import time against whatever HOME says.
+        env = dict(os.environ, **child_env(Path(workspace)))
         env.update(_child_env(workspace, executor))
         env["PYTHONPATH"] = os.pathsep.join([workspace, TREE])
         run = subprocess.run(
@@ -149,7 +156,12 @@ def test_a_write_tool_is_refused_over_the_product_route():
             "except RuntimeError as exc:\n"
             "    print('REFUSED', exc)\n")
 
-        env = dict(os.environ)
+        # conftest.child_env, not the local _child_env in this file:
+        # that one wraps api_client._code_mode_child_env and says
+        # nothing about HOME. These children run
+        # `python -m delfin.agent.code_mode`, so each resolves its own
+        # ~/.delfin sinks at import time against whatever HOME says.
+        env = dict(os.environ, **child_env(Path(workspace)))
         env.update(_child_env(workspace, executor))
         env["PYTHONPATH"] = os.pathsep.join([workspace, TREE])
         run = subprocess.run(
