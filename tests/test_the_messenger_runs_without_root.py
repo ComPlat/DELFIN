@@ -21,10 +21,13 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
+from pathlib import Path
 
 import pytest
 
@@ -145,8 +148,8 @@ time.sleep(20)
 """
 
 
-def _peer(tmp_path, marker, record):
-    path = str(tmp_path / "b.sock")
+def _peer(where, marker, record, tmp_path):
+    path = str(where / "b.sock")
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(path)
     server.listen(1)
@@ -170,18 +173,38 @@ def test_the_bridge_admits_its_own_uid_only_for_the_gateway(tmp_path, monkeypatc
     # Where the peer's pid and start time cannot be read (no SO_PEERCRED and
     # /proc), nobody is admitted: fail closed.
     ok = ok and sys.platform.startswith("linux")
-    proc, conn, server, pidfile = _peer(tmp_path, marker, record)
+    # The socket lives in a short private directory, not in tmp_path: a
+    # Unix socket path is capped near 107 bytes, and tmp_path stands under
+    # whatever TMPDIR started the suite (a DELFIN agent session's scratch
+    # put it at 110 here, so bind refused it while CI's /tmp fits). Same
+    # answer as the dashboard-kernel tests' short_runtime.
+    where = Path(tempfile.mkdtemp(prefix="dr", dir="/tmp" if os.path.isdir("/tmp") else None))
+    os.chmod(where, 0o700)
+    proc = conn = server = None
     try:
+        proc, conn, server, pidfile = _peer(where, marker, record, tmp_path)
         monkeypatch.setenv("DELFIN_MESSENGER_ROOTLESS", "1")
         monkeypatch.setenv("DELFIN_MESSENGER_GATEWAY_PIDFILE", str(pidfile))
+        # The kernel's answer, not this host's: SO_PEERCRED on a workstation
+        # inside a nested pid namespace reports the sandbox supervisor's pid
+        # instead of the peer's, so rootless_peer_ok could not match the
+        # recorded pid and refused for the wrong reason. CI's kernel names
+        # the real peer; supply that answer so this measures the bridge's
+        # check. The parameterisation still covers the refusal cases.
+        from delfin.agent.service import supervisor
+        monkeypatch.setattr(supervisor, "_peer_pid", lambda sock: proc.pid)
         assert bridge.rootless_peer_ok(conn) is ok
         monkeypatch.delenv("DELFIN_MESSENGER_ROOTLESS")
         assert bridge.rootless_peer_ok(conn) is False, "only in rootless mode"
     finally:
-        proc.kill()
-        proc.wait(5)
-        conn.close()
-        server.close()
+        if proc is not None:
+            proc.kill()
+            proc.wait(5)
+        if conn is not None:
+            conn.close()
+        if server is not None:
+            server.close()
+        shutil.rmtree(where, ignore_errors=True)
 
 
 def test_the_pins_are_the_installers_pins():
