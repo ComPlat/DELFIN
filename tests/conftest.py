@@ -1466,19 +1466,62 @@ def isolation_is_expected() -> bool:
 
 
 def sandbox_is_functional() -> bool:
-    """Whether bwrap can actually confine anything here.
+    """Whether the wrap these tests drive a command through can run here.
 
-    Production's own probe, not a second one: a private copy in the test
-    file probed the MINIMAL wrap (``bwrap --ro-bind / / true``) while the
-    real wrap also asks for ``--dev /dev --proc /proc --tmpfs /tmp``. On a
-    host where the minimal probe passes and the full one does not, the
+    Production's own probe first, not a second one: a private copy in the
+    test file probed the MINIMAL wrap (``bwrap --ro-bind / / true``) while
+    the real wrap also asks for ``--dev /dev --proc /proc --tmpfs /tmp``. On
+    a host where the minimal probe passes and the full one does not, the
     gate opened for a wrap that cannot be built.
+
+    ``_bwrap_functional`` is necessary and not sufficient, measured
+    2026-11-20: on a workstation that is already inside a seccomp filter,
+    bwrap builds its cage (so ``_bwrap_functional`` is True) and the caged
+    command still cannot run, because the layers that hold its network both
+    fail there -- a listener filter gets EBUSY
+    (``SECCOMP_SET_MODE_FILTER | NEW_LISTENER``), and
+    ``bwrap --unshare-net`` dies on ``loopback: Failed RTM_NEWADDR:
+    Permission denied``. Eleven tests in the two caged-command files then
+    failed on "refused: sandbox could not be applied" while passing on CI,
+    where the runner is not filtered.
+
+    So the question is asked where the tests put it: a command is driven
+    through the product's own executor, in the mode these tests use, and
+    the answer is whether it came back refused BY THE CAGE. Asking the
+    product rather than re-deriving its decision means a new layer that
+    cannot run here skips these tests with a reason instead of failing
+    them.
     """
     try:
         from delfin.agent.api_client import _bwrap_functional
-        return bool(_bwrap_functional())
+        if not bool(_bwrap_functional()):
+            return False
     except Exception:
         return False
+    return _a_caged_command_can_run()
+
+
+def _a_caged_command_can_run() -> bool:
+    """Drive ``true`` through the executor; False when the cage refused it.
+
+    The refusal is the product's own wording ("refused: sandbox could not
+    be applied"), which is what the caged tests would otherwise fail on.
+    A host where the command runs, prints, and is not refused is functional
+    whether or not a cage was involved: those are the tests' own
+    preconditions, and they assert the confinement separately.
+    """
+    import json
+    import tempfile
+    try:
+        from delfin.agent.api_client import KitToolPermissions, _doc_executor
+        with tempfile.TemporaryDirectory(prefix="dx-probe-") as tmp:
+            perms = KitToolPermissions(mode="default", workspace=tmp)
+            out = json.loads(_doc_executor.execute(
+                "bash", {"command": "true", "description": "probe"}, perms))
+    except Exception:
+        return False
+    return "refused: sandbox could not be applied" not in str(
+        out.get("stderr", ""))
 
 
 def requires_a_working_sandbox(fn):
@@ -1492,14 +1535,44 @@ def requires_a_working_sandbox(fn):
         def _fail(*args, **kwargs):
             pytest.fail(
                 f"{_ISOLATION_EXPECTED_ENV} is set, so this environment "
-                "promises a working sandbox, but bwrap could not build the "
-                "wrap the agent uses. Confinement is NOT being tested here."
+                "promises a working sandbox, but a caged command was "
+                f"refused here: {sandbox_refusal_reason()}. Confinement is "
+                "NOT being tested here."
             )
         return _fail
     return pytest.mark.skip(
-        reason=("no functional bwrap (unprivileged container?); set "
-                f"{_ISOLATION_EXPECTED_ENV}=1 to make this a failure")
+        reason=(f"a caged command is refused here ({sandbox_refusal_reason()}); "
+                f"set {_ISOLATION_EXPECTED_ENV}=1 to make this a failure")
     )(fn)
+
+
+def sandbox_refusal_reason() -> str:
+    """Why :func:`sandbox_is_functional` said no, in the product's words.
+
+    Names the layer that actually refused, so the skip line is read for what
+    it is. On the workstation measured 2026-11-20 bwrap itself was fine and
+    the network layers were not (a listener seccomp filter got EBUSY, and
+    ``bwrap --unshare-net`` could not bring its loopback up), so a fixed
+    "no functional bwrap" message sent the reader after the wrong thing.
+    """
+    import json
+    import tempfile
+    try:
+        from delfin.agent.api_client import (
+            KitToolPermissions, _bwrap_functional, _doc_executor)
+        if not bool(_bwrap_functional()):
+            return "bwrap cannot build the wrap the agent uses"
+        with tempfile.TemporaryDirectory(prefix="dx-probe-") as tmp:
+            perms = KitToolPermissions(mode="default", workspace=tmp)
+            out = json.loads(_doc_executor.execute(
+                "bash", {"command": "true", "description": "probe"}, perms))
+        stderr = str(out.get("stderr", ""))
+    except Exception as exc:                          # noqa: BLE001 - report it
+        return f"the probe could not run ({exc})"
+    if "refused: sandbox could not be applied" in stderr:
+        first = stderr.strip().splitlines()[0] if stderr.strip() else ""
+        return first.replace("refused: sandbox could not be applied ", "")[:200]
+    return "the probe command did not run"
 
 
 # ---------------------------------------------------------------------------
