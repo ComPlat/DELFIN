@@ -262,7 +262,7 @@ class BudgetLedger:
         return usd > 0 and int(getattr(engine, "_unpriced_turns", 0) or 0) == 0
 
     def _note_turn_token_state(self, input_delta: int = 0,
-                              produced: bool = True) -> None:
+                               produced: bool = True) -> None:
         """Count the turn that just ran by whether its input size was
         reported at all. The token twin of
         :meth:`_note_turn_price_state`, and for the same reason: a
