@@ -287,7 +287,11 @@ tools, messages to other agents, writes outside the workspace or into
 agent-instruction and git configuration files, commands that reach the
 network, and under bypass every command off the auto-allow list) is asked
 when someone can be asked and refused when nobody can; work inside the
-workspace keeps the rule result. After `api_client._CLASSIFIER_BREAKER_FAILURES`
+workspace keeps the rule result. The reason names WHICH failure it was
+(`action_classifier.no_verdict_shape`): an empty reply, a reply that stopped
+before any decision, or a reply with no clear verdict, so an overloaded
+endpoint and a malformed answer are not reported as the same thing. After
+`api_client._CLASSIFIER_BREAKER_FAILURES`
 failed calls in a row it is marked down (`classifier_down`), probed at most
 once a minute, and `api_client.watcher_status_line` shows DOWN in the banner
 and `/status`. `DELFIN_CLASSIFIER` overrides the switch for one process,

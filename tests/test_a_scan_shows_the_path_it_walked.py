@@ -591,7 +591,9 @@ def test_the_profile_lays_out_in_the_structure_s_place_in_a_browser(width):
     """
     pytest.importorskip('ipywidgets')
     playwright = pytest.importorskip(
-        'playwright.sync_api', reason='needs a browser to lay the row out')
+        'playwright.sync_api',
+        reason='needs the playwright package and its Chromium browser '
+               'to lay the row out')
     pytest.importorskip('matplotlib')
     from delfin.dashboard import scan_profile
     from delfin.dashboard.molecule_viewer import (
@@ -999,7 +1001,9 @@ def test_the_view_panel_is_not_a_wall_across_the_picture():
     own presses back, which is what the panel is for.
     """
     playwright = pytest.importorskip(
-        'playwright.sync_api', reason='needs a browser to lay the panel out')
+        'playwright.sync_api',
+        reason='needs the playwright package and its Chromium browser '
+               'to lay the panel out')
     from delfin.dashboard.molecule_viewer import STRUCTURE_VIEWER_FULLSCREEN_CSS
 
     css = STRUCTURE_VIEWER_FULLSCREEN_CSS
