@@ -4875,6 +4875,37 @@ def _is_run_hidden(resolved: Path) -> bool:
         return True
 
 
+def _denied_path_refusal(path: Any) -> str:
+    """The whole refusal for a deny-listed ``path``, named by its kind.
+
+    The deny list holds two different kinds of path, and one message for
+    both sends the caller looking for the wrong thing. A refusal that
+    reads "secret" over a file that plainly holds no secret is retried
+    in another spelling instead of accepted: measured 8 retries of
+    ``.git/info/exclude`` in one agent run, against a rule working
+    exactly as intended.
+
+    A real secret keeps the original wording, which is accurate for it
+    and which several suites assert. Only git's own state, where
+    "secret" was the wrong word, gets its own sentence.
+    """
+    text = str(path or "").replace("\\", "/")
+    if "/.git/" in f"/{text}" or text.endswith("/.git") or text == ".git":
+        return (
+            f"bash command references git's own state ({path!r}), which is "
+            "not a secret: it is blocked because writing it changes what git "
+            "does next. A hook runs on the next git command, and an ignore "
+            "rule (.git/info/exclude) hides files from `git status`, so work "
+            "can leave review unseen. Use a tracked .gitignore, or say what "
+            "you need and let the reviewer decide."
+        )
+    return (
+        f"bash command references a secret-deny path ({path!r}). "
+        "Reading or touching .ssh/.env/*.key/credentials via the "
+        "shell is blocked — the read deny-list applies to bash too."
+    )
+
+
 def _is_secret_path(perms: Any, path: Path) -> bool:
     """Whether ``path`` matches the secret deny list, tested the way
     ``_check_read_access`` tests it: relative to the readable root it lies
@@ -13182,10 +13213,54 @@ def _scoped_test_cmd_for_edits(edited_paths: list, scope) -> str:
     return "python -m pytest -x -q " + " ".join(shlex.quote(f) for f in files)
 
 
-def _run_test_command(command: str, workspace, timeout: float) -> tuple[str, bool]:
-    """Run a verification command. Returns (problem_summary, timed_out)."""
+def _auto_verify_confinement(perms) -> str:
+    """What holds auto-verify's command on this host: the kind, or "".
+
+    Auto-verify runs pytest in the workspace, and pytest executes the
+    workspace's own ``conftest.py`` before it collects anything. The
+    workspace therefore decides what code runs, and nobody is asked:
+    auto-verify is not a tool call, so no gate and no dialog sees it. A
+    ``conftest.py`` gets there two ways that need nothing exotic -- an
+    instruction smuggled into fetched text asks for one (a file write is
+    not asked about under ``acceptEdits``), or a cloned repository brings
+    one along, and ``/trust`` covers hooks, settings and MCP servers but
+    not pytest's configuration.
+
+    Input: the session's permissions. Output: ``_bash_isolation_decision``'s
+    kind where it confines filesystem writes ("bwrap", "landlock",
+    "seatbelt"), else "". Never raises: a decision that cannot be read
+    counts as unconfined, which is the cautious direction.
+    """
+    if perms is None:
+        return ""
     try:
-        r = subprocess.run(command, shell=True, cwd=str(workspace),
+        kind, _mode = _bash_isolation_decision(perms)
+    except Exception:
+        return ""
+    return kind if kind in ("bwrap", "landlock", "seatbelt") else ""
+
+
+def _run_test_command(command: str, workspace, timeout: float,
+                      perms=None) -> tuple[str, bool]:
+    """Run a verification command. Returns (problem_summary, timed_out).
+
+    The command runs in the cage the explicit ``run_tests`` tool uses
+    (``_test_run_argv`` -> ``_bash_isolation_argv``): the session's roots
+    are writable, ``/`` is read-only, ``/tmp`` is fresh and the credential
+    paths under ``$HOME`` are masked. It used to be a plain
+    ``subprocess.run(..., shell=True)``; measured against that, a
+    ``conftest.py`` in the workspace wrote a file outside the workspace
+    and the write landed.
+
+    Without a confinement the command is not run at all -- the caller
+    (``_run_auto_verify``) decides that once and says so in its status, so
+    an unverified turn reads as unverified instead of as clean.
+    """
+    if not _auto_verify_confinement(perms):
+        return "", False
+    try:
+        argv = _bash_isolation_argv(command, str(workspace), perms)
+        r = subprocess.run(argv, cwd=str(workspace),
                            capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return "", True
@@ -13247,7 +13322,8 @@ def _scoped_test_dir(edited_paths: list, workspace) -> Optional[Path]:
 
 
 def _run_auto_verify(edited_paths: list, mode: str, command: str,
-                     workspace, status: Optional[dict] = None) -> str:
+                     workspace, status: Optional[dict] = None,
+                     perms=None) -> str:
     """Verify code the agent just edited. Returns a short problem summary when
     something is wrong (→ force a fix round), or "" when clean. Never raises —
     verification failing closed would be worse than not verifying.
@@ -13262,17 +13338,35 @@ def _run_auto_verify(edited_paths: list, mode: str, command: str,
     that forces a fix round.
 
     ``status`` (optional dict) is filled with how verification actually ran:
-    ``skipped``/``reason``/``command``/``scoped``/``timed_out`` — so the
-    caller can SAY when a turn went unverified instead of returning ""
+    ``skipped``/``reason``/``command``/``scoped``/``timed_out``/``cage`` — so
+    the caller can SAY when a turn went unverified instead of returning ""
     (which reads as "verified clean") in silence.
+
+    ``perms`` carries the cage every run of workspace code goes into
+    (``_run_test_command``). Without one -- no permission bundle, or a host
+    where nothing confines filesystem writes -- the syntax check still
+    runs, because ``py_compile`` does not import the file and so runs no
+    workspace code, and the test run is skipped with its reason. That is
+    the one degradation here: a host that can cage nothing keeps verifying
+    what can be verified safely instead of either going silent or running
+    the workspace's ``conftest.py`` unconfined.
     """
     st = status if isinstance(status, dict) else {}
     try:
         if mode == "off":
             return ""
+        cage = _auto_verify_confinement(perms)
+        st["cage"] = cage or "none"
+        no_cage = ("no filesystem isolation available for the test run "
+                   "(the workspace's own conftest.py would run outside a "
+                   "cage); syntax check only")
+        if not cage and mode == "command":
+            st["skipped"] = True
+            st["reason"] = no_cage
+            return ""
         if mode == "command" and command:
             st["command"] = command
-            prob, timed_out = _run_test_command(command, workspace, 180)
+            prob, timed_out = _run_test_command(command, workspace, 180, perms)
             if timed_out:
                 st["skipped"] = True
                 st["timed_out"] = True
@@ -13291,6 +13385,12 @@ def _run_auto_verify(edited_paths: list, mode: str, command: str,
             if not edited_paths:
                 st["command"] = "file check (artifact_check)"
                 return ""
+            if not cage:
+                # The syntax check above is the whole verification here: it
+                # compiles, it does not import, so no workspace code ran.
+                st["skipped"] = True
+                st["reason"] = no_cage
+                return ""
             # smart: syntax clean → the tests that cover the edit; the whole
             # suite only when no test does (bounded + adaptive).
             ws_key = str(workspace)
@@ -13308,7 +13408,7 @@ def _run_auto_verify(edited_paths: list, mode: str, command: str,
                 st["command"] = cmd
                 st["scoped"] = True
                 prob, timed_out = _run_test_command(
-                    cmd, scope, _RELATED_TEST_TIMEOUT_S)
+                    cmd, scope, _RELATED_TEST_TIMEOUT_S, perms)
                 if timed_out:
                     st["skipped"] = True
                     st["timed_out"] = True
@@ -13330,7 +13430,7 @@ def _run_auto_verify(edited_paths: list, mode: str, command: str,
                 st["reason"] = "no test suite detected (syntax check only)"
                 return ""
             st["command"] = cmd
-            prob, timed_out = _run_test_command(cmd, scope, 60)
+            prob, timed_out = _run_test_command(cmd, scope, 60, perms)
             if timed_out:
                 # Full suite too slow: never re-run it per turn.
                 _SLOW_TEST_WS.add(ws_key)
@@ -21972,11 +22072,7 @@ class _DocToolExecutor:
             denied_path = self._bash_denied_path(cmd, perms)
             if denied_path is not None:
                 _record_security_event("secret_path", "bash", str(denied_path))
-                return (
-                    f"bash command references a secret-deny path ({denied_path!r}). "
-                    "Reading or touching .ssh/.env/*.key/credentials via the "
-                    "shell is blocked — the read deny-list applies to bash too."
-                )
+                return _denied_path_refusal(denied_path)
             _unknown_scripts: list = []
             payload_hit = self._scan_bash_script_payloads(
                 cmd, args, perms, unknown=_unknown_scripts)
@@ -35728,7 +35824,7 @@ class OpenAIClient(_BaseClient):
                 _problems = _run_auto_verify(
                     list(_edited_py), _av_mode, _av_cmd,
                     getattr(self._permissions, "workspace", "."),
-                    status=_av_status)
+                    status=_av_status, perms=self._permissions)
                 _last_verify_problem = _problems
                 # Evidence ledger: auto-verify runs AND skips are recorded —
                 # a skipped verification must never read as a green one.

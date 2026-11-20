@@ -7,10 +7,31 @@ The program is untrusted code: whatever it sends over the socket must never
 reach a write/submit tool through Code Mode.
 """
 import json
+import time
 
 import pytest
 
 from delfin.agent import code_mode
+
+
+@pytest.fixture
+def slow_listen(monkeypatch):
+    """Hold the window inside ``RpcServer.bind`` open.
+
+    ``bind`` creates the socket file and only then calls ``listen``; a
+    client that connects between the two is refused, which is what CI
+    reported as ``ConnectionRefusedError`` on an unrelated change. The pause
+    makes that window open on every run, so waiting for the socket FILE
+    instead of for the listener fails every time rather than once in twenty.
+    """
+    import socket as _socket
+    real = _socket.socket.listen
+
+    def _listen(self, *a, **kw):
+        time.sleep(0.3)
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(_socket.socket, "listen", _listen)
 
 
 class _RecordingExecutor:
@@ -116,52 +137,49 @@ def test_oversized_executor_result_capped_at_server():
 
 # ------------------------------------------------------- client error surface
 
-def test_client_raises_on_refusal_never_swallows(tmp_path):
+def test_client_raises_on_refusal_never_swallows(tmp_path, slow_listen):
     """A gate refusal inside the program surfaces as an exception in the
     program, not as a silent None."""
     sock = tmp_path / "rpc.sock"
 
     class _OneShotServer:
-        def __init__(self):
+        def __init__(self, ready):
             self.srv = code_mode.RpcServer(_RecordingExecutor(),
                                            permissions=None)
+            self.ready = ready
 
         def __call__(self):
             self.srv.bind(str(sock))
+            self.ready.set()          # bind() has listened; a connect is safe
             self.srv.serve_one()
 
     import threading
-    t = threading.Thread(target=_OneShotServer(), daemon=True)
+    listening = threading.Event()
+    t = threading.Thread(target=_OneShotServer(listening), daemon=True)
     t.start()
-    import time
-    for _ in range(100):
-        if sock.exists():
-            break
-        time.sleep(0.05)
+    assert listening.wait(10), "the server never began listening"
     client = code_mode.RpcClient(str(sock))
     with pytest.raises(RuntimeError, match="refused"):
         client.call("write_file", {"path": "x"})
     t.join(timeout=5)
 
 
-def test_client_returns_result_payload(tmp_path):
+def test_client_returns_result_payload(tmp_path, slow_listen):
     sock = tmp_path / "rpc2.sock"
     ex = _RecordingExecutor()
 
     import threading
-    import time
     srv = code_mode.RpcServer(ex, permissions=None)
+    listening = threading.Event()
 
     def _serve():
         srv.bind(str(sock))
+        listening.set()               # bind() has listened; a connect is safe
         srv.serve_one()
 
     t = threading.Thread(target=_serve, daemon=True)
     t.start()
-    for _ in range(100):
-        if sock.exists():
-            break
-        time.sleep(0.05)
+    assert listening.wait(10), "the server never began listening"
     client = code_mode.RpcClient(str(sock))
     assert client.call("search_calcs", {"query": "PBE0"}) == {"ok": "search_calcs"}
     assert ex.calls == ["search_calcs"]
