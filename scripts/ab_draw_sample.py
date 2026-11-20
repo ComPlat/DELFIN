@@ -16,7 +16,9 @@ between the pools and can be reported as a covariate.
 
 Why not in proportion to each pool's tier mix, which was the first rule:
 the two pools' mixes are near-opposites -- measured 2026-11-20, infra is
-34 % ``nowhere`` and chem 69 % -- so a proportional draw hands one arm
+34 % ``nowhere`` (27 of 80) and chem 69 % (54 of 78), and 71 % (70 of 99)
+once the chemistry rule gained its S3 clause -- so a proportional draw
+hands one arm
 mostly ``test-only`` tasks and the other mostly ``nowhere`` ones. Tier
 plausibly predicts difficulty (a ``test-only`` capability has a test
 pinning its behaviour; a ``nowhere`` one is more often simply dead), so
