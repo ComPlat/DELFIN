@@ -201,3 +201,35 @@ AGPL for DELFIN (refused — it is LGPL and public); the separate process
 (cheapest on licence, most expensive on safety, since the client's own
 guards against whole-record overwrites and restricted elements would
 have to be rebuilt).
+
+
+## Test-suite dependencies: optional, permissively licensed
+
+Three ordinary installable packages gate parts of the test suite. None is
+one of the heavy optional builders (MACE, molSimplify, Molassembler,
+architector, rxembed, metallogen); each is small, permissively licensed and
+declared as an **optional extra**, so a machine without it runs the rest of
+the suite and the gated tests skip by naming that package. The licence of
+each is recorded here so that the compatibility with this repository's
+LGPL-3.0 is a cited decision, not an assumption (the family-4 rule for
+optional third-party dependencies, applied to the test stack):
+
+- `hypothesis` — **MIT**. Property-based tests of the outside-input parsers
+  (`tests/test_outside_input_parsers_hold_on_any_text.py`). Declared
+  pinned in the `dev` extra (`hypothesis==6.168.5`); the exact pin is
+  deliberate, because a new release changes the inputs a derandomized run
+  generates.
+- `morfeus` — **MIT**. The steric-descriptor package, imported as `morfeus`
+  and shipped on PyPI as `morfeus-ml`. Gates the steric wrapper and adapter
+  tests. Declared in the `analysis` extra.
+- `playwright` — **Apache-2.0**. The headless-browser driver for the page
+  and viewer layout tests, and for the turn-end page check
+  (`delfin/agent/artifact_check.py`). Declared in the `browser` extra
+  (`playwright>=1.40,<2`); the browser itself is a one-time
+  `playwright install chromium`, separate from the package.
+
+MIT and Apache-2.0 are both permissive and compatible with the
+repository's LGPL-3.0, so depending on any of them does not move the
+combined work's licence. A test that needs one skips by naming that
+package; the skip is legitimate on a machine that does not have it, and the
+test must not silently depend on anything else.
