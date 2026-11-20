@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import pytest
 
-from delfin.agent.api_client import _why_path_is_denied
+from delfin.agent.api_client import _denied_path_refusal
 
 
 @pytest.mark.parametrize("path", [
@@ -34,7 +34,7 @@ from delfin.agent.api_client import _why_path_is_denied
     ".git",
 ])
 def test_git_state_is_not_called_a_secret(path):
-    why = _why_path_is_denied(path)
+    why = _denied_path_refusal(path)
     assert "not a secret" in why
     # The two mechanisms, so the caller knows why a harmless-looking
     # file is refused and does not look for a spelling that passes.
@@ -50,7 +50,10 @@ def test_git_state_is_not_called_a_secret(path):
     "secrets.yaml",
 ])
 def test_a_real_secret_still_says_secret(path):
-    why = _why_path_is_denied(path)
+    why = _denied_path_refusal(path)
+    # The original wording, which is accurate for a real secret and
+    # which several other suites assert.
+    assert "secret-deny path" in why
     assert ".ssh/.env/*.key/credentials" in why
     assert "not a secret" not in why
 
@@ -58,12 +61,12 @@ def test_a_real_secret_still_says_secret(path):
 def test_a_path_named_gitignore_is_not_git_state():
     """A tracked ``.gitignore`` is the route the message points at; it
     must not be described as git's own state."""
-    assert "not a secret" not in _why_path_is_denied(".gitignore")
+    assert "not a secret" not in _denied_path_refusal(".gitignore")
 
 
 @pytest.mark.parametrize("path", ["", None, "   "])
 def test_nothing_named_still_answers(path):
-    assert _why_path_is_denied(path)
+    assert _denied_path_refusal(path)
 
 
 def test_the_refusal_still_refuses(tmp_path):
