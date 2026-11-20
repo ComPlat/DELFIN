@@ -255,6 +255,23 @@ def _teardown_new_paths(before: frozenset,
 _LIFELINE_NAMES = ("DELFIN_LIFELINE_PID", "DELFIN_LIFELINE_TICKS")
 _LIFELINE_SAVED: dict = {}
 
+#: Variables a DELFIN agent session exports to everything it starts, and
+#: which a suite run from one therefore inherits. Each is read by the
+#: product as a state of the RUNNING process, so a test that does not unset
+#: it measures the shell instead of the code:
+#:
+#: * ``DELFIN_AGENT_SESSION`` (``approval_guard.ENV_MARKER``): the mark
+#:   every agent child carries. ``knowledge_share`` refuses to share or
+#:   curate, the trust store refuses a write, ``file_confirm`` answers as
+#:   the person, and ``_classifier_settings`` ignores
+#:   ``DELFIN_CLASSIFIER=off`` when it is set.
+#: * ``DELFIN_SESSION_SCRATCH``: the cage's session scratch directory, read
+#:   by ``orca`` (for a caged run) and exported by the bash tool. A test of
+#:   ``_scrubbed_bash_env`` asserts it is NOT exported when no scratch can
+#:   be made -- true on CI, false in a shell that already carries one.
+AGENT_SESSION_MARKER = "DELFIN_AGENT_SESSION"
+_CAGE_SESSION_VARS = (AGENT_SESSION_MARKER, "DELFIN_SESSION_SCRATCH")
+
 #: Credential variables (a provider's key, a forge token, any secret): the
 #: rule of tui/spike/check_tmux.py's is_credential, held to the same
 #: answer by tests/test_the_tui_e2e_harness_passes_no_credentials.py.
@@ -1721,6 +1738,24 @@ def pytest_configure(config):
     )
     import os
     for name in _LIFELINE_NAMES:
+        if name in os.environ:
+            _LIFELINE_SAVED[name] = os.environ.pop(name)
+    # The suite measures the code, not the shell it was started from: a
+    # DELFIN agent session exports its marker to everything it starts, so a
+    # suite run from one would ask "am I inside an agent session" everywhere
+    # the product asks it. Measured 2026-11-20 on a workstation whose shell
+    # carried DELFIN_AGENT_SESSION=985466 and DELFIN_SESSION_SCRATCH, on the
+    # commit CI runs green: test_zz_u12_second_opinion failed on the
+    # classifier switch (a nested agent ignores DELFIN_CLASSIFIER=off by
+    # design), test_knowledge_agent_surface failed on sharing ("this runs
+    # inside an agent session"), and test_sx2_session_scratch_export failed
+    # on an exported scratch directory -- all three passing under `env -u`.
+    # Removed for the session and handed back in pytest_unconfigure, like
+    # the lifeline variables above -- not per test, because a test may call
+    # monkeypatch.undo() (the classifier test does), which would put the
+    # host's copy back mid-test. The tests that measure what happens INSIDE
+    # an agent session set the marker themselves and are unaffected.
+    for name in _CAGE_SESSION_VARS:
         if name in os.environ:
             _LIFELINE_SAVED[name] = os.environ.pop(name)
     # A dashboard built by a test (a voila server, a create_tab without a
