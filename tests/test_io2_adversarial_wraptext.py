@@ -97,17 +97,40 @@ def test_a_clean_wrap_without_a_suffix_still_runs(mounts, tmp_path, monkeypatch)
     assert may_run is True
 
 
+@pytest.mark.parametrize("spelling", ["run.sh", "./run.sh"])
 def test_a_wrap_naming_a_walking_script_is_still_refused(
-        mounts, tmp_path, monkeypatch):
-    """Control: when the named file DOES exist its content is judged.
+        mounts, tmp_path, monkeypatch, spelling):
+    """The fix must not turn every wrap text into a pure TEXT check.
 
-    This is the behaviour that makes the shape heuristic tempting -- it
-    must keep working once the text path stops crashing.
+    Today the shape heuristic gives this for free: the wrap text names a
+    file, the file is read, its content walks Lustre, the submit is
+    refused. A fix that simply passes is_text=True from
+    hpc_io_check.py:651 keeps the crash away but LOSES this refusal --
+    the check then sees the literal characters "run.sh" and allows.
+
+    So this is the guard that separates "checks the text" from "checks
+    the text AND, when it names a real script, that script". A correct
+    fix refuses both spellings; a naive is_text fix allows both.
+
+    Deliberately NOT parametrised over "bash run.sh": that wrap text
+    MENTIONS a file rather than naming one, so resolving it would need
+    shell-word parsing the brief never asked for. I raised it with the
+    QS as an open design question instead of asserting a requirement
+    the package does not state.
     """
     monkeypatch.chdir(tmp_path)
     (tmp_path / "run.sh").write_text(
         "#!/bin/bash\n" + WALK + "\n", encoding="utf-8")
+
+    # What the two readings do with the same string, measured: the pure
+    # TEXT reading finds nothing (that is the trap), the FILE reading
+    # finds the walk. If check() ever starts refusing bare "run.sh" as
+    # text, this test no longer discriminates and must be revisited.
+    assert hpc_io_check.check(spelling, env=ENV, mounts_path=mounts) == []
+
     verdict, finding, may_run = hpc_io_check.sbatch_gate(
-        "sbatch --wrap='run.sh'", env=ENV, mounts_path=mounts)
-    assert verdict == "refuse"
+        f"sbatch --wrap={spelling!r}", env=ENV, mounts_path=mounts)
+    assert verdict == "refuse", (
+        f"wrap text {spelling!r} names an existing walking script; the "
+        "submit must be judged on that script's content")
     assert may_run is False
