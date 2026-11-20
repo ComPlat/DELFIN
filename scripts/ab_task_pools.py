@@ -422,15 +422,6 @@ def chemistry_signals(text: str) -> dict:
             "chemistry": s1 or s2 or s3}
 
 
-def is_chemistry_file(path: Path) -> bool:
-    """True when ``path`` is a chemistry file by the rule in the docstring."""
-    try:
-        text = path.read_text(errors="replace")
-    except OSError:
-        return False
-    return chemistry_signals(text)["chemistry"]
-
-
 # --------------------------------------------------------------------------
 # Pools
 # --------------------------------------------------------------------------
