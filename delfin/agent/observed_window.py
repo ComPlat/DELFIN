@@ -41,6 +41,12 @@ def _path() -> Optional[Path]:
 
 
 def _load() -> dict:
+    """The floors, or ``{}`` where the store is absent OR unreadable.
+
+    Lenient on purpose: a reader asks what floor is known, and a damaged
+    file means none is, which must not raise in the middle of a turn. A
+    WRITER may not build on this answer -- see :func:`note`.
+    """
     p = _path()
     if p is None or not p.exists():
         return {}
@@ -67,6 +73,14 @@ def note(model: str, input_tokens: int) -> None:
 
     Writes only when the number is a new maximum, so the per-request
     cost is one dictionary lookup almost always. Owner-only file.
+
+    A store that cannot be read is NOT replaced. Rebuilding the file from
+    a lenient read's ``{}`` is how the floors a previous run measured
+    were silently lost. Instead the damaged file is moved to the dated
+    ``.unreadable-`` quarantine of ``agent/state_file.py`` (bytes and
+    mode kept), this write is refused, and the loss is logged: the store
+    is gone, so the next note writes a fresh one safely, and whatever the
+    damaged file still held is recoverable from the quarantine.
     """
     model = str(model or "").strip()
     try:
@@ -75,14 +89,25 @@ def note(model: str, input_tokens: int) -> None:
         return
     if not model or n <= 0:
         return
+    p = _path()
+    if p is None:
+        return
     try:
-        data = _load()
+        # The writer's read: a damaged store is quarantined, not answered
+        # with "nothing was learned".
+        from . import state_file as _state_file
+        data, moved = _state_file.read_json_for_write(p, default={})
+        if moved is not None:
+            from delfin.common.logging import get_logger
+            get_logger(__name__).warning(
+                "observed-window store %s could not be read; kept at %s, "
+                "this floor was not stored", p, moved)
+            return
+        if not isinstance(data, dict):
+            data = {}
         if n <= int(data.get(model) or 0):
             return
         data[model] = n
-        p = _path()
-        if p is None:
-            return
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_name(p.name + ".tmp")
         tmp.write_text(json.dumps(data, indent=1, sort_keys=True), encoding="utf-8")

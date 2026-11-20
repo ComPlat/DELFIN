@@ -703,6 +703,48 @@ _VALID = ("allow", "ask", "refuse")
 
 _STRICTNESS = {"allow": 0, "ask": 1, "refuse": 2}
 
+#: How far into a reply the shape detector looks for the decision line. The
+#: prompt asks for two lines; anything longer is searched whole.
+_SHAPE_SCAN_CHARS = 800
+
+
+def no_verdict_shape(answer) -> str:
+    """Which way a reply failed to carry a decision: ``"empty"``,
+    ``"cut"`` or ``"unreadable"``.
+
+    Input: the model's reply (``None`` is treated as empty). Output: one of
+    those three words, never empty. Semantics: describes the REPLY, not the
+    action and not the outcome, so the operator can tell a budget cut or a
+    stalled endpoint from a model that simply did not follow the format.
+    Using it never changes a decision: every shape still means "no verdict".
+    The alternative rejected was a single message for all of them
+    (``"the model returned no clear verdict"``), which is what made 138 held
+    and 16 down entries in one night's record unattributable: a provider 502,
+    a cut reply and a garbled one all read the same.
+    """
+    text = answer if isinstance(answer, str) else ""
+    if not text.strip():
+        return "empty"
+    low = text.lower()
+    scanned = low[:_SHAPE_SCAN_CHARS]
+    offset = scanned.find("decision:")
+    if offset < 0:
+        # No decision line where the prompt asks for it. A reply that stopped
+        # without one -- the budget spent before the answer -- is a cut.
+        return "cut" if len(low) < _SHAPE_SCAN_CHARS else "unreadable"
+    # A decision line is present but its first word is not a verdict: either
+    # the value was cut off ("DECISION: al") or the model wrote something
+    # that is not allow/ask/refuse.
+    rest = low[offset + len("decision:"):].lstrip(" *`.")
+    word = rest.split(" ")[0].strip(".,*`") if rest else ""
+    if not word:
+        return "cut"
+    if word in _STRICTNESS:
+        return "unreadable"
+    if any(v.startswith(word) for v in _VALID):
+        return "cut"
+    return "unreadable"
+
 
 def _parse_answer(answer: str) -> "tuple[str, str] | None":
     """Parse ``DECISION: allow`` + ``REASON: ...`` from the model answer.
@@ -808,7 +850,16 @@ def judge(action: dict, context: dict, *, model: str = DEFAULT_MODEL,
     if parsed is None:
         # No readable verdict is the model failing, like a timeout: the
         # documented error behaviour applies, and the wiring records it.
-        return Verdict(default_on_error,
-                       f"{ERROR_PREFIX} the model returned no clear verdict")
+        # WHICH failure it was goes into the reason: every shape fails
+        # closed, but an empty reply (a budget cut or a stalled endpoint) is
+        # a different operational problem from a garbled answer, and one
+        # sentence for all of them made the record unattributable
+        # (no_verdict_shape).
+        detail = {
+            "empty": "the model returned an empty reply",
+            "cut": "the model's reply stopped before any decision",
+            "unreadable": "the model returned no clear verdict",
+        }[no_verdict_shape(answer)]
+        return Verdict(default_on_error, f"{ERROR_PREFIX} {detail}")
     decision, reason = parsed
     return Verdict(decision, reason)

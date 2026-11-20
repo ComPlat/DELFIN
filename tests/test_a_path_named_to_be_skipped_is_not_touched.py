@@ -5,7 +5,7 @@ refuses the command if one matches a protected glob. It reads the path,
 not its role — so on 2026-09-18 a session got:
 
     find agent_workspace/base-run -type f -not -path "*/.git/*" -delete
-    → bash command references a secret-deny path ('/.git/*')
+    → bash command references git's own state ('/.git/*')
 
 while the same intent, spelled the way grep spells it, ran:
 
