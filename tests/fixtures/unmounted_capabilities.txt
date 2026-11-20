@@ -32,7 +32,6 @@ test-only	_locator_value	delfin/agent/cited_retrieval.py:218
 nowhere	_now_minus	delfin/agent/session_health.py:79
 nowhere	_project_config_path	delfin/agent/mcp_client.py:144
 nowhere	_project_settings_paths	delfin/agent/hooks.py:164
-nowhere	_redirect_targets_safe	delfin/agent/refusal_memory.py:161
 test-only	_release_mine	delfin/agent/scratch.py:75
 test-only	_scoped_test_cmd_for_edits	delfin/agent/api_client.py:13237
 nowhere	_seed_indices	delfin/agent/campaign.py:233
@@ -50,7 +49,6 @@ test-only	decide_recovery	delfin/agent/durable.py:142
 test-only	distill_for_shipping	delfin/agent/memory_distill.py:380
 test-only	enforce_quota	delfin/agent/shared_tmp.py:307
 nowhere	estimated_tokens	delfin/agent/memory_nudge.py:147
-nowhere	expected_digest	delfin/agent/principles_guard.py:51
 test-only	for_files	delfin/agent/verify_recipe.py:327
 test-only	forget_pin_decisions	delfin/agent/mcp_client.py:429
 test-only	format_member_message	delfin/agent/swarm/lead.py:198
