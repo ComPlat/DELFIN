@@ -13,12 +13,33 @@ dropped, and the reason is recorded beside the zero.
 The four checks
 ---------------
 1. ``capability_resolved`` -- the capability is no longer in the product's
-   unreachable set, re-measured on the attempt tree with the scan in
-   ``ab_task_pools.py``. The outcome is a **route**, never a sum:
-   ``connected`` (still defined, and something under ``delfin/`` now names
-   it) or ``deleted`` (no definition of that name is left under
-   ``delfin/``). ``still_unreachable`` and ``deleted_but_named`` are the two
-   ways of not finishing.
+   unreachable set, re-measured on the attempt tree. The outcome is a
+   **route**, never a sum: ``connected`` or ``deleted`` (no definition of
+   that name is left under ``delfin/``, and nothing names it).
+   ``still_unreachable`` and ``deleted_but_named`` are the two ways of not
+   finishing.
+
+   This check is scored **twice**, because what counts as "connected" has
+   two readings and the weaker one is writable by the agent under test:
+
+   * **primary** -- an ``ast.Call`` under ``delfin/``, outside test files,
+     whose callee is that name. ``score`` is this one.
+   * **secondary** -- the scan's own rule from ``ab_task_pools.py``, which
+     counts a name in a string literal as a reference. ``score_secondary``
+     is this one.
+
+   The secondary is not a weaker endpoint kept for comfort: name-based
+   dispatch is real in this product, a scan that ignored it called two live
+   functions unreachable, and an attempt that wires a capability into a
+   genuine dispatch table has done the work. Scoring both lets that case be
+   seen instead of argued about. ``variants_disagree`` marks the attempts
+   where the two differ; the per-arm count of those is a result about the
+   corpus, not a rounding error.
+
+   The two readings differ only in the *connected* direction. For deletion
+   both require that nothing names the capability any more, string literals
+   included -- a leftover dispatch string pointing at a deleted function is
+   a break, and being stricter in that direction cannot be gamed.
 2. ``tests_still_pass`` -- the consuming suites of the touched files, chosen
    from the tree **before** the attempt, run in both trees. Per test:
    passed, failed, skipped, missing. Charged to the attempt are only the
@@ -276,13 +297,12 @@ def _call_sites(root: Path, name: str) -> list[str]:
     ``ast.Call`` under ``delfin/``, outside test files, whose callee is that
     name plainly or as an attribute.
 
-    Why it is recorded and does not decide the score: the scan counts a name
-    in a string literal as a reference, because name-based dispatch is real
-    in this product and a scan that ignored it called two live functions
-    unreachable. The same rule means a string literal naming the capability
-    is enough to move it out of the unreachable set -- and a string literal
-    is something the agent can write. This number is what lets that be
-    checked afterwards instead of assumed, for both arms.
+    This is the **primary** reading of "connected" (see the module
+    docstring). The scan's own rule counts a name in a string literal as a
+    reference, which is right for name-based dispatch and also means a
+    string literal the agent writes would satisfy the endpoint; so the
+    string-literal reading is scored beside this one rather than instead of
+    it.
     """
     out = []
     for path in sorted((root / "delfin").rglob("*.py")):
@@ -306,10 +326,11 @@ def _call_sites(root: Path, name: str) -> list[str]:
 def capability_route(root: Path, task: dict) -> dict:
     """Where the capability stands in the attempt tree.
 
-    Input: the attempt tree and the task row. Output: ``{"route", "mentions",
-    "call_sites", "definitions"}`` with route in ``connected``, ``deleted``,
-    ``still_unreachable``, ``deleted_but_named``. ``call_sites`` is a
-    diagnosis, not part of the score (see ``_call_sites``).
+    Input: the attempt tree and the task row. Output: ``{"route",
+    "route_secondary", "mentions", "call_sites", "definitions"}``, each
+    route in ``connected``, ``deleted``, ``still_unreachable``,
+    ``deleted_but_named``. ``route`` is the primary reading (a call site in
+    the syntax tree), ``route_secondary`` the scan's string-inclusive one.
     """
     name = task["name"]
     defs_here = _defined_anywhere(root, name)
@@ -320,12 +341,18 @@ def capability_route(root: Path, task: dict) -> dict:
     defs = {name: scoped.get(name, (task["file"], task["line"]))}
     skip = {root / BASELINE_FIXTURE}
     mentions = _mentions(root / "delfin", defs, True, root, skip)[name]
+    calls = _call_sites(root, name)
     if defs_here:
-        route = "connected" if mentions else "still_unreachable"
+        primary = "connected" if calls else "still_unreachable"
+        secondary = "connected" if mentions else "still_unreachable"
     else:
-        route = "deleted_but_named" if mentions else "deleted"
-    return {"route": route, "mentions": mentions,
-            "call_sites": _call_sites(root, name), "definitions": defs_here}
+        # Deletion is judged the same way under both readings, and by the
+        # stricter signal: anything still naming a deleted function is a
+        # break, string literals included.
+        primary = secondary = "deleted_but_named" if mentions else "deleted"
+    return {"route": primary, "route_secondary": secondary,
+            "mentions": mentions, "call_sites": calls,
+            "definitions": defs_here}
 
 
 # --------------------------------------------------------------------------
@@ -588,6 +615,7 @@ def score_attempt(attempt_dir: Path, post_tree: Path, pre_tree: Path,
     post_run = run_suites(post_tree, suites, python, timeout)
     tests = compare_suites(pre_run, post_run, allowed_missing)
 
+    resolved_secondary = route["route_secondary"] in ("connected", "deleted")
     checks = {
         "capability_resolved": route["route"] in ("connected", "deleted"),
         "tests_still_pass": not (tests["regressed"] or
@@ -621,7 +649,14 @@ def score_attempt(attempt_dir: Path, post_tree: Path, pre_tree: Path,
         "pre_sha": pre_sha,
         "post_sha": post_sha,
         "score": 1 if all(checks.values()) else 0,
+        "score_secondary": 1 if (resolved_secondary and all(
+            v for k, v in checks.items()
+            if k != "capability_resolved")) else 0,
         "checks": checks,
+        "checks_secondary": {**checks,
+                             "capability_resolved": resolved_secondary},
+        "route_secondary": route["route_secondary"],
+        "variants_disagree": route["route"] != route["route_secondary"],
         "reasons": reasons,
         "route": route["route"],
         "route_detail": route,

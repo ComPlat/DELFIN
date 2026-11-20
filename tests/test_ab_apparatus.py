@@ -151,6 +151,14 @@ def _attempt(tmp_path: Path, scenario: str) -> dict:
                "def test_run():\n"
                "    pytest.skip('not today')\n"
                "    assert run() == 1\n")
+    elif scenario == "string_only":
+        # The hole the primary endpoint closes: the capability is named in a
+        # string literal and never called.
+        _write(repo / "delfin" / "agent" / "caller.py",
+               "from delfin.agent.widget import used_helper\n\n\n"
+               "DISPATCH = ('orphan_capability',)\n\n\n"
+               "def run():\n    return used_helper()\n")
+        _drop_from_fixture(repo)
     elif scenario == "scorer_edited":
         _connect_capability(repo)
         _drop_from_fixture(repo)
@@ -214,34 +222,40 @@ def test_a_connected_capability_scores_one(tmp_path):
     assert all(rec["checks"].values())
 
 
-def test_a_string_literal_is_a_mention_and_the_call_sites_say_otherwise(
+def test_a_string_literal_satisfies_the_secondary_endpoint_and_not_the_score(
         tmp_path):
-    """The hole in check 1, measured rather than left to be discovered.
+    """The primary endpoint is the call site, and the two are scored apart.
 
-    A name in a string literal counts as a reference, because name-based
-    dispatch is real here. So a string literal the agent writes is enough
-    to move a capability out of the unreachable set. The call-site count is
-    recorded beside the route so that the aggregate can be re-derived
-    without it, for both arms.
+    A string literal naming the capability is something the agent under
+    test can write, so it may not be what the score rests on. It is still
+    recorded, because a genuine dispatch table looks exactly like this and
+    that case has to be visible rather than argued about.
     """
-    bundle = _attempt(tmp_path, "connected")
-    rec = _score(bundle)
-    assert rec["route_detail"]["call_sites"], rec["route_detail"]
-    # The same tree with the call replaced by a bare string still reads as
-    # connected, and the call-site list is then empty.
-    repo = bundle["post"]
-    _write(repo / "delfin" / "agent" / "caller.py",
-           "from delfin.agent.widget import used_helper\n\n\n"
-           "DISPATCH = ('orphan_capability',)\n\n\n"
-           "def run():\n    return used_helper()\n")
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "string only")
-    rec2 = score_mod.capability_route(repo, {
-        "name": CAP, "file": "delfin/agent/widget.py", "line": 1,
-        "pool": "infra"})
-    assert rec2["route"] == "connected"
-    assert rec2["mentions"] >= 1
-    assert rec2["call_sites"] == []
+    rec = _score(_attempt(tmp_path, "string_only"))
+    assert rec["route"] == "still_unreachable"
+    assert rec["route_secondary"] == "connected"
+    assert rec["variants_disagree"] is True
+    assert rec["score"] == 0
+    assert rec["score_secondary"] == 1
+    assert rec["route_detail"]["call_sites"] == []
+    assert rec["route_detail"]["mentions"] >= 1
+
+
+def test_a_real_call_satisfies_both_endpoints_and_they_agree(tmp_path):
+    rec = _score(_attempt(tmp_path, "connected"))
+    assert rec["route"] == "connected"
+    assert rec["route_secondary"] == "connected"
+    assert rec["variants_disagree"] is False
+    assert rec["score"] == 1 and rec["score_secondary"] == 1
+    assert rec["route_detail"]["call_sites"]
+
+
+def test_a_deletion_is_judged_the_same_way_under_both_readings(tmp_path):
+    """Strictness in the deletion direction cannot be gamed, so it is not
+    split: anything still naming a deleted function is a break."""
+    rec = _score(_attempt(tmp_path, "deleted"))
+    assert rec["route"] == rec["route_secondary"] == "deleted"
+    assert rec["variants_disagree"] is False
 
 
 def test_a_proper_deletion_scores_one_and_is_a_different_route(tmp_path):
