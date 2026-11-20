@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+import conftest
 from conftest import requires_a_working_sandbox
 from delfin.agent import api_client as A
 from delfin.agent import sandbox
@@ -30,9 +31,15 @@ from delfin.agent import sandbox
 def lockbox(tmp_path, monkeypatch):
     # Not under /tmp: every cage mounts a fresh /tmp, so a lockbox there is
     # invisible with or without this feature and the real-run tests would
-    # pass on code that hides nothing. /var/tmp is shown read-only like the
-    # rest of the host, as a real lockbox in a home directory would be.
-    base = Path(tempfile.mkdtemp(prefix="delfin-hide-", dir="/var/tmp"))
+    # pass on code that hides nothing. A writable directory outside /tmp is
+    # asked for rather than assumed: /var/tmp is the first choice and is
+    # read-only on some hosts (measured 2026-11-20: os.access W_OK False and
+    # mkdtemp raising OSError 30), which used to fail this fixture in setup
+    # and report five ERRORS instead of a stated reason.
+    base = conftest.outside_tmp()
+    if base is None:
+        pytest.skip("no writable directory outside /tmp on this host")
+    base = Path(tempfile.mkdtemp(prefix="delfin-hide-", dir=str(base)))
     box = base / "LOCKBOX2"
     box.mkdir()
     (box / "held_out.txt").write_text("secret-frame\n")

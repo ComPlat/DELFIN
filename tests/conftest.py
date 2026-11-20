@@ -1465,6 +1465,55 @@ def isolation_is_expected() -> bool:
         "1", "true", "yes")
 
 
+#: Where a directory OUTSIDE /tmp may live, in the order a real lockbox
+#: does: the system temporary root for long-lived files, then the user's own
+#: home. ``tempfile.gettempdir()`` is deliberately not a candidate -- on most
+#: systems it IS /tmp, which the caller must not get.
+_OUTSIDE_TMP_CANDIDATES = (
+    Path("/var/tmp"),
+    Path.home(),
+)
+
+
+def outside_tmp() -> "Path | None":
+    """A writable directory that is not under /tmp, or None.
+
+    Input: nothing. Output: a ``Path`` the caller may create files under, or
+    None where this host offers none. Semantics: each candidate is checked
+    by CREATING a directory in it and removing it again -- the create is the
+    measurement -- and a candidate that resolves into /tmp is rejected
+    whatever its name, because a cage mounts a fresh tmpfs there and a
+    lockbox beneath it would be invisible for the wrong reason.
+
+    Rejected: ``os.access(path, os.W_OK)`` alone, which the sibling fixture
+    in ``test_a_caged_command_runs_without_asking.py`` uses. It answers the
+    permission bit, not whether the mount accepts writes: a path whose MODE
+    looks writable on a read-only mount answers True, and the fixture then
+    failed in setup with ``OSError: [Errno 30]`` instead of saying what it
+    needed.
+    """
+    import tempfile as _tempfile
+    for base in _OUTSIDE_TMP_CANDIDATES:
+        try:
+            if not base.is_dir():
+                continue
+            if str(base.resolve()).startswith(("/tmp/", "/private/tmp/")):
+                continue
+            made = _tempfile.mkdtemp(prefix="dx-outside-", dir=str(base))
+        except OSError:
+            continue
+        try:
+            if not str(Path(made).resolve()).startswith(
+                    ("/tmp/", "/private/tmp/")):
+                return base
+        finally:
+            try:
+                Path(made).rmdir()
+            except OSError:
+                pass
+    return None
+
+
 def sandbox_is_functional() -> bool:
     """Whether the wrap these tests drive a command through can run here.
 
