@@ -729,9 +729,22 @@ _CTX_PROSE_RE = _re.compile(
     r"context\s*length\s*[≈~:=]?\s*([\d.]+)\s*([kKmM])", _re.IGNORECASE)
 
 
+# A router in front of several backends states the window as
+# ``max_input_tokens`` (the LiteLLM/OpenRouter spelling) rather than the
+# vLLM ``max_model_len``. It is read LAST: where a server states both, the
+# explicit window keys are the server's own number, while
+# ``max_input_tokens`` may be a route-level cap. ``max_output_tokens`` is
+# deliberately not consulted -- it bounds the answer, not the context.
+#
+# Measured: of 76 entries on one endpoint's roster exactly one text model
+# used this spelling, for a 1,048,576-token window. Without the key the
+# resolver fell through to the 32,768 heuristic, so every long run on that
+# model summarised itself every two rounds and finished with nothing. A
+# window read too small is not a visible failure: the agent keeps
+# answering, and only the compaction count shows it.
 def _win_from_numeric(d: dict) -> int:
     for k in ("max_model_len", "context_length", "max_context_length",
-              "context_window"):
+              "context_window", "max_input_tokens"):
         try:
             v = int(d.get(k) or 0)
         except (TypeError, ValueError):
