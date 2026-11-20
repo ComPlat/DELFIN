@@ -1,59 +1,72 @@
 """SRC1: the network policy binds verify_source (operator 2026-11-01).
 
-Runs the rule layer from a COPY of permission_rules.py: with
-SRC1_POLICY_COPY unset the ORIG copy is used (the escape exists -> the
-test must be red on the pre-fix tree); with
-SRC1_POLICY_COPY=.gate/px/new_permission_rules.py the fixed copy is
-used and the test must go green. Overlay via a temp directory holding
-the copy as delfin/agent/_policy_under_test.py, imported directly —
-never a shadow import of the real package (the real
-delfin.agent.permission_rules stays untouched in sys.modules).
+The green half runs against the LIVE ``delfin/agent/permission_rules.py``:
+the SRC1 fix is merged, so the live module is the "new" copy — what the
+original test loaded from ``.gate/px/new_permission_rules.py`` (an
+untracked, operator-built copy that exists only transiently in a
+protected-file session and is absent in every clean checkout, which is
+why those tests skipped everywhere).
+
+The red half is the escape control. Its pre-fix subject is no longer in
+any working tree, so it is loaded from the pinned git-history blob of
+``permission_rules.py`` at the commit before the fix — the exact code
+the escape lived in — never a monkeypatched reconstruction. It is a
+regression lock on the history (full-depth clones, which CI is; a local
+shallow checkout names the gap in its own skip).
 """
 
 from __future__ import annotations
 
 import importlib.util
 import os
+import subprocess
 import sys
-from pathlib import Path
+import tempfile
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
-POLICY_COPY = os.environ.get("SRC1_POLICY_COPY",
-                             ".gate/px/orig_permission_rules.py")
+from delfin.agent import managed_policy as mp
+from delfin.agent import permission_rules as pr
+
+# The commit before the SRC1 fix (8a16670f3): its permission_rules.py is
+# the one verify_source escaped.  Pin it — re-pin if history rewrites it.
+PRE_FIX = "541471d175883b4536ea9e4b9a8aba356e11fd32"
+_LIVE_RULE = "web_fetch(domain:api.crossref.org)"
 
 
-def _load_policy(copy: str):
-    """Import permission_rules from one .gate/px copy.
+def _load_pre_fix():
+    """Load the pre-fix permission_rules as a separate module.
 
-    The copy is loaded as a member of the real delfin.agent package
-    under a per-copy module name, so its relative imports resolve and
-    neither copy is registered as the live permission_rules.
+    Written to a temp file and imported as a member of the real
+    delfin.agent package, so the blob's relative imports (``.source_apis``)
+    resolve, and the live permission_rules stays registered under its own
+    name.
     """
-    path = (ROOT / copy).resolve()
-    if not path.exists():
-        pytest.skip(f"policy copy missing: {path}")
-    name = "delfin.agent._policy_under_test_" + (
-        "new" if "new_" in copy else "orig")
-    spec = importlib.util.spec_from_file_location(name, path)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
-
-
-ORIG_COPY = ".gate/px/orig_permission_rules.py"
-NEW_COPY = ".gate/px/new_permission_rules.py"
-
-
-def _rule(copy):
-    pr = _load_policy(copy)
-    return pr, pr.parse_rule("web_fetch(domain:api.crossref.org)")
+    try:
+        src = subprocess.check_output(
+            ["git", "show", f"{PRE_FIX}:delfin/agent/permission_rules.py"],
+        ).decode()
+    except Exception as exc:  # shallow/missing history, or outside the repo
+        pytest.skip(
+            "the pre-fix commit is not available here "
+            f"({exc.__class__.__name__}) — run inside a full-history clone")
+    fd, path = tempfile.mkstemp(suffix="_permission_rules.py")
+    with os.fdopen(fd, "w") as f:
+        f.write(src)
+    try:
+        name = "delfin.agent._policy_under_test_pre_fix"
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+    finally:
+        os.unlink(path)
 
 
 def test_verify_source_is_bound_by_a_web_fetch_domain_rule():
-    pr, rule = _rule(NEW_COPY)
+    """The live rule layer binds verify_source to a web_fetch domain rule."""
+    rule = pr.parse_rule(_LIVE_RULE)
     # sanity: web_fetch itself is bound (unchanged behaviour)
     subj = pr._subjects("web_fetch",
                         {"url": "https://api.crossref.org/works/10.1/x"},
@@ -67,32 +80,47 @@ def test_verify_source_is_bound_by_a_web_fetch_domain_rule():
         "verify_source escaped the web_fetch domain rule")
 
 
-def test_the_orig_copy_still_shows_the_escape():
-    # the control: WITHOUT the fix the rule misses verify_source. This
-    # is the red-before / green-after pair in one file — the orig copy
-    # proves the escape existed, the new copy proves the fix closes it.
-    pr, rule = _rule(ORIG_COPY)
-    subj2 = pr._subjects("verify_source",
+def test_the_pre_fix_code_shows_the_escape():
+    """The red half of the pair: the pre-fix code let verify_source escape.
+
+    Loaded from git history, not a reconstruction — it proves the escape
+    was real at the pinned commit and that the live module (tested
+    alongside) is what closes it.
+    """
+    pf = _load_pre_fix()
+    rule = pf.parse_rule(_LIVE_RULE)
+    # the pre-fix code: web_fetch is bound...
+    subj = pf._subjects("web_fetch",
+                        {"url": "https://api.crossref.org/works/10.1/x"},
+                        "/tmp/ws")
+    assert pf._hits(rule, "web_fetch", subj, "/tmp/ws")
+    # ...but verify_source produced no host at all, so the rule missed it
+    subj2 = pf._subjects("verify_source",
                          {"action": "doi", "value": "10.1039/x"},
                          "/tmp/ws")
-    assert not pr._hits(rule, "verify_source", subj2, "/tmp/ws")
-    pr_new, rule_new = _rule(NEW_COPY)
-    subj3 = pr_new._subjects("verify_source",
+    assert subj2["hosts"] == [], (
+        f"pre-fix code should derive no host, got {subj2['hosts']}")
+    assert not pf._hits(rule, "verify_source", subj2, "/tmp/ws"), (
+        "the escape is gone from the pre-fix commit — re-pin PRE_FIX "
+        "to the commit before the fix")
+    # and the live module is the one that closes it: same args, it
+    # derives the host, so the same rule now hits
+    subj_live = pr._subjects("verify_source",
                              {"action": "doi", "value": "10.1039/x"},
                              "/tmp/ws")
-    assert pr_new._hits(rule_new, "verify_source", subj3, "/tmp/ws")
+    assert subj_live["hosts"] != [], (
+        f"live module derives no host for a known action: {subj_live['hosts']}")
+    assert pr._hits(pr.parse_rule(_LIVE_RULE), "verify_source", subj_live,
+                    "/tmp/ws")
 
 
 def test_verify_source_unknown_action_gets_no_host():
-    pr, _ = _rule(NEW_COPY)
     subj = pr._subjects("verify_source",
                         {"action": "scrape", "value": "x"}, "/tmp/ws")
     assert subj["hosts"] == [], "an unknown action must get NO host"
 
 
 def test_managed_ceiling_stops_verify_source_outside_it():
-    pr = _load_policy(NEW_COPY)
-    from delfin.agent import managed_policy as mp
     pol = mp.Policy(sources=(),
                     allowed_domains_max=(("api.crossref.org",),))
     rs = pr.RuleSet(deny=(), ask=(), allow=(), policy=pol)
@@ -105,8 +133,6 @@ def test_managed_ceiling_stops_verify_source_outside_it():
 
 
 def test_managed_ceiling_still_stops_web_fetch():
-    pr = _load_policy(NEW_COPY)
-    from delfin.agent import managed_policy as mp
     pol = mp.Policy(sources=(),
                     allowed_domains_max=(("api.crossref.org",),))
     rs = pr.RuleSet(deny=(), ask=(), allow=(), policy=pol)
