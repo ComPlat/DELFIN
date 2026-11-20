@@ -376,11 +376,25 @@ def run_program(program_path: str, timeout_s: float = DEFAULT_TIMEOUT_S,
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    """``python -m delfin.agent.code_mode run <program>`` — the program side."""
+    """``python -m delfin.agent.code_mode <stub|run> ...``.
+
+    Two subcommands, both documented in the Code Mode skill:
+
+    * ``stub`` writes the typed API (``generate_stub()``) to stdout, so
+      ``... stub > tools_api.py`` materialises the module a program imports.
+      Before this route existed the command printed the ``run`` usage and
+      exited 2, so the API the skill documents could not be obtained at all.
+    * ``run <program.py>`` executes the program: the program side of the RPC.
+
+    Returns 0 on success, 2 for a usage error.
+    """
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "stub" and len(argv) == 1:
+        sys.stdout.write(generate_stub())
+        return 0
     if len(argv) != 2 or argv[0] != "run":
-        print("usage: python -m delfin.agent.code_mode run <program.py>",
-              file=sys.stderr)
+        print("usage: python -m delfin.agent.code_mode stub | "
+              "run <program.py>", file=sys.stderr)
         return 2
     program = argv[1]
     sys.path.insert(0, os.path.dirname(os.path.abspath(program)))
