@@ -511,3 +511,103 @@ specialists". It is that their value was on the axis nobody was measuring,
 and that the roster should grow for confinement and be judged on
 confinement -- while the thing to invest in for outcome is that a second
 agent reviews at all.
+
+---
+
+## Addendum 4, 2026-11-20, task validation fixed before the tasks were read
+
+Written before any row of the sample was looked at, so the rubric cannot be
+fitted to what the rows turned out to be.
+
+### Why this is added
+
+The lesson the established benchmarks paid for: **the task set is an
+instrument and has to be validated.** SWE-bench Verified exists because 93
+developers screened 1,699 instances and kept 500 where the issue was not
+underspecified *and* the tests were appropriately scoped; the three failure
+modes were an underspecified task, an environment where the tests fail
+whatever the agent does, and tests scoped too narrowly or too broadly. It is
+still contested — one audit rates it flawed, a study found 7.8 % of accepted
+patches failing the developers' own tests, and a SWE-Bench Pro
+recommendation was retracted in July 2026 after about 30 % of its tasks were
+judged broken.
+
+This protocol mechanised **selection** (§3) to remove the bias of a person
+choosing tasks in a domain they know. That is a different problem from
+**validity**, and mechanising the first does nothing for the second. Twenty
+rows were drawn and nobody had read them.
+
+### The rubric, fixed now
+
+Each drawn row gets exactly one verdict, with a written reason:
+
+- **usable** — a competent agent can tell from the code what connecting this
+  capability would mean, or that deleting it is right; and checks 1–4 bite.
+- **underspecified** — the intended call site is not knowable from the code,
+  so "connect it" has no determinable answer and the agent is graded on a
+  guess.
+- **mis-scoped** — a check does not measure the work. Includes: no consuming
+  suite, so check 2 is vacuous; a capability that is a published entry point
+  for callers outside this repository, where deleting it is wrong and
+  connecting it is meaningless; a capability whose own tests cannot be
+  located, so check 4 cannot be applied to the deletion route.
+- **blocked** — the work cannot be done or checked on the host the arms run
+  on: it needs a device, a licensed program, or a file the person has
+  reserved to themselves (the security core).
+
+### What happens to a row that is not usable
+
+It is **replaced from the same pool, same tier, by the next row the same
+seed produces**, and both the removed row and its replacement are recorded
+with the verdict and the reason. Rows are not silently dropped: a sample
+that shrinks is a denominator the experiment controls, which is the trap
+this whole protocol is written against.
+
+If more than **5 of 20** rows are not usable, the corpus — not the sample —
+is the finding, and the experiment does not run until that is reported.
+
+### Two validators, because one of them has a prediction on record
+
+The author of this protocol has committed a prediction (Addendum 3) and is
+therefore not a disinterested judge of which tasks are fair. So:
+
+- the author validates all 20 rows and records a verdict and reason for each;
+- **a second agent validates the same 20 blind** — given the rows and this
+  rubric, and **not** the author's verdicts, the prediction, or which pool a
+  row came from;
+- **every disagreement is listed in the result.** A row both call unusable is
+  replaced. A row they split on is replaced as well, and the split is
+  reported: treating a contested row as usable would let the author's
+  judgement decide the sample, and treating it as fine without saying so
+  would hide that the two instruments disagree.
+
+The agreement rate between the two validators is reported as a property of
+the rubric. A rubric both can apply the same way is worth something; one they
+apply differently was a matter of taste and must be said to have been.
+
+### Three further corrections from the same reading
+
+- **The scaffold is recorded in every artefact.** The field's advice is to
+  log framework version, plugins, routing and tool versions; this protocol
+  recorded `tree_sha`, model and host but **not the swarm harness sha**. The
+  harness in use is three weeks behind `main` and does not contain the five
+  presets arm S depends on, so without the harness sha an artefact cannot be
+  told from one produced by a tree where arm S was impossible. It is added to
+  the sample, the attempt manifest and the score record.
+- **`pass^k` beside `pass@k`.** The convention is shifting to requiring *all*
+  k attempts to succeed rather than any. Both are reported: `pass@2` (either
+  repeat completed) and `pass^2` (both did). The second is the stricter
+  reliability statement and is the one quoted in any summary sentence.
+- **Repeats stay at 2, and the price is stated.** Three to five repeats is
+  the recommended range; 20 tasks × 2 arms × 3 repeats is 120 runs against a
+  measured ceiling of about 50 runs a day over three keys, so 3 repeats costs
+  the whole weekend and leaves nothing for the review gate or the capability
+  debt. 2 repeats is chosen **knowing it is below the recommendation**, which
+  is a different thing from not knowing.
+
+### Cost is plotted, not appended
+
+Accuracy against cost per completed task, per arm — not cost as a line at the
+end of the table. Per-task cost is reported to vary by a factor of order
+hundreds across scaffolds, which makes an accuracy number without its cost
+close to meaningless.
