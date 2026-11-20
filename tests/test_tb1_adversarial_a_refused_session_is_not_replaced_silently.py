@@ -134,6 +134,13 @@ def env(tmp_path, monkeypatch):
         return _FakeEngine(new)
 
     monkeypatch.setattr(engine_mod, "AgentEngine", _factory)
+    # The tab's periodic path is the only thing that can notice a holder
+    # going away (``_background_tick``, :11605). Its period is a module
+    # constant read at every reschedule (:836), so shortening it makes the
+    # wait observable in a second or two instead of tens of seconds -- the
+    # assertion stays the same, only the clock does not depend on speed.
+    from delfin.dashboard import tab_agent as _ta
+    monkeypatch.setattr(_ta, "_BACKGROUND_REFRESH_S", 0.2, raising=False)
     return {"tmp": tmp_path, "created": created, "SS": SS}
 
 
@@ -441,7 +448,14 @@ def test_wait_opens_the_held_conversation_once_the_holder_ends(env):
             proc.wait(timeout=30)
             (env["SS"]._SESSIONS_DIR / f"{SID}.lock").unlink(missing_ok=True)
 
-            deadline = time.monotonic() + 40.0
+            # Diagnostic only, never an assertion: a wait that cannot work
+            # must fail on the OUTCOME, not on my guess about why. The tab's
+            # periodic path is started by _wire_phase5_callbacks (:11474,
+            # timer at :11636-11643), which _ensure_engine calls only when it
+            # mints an engine (:12831-12836) -- a tab refused on load has no
+            # engine, so on main there is no timer at all.
+            had_timer = state.get("_background_timer") is not None
+            deadline = time.monotonic() + 20.0
             while time.monotonic() < deadline:
                 if state.get("active_session_id") == SID:
                     break
@@ -449,7 +463,8 @@ def test_wait_opens_the_held_conversation_once_the_holder_ends(env):
             assert state.get("active_session_id") == SID, (
                 "when the holder ends the tab must open the held conversation "
                 "by itself; it stayed on "
-                f"{state.get('active_session_id')!r} for 40 s")
+                f"{state.get('active_session_id')!r} for 20 s "
+                f"(a periodic timer existed: {had_timer})")
             assert env["created"] == [], (
                 "waiting must not create a session of its own")
             assert set(_session_files(env)) == before, (
@@ -551,8 +566,8 @@ def test_a_live_holder_is_never_opened_and_a_closed_tab_writes_nothing(env):
             typed = "kept while I wait"
             tab["input"].value = typed
 
-            # (2a) The holder is alive; two ticks pass. Nothing may happen.
-            time.sleep(22.0)
+            # (2a) The holder is alive; many ticks pass. Nothing may happen.
+            time.sleep(2.0)
             assert state.get("active_session_id") != SID, (
                 "a live holder's conversation must not be opened")
             assert env["created"] == [], (
@@ -568,7 +583,7 @@ def test_a_live_holder_is_never_opened_and_a_closed_tab_writes_nothing(env):
             proc.kill()
             proc.wait(timeout=30)
             (env["SS"]._SESSIONS_DIR / f"{SID}.lock").unlink(missing_ok=True)
-            time.sleep(22.0)
+            time.sleep(2.0)
             assert set(_session_files(env)) == before, (
                 "a closed tab wrote a session while waiting on a holder")
             assert env["created"] == [], (
