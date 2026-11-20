@@ -28,6 +28,7 @@ abzunehmen.
 | MDAnalysis | 2.9.0 | MDAnalysis, Align-Modul und NumPy; Biopython |
 | ProLIF | 2.2.3 | ProLIF, MDAnalysis und RDKit |
 | PLIP | 3.0.1 | PLIP und Open Babel; PLIP-Kommando |
+| PoseBusters | 0.5.1 | Paket und CLI-Modul, RDKit ≥2024.9, pandas, NumPy, PyYAML; `bust` |
 
 Die maßgeblichen Rezepte stehen in `delfin/tools/bio/environments.py`.
 Die angegebenen Pakete sind keine Behauptung, dass Solver und echte Engines hier
@@ -66,7 +67,7 @@ python -m delfin.installer --repair openmm
 ## Noch fehlende Installationsparität
 
 Nicht jeder Adapter besitzt bereits ein verwaltetes Rezept. Insbesondere sind
-GNINA, smina, PoseBusters und ESMFold nicht durch die obige Rezeptliste abgedeckt.
+GNINA, smina und ESMFold nicht durch die obige Rezeptliste abgedeckt.
 ESMFold benötigt außerdem lokal bereitgestellte, hashgeprüfte Modellgewichte;
 der Adapter lädt sie nicht selbst herunter. Für weitere Predictor-, Design- und
 MD-Backends fehlen zusätzlich Ausführungsadapter oder vollständig geprüfte
@@ -77,3 +78,14 @@ separate Prefixe, nachvollziehbare Fehler, Reparaturtests und eine spätere echt
 Installation auf dem Zielcluster. GPU-, Lizenz-, Modell- und Datenbankvoraussetzungen
 müssen separat ausgewiesen werden. Ein Katalogeintrag darf diese Voraussetzungen
 nicht verdecken.
+
+PoseBusters 0.5.1 ist im [conda-forge-Paketbestand](https://anaconda.org/channels/conda-forge/packages/posebusters/files)
+verfügbar. Abhängigkeiten und `bust`-Einstiegspunkt wurden anhand der
+[versionierten Projektmetadaten](https://github.com/maabuu/posebusters/blob/v0.5.1/pyproject.toml)
+abgeglichen. Das Rezept verwendet bewusst die zum bestehenden Adapterbeispiel
+passende Version. Installation und wissenschaftlicher Lauf bleiben extern zu prüfen.
+
+Auch ein explizit ausgewählter Interpreter und weitere Pakete eines Workers
+müssen die Importprüfung bestehen. Vorhandene Versionsmetadaten allein reichen
+nicht: eine fehlende native Bibliothek oder ein beschädigtes Python-Modul darf
+nicht erst nach erfolgreichem Preflight als fehlgeschlagene Rechnung erscheinen.

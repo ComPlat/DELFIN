@@ -99,3 +99,21 @@ def test_module_can_supply_python_through_dependency(monkeypatch):
     assert found.path == sys.executable and found.module_name == 'bio/prolif/2.2.3'
     assert calls[0][2]['track_process'] and not calls[0][2]['allow_install']
     assert calls[0][2]['timeout'] == 20
+
+
+@pytest.mark.parametrize('distribution,version', [('posebusters', '0.5.1'), ('openmm', '8.4.0')])
+def test_explicit_worker_environment_rejects_broken_import_despite_valid_metadata(tmp_path, monkeypatch, distribution, version):
+    monkeypatch.setattr(envs, 'ensure_python', lambda *a, **kw: pytest.fail('explicit environment must not be replaced'))
+    monkeypatch.setattr(qm_runtime, 'run_tool', lambda *a, **kw: SimpleNamespace(returncode=0, stdout=version, stderr=''))
+    checks = []
+    def broken(item, python, **kw):
+        checks.append((item.name, python, kw['environment_module']))
+        raise ValueError('missing native library')
+    monkeypatch.setattr(envs, 'check_python', broken)
+    with pytest.raises(ValueError, match='missing native library'):
+        runtime.probe_distribution(distribution, python=sys.executable, expected_version=version,
+                                   work_dir=tmp_path, discover=False, environment_module='bio/explicit')
+    from pathlib import Path
+    assert len(checks) == 1
+    assert checks[0][0] == distribution and checks[0][2] == 'bio/explicit'
+    assert Path(checks[0][1]).samefile(sys.executable)

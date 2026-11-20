@@ -67,7 +67,8 @@ Am 20. November wurden die 46 gezielten System-/Periodik-/Dynamik-/Analysetests
 erneut erfolgreich ausgeführt. Das sind Schnittstellentests ohne echte OpenMM-
 oder MDAnalysis-Engineausführung.
 
-Die breitere Bio-/QM-Runtime-/CLI-/Tool-Vertragssuite ergibt 319 bestandene Tests
+Nach Ergänzung des PoseBusters-Installers und der Importprüfung für explizite
+Interpreter ergibt die breitere Bio-/QM-Runtime-/CLI-/Tool-Vertragssuite 322 bestandene Tests
 und drei bereits vorher reproduzierte Fehler: fehlende Pflichtparameterprüfung
 für `orca_th_opi.output_file`, fehlende Vertragskategorie bei `orca_qmmm_opi`
 und ein abgeschnittener Producer-Hinweis im Plattformtest. Diese Fehler werden

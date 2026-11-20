@@ -50,6 +50,11 @@ def probe_distribution(distribution: str, *, python: str, expected_version: str,
     actual = (version.stdout or "").strip()
     if actual != expected_version:
         raise ValueError(f"{distribution} version mismatch: expected {expected_version!r}, found {actual!r}")
+    # Explicit interpreters and secondary worker dependencies bypass discovery,
+    # but must not bypass import health (metadata can outlive a broken package).
+    if distribution in RECIPES:
+        check_python(recipe(distribution, expected_version), resolved.path,
+                     environment_module=environment_module)
     return {"distribution": distribution, "version": actual, "python": resolved.path,
             "python_sha256": file_hash(Path(resolved.path)), "environment_module": environment_module}
 

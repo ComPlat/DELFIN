@@ -153,3 +153,19 @@ def test_broken_package_provenance_prevents_ready_state(monkeypatch):
     result = envs.install(['meeko'])
     assert not result['ok']
     assert 'Invalid package provenance' in result['results'][0]['lines'][0]
+
+
+def test_posebusters_uses_shared_isolated_recipe_and_missing_tool_provisioning(monkeypatch):
+    from delfin import installer
+    item = envs.recipe('posebusters')
+    assert installer.find('bust').name == item.name
+    command = envs.installation_command(item, '/fake/micromamba')
+    assert 'posebusters=0.5.1' in command
+    assert 'rdkit>=2024.9' in command
+    assert 'posebusters.cli' in item.modules
+    monkeypatch.setattr(envs, 'python_candidates', lambda item: iter([]))
+    monkeypatch.setenv('DELFIN_AUTO_INSTALL_QM_TOOLS', '1')
+    calls = []
+    monkeypatch.setattr(envs, 'install', lambda names, **kw: calls.append((names, kw)) or {'ok': True})
+    assert envs.ensure_python(item.name, item.version, allow_install=True) == str(envs.prefix(item) / 'bin/python')
+    assert calls == [(['posebusters'], {'versions': {'posebusters': '0.5.1'}})]

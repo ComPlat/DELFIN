@@ -148,3 +148,27 @@ def test_optional_processing_uses_native_entry_and_validates_outputs(tmp_path, m
     assert result.data['runtime']['entry_point'] == entry
     if operation == 'plip_analyze':
         assert result.data['binding_sites'] == 1
+
+
+@pytest.mark.parametrize('mode', ['duplicate', 'foreign_file', 'bad_position', 'multiple_references'])
+def test_posebusters_rejects_ambiguous_report_identity(tmp_path, monkeypatch, mode):
+    import delfin.tools.adapters.bio_posebusters as module
+    fixtures = Path(__file__).resolve().parents[1] / 'examples' / 'biomolecular_foundation'
+    def fake_console(*args, **kwargs):
+        assert mode != 'multiple_references', 'ambiguous references must fail before engine execution'
+        rows = [('poses.sdf', str(i)) for i in range(3)]
+        if mode == 'duplicate':
+            rows[2] = rows[1]
+        elif mode == 'foreign_file':
+            rows[2] = ('other.sdf', '2')
+        else:
+            rows[2] = ('poses.sdf', 'nan')
+        (kwargs['work_dir'] / 'checks.csv').write_text('file,molecule,position,sanitization\n' +
+            ''.join(f'{file},ligand,{position},False\n' for file, position in rows))
+        return {'version': 'fixture'}
+    monkeypatch.setattr(module, 'run_console', fake_console)
+    result = run_step('posebusters_validate', poses_file=fixtures / 'poses.sdf',
+                      reference_file=fixtures / ('poses.sdf' if mode == 'multiple_references' else 'reference.sdf'),
+                      receptor_file=fixtures / 'receptor.pdb', expected_version='fixture', work_dir=tmp_path / 'run')
+    assert not result.ok
+    assert ('exactly one molecule' if mode == 'multiple_references' else 'PoseBusters') in result.error

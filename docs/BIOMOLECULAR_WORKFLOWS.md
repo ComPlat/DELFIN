@@ -306,7 +306,7 @@ are refused rather than silently discarded.
 ## Shared installation and health checks
 
 The central `delfin.installer` now includes a `bio` family. Initial conda-forge
-recipes cover Vina, Meeko, PDBFixer, OpenMM, ProLIF and PLIP. Top-level releases
+recipes cover Vina, Meeko, PDBFixer, OpenMM, MDAnalysis, ProLIF, PLIP and PoseBusters. Top-level releases
 are pinned; transitive dependencies are resolved by conda and their exact
 versions/builds/hashes are recorded from `conda-meta`. These recipes have
 interface tests, not successful installation evidence in this environment.

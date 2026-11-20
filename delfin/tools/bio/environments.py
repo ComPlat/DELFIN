@@ -35,6 +35,8 @@ RECIPES = {
         Recipe('mdanalysis', '2.9.0', modules=('MDAnalysis', 'MDAnalysis.analysis.align', 'numpy'), dependencies=('biopython',)),
         Recipe('prolif', '2.2.3', modules=('prolif', 'MDAnalysis', 'rdkit')),
         Recipe('plip', '3.0.1', modules=('plip', 'openbabel'), commands=('plip',)),
+        Recipe('posebusters', '0.5.1', modules=('posebusters', 'posebusters.cli', 'rdkit', 'pandas', 'numpy', 'yaml'),
+               commands=('bust',), dependencies=('rdkit>=2024.9', 'pandas', 'numpy', 'pyyaml')),
     )
 }
 _TRIED = set()

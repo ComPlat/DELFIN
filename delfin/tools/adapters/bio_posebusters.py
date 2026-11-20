@@ -63,6 +63,8 @@ class PoseBusters(StepAdapter):
             if receptor.source_format != 'pdb' or len(receptor.models) != 1:
                 raise ValueError('PoseBusters integration requires a single prepared PDB receptor')
             poses, reference = load_ligands(kwargs['poses_file']), load_ligands(kwargs['reference_file'])
+            if len(reference) != 1:
+                raise ValueError('PoseBusters redocking requires exactly one explicit reference ligand')
             if any(not mol.GetNumConformers() for mol in poses + reference):
                 raise ValueError('PoseBusters requires existing coordinates in a shared reference frame')
             for name, molecules in (('poses.sdf', poses), ('reference.sdf', reference)):
@@ -84,6 +86,18 @@ class PoseBusters(StepAdapter):
                 raise ValueError('incomplete PoseBusters output: expected one complete row per pose')
             if any(len(row) <= 3 for row in rows):
                 raise ValueError('PoseBusters output contains no checks')
+            positions = []
+            for row in rows:
+                source = Path(row['file'])
+                if not source.is_absolute():
+                    source = root / source
+                if source.resolve() != (root / 'poses.sdf').resolve():
+                    raise ValueError('PoseBusters report refers to an unexpected pose file')
+                if not row['position'].isdigit():
+                    raise ValueError('PoseBusters report contains an invalid pose position')
+                positions.append(int(row['position']))
+            if sorted(positions) != list(range(len(poses))):
+                raise ValueError('PoseBusters report must cover every pose position exactly once')
             data = dict(runtime=runtime, checks=rows, input_sha256=hashes, output_sha256=file_hash(output),
                         mode='redock', coordinate_frame='caller-supplied; no alignment',
                         interpretation='Execution success means a complete report, not that poses passed; raw checks retained, no affinity claim')

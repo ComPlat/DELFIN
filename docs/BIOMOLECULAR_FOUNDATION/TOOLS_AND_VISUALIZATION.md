@@ -34,6 +34,12 @@ unterstützt unter anderem Cartoon-Darstellung, Heterokomponenten, Kettenwahl,
 Residuenmarkierung und Vollbild. Konfidenzinterpretation bleibt explizit: B-Faktoren
 sind ohne entsprechende Angabe nicht automatisch pLDDT.
 
+PoseBusters-Redocking verlangt genau einen Referenzliganden. Der Bericht muss
+jede Poseposition genau einmal aus der tatsächlich übergebenen Pose-Datei
+enthalten. Eine passende Zeilenzahl allein genügt nicht; doppelte Positionen,
+ungültige Indizes und Berichte über andere Dateien werden abgelehnt. Negative
+Prüfergebnisse bleiben als solche erhalten und sind kein Ausführungsfehler.
+
 Bereits vorhanden sind Export- und Steuerlogiktests sowie Syntaxprüfungen für
 Desktop-Skripte. Echte Browser-/WebGL- und Desktop-Abnahme bleibt erforderlich.
 Trajektorienanimation, periodische Rekonstruktion, konsistente Kontakt-Overlays,
