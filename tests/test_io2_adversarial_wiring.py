@@ -71,12 +71,13 @@ def test_a_refusal_stops_the_submit_before_sbatch(backend, lustre, no_sbatch,
 
 def test_a_warning_is_visible_to_the_caller_of_a_successful_submit(
         backend, lustre, tmp_path, monkeypatch):
-    """The task says warn findings are "logged with the job". Measured: the
-    warning is appended to ``stderr`` of a returncode-0 result -- and a
-    caller shows stderr only when the return code is not 0 (the pattern at
-    backend_slurm.py:441 says so in as many words). So on success the
-    warning reaches nobody. A job that submitted fine and carried a warning
-    must say so somewhere the caller reads."""
+    """The task says warn findings are "logged with the job". When this was
+    written the warning went only to ``stderr`` of a returncode-0 result,
+    and a caller shows stderr only when the return code is not 0 (the rule
+    backend_slurm.py:441 states), so it reached nobody. Now it rides in
+    stdout next to the job id -- asserted here, together with the job id
+    still parsing, because moving text into stdout is how a job id gets
+    broken."""
     script = _script(
         tmp_path, "#!/bin/bash\nexport ORCA_SCRATCH=/pfs/data6/scr/\n")
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(
@@ -89,7 +90,23 @@ def test_a_warning_is_visible_to_the_caller_of_a_successful_submit(
     shown_on_success = (result.stdout or "")
     assert "scratch_on_lustre" in shown_on_success, (
         "the warning must be in the stream a successful submit's caller "
-        "reads; today it is only in stderr, which is shown on failure")
+        "reads (stdout), not only in stderr, which is shown on failure")
+    assert SlurmJobBackend._job_id_from_submit(result.stdout) == "5", (
+        "the warning must not displace the job id the caller parses")
+
+
+def test_a_clean_submit_leaves_stdout_exactly_as_sbatch_wrote_it(
+        backend, lustre, tmp_path, monkeypatch):
+    """The other half of the warning fix: a script with no finding must not
+    have anything appended, or every submit's output changes."""
+    script = _script(tmp_path, "#!/bin/bash\ncd $TMPDIR\necho hi\n")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(
+        args=["sbatch"], returncode=0, stdout="Submitted batch job 7\n",
+        stderr=""))
+    monkeypatch.setattr(SlurmJobBackend, "_release_env_hold",
+                        lambda self, stdout: None)
+    result = backend._sbatch(tmp_path, "", "01:00:00", 2, 1000, "j", script)
+    assert result.stdout == "Submitted batch job 7\n"
 
 
 def test_the_wiring_does_not_lose_the_home_rule(
