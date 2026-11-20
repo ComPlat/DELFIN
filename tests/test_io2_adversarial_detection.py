@@ -139,15 +139,29 @@ def test_the_control_that_these_tests_are_measured_against():
         "${JOB_DIR}": "/pfs/home/user/run",
     }),
 ])
-def test_a_template_whose_paths_are_written_out_is_still_judged(name, substitutions):
+def test_a_template_is_judged_on_its_paths_not_on_its_variable_names(
+        name, substitutions):
     """Phase 2 asks that DELFIN's generated script pass clean. It passes with
     the variable and refuses with the path written out -- so "clean" today is
     a property of the blindness above, not of the template. Measured: the
-    rendered ``submit_delfin.sh`` gives 3 refusals, the shipped text 0."""
+    rendered ``submit_delfin.sh`` gives 3 refusals, the shipped text 0.
+
+    What is asked for is that the check reaches a verdict on a template at
+    all: a route that hands over a path-carrying variable must not get a
+    silent pass. Which verdict is right (refuse the template's copy, or
+    allow it) is the fix's decision, not this test's -- it asserts only that
+    the rendered reading is not silent, and that the shipped one stays
+    clean so a fix does not turn every DELFIN submit into a refusal."""
     text = (TEMPLATES / name).read_text(encoding="utf-8")
     rendered = text
     for needle, path in substitutions.items():
         rendered = rendered.replace(needle, path)
+    # The shipped text is what DELFIN submits when the variable resolves;
+    # it must stay clean, or the fix turns every submit into a refusal.
+    assert not refusals_of(text), (
+        f"{name} as shipped must stay clean: a fix that refuses DELFIN's own "
+        "generated script blocks every submit")
     assert refusals_of(rendered), (
         "a submit script must be judged on the paths it will use, not on "
-        "the variable names that carry them")
+        "the variable names that carry them: the rendered reading must not "
+        "be silent")
