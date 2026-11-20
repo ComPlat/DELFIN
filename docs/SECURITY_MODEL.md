@@ -84,7 +84,14 @@ terminal session (grants, isolation flags, posture, session restore,
 `default`, a one-shot run asking for bypass without `--unattended` exits
 with status 2 instead of doing less than it was asked. Settings, hooks and
 MCP servers that come from a checked-out repository are ignored until the
-directory is trusted (`/trust`).
+directory is trusted (`/trust`). A test configuration is not on that list
+and cannot be: pytest executes the workspace's own `conftest.py` before it
+collects anything, and the verification run at the end of an editing turn
+(`agent.auto_verify`, default `smart`) starts pytest in the workspace
+without asking. That run therefore goes into the same cage as the
+`run_tests` tool, and where this host can cage nothing it is not started
+at all -- the syntax check, which compiles without importing, is then the
+whole verification and the turn says so.
 
 The CLI backend runs its own tools, outside DELFIN's process, and DELFIN's
 gate hook (`cli_gate`) decides every one of them before it runs. A Bash call
@@ -1141,6 +1148,17 @@ users fall back to the unkeyed form, which they report as unverified.
 
 ## Residual risks
 
+- **A workspace's test configuration runs, inside the cage.** The
+  verification run at the end of an editing turn, and the `run_tests` tool,
+  both execute the workspace's `conftest.py` and its pytest plugins: that
+  is what running a project's tests means. Nobody is asked, because the
+  verification run is not a tool call. What bounds it is the cage -- writes
+  confined to the session's roots, `/` read-only, a fresh `/tmp`,
+  credential paths under `$HOME` masked, the network through the egress
+  proxy -- and, on a host that can cage nothing, that the run does not
+  happen. What is left: code from a checked-out repository runs with the
+  cage's reach, which includes reading the workspace and whatever the
+  egress rules allow. `/trust` does not cover it.
 - **Text-based checks without isolation.** On a host in the "None" row, and
   for any command run with `--no-isolate`, the only thing between a command
   and the filesystem is the gate's reading of its text. A command that builds
