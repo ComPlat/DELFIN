@@ -2048,6 +2048,68 @@ def _protected_write_prefixes() -> tuple[str, ...]:
     return tuple(sorted(out))
 
 
+#: The type names the subset validator understands. ``_conforming_sample``
+#: knows how to build a value for each of these and nothing else, so the
+#: builder and the validator stay on the SAME subset by construction: a
+#: type the validator accepts but the set omits would be sampled as a
+#: string and fail its own self-check. A new type must be added here and in
+#: ``structured_output._SCHEMA_TYPES`` together.
+_CONFORMING_SAMPLE_TYPES: frozenset[str] = frozenset(
+    {"object", "array", "string", "number", "integer", "boolean"})
+
+
+def _conforming_sample(schema: object) -> Any:
+    """A value the subset validator accepts for a JSON-Schema subset schema.
+
+    Built for ``validate_preset``'s self-check, not for the runtime: the
+    shipped schema is a contract a model must be able to FILL, and a
+    sample the builder cannot fill would be a contract the check itself
+    cannot keep. The builder follows the SAME subset the validator
+    enforces (type, enum, required, properties, items) and recurses into
+    objects and arrays, so a NESTED ``required:`` object is sampled to
+    its own required properties — the flat ``object: {}`` it used to
+    produce is exactly the value a nested ``required:`` rejects, which
+    is what wrongly refused a legitimate nested schema at load.
+
+    Input: a schema dict (possibly nested). Output: a value
+    ``validate_json_schema`` accepts for it, so the sample and the
+    validator agree on the subset — if a new keyword is added to one
+    without the other, the self-check turns red. A required key the
+    schema gives no type for reads as a string, so an unknown shape never
+    fabricates a failure; an empty array validates against any item
+    schema, so it is left empty.
+    """
+    if not isinstance(schema, dict):
+        return "x"
+    t = schema.get("type")
+    if not isinstance(t, str) or t not in _CONFORMING_SAMPLE_TYPES:
+        return "x"
+    enum = schema.get("enum")
+    if isinstance(enum, list) and enum:
+        return enum[0]
+    if t == "object":
+        obj: dict = {}
+        props = schema.get("properties")
+        if isinstance(props, dict):
+            for key, sub in props.items():
+                obj[key] = _conforming_sample(sub)
+        req = schema.get("required")
+        if isinstance(req, list):
+            for key in req:
+                if isinstance(key, str) and key not in obj:
+                    obj[key] = "x"
+        return obj
+    if t == "array":
+        return []
+    if t == "boolean":
+        return True
+    if t == "integer":
+        return 1
+    if t == "number":
+        return 1.0
+    return "x"
+
+
 def validate_preset(path_or_text: str) -> list[str]:
     """Check one preset definition; return its problems (empty = valid).
 
@@ -2189,15 +2251,14 @@ def validate_preset(path_or_text: str) -> list[str]:
             "JSON-Schema object")
     schema = _parse_preset_schema(raw_schema)
     if isinstance(schema, dict) and schema:
-        sample: dict = {}
-        props = schema.get("properties")
-        if isinstance(props, dict):
-            for prop, spec in props.items():
-                t = spec.get("type") if isinstance(spec, dict) else None
-                sample[prop] = {"string": "x", "integer": 1,
-                                "number": 1.0, "boolean": True,
-                                "array": [], "object": {}}.get(
-                    t if isinstance(t, str) else "", "x")
+        # The return contract is a JSON object, so the sample is the object a
+        # conforming delegate would produce. A top-level schema that is not an
+        # object cannot be honoured by the extraction (it keeps the first JSON
+        # object in the message), so it is sampled as the empty object and
+        # fails validation -- the same refusal the check gave before the
+        # builder learned to nest.
+        sample = _conforming_sample(schema) if schema.get("type") == "object" \
+            else {}
         errs = validate_json_schema(sample, schema)
         if errs:
             problems.append(
