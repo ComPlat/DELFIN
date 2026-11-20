@@ -292,16 +292,21 @@ def test_export_bytes_large_payload_single_run_js(tmp_path):
     ctx = FakeCtx()
 
     # Large payload: still exactly ONE run_js call, and the data rides
-    # INLINED in the script (the buffer-DOM transport failed in voila:
-    # run_js clears the output before the browser sees the widget state,
-    # and the class was attached only after run_js).
+    # in the HIDDEN BUFFER WIDGET with the script POLLING the node for
+    # the payload (the inlined multi-MB script did not survive the
+    # voila transport; the widget state channel does, and polling
+    # removes the run_js/first-set sync race).
     payload = b"x" * (3 * 1024 * 1024)  # 3 MB binary -> ~4 MB b64
     panel._export_bytes("big.bin", payload, "application/octet-stream")
     assert len(ctx.scripts) == 1, (
         f"expected ONE run_js call, got {len(ctx.scripts)}")
     expected_b64 = base64.b64encode(payload).decode("ascii")
     script = ctx.scripts[0]
-    assert expected_b64 in script
+    stored = json.loads(panel._export_buffer.value)
+    assert base64.b64decode(stored[next(iter(stored))]) == payload
+    # The script must poll the buffer node and assemble a Blob.
+    assert ".export-buffer" in script
+    assert "for(let t=0;t<200" in script
     assert "atob" in script
     assert "a.download" in script
 

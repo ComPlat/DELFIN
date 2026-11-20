@@ -154,6 +154,11 @@ def build_job(
     py = _require(_SAFE_PATHLD, python if python else "PYTHON_PLACEHOLDER",
                   "python")
 
+    # git archive resolves pathspecs against the CURRENT directory, so the
+    # job script (which runs from the run dir, not the repo) must anchor
+    # every repo path absolutely: an absolute repo path plus explicit cd.
+    repo = str(Path(repo).resolve())
+
     # shell-quote everything that crosses into bash. Values are already
     # allow-listed above (no whitespace or metacharacter), so this is strict
     # defense-in-depth; it can no longer be the security boundary on its own.
@@ -198,7 +203,7 @@ def build_job(
         "# (pax_global_header entries) older node tar rejects outright",
         "# (\"This does not look like a tar archive\"), leaving the staging dir",
         "# empty and pytest failing with file-not-found (job 9159624/9159875).",
-        f'git -C {q_repo} archive --format=tar {q_ref} -- "tests" delfin pyproject.toml setup.py 2>/dev/null | tar -x -C "$LOCAL" || git -C {q_repo} archive --format=tar {q_ref} | tar -x -C "$LOCAL"',
+        f'cd {q_repo} && git archive --format=tar {q_ref} -- "tests" "delfin" "pyproject.toml" "setup.py" 2>/dev/null | tar -x -C "$LOCAL" || cd {q_repo} && git archive --format=tar {q_ref} | tar -x -C "$LOCAL"',
         "",
         "# stage the interpreter's venv node-local (never run children from HOME)",
         'PYTHON_BIN=${PYTHON_BIN:-"' + q_python + '"}',
