@@ -9,6 +9,81 @@ import json
 from typing import Any, Optional
 
 
+def _subagent_writers() -> tuple[str, ...]:
+    """The preset names that can change something, from the registry.
+
+    A type is a writer when its mode is not ``plan`` or when it carries a
+    ``write_globs`` scope. Read from the live registry rather than named
+    in prose: the description used to state "all types are read-only
+    except 'general-purpose' and 'verifier'", which is a sentence about a
+    configuration, and the first specialist given a write scope makes it
+    false. A sentence that can be false is worse than none, because the
+    model believes it.
+    """
+    try:
+        from .subagents import SUBAGENT_PRESETS
+        return tuple(sorted(
+            n for n, p in SUBAGENT_PRESETS.items()
+            if str(getattr(p, "mode", "")) != "plan"
+            or tuple(getattr(p, "write_globs", ()) or ())))
+    except Exception:
+        return ("general-purpose", "verifier")
+
+
+def _subagent_description() -> str:
+    """The ``subagent`` tool's description, derived from the registry."""
+    writers = _subagent_writers()
+    if writers:
+        which = ", ".join(repr(w) for w in writers)
+        what = f"All read-only except {which}, which may write"
+        # Kept whatever the registry says, and it is the one claim here
+        # that is about a permission rather than a mode: the full-permission
+        # delegate is the parent's own surface. The phrase "FULL" and the
+        # word "read-only" are both required to survive compaction
+        # (tests/test_tool_schema_budget.py::_SAFETY_PHRASES) -- the
+        # derived text dropped them once, which told the model less about
+        # a delegate's reach than the hand-written sentence had.
+        if "general-purpose" in writers:
+            what += "; 'general-purpose' gets the parent's FULL permissions"
+        what += "."
+    else:
+        what = "Every type is read-only."
+    return ("Delegate a self-contained task to an isolated sub-agent; "
+            "returns one summary. " + what + " Caps: "
+            + _subagent_caps_phrase() + ".")
+
+
+def refresh_subagent_tool() -> None:
+    """Rebuild the ``subagent`` entry from the live preset registry.
+
+    The catalogue is a module-level literal, so its ``subagent_type`` enum
+    and its description were fixed at import: a preset dropped into
+    ``~/.delfin/subagents/`` during a session was not offered until the
+    process restarted, and the description could not follow a preset that
+    gained a write scope. ``subagents.reload_subagent_presets`` calls this,
+    so the schema follows the registry wherever the registry is rebuilt.
+
+    Input: the registry. Output: none -- the entry is updated in place,
+    because that list is what every consumer already holds a reference to.
+    Never raises: a catalogue that cannot be refreshed keeps the names it
+    had, which is the previous behaviour and not a new failure.
+    """
+    try:
+        from .subagents import subagent_type_names
+        names = list(subagent_type_names())
+        for tool in _DOC_TOOLS_OPENAI:
+            fn = tool.get("function") or {}
+            if fn.get("name") != "subagent":
+                continue
+            fn["description"] = _subagent_description()
+            props = (fn.get("parameters") or {}).get("properties") or {}
+            if names and isinstance(props.get("subagent_type"), dict):
+                props["subagent_type"]["enum"] = names
+            return
+    except Exception:
+        pass
+
+
 def _subagent_caps_phrase() -> str:
     """The sub-agent limits, read from the constants that enforce them.
 
@@ -1972,13 +2047,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "subagent",
-            "description": (
-                "Delegate a self-contained task to an isolated sub-agent "
-                "that returns one summary. All types are read-only except "
-                "'general-purpose' (the parent's FULL permissions) and "
-                "'verifier' (runs commands). Caps: "
-                + _subagent_caps_phrase() + "."
-            ),
+            "description": _subagent_description(),
             "parameters": {
                 "type": "object",
                 "properties": {
