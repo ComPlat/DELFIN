@@ -30,6 +30,7 @@ on:
       - ".github/workflows/audit.yml"
       - ".github/ci/audit_closure.py"
       - ".github/ci/audit-ignore.txt"
+      - "env/reference-environment.lock"
 
 concurrency:
   group: audit-${{ github.ref }}
@@ -89,6 +90,46 @@ jobs:
             echo
             echo '```'
             cat "$RUNNER_TEMP/audit.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$code"
+
+      - name: Audit the reference constraints file
+        # The other half of the question. The closure above is what pip
+        # resolves TODAY; env/reference-environment.lock is what it is told
+        # to resolve TO, and a pin is applied to any package pip installs
+        # anyway. Until 2026-11-20 that file was `pip freeze --all` of the
+        # build interpreter, so installing as the README says held urllib3,
+        # cryptography, requests and seven more at the versions of that day:
+        # 59 advisories across 14 distributions, none of them a package that
+        # computes a coordinate. Auditing the resolved closure never saw it,
+        # because the resolution it audited was unconstrained.
+        #
+        # Audited as written: every line is a pin, so --no-deps over the file
+        # itself asks exactly "is any version this file fixes known to be
+        # vulnerable". The count guards against auditing an emptied file.
+        run: |
+          pins=$(grep -Ecv '^[[:space:]]*(#|$)' env/reference-environment.lock)
+          echo "reference pins: $pins"
+          test "$pins" -ge 20
+          grep -Eq '^numpy==' env/reference-environment.lock
+          grep -Eq '^rdkit==' env/reference-environment.lock
+          ignores=()
+          while read -r id _; do
+            ignores+=(--ignore-vuln "$id")
+          done < <(grep -Ev '^[[:space:]]*(#|$)' .github/ci/audit-ignore.txt)
+          set +e
+          pip-audit --progress-spinner off --no-deps --disable-pip --desc off \
+            -r env/reference-environment.lock "${ignores[@]}" \
+            > "$RUNNER_TEMP/reference.txt" 2>&1
+          code=$?
+          set -e
+          cat "$RUNNER_TEMP/reference.txt"
+          {
+            echo "### pip-audit, reference constraints ($pins pins, exit $code)"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/reference.txt"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$code"

@@ -8,7 +8,25 @@ pointed at a repository that was not there.
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
+
 from delfin import dashboard as D
+
+
+def _checkout(path: Path) -> Path:
+    """A directory git itself calls a checkout.
+
+    ``(path / ".git").mkdir()`` is not one: git answers "not a git
+    repository" for an empty ``.git``, and a stray empty one on a
+    workstation (measured: ``/tmp/.git``) made every path beneath it read as
+    a checkout. The predicate under test reads the layout, so the stand-in
+    has to have it.
+    """
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=str(path), check=True,
+                   capture_output=True)
+    return path
 
 
 def test_an_installed_copy_is_said_to_be_one(tmp_path):
@@ -20,7 +38,7 @@ def test_an_installed_copy_is_said_to_be_one(tmp_path):
 
 
 def test_a_checkout_is_left_to_its_git_status(tmp_path):
-    (tmp_path / ".git").mkdir()
+    _checkout(tmp_path)
     assert D._installed_copy_hint(tmp_path) is None
 
 

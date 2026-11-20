@@ -168,7 +168,7 @@ def resolve_target(layer: str, *, workspace, scope: str = "",
         repo = kn.repo_root_of(workspace)
         folder = PROJECT_FOLDER
         scope = "project"
-        if not (repo / ".git").exists():
+        if not safe_git.is_checkout(repo):
             raise ShareRefused(f"{repo.name} is not a git repository; the "
                                "project layer lives in one")
     vis = rv.visibility(repo, probe=probe)

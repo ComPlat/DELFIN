@@ -111,6 +111,17 @@ def test_a_hanging_git_worktree_remove_is_bounded(rec, monkeypatch, tmp_path):
                     f'exec {real} "$@"\n')
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    # The step before the removal asks which programs use the worktree, by
+    # walking /proc. It is bounded by the same step_timeout, and this test
+    # sets that to 2 s to keep itself short. Measured on a workstation with
+    # 6,559 processes: the walk takes 2.4 to 3.7 s, so it timed out and the
+    # close ended in "kept: checking it failed" -- the removal this test is
+    # about was never reached, and the test passed on CI only because a
+    # runner has a few dozen processes. The production timeout is 30 s
+    # (STEP_TIMEOUT_S), so the walk is not the subject here; it is answered
+    # at once so the bound on `git worktree remove` is what gets measured.
+    from delfin.dashboard import worktree_use
+    monkeypatch.setattr(worktree_use, "in_use", lambda paths, **kw: {})
     t0 = time.monotonic()
     r = BP.close(p.slug, step_timeout=2)
     assert time.monotonic() - t0 < 15
