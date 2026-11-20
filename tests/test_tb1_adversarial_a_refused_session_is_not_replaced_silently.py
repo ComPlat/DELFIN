@@ -57,6 +57,7 @@ class _FakeEngine:
         self.session_id = session_id
         self.messages = []
         self.route = ["solo_agent"]
+        self.role_outputs = {}
         self.current_role = "solo_agent"
         self.current_role_index = 0
         self.is_cycle_complete = False
@@ -65,10 +66,24 @@ class _FakeEngine:
         self.client = type("C", (), {"kill": lambda self: None})()
 
     def get_status(self):
-        return {"session_id": self.session_id}
+        """The keys ``_render_status`` (:14070) reads positionally; a thin
+        dict raises KeyError in the refresh thread and hides real failures."""
+        return {"session_id": self.session_id, "mode": "solo",
+                "backend": "api", "role": self.current_role,
+                "role_index": 0, "role_total": 1,
+                "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0,
+                "provider": "", "model": "", "cached_tokens": 0}
 
     def export_state(self):
         return {"session_id": self.session_id, "engine_messages": []}
+
+    def restore_state(self, data):
+        """``_hand_state_to`` (:12468) is the one path a saved session takes
+        into an engine; the tab aborts the restore when this raises, so a
+        stub without it makes every load look refused."""
+        self.restored = dict(data)
+        self.session_id = str(data.get("session_id") or self.session_id)
+        self.messages = list(data.get("engine_messages") or [])
 
     def build_handoff_message(self, task):
         return str(task)
@@ -133,6 +148,18 @@ def _session_files(env):
     d = env["tmp"] / "sessions"
     return sorted(p.name for p in d.glob("*.json")
                   if not p.name.endswith(".turn.json"))
+
+
+def _sessions_holding(env, text):
+    """The session files whose content carries ``text``.
+
+    The person's loss is not the file, it is the content: a session file for
+    the new engine is written by the tab's own autosave on the first turn
+    (``_auto_save_session``, ``:11943``), so "a session exists" is a weak
+    signal while "the typed text is in a session" is the defect itself.
+    """
+    return sorted(p.name for p in (env["tmp"] / "sessions").glob("*.json")
+                  if text in p.read_text(errors="replace"))
 
 
 def _held_by_a_live_process(env):
@@ -252,8 +279,9 @@ def test_typing_after_a_refusal_starts_no_session_and_keeps_the_text(env):
             assert env["created"] == [], (
                 "sending after a refusal minted a new session: the text went "
                 "to a stranger instead of staying with the person")
-            assert _session_files(env) == before, (
-                "a new session file appeared after a refused open")
+            assert _sessions_holding(env, typed) == [], (
+                "the typed text was written into a session after a refused "
+                "open: it was sent instead of being kept for the person")
             assert tab["input"].value == typed, (
                 "the typed text was taken out of the input box")
             said = _chat_text(state)
@@ -261,6 +289,57 @@ def test_typing_after_a_refusal_starts_no_session_and_keeps_the_text(env):
                 f"the person is not offered the fork choice; chat says:\n{said}")
             assert "Wait" in said, (
                 f"the person is not offered the wait choice; chat says:\n{said}")
+        finally:
+            tab["refs"]["shutdown"](save=False)
+    finally:
+        proc.kill()
+        proc.wait(timeout=30)
+
+
+# ---------------------------------------------------------------------------
+# The reuse point, pinned green on main
+# ---------------------------------------------------------------------------
+
+
+def test_the_fork_button_makes_exactly_one_session_from_the_held_history(env):
+    """The "start a new session from it" path already exists and already works.
+
+    Target 1 says reuse it, not build a second one. This pins what the builder
+    must reuse: pressing Fork on the held conversation writes exactly one new
+    session, its history is the held conversation's, and the tab then holds
+    the fork. Green on main -- it is a contract, not a finding; if the patch
+    breaks it, the patch changed the fork path.
+
+    It also proves the fork works while the SOURCE is held: the new id has no
+    lock of its own, which is why the refused state can safely offer it.
+    """
+    _write_session(env, SID, "held job", "held-turn")
+    proc = _held_by_a_live_process(env)
+    try:
+        before = set(_session_files(env))
+        tab = _tab(env)
+        state = tab["refs"]["state"]
+        try:
+            _open_held_conversation(tab, env)
+            assert "held by a live session" in _chat_text(state)
+
+            tab["fork"].click()
+
+            after = set(_session_files(env))
+            forks = sorted(n for n in after - before
+                           if n.startswith("fork-"))
+            assert len(forks) == 1, (
+                f"the fork must write exactly one session, wrote {forks}")
+            forked = forks[0].removesuffix(".json")
+            assert forked != SID
+            forked_data = json.loads(
+                (env["tmp"] / "sessions" / f"{forked}.json").read_text())
+            assert forked_data.get("engine_messages") == [
+                {"role": "user", "content": "held-turn"},
+                {"role": "assistant", "content": "answer to held-turn"},
+            ], "the fork must start from the held conversation's history"
+            assert state.get("active_session_id") == forked, (
+                "after forking, the tab must hold the fork, not stay empty")
         finally:
             tab["refs"]["shutdown"](save=False)
     finally:
