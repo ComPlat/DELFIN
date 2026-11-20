@@ -158,18 +158,6 @@ def _command_changes_directory(cmd: str) -> bool:
     return bool(re.search(r"(?:^|[;&|]\s*|\s)(?:cd|pushd|popd)\b", cmd or ""))
 
 
-def _redirect_targets_safe(cmd: str) -> list[str]:
-    """Alias of :func:`_redirect_targets`.
-
-    Kept because the operator-built hook (api_client.py, _bash_named_write_
-    paths) calls it by name. Since the operator ruling of the PR #308 CI
-    red, the guard lives INSIDE _redirect_targets (both the record and the
-    check path get nothing from a cd command), so both names behave
-    identically.
-    """
-    return _redirect_targets(cmd)
-
-
 def _redirect_targets(cmd: str) -> list[str]:
     """Redirect words a quote-aware reading of ``cmd`` sees.
 
@@ -189,8 +177,14 @@ def _redirect_targets(cmd: str) -> list[str]:
     words resolve against a base this module cannot know, so return [] --
     the pass only ever ADDS candidates, so returning nothing there is
     always safe. This protects BOTH consumers: the record path in the
-    gate (the operator-built hook folds these targets into the ledger)
-    and same_change's check path.
+    gate -- api_client._bash_named_write_paths folds these targets into
+    the ledger -- and same_change's check path.
+
+    Named here because an alias, _redirect_targets_safe, used to sit above
+    this function and claimed in its own docstring that the hook called IT
+    by name. It did not: the hook has always called this function, and the
+    alias was reached by nothing. It is deleted, and the caller is written
+    down so the next reader does not have to find it twice.
     """
     if _command_changes_directory(cmd):
         return []
