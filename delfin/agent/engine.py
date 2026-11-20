@@ -3727,6 +3727,21 @@ class AgentEngine:
         self._turn_start_cost = self.cost_usd
         self._cost_cap_hit = False
         self._cost_cap_value = self._cost_hard_cap()   # read once per turn
+        # The model behind this turn's commits. Set here because this is the
+        # thread that runs the turn's tool calls and the trailer is carried
+        # in a context variable, and set per TURN rather than once per
+        # session because a successor switch changes the model mid-run: the
+        # trailer then names the model that actually produced the diff.
+        # Until this line existed, nothing in the product called the setter
+        # at all -- the whole rewrite path was unreachable and no commit
+        # ever carried the line (its own tests set the variable themselves,
+        # so they passed throughout).
+        try:
+            from .api_client import set_commit_trailer_model
+            set_commit_trailer_model(
+                str(getattr(self.client, "model", "") or ""))
+        except Exception:
+            pass
         # The live phase both indicators read (activity.py). Begun here,
         # immediately before the try whose finally ends it, so no exit
         # path leaves a surface showing a turn that is over.
