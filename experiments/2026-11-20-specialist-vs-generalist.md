@@ -204,3 +204,136 @@ and the first draft's own flaw is §0 of this file.
 architecture helps on the chemistry work the five specialists exist for (§0);
 whether the result transfers to a different model; and whether the prompt-byte
 confound of §2 accounts for any difference found.
+
+---
+
+## Addendum 1, 2026-11-20, before any arm ran
+
+The apparatus was built against §3–§6 above and the build measured eleven
+problems in them. Four change the protocol and are recorded here; nothing
+above is rewritten. The pools and the sample below supersede the first draw,
+which is superseded rather than deleted.
+
+**The corpus, measured at `7abca4483`.** Pool `infra` 80 candidates (27
+`nowhere`, 53 `test-only`) from 4,908 callables scanned; pool `chem` 78 (54
+`nowhere`, 24 `test-only`) from 4,645. Neither is underpowered. The two pools
+cover 64 % of the available work type: over all of `delfin/` there are 246
+unmounted module-level callables, 158 fall in these pools and **88 fall in
+neither** — non-chemistry files outside `delfin/agent/` (dashboard 29, manta
+13, reporting 6, …). That is a property of the two scopes §3 fixed, stated so
+no result is read as covering the repository.
+
+**The scan is copied, not imported.** `tests/test_every_capability_has_a_caller.py`
+and its 86-name fixture are not on `origin/main`; they live only on
+`commit/a-commit-records-the-model-that-wrote-it`. Control for the copy: the
+vendored functions reproduce that fixture's 86 names with identical tiers,
+plus `set_commit_trailer_model`, which is unmounted on main and connected on
+that branch. The live copy of the instrument is therefore
+`scripts/ab_task_pools.py`, which is why it is on the untouchable list of
+check 3.
+
+### Change 1 — the allocation is balanced, not proportional
+
+§3 said "within each pool proportional to tier". That re-introduces the
+confound the two pools exist to remove: the tier mixes are near-opposites
+(infra 34 % `nowhere`, chem 69 %), and tier plausibly predicts difficulty — a
+`test-only` capability has a test pinning its behaviour and a caller to find,
+a `nowhere` one is more often simply dead. The first draw shows the effect
+directly: infra 3/7, chem 7/3. Domain would have been confounded with tier.
+
+The allocation is therefore **5 `nowhere` + 5 `test-only` from each pool**.
+Both pools can supply it, so no power is lost. Tier now varies within arm and
+is reported as a covariate.
+
+### Change 2 — the primary endpoint requires an AST-visible call site
+
+§4 check 1 could be satisfied by a string literal. The scan counts a name in
+a string as a reference, deliberately, because name-based dispatch is real in
+this codebase and ignoring it called two live functions unreachable. But that
+makes `DISPATCH = ("orphan_capability",)` a passing attempt, which is exactly
+"something the agent could write itself".
+
+So the endpoint splits, and both halves are reported:
+
+- **primary** — connected by an **AST-visible call site** in the product, or
+  deleted together with its tests;
+- **secondary** — the string-literal-inclusive variant, i.e. the rule as
+  first registered.
+
+The string-literal route stays in the record because an attempt that connects
+a capability through a genuine dispatch table is correct work. The **per-arm
+count of attempts where the two variants disagree** is itself a reported
+result about the corpus.
+
+### Change 3 — check 3 needs one narrow exception, or it scores every correct infra attempt zero
+
+Both routes force an edit to `tests/fixtures/unmounted_capabilities.txt`,
+because its ratchet test goes red until the name is removed. As first
+registered, check 3 would have charged every *correct* `infra` attempt a zero
+— and "no difference between the arms" is the result this protocol was most
+prepared to believe.
+
+The exception is exactly this: the fixture may **lose** this capability's one
+line and nothing else — zero added lines, zero header changes, removed names
+equal to this capability alone. **An added line still scores zero**, because
+adding a line is how an orphan would be excused rather than fixed. Every
+other file on the untouchable list stays untouchable.
+
+### Change 4 — the `documented_only` exclusion is removed
+
+Its justification was backwards. The scan never reads `docs/`, so a
+documented name is already tier `nowhere`; as a filter it removed a candidate
+*for being documented*, which treats a doc mention as evidence of an entry
+point. Removed. It had removed one name, `describe_mlp_backends`, which is
+back in `chem`.
+
+The other three exclusions removed **0** each — `module_absent` is 0 by
+construction, since the pools are scanned from the same tree — and they are
+kept with their measured zeros, because a filter that removed nothing and
+says so is readable and a later corpus may need them.
+
+### Recorded, not acted on
+
+- **Check 2 is vacuous for two of the drawn tasks.** `ensemble_summary`
+  (`delfin/manta/_ensemble_dispatch.py`) and `validate_control_file`
+  (`delfin/config.py`) have no consuming suite for their defining file. Both
+  stay in the sample; for those two the score rests on checks 1, 3 and 4
+  only, and that is reported with their rows rather than averaged away.
+- **Two unreachable twins hide each other.** A name defined twice is never a
+  candidate, because each twin counts as a mention of the other. This is a
+  limitation of the original instrument as much as of this one.
+  `candidates_with_a_twin` is reported; it is currently none.
+- **The chemistry rule's recall.** The rule is per file, never per package —
+  a package verdict calls all 609 `delfin/agent` files chemistry because five
+  of them import rdkit or ase. Its absolute floor costs recall on small
+  chemistry modules, among them `ts_finder.py`, `fukui.py`, `ir_spectrum.py`
+  and the other spectrum modules. `ts-finder` is one of the five presets the
+  switch adds, so a `chem` pool that excludes the module a specialist is
+  named after measures the wrong thing. An S3 clause is being measured; if no
+  rule separates those files from a 20-word banner module, the gap stays and
+  stays documented, because a rule that cannot be stated is worse than a gap
+  that is written down.
+- **Route mix.** Deletion is almost always cheaper than connection, so an arm
+  that deletes everything scores 1 on everything, guarded only by check 4 and
+  the consuming suites. The route mix was already a registered endpoint (§4);
+  added here: **ten raw diffs, chosen at random rather than picked, are read
+  before any aggregate of this experiment is believed.**
+
+### Blindness and mutation evidence, as built
+
+No arm, role or model argument reaches the scorer, asserted by a test over
+its parser's option strings. Exactly two files are opened inside an attempt
+directory, by fixed name; everything else is listed in `ignored_files` and
+never read. A manifest key outside the allowlist, or arm vocabulary anywhere
+in the manifest, **refuses with no score emitted** — an apparatus defect must
+not be charged to the agent as a zero. The log is projected onto
+`{ts, input_tokens, output_tokens, type, role}` at the read, with a count of
+discarded fields rather than their names. A missing cost figure is `null`.
+
+The instrument's own checks were mutation-tested: 25 mutations, 25 caught.
+**Four tests passed their first mutation and were rewritten** — one rested on
+a sibling clause of the same `and`, one on the arm-word check instead of the
+key allowlist, one could not observe the log projection from outside, one on
+the allocator's arithmetic rather than the pool refusal it names. That
+rewrite loop is the reason to run a mutation harness instead of asserting
+that tests are attached.
