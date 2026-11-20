@@ -755,3 +755,139 @@ experiment. An A/B run on this corpus would have produced a clean number
 with a confidence interval, and about a third of it would have been
 measuring whether an agent will delete documented, working code when a
 brief tells it to.
+
+---
+
+## Addendum 6, 2026-11-20: the rebuilt corpus, and what it does not cover
+
+Addendum 5 retired the first sample. The pools were rebuilt with the three
+exclusions it required plus four instrument changes. Measured at
+`e452ac009`:
+
+| | before | after | `nowhere` | `test-only` |
+|---|---|---|---|---|
+| `infra` | 80 | **66** | 24 | 42 |
+| `chem` | 99 | **90** | 68 | 22 |
+
+Both clear ten per tier, so a balanced 5 + 5 draw holds with margin.
+**Nothing here is blocked by power.** 179 → 156 rows.
+
+| exclusion | removed | infra | chem |
+|---|---|---|---|
+| documented entry point | 7 | 5 | 2 |
+| security core | 12 | 7 | 5 |
+| suites cannot run here | 2 | 0 | 2 |
+| suite punishes the fix | 2 | 2 | 0 |
+| the three that fired on nothing | 0 | 0 | 0 |
+
+The security core is decided by **loading and running
+`auto_guard.protected_reason` from the scanned tree**, under a private
+package name so an already-imported `delfin` cannot answer, and the
+answering file is recorded. When that function cannot be loaded the
+exclusion removes nothing **and says so with the reason** — an exclusion
+that silently removes nothing looks exactly like one that found nothing.
+
+Two of the four rows the validation named are **not** excluded, and both
+corrections are the apparatus's, against my reading:
+
+- `est_reference_comparison` stays. Its caller is in uncommitted `.gate/`,
+  which no reference directory sees, so it is still mis-scoped and the
+  documented-entry-point rule does not reach it.
+- `write_co2_scan_opi_input` stays. Two of the three suites covering its
+  module die on `opi`; **the third runs.** The validation looked at the two
+  that die.
+
+### What the experiment measures, stated narrowly
+
+The work type is unchanged — an unreached module-level callable, to be
+connected or deleted. Exclusion 1 does not narrow it; it **restores** it,
+because a documented entry point was never an unreached capability: it is
+reached from outside the repository and the scanner cannot see out.
+
+The other three narrow the population in one direction, and it is not the
+work that is excluded but the **measurement**. So, registered:
+
+> The arms are measured on an unreached capability **that no published
+> reference names, that is not in the security core, and whose checks can
+> run here and do not punish the fix.**
+
+That is narrower than §3 declares, by **23 of 179 rows**, and those are not
+noise: they are four kinds of work the arms will never be asked to do. They
+are a **named, counted part of the corpus this experiment does not cover**,
+and no result may be read as covering them.
+
+### Three changes the rebuild made necessary
+
+**A. The task sentence offers a third option.** It still presupposed the
+finding was a defect. The `declined` signal reports four candidates and one
+is the real case — `_max_heavy_bond_order`, whose comment sits **326 lines**
+below its definition and keeps it as reference for a future multiple-bond
+layer. Without a third option an arm that answers honestly scores zero, so
+the sentence becomes:
+
+> connect this capability to the product, or delete it together with its
+> tests — **or report that neither is right, with the evidence.**
+
+The third answer is scored as a completion when the evidence holds, and the
+`declined` candidates are reported per row **for a person**: the signal
+catches one real case in four, and three of its four hits are comments
+about how a test harness uses the function, which is precisely why the
+mechanism may not decide.
+
+**B. Rows are not averaged across two instruments.** With the resolver
+fixed, **15 of 156 rows have no consuming suite at all**, so checks 1, 3
+and 4 decide them while the rest are decided by four. And every `infra` row
+additionally sits under the baseline ratchet, a crisp automatic check that
+`chem` has no equivalent of. Each row therefore carries its
+`consuming_suites` count and whether it is under the ratchet, and the
+result reports **by instrument class, not pooled**. One grader applying one
+standard to all 156 would be averaging two different measurements.
+
+**C. The two pools were filtered by different rules**, and that is stated
+rather than left to be noticed: `infra` lost 14 of 80 and `chem` 9 of 99,
+with the security core almost entirely `infra` and the unrunnable suites
+entirely `chem`. The surviving work type is the same in both; if anything
+correlates with difficulty, the asymmetry of the filters is a candidate
+explanation and must be available to whoever reads the result.
+
+### The pre-flight, and the defect it had
+
+Every drawn row is checked against **every open pull request** — a sample
+drawn from `main` goes stale at the speed of the landing queue, and 17 PRs
+landed the day the first one was drawn. A pre-flight that cannot run
+**refuses the draw**; skipping it records the gap in the sample.
+
+Its first version **refused 18 rows because of this protocol document.**
+Scanning whole diffs, 21 of 156 rows were refused and 18 came from the
+pull request carrying this pre-registration and its addenda, which name
+rows in prose and decide none of them. *A pre-flight that refuses a row
+because the experiment's own write-up discusses it is measuring the
+write-up.* Fixed: a changed line counts only under `delfin/` or `tests/`,
+with both diff headers read so a deletion is still attributed. 21 → 3.
+
+Live against the 8 open pull requests, **3 of 156** rows are refused —
+`_redirect_targets_safe` (#834), `generate_stub` and `serve_request`
+(#832), all `infra` — leaving `infra` 63 (23/40) and `chem` 90 (67/23).
+
+### Two defects the apparatus found in itself, both the same shape
+
+- **The scan was reading the apparatus's own test file.** Comparing two
+  scans of one tree, `_max_heavy_bond_order` moved from `nowhere` to
+  `test-only` with no test of it anywhere — the apparatus's test docstring
+  names it, and `tests/` is scanned as text. `expected_digest` is named six
+  times there for the same reason. That file now joins the baseline fixture
+  in the skip set. **This is the instrument measuring itself one step
+  further out than the guard already in place, and it would have changed a
+  stratum in the draw.**
+- **The resolver's cause is the mapping, not the cap.** A package's
+  `__init__.py` has the stem `__init__`, which is in the unsearchable set,
+  so the import search was skipped entirely and the answer came back empty
+  — a cap truncates a non-empty answer and cannot produce an empty one.
+  `delfin/mlp_tools/__init__.py` resolved to 0 suites and now resolves to
+  12 of the 33 files naming `mlp_tools` on an import line. Addendum 5
+  recorded the under-reporting; this is its cause.
+
+Instrument state: **55 tests, 66 mutations applied, 66 caught.** One
+mutation reported `SETUP FAIL` rather than failing, because restructuring
+the diff parser moved the line it anchored on — an unmeasured check, not a
+passing one. Re-anchored and driven.
