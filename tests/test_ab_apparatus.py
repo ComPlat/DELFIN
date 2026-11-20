@@ -604,16 +604,40 @@ def _fake_pools(infra: int, chem: int, nowhere_share: float = 0.5) -> dict:
     }
 
 
-def test_the_draw_is_equal_per_pool_and_proportional_per_tier():
+def test_the_draw_is_equal_per_pool_and_equal_per_tier():
+    """The balanced rule, which is what the protocol uses.
+
+    The pool's own tier mix is 25 % / 75 % and the draw is 50 / 50, so tier
+    varies inside each arm instead of between the pools.
+    """
     doc = _fake_pools(40, 40, nowhere_share=0.25)
     sample = draw_mod.draw(doc, seed=7, per_pool=12)
     assert sample["n_tasks"] == 24
+    assert sample["allocation_rule"] == "balanced"
     for pool in ("infra", "chem"):
         got = sample["drawn_counts"][pool]
         assert sum(got.values()) == 12
-        # 25 % of the pool is `nowhere`, so 3 of 12.
-        assert got["nowhere"] == 3
-        assert got["test-only"] == 9
+        assert got["nowhere"] == 6
+        assert got["test-only"] == 6
+
+
+def test_the_superseded_proportional_rule_is_still_reproducible():
+    """The first draw is superseded by an addendum, not deleted, so the
+    rule that produced it stays available and is named in the output."""
+    doc = _fake_pools(40, 40, nowhere_share=0.25)
+    sample = draw_mod.draw(doc, seed=7, per_pool=12, rule="proportional")
+    assert sample["allocation_rule"] == "proportional"
+    for pool in ("infra", "chem"):
+        assert sample["drawn_counts"][pool]["nowhere"] == 3
+        assert sample["drawn_counts"][pool]["test-only"] == 9
+
+
+def test_a_balanced_draw_refuses_a_pool_whose_tier_is_too_small():
+    doc = _fake_pools(40, 40, nowhere_share=0.05)      # 2 of 40 are nowhere
+    with pytest.raises(ValueError) as exc:
+        draw_mod.draw(doc, seed=7, per_pool=12)
+    assert "balanced" in str(exc.value)
+    assert "nowhere" in str(exc.value)
 
 
 def test_the_same_seed_draws_the_same_tasks_and_another_seed_does_not():

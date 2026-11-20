@@ -10,9 +10,20 @@ Semantics
 ---------
 The draw is **stratified twice**: the same number of tasks from ``infra`` and
 from ``chem``, so that arm and domain are not confounded; and within each
-pool the tiers ``nowhere`` and ``test-only`` are filled in proportion to
-their share of that pool, by largest remainder, so that a pool's tier mix is
-not re-shaped by the sampler.
+pool the tiers ``nowhere`` and ``test-only`` are filled **equally**
+(``balanced``, the default), so that tier varies inside each arm instead of
+between the pools and can be reported as a covariate.
+
+Why not in proportion to each pool's tier mix, which was the first rule:
+the two pools' mixes are near-opposites -- measured 2026-11-20, infra is
+34 % ``nowhere`` and chem 69 % -- so a proportional draw hands one arm
+mostly ``test-only`` tasks and the other mostly ``nowhere`` ones. Tier
+plausibly predicts difficulty (a ``test-only`` capability has a test
+pinning its behaviour; a ``nowhere`` one is more often simply dead), so
+that draw confounds domain with tier, which is the confound the two pools
+exist to remove. The proportional rule is kept as ``--allocation
+proportional`` so that a superseded draw can still be reproduced from its
+seed, and the rule used is recorded in the output as ``allocation_rule``.
 
 The draw is **frozen**: the output file is written once. A second run refuses
 and prints the sha256 of the file that already exists, because a silent
@@ -57,17 +68,32 @@ def _tree_sha(root: Path) -> str | None:
     return out.stdout.strip() or None if out.returncode == 0 else None
 
 
-def allocate(counts: dict[str, int], total: int) -> dict[str, int]:
-    """Split ``total`` over the strata in ``counts``, by largest remainder.
+def allocate(counts: dict[str, int], total: int,
+             rule: str = "balanced") -> dict[str, int]:
+    """Split ``total`` over the strata in ``counts``.
 
-    Input: ``{stratum: available}`` and the number to draw. Output:
-    ``{stratum: n}`` summing to ``total``, each ``n`` at most the stratum's
-    availability, proportional to the stratum's share.
+    Input: ``{stratum: available}``, the number to draw, and the rule --
+    ``balanced`` (each stratum the same share) or ``proportional`` (each
+    stratum its share of the pool). Output: ``{stratum: n}`` summing to
+    ``total``, each ``n`` at most that stratum's availability. The
+    remainder goes by largest remainder in both cases, so the split does
+    not depend on the order the strata arrive in.
     """
     pool_size = sum(counts.values())
     if total > pool_size:
         raise ValueError(f"asked for {total} of {pool_size} available")
-    exact = {k: counts[k] / pool_size * total for k in counts}
+    if rule == "balanced":
+        exact = {k: total / len(counts) for k in counts}
+        short = {k: v for k, v in counts.items() if v < exact[k]}
+        if short:
+            raise ValueError(
+                f"a balanced draw needs {total // len(counts)} of each "
+                f"stratum; these hold fewer: "
+                f"{ {k: counts[k] for k in short} }")
+    elif rule == "proportional":
+        exact = {k: counts[k] / pool_size * total for k in counts}
+    else:
+        raise ValueError(f"unknown allocation rule {rule!r}")
     out = {k: int(exact[k]) for k in counts}
     remainder = total - sum(out.values())
     order = sorted(counts, key=lambda k: (-(exact[k] - out[k]), k))
@@ -83,8 +109,9 @@ def allocate(counts: dict[str, int], total: int) -> dict[str, int]:
     return out
 
 
-def draw(doc: dict, seed: int, per_pool: int) -> dict:
-    """The stratified draw. Input: the pools document, a seed, a size.
+def draw(doc: dict, seed: int, per_pool: int,
+         rule: str = "balanced") -> dict:
+    """The stratified draw. Input: the pools document, a seed, a size, a rule.
 
     Output: the frozen-sample document, without the ``replaced`` field,
     which only an overwrite adds.
@@ -102,7 +129,8 @@ def draw(doc: dict, seed: int, per_pool: int) -> dict:
         by_tier: dict[str, list[dict]] = {}
         for row in rows:
             by_tier.setdefault(row["tier"], []).append(row)
-        want = allocate({t: len(v) for t, v in by_tier.items()}, per_pool)
+        want = allocate({t: len(v) for t, v in by_tier.items()},
+                        per_pool, rule)
         allocation[pool] = want
         for tier in sorted(want):
             for row in rng.sample(by_tier[tier], want[tier]):
@@ -121,6 +149,7 @@ def draw(doc: dict, seed: int, per_pool: int) -> dict:
             timespec="seconds"),
         "seed": seed,
         "per_pool": per_pool,
+        "allocation_rule": rule,
         "n_tasks": len(tasks),
         "pools_tree": doc.get("generated_for"),
         "pools_tree_sha": None,          # filled by main()
@@ -144,6 +173,10 @@ def main(argv=None) -> int:
     ap.add_argument("--seed", type=int, required=True)
     ap.add_argument("--per-pool", type=int, default=10,
                     help="tasks drawn from each pool (total is twice this)")
+    ap.add_argument("--allocation", choices=("balanced", "proportional"),
+                    default="balanced",
+                    help="tiers equally within each pool, or in proportion "
+                         "to the pool's mix (superseded 2026-11-20)")
     ap.add_argument("--force", action="store_true",
                     help="overwrite an existing sample, recording its sha256")
     args = ap.parse_args(argv)
@@ -163,7 +196,7 @@ def main(argv=None) -> int:
 
     pools_path = Path(args.pools)
     doc = json.loads(pools_path.read_text())
-    sample = draw(doc, args.seed, args.per_pool)
+    sample = draw(doc, args.seed, args.per_pool, args.allocation)
     sample["pools_file"] = str(pools_path)
     sample["pools_file_sha256"] = _sha256(pools_path)
     tree = doc.get("generated_for")
@@ -179,6 +212,7 @@ def main(argv=None) -> int:
     out.write_text(json.dumps(sample, indent=2, sort_keys=True))
     print(f"wrote {out}  sha256 {_sha256(out)}")
     print(f"seed {sample['seed']}  tasks {sample['n_tasks']}  "
+          f"allocation {sample['allocation_rule']}  "
           f"tree {sample['pools_tree_sha']}")
     if (sample["tree_sha_at_draw"]
             and sample["tree_sha_at_draw"] != sample["pools_tree_sha"]):
