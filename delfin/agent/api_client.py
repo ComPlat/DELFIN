@@ -4875,6 +4875,37 @@ def _is_run_hidden(resolved: Path) -> bool:
         return True
 
 
+def _denied_path_refusal(path: Any) -> str:
+    """The whole refusal for a deny-listed ``path``, named by its kind.
+
+    The deny list holds two different kinds of path, and one message for
+    both sends the caller looking for the wrong thing. A refusal that
+    reads "secret" over a file that plainly holds no secret is retried
+    in another spelling instead of accepted: measured 8 retries of
+    ``.git/info/exclude`` in one agent run, against a rule working
+    exactly as intended.
+
+    A real secret keeps the original wording, which is accurate for it
+    and which several suites assert. Only git's own state, where
+    "secret" was the wrong word, gets its own sentence.
+    """
+    text = str(path or "").replace("\\", "/")
+    if "/.git/" in f"/{text}" or text.endswith("/.git") or text == ".git":
+        return (
+            f"bash command references git's own state ({path!r}), which is "
+            "not a secret: it is blocked because writing it changes what git "
+            "does next. A hook runs on the next git command, and an ignore "
+            "rule (.git/info/exclude) hides files from `git status`, so work "
+            "can leave review unseen. Use a tracked .gitignore, or say what "
+            "you need and let the reviewer decide."
+        )
+    return (
+        f"bash command references a secret-deny path ({path!r}). "
+        "Reading or touching .ssh/.env/*.key/credentials via the "
+        "shell is blocked — the read deny-list applies to bash too."
+    )
+
+
 def _is_secret_path(perms: Any, path: Path) -> bool:
     """Whether ``path`` matches the secret deny list, tested the way
     ``_check_read_access`` tests it: relative to the readable root it lies
@@ -22041,11 +22072,7 @@ class _DocToolExecutor:
             denied_path = self._bash_denied_path(cmd, perms)
             if denied_path is not None:
                 _record_security_event("secret_path", "bash", str(denied_path))
-                return (
-                    f"bash command references a secret-deny path ({denied_path!r}). "
-                    "Reading or touching .ssh/.env/*.key/credentials via the "
-                    "shell is blocked — the read deny-list applies to bash too."
-                )
+                return _denied_path_refusal(denied_path)
             _unknown_scripts: list = []
             payload_hit = self._scan_bash_script_payloads(
                 cmd, args, perms, unknown=_unknown_scripts)
