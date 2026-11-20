@@ -200,6 +200,12 @@ MUTATIONS = [
      '        if short:',
      '        if False:',
      ["test_a_balanced_draw_refuses_a_pool_whose_tier_is_too_small"]),
+    ("draw: the balanced floor is a floor, not the exact share",
+     "scripts/ab_draw_sample.py",
+     '        floor_each = total // len(counts)',
+     '        floor_each = -(-total // len(counts))',
+     ["test_a_balanced_draw_of_three_strata_uses_the_floor_not_the_exact_"
+      "share"]),
     ("draw: the allocation rule is recorded", "scripts/ab_draw_sample.py",
      '        "allocation_rule": rule,',
      '        "allocation_rule": "balanced",',

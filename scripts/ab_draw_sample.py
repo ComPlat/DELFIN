@@ -80,16 +80,27 @@ def allocate(counts: dict[str, int], total: int,
     ``total``, each ``n`` at most that stratum's availability. The
     remainder goes by largest remainder in both cases, so the split does
     not depend on the order the strata arrive in.
+
+    A balanced draw refuses when a stratum holds fewer than ``total //
+    len(counts)``, the floor rather than the exact share: with two tiers
+    and an even total the two agree, but with three or more strata, or an
+    odd total, the exact share is not an integer and comparing against it
+    refused a split that exists -- {3, 4, 5} for a total of 10 is
+    feasible as 4/3/3 and was rejected because 3 < 3.33. The refusal is
+    there to stop a pool silently supplying 2 where 5 was asked for, not
+    to reject every split that cannot be exactly equal (Addendum 2,
+    Correction F).
     """
     pool_size = sum(counts.values())
     if total > pool_size:
         raise ValueError(f"asked for {total} of {pool_size} available")
     if rule == "balanced":
         exact = {k: total / len(counts) for k in counts}
-        short = {k: v for k, v in counts.items() if v < exact[k]}
+        floor_each = total // len(counts)
+        short = {k: v for k, v in counts.items() if v < floor_each}
         if short:
             raise ValueError(
-                f"a balanced draw needs {total // len(counts)} of each "
+                f"a balanced draw needs {floor_each} of each "
                 f"stratum; these hold fewer: "
                 f"{ {k: counts[k] for k in short} }")
     elif rule == "proportional":

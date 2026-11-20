@@ -850,6 +850,32 @@ def test_a_balanced_draw_refuses_a_pool_whose_tier_is_too_small():
     assert "nowhere" in str(exc.value)
 
 
+def test_a_balanced_draw_of_three_strata_uses_the_floor_not_the_exact_share():
+    """Correction F: refuse a split that cannot be made, not one that can.
+
+    With three strata the exact share is not an integer, and comparing a
+    stratum's stock against it refused allocations that exist: {3, 4, 5}
+    for a total of 10 is feasible as 4/3/3 and was rejected because
+    3 < 3.33. Harmless at the two tiers and 10 per pool this experiment
+    draws -- there the floor and the exact share agree -- and still a
+    defect of the instrument.
+    """
+    got = draw_mod.allocate({"a": 3, "b": 4, "c": 5}, 10)
+    assert sum(got.values()) == 10
+    assert all(got[k] <= avail
+               for k, avail in {"a": 3, "b": 4, "c": 5}.items())
+    assert min(got.values()) >= 10 // 3
+    assert max(got.values()) - min(got.values()) <= 1
+    # An odd total over two strata is the same case.
+    odd = draw_mod.allocate({"nowhere": 5, "test-only": 40}, 11)
+    assert sum(odd.values()) == 11 and odd["nowhere"] == 5
+
+    # What the refusal is for: a stratum that cannot supply the floor.
+    with pytest.raises(ValueError) as exc:
+        draw_mod.allocate({"a": 2, "b": 4, "c": 5}, 10)
+    assert "balanced" in str(exc.value) and "'a': 2" in str(exc.value)
+
+
 def test_the_same_seed_draws_the_same_tasks_and_another_seed_does_not():
     doc = _fake_pools(40, 40)
     a = draw_mod.draw(doc, seed=11, per_pool=10)["tasks"]
