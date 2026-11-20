@@ -231,6 +231,7 @@ def _tab(env, initial_session_id=""):
             found["session"] = w
     assert all(found.values()), f"widgets not found: {sorted(found)}"
     found["refs"] = refs
+    found["tab"] = tab
     return found
 
 
@@ -345,3 +346,140 @@ def test_the_fork_button_makes_exactly_one_session_from_the_held_history(env):
     finally:
         proc.kill()
         proc.wait(timeout=30)
+
+
+# ---------------------------------------------------------------------------
+# The two choices, and the green direction
+# ---------------------------------------------------------------------------
+
+def _choose_new_session(tab, env):
+    """Take the "start a new session from it" choice, however it is offered.
+
+    The target asks for a line with two explicit choices and does not fix the
+    widget. Both honest forms are driven here: a button carrying the label,
+    or the label sent as a line (the form the builder's own tests use). A
+    test that only knew one form would pin the patch, not the contract.
+    """
+    labels = ("Start a new session from it",)
+    for w in _walk(tab["tab"]):
+        if isinstance(w, widgets.Button) and str(w.description or "").strip() in labels:
+            w.click()
+            return
+    _type_and_send(tab, labels[0])
+
+
+def test_choosing_a_new_session_writes_exactly_one_from_the_held_history(env):
+    """The first choice: a real new session that starts from the held history.
+
+    Red on main: no choice line exists at all, so choosing is impossible and
+    the send just mints an unrelated empty session.
+    """
+    _write_session(env, SID, "held job", "held-turn")
+    proc = _held_by_a_live_process(env)
+    try:
+        before = set(_session_files(env))
+        tab = _tab(env)
+        state = tab["refs"]["state"]
+        try:
+            _open_held_conversation(tab, env)
+            assert "held by a live session" in _chat_text(state)
+
+            _choose_new_session(tab, env)
+
+            new = sorted(n for n in set(_session_files(env)) - before
+                         if n.startswith("fork-"))
+            assert len(new) == 1, (
+                f"exactly one new session must come from the choice, got {new}")
+            forked = new[0].removesuffix(".json")
+            data = json.loads((env["tmp"] / "sessions" / new[0]).read_text())
+            history = [m.get("content") for m in data.get("engine_messages") or []]
+            assert "held-turn" in history, (
+                "the new session must start from the held conversation's "
+                f"history, got {history}")
+            assert env["SS"].session_lock_holder(SID) is not None, (
+                "the held conversation must not be taken from its holder")
+            assert state.get("active_session_id") == forked, (
+                "after choosing, the tab must hold the new session")
+            # The offer itself, asserted last: a target asks for the two
+            # choices on one line, but the BEHAVIOUR is what a red test must
+            # name, so it is checked only once the behaviour has passed.
+            # Lower-cased, because the existing refusal already ends "...
+            # or start a new session from it" and a patch may keep its words.
+            said = _chat_text(state).lower()
+            assert "start a new session from it" in said, (
+                f"the refusal never offers the choice it accepted:\n{said}")
+        finally:
+            tab["refs"]["shutdown"](save=False)
+    finally:
+        proc.kill()
+        proc.wait(timeout=30)
+
+
+def test_wait_opens_the_held_conversation_once_the_holder_ends(env):
+    """The second choice: keep the tab; when the holder ends, it opens itself.
+
+    Red on main: there is no refused state to wait in, so the tab never opens
+    the held conversation on its own. It leans on the tab's existing
+    background tick (``_background_tick``, :11605, every 10 s), which is the
+    only periodic path the tab has -- a bounded wait, with a deadline.
+    """
+    _write_session(env, SID, "held job", "held-turn")
+    proc = _held_by_a_live_process(env)
+    try:
+        before = set(_session_files(env))
+        tab = _tab(env)
+        state = tab["refs"]["state"]
+        try:
+            _open_held_conversation(tab, env)
+            assert "held by a live session" in _chat_text(state)
+            # The person decides to wait and then does nothing. The choice
+            # label is asserted at the END, with the first choice's, so this
+            # red names a behaviour (a send minted a session) and not a word.
+
+            # The holder goes away; nothing else happens.
+            proc.kill()
+            proc.wait(timeout=30)
+            (env["SS"]._SESSIONS_DIR / f"{SID}.lock").unlink(missing_ok=True)
+
+            deadline = time.monotonic() + 40.0
+            while time.monotonic() < deadline:
+                if state.get("active_session_id") == SID:
+                    break
+                time.sleep(0.25)
+            assert state.get("active_session_id") == SID, (
+                "when the holder ends the tab must open the held conversation "
+                "by itself; it stayed on "
+                f"{state.get('active_session_id')!r} for 40 s")
+            assert env["created"] == [], (
+                "waiting must not create a session of its own")
+            assert set(_session_files(env)) == before, (
+                "waiting must not write a second session")
+            assert "wait" in _chat_text(state).lower(), (
+                "the refusal never offered the wait choice it is expected to")
+        finally:
+            tab["refs"]["shutdown"](save=False)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=30)
+
+
+def test_an_ordinary_send_still_starts_its_session(env):
+    """The green direction: with no refusal, a send must start its session.
+
+    Green on main and it must STAY green: a patch that blocks every send
+    would pass the defect test and break the product. This is the guard the
+    builder checklist asks for ("does not fire when it should not").
+    """
+    tab = _tab(env)
+    state = tab["refs"]["state"]
+    try:
+        assert _chat_text(state) == "", "a fresh tab has not refused anything"
+        _type_and_send(tab, "an ordinary first message")
+        assert len(env["created"]) == 1, (
+            "an ordinary send with no refusal must start exactly one session, "
+            f"started {env['created']}")
+        assert state.get("active_session_id") == env["created"][0], (
+            "the tab must hold the session the send started")
+    finally:
+        tab["refs"]["shutdown"](save=False)
