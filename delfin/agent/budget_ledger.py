@@ -540,9 +540,11 @@ class BudgetLedger:
         says so when a particular provider leaves it out anyway).
 
         Precedence, widest first: an explicit ``run_budget_tokens``
-        attribute (a flag, a scheduler entry, a test), then an explicit
-        ``agent.run_budget_tokens`` setting — including a 0 there, which
-        lifts the ceiling — then :data:`DEFAULT_RUN_BUDGET_TOKENS`, whose
+        attribute (a flag, a scheduler entry, a test) — negative lifts
+        the ceiling for THIS run, the convention
+        :meth:`_run_budget_turns` already uses — then an explicit
+        ``agent.run_budget_tokens`` setting, including a 0 there, which
+        lifts it; then :data:`DEFAULT_RUN_BUDGET_TOKENS`, whose
         docstring states which measured sessions it was derived from.
 
         **Cost in prompt text:** none below 80 % of the ceiling, which
@@ -553,6 +555,8 @@ class BudgetLedger:
         tokens = int(getattr(engine, "run_budget_tokens", 0) or 0)
         if tokens > 0:
             return tokens
+        if tokens < 0:
+            return 0
         try:
             from delfin.user_settings import load_settings as _ls
             ag = (_ls() or {}).get("agent", {}) or {}
