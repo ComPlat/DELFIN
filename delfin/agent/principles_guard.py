@@ -48,11 +48,6 @@ def _has_body(text: str) -> bool:
     return _loader_has_body(text)
 
 
-def expected_digest() -> str:
-    """The pinned digest of the expected principles text."""
-    return EXPECTED_DIGEST
-
-
 def check(
     pack_dir: Path | str,
     expected_digests: list[str] | None = None,
