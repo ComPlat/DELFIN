@@ -165,6 +165,24 @@ def test_the_guard_detects_the_real_known_followups():
         f"the guard does not find the excluded defects: {found}")
 
 
+def test_no_followup_entry_is_stale(tmp_path, monkeypatch):
+    """A KNOWN_FOLLOWUPS entry that is no longer a real defect is a hole:
+    the guard would keep tolerating that function, so a later regression in
+    the file that was just fixed stays green. Every entry must still be
+    found by the scan.
+
+    Also checks the sharp end: an entry whose file has been FIXED fails
+    here, which is the reminder to delete it in the same commit.
+    """
+    guard = _guard()
+    hits = set(guard.fail_open_redactors())
+    real = [entry for entry in guard.KNOWN_FOLLOWUPS if entry in hits]
+    stale = sorted(set(guard.KNOWN_FOLLOWUPS) - set(real))
+    assert not stale, (
+        "these KNOWN_FOLLOWUPS entries no longer describe a fail-open "
+        f"function -- delete them in the fix commit: {stale}")
+
+
 def test_the_placeholder_is_one_constant_not_a_retold_literal():
     assert getattr(memory_store, "REDACT_FAILED_PLACEHOLDER", "") == PLACEHOLDER
     assert task_state._scrub("plain text") == "plain text"
