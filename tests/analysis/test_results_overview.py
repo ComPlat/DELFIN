@@ -319,22 +319,21 @@ def test_export_bytes_large_payload_single_run_js(tmp_path):
     assert len(ctx.scripts) == 2
 
 
-def _extract_export_js(monkeypatch):
+def _extract_export_js(tmp_path):
     """Build the js exactly as _export_bytes does, via a fake ctx."""
     pytest.importorskip("ipywidgets")
     from delfin.dashboard import tab_results_overview as tab
 
     class FakeCtx:
-        archive_dir = ""
-        calc_dir = ""
+        archive_dir = str(tmp_path / "empty_archive")
+        calc_dir = str(tmp_path / "empty_calc")
         scripts = []
 
         def run_js(self, script, *, keep=False):
             self.scripts.append(script)
 
-    import os
-    os.makedirs(FakeCtx.archive_dir, exist_ok=True)
-    os.makedirs(FakeCtx.calc_dir, exist_ok=True)
+    (tmp_path / "empty_archive").mkdir()
+    (tmp_path / "empty_calc").mkdir()
     widget, refs = tab.create_tab(FakeCtx())
     panel = refs["results_overview"]
     ctx = FakeCtx()
@@ -361,7 +360,7 @@ def test_export_bytes_script_is_valid_javascript(monkeypatch):
     node = shutil.which("node")
     if not node:
         pytest.skip("node not available: JS validity checked nowhere")
-    script = _extract_export_js(monkeypatch)
+    script = _extract_export_js(tmp_path)
     with tempfile.TemporaryDirectory() as td:
         path = os.path.join(td, "export_script.js")
         with open(path, "w", encoding="utf-8") as fh:
