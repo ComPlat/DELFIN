@@ -107,6 +107,77 @@ def test_metal_bond_excluded():
         assert not graph["is_metal"][p]
 
 
+# An Fe(NH2-CH2-CH2-S) chelate: 5-membered ring Fe-N-C-C-S, every
+# backbone bond single, non-aromatic, ring-flagged, and without a
+# metal endpoint.  The 2026-05-18 user finding: T6 rotamer diversity
+# rotated this chelate backbone.
+_FE_NCCS_CHELATE_XYZ = """\
+Fe      0.000000    0.000000    0.000000
+N       2.050000    0.000000    0.000000
+C       2.770000    1.270000    0.000000
+C       1.950000    2.500000    0.000000
+S       0.250000    2.150000    0.000000
+H       2.420000   -0.510000    0.810000
+H       2.420000   -0.510000   -0.810000
+H       3.420000    1.330000    0.880000
+H       3.420000    1.330000   -0.880000
+H       2.270000    3.080000    0.880000
+H       2.270000    3.080000   -0.880000
+"""
+
+
+def test_ring_bonds_excluded_synthetic():
+    """The ring rule alone excludes ring bonds from rotamer DOFs.
+
+    Control pair: a 6-carbon ring whose bonds are ring-flagged yields
+    zero DOFs; the identical topology with the ring flag off yields
+    all 6 backbone bonds as DOFs.  Neither graph contains a metal, so
+    the exclusion is attributable to the ring rule, not the metal rule.
+    """
+    n = 6
+
+    def ring_graph(is_ring):
+        return {
+            "n_atoms": n,
+            "atomic_nums": [6] * n,
+            "is_metal": [False] * n,
+            "neighbours": [[(i - 1) % n, (i + 1) % n] for i in range(n)],
+            "bonds": [tuple(sorted((i, (i + 1) % n))) + (1, False, is_ring)
+                      for i in range(n)],
+        }
+
+    assert rot.identify_rotamer_dofs(ring_graph(True), max_dofs=8) == []
+    dofs = rot.identify_rotamer_dofs(ring_graph(False), max_dofs=8)
+    assert len(dofs) == 6, f"expected all 6 backbone bonds, got {len(dofs)}"
+
+
+def test_chelate_ring_backbone_not_rotatable():
+    """The Fe(NH2-CH2-CH2-S) chelate ring yields zero rotamer DOFs.
+
+    The ring rule in ``identify_rotamer_dofs`` is the unconditional
+    successor of the Welle-5p-C hotfix that guarded this user finding;
+    the hotfix's env flags and helper API are gone.  This test pins
+    the finding motif end to end: the N-C, C-C and C-S backbone bonds
+    are single, non-aromatic ring bonds and none has a metal endpoint,
+    so the ring rule is the mechanism that excludes them (the metal
+    rule would not fire on them).
+    """
+    ob = rot._build_ob_mol_from_xyz(_FE_NCCS_CHELATE_XYZ)
+    if ob is None:
+        pytest.skip("Open Babel not installed")
+    graph = rot._graph_from_ob(ob)
+    backbone = [
+        (a, b) for a, b, order, aromatic, ring in graph["bonds"]
+        if order == 1 and not aromatic and ring
+        and not graph["is_metal"][a] and not graph["is_metal"][b]
+    ]
+    assert len(backbone) >= 3, (
+        f"OB did not perceive the chelate backbone as ring bonds: {backbone}"
+    )
+    dofs = rot.identify_rotamer_dofs(graph, max_dofs=8)
+    assert dofs == [], f"chelate ring backbone must not rotate, got {dofs}"
+
+
 def test_rodrigues_360_is_identity():
     """Rotating by 2π must return the same coordinates."""
     coords = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.5, 1.0, 0.0)]

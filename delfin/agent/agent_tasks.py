@@ -113,6 +113,18 @@ class TaskStore:
     # -- internal helpers --------------------------------------------------
 
     def _load(self) -> dict:
+        """The store, or an empty one where it is absent OR unreadable.
+
+        Lenient on purpose: a reader (``get``/``list``) asks what is
+        tracked, and a damaged file must not crash the tool. It does NOT
+        touch the file -- a reader that rewrote a ``.bak`` slot on every
+        failed read would overwrite the evidence of the first damage,
+        which is how a single-slot backup loses the original. The reason
+        is kept in ``last_load_error``: an empty list from here is a READ
+        FAILURE, not "nothing outstanding", and a caller that reports it
+        as the latter is asserting something it does not know. A WRITER
+        may not build on this answer -- see :meth:`_load_for_write`.
+        """
         if not self.path.exists():
             self.last_load_error = ""
             return {"next_id": 1, "tasks": []}
@@ -121,18 +133,30 @@ class TaskStore:
             self.last_load_error = ""
             return data
         except Exception as exc:
-            # Corrupt file — back it up and start fresh rather than crash
-            # the tool. The user can recover from the backup if needed.
-            # The reason is kept: an empty list from here is a READ
-            # FAILURE, and a caller that reports it as "nothing
-            # outstanding" is asserting something it does not know.
             self.last_load_error = f"{type(exc).__name__}: {exc}"[:200]
-            try:
-                bak = self.path.with_suffix(".json.bak")
-                bak.write_text(self.path.read_text(encoding="utf-8"))
-            except Exception:
-                pass
             return {"next_id": 1, "tasks": []}
+
+    def _load_for_write(self) -> dict:
+        """The store to modify, or raise: a damaged store is kept, not
+        written over.
+
+        A WRITER's read, distinct from :meth:`_load`, which may answer a
+        damaged file with "nothing is tracked" -- true for a reader and
+        destructive for a writer that would rebuild the file from it and
+        drop every task it held. On damage the file is moved to the dated
+        ``.unreadable-`` quarantine of ``agent/state_file.py`` (bytes
+        kept) and :class:`state_file.StateFileUnreadable` is raised:
+        a store that cannot be read cannot be safely replaced, so the
+        write is refused rather than proceeding to empty it.
+        """
+        from . import state_file as _sf
+        data, moved = _sf.read_json_for_write(self.path, default=None)
+        if moved is not None:
+            raise _sf.StateFileUnreadable(
+                f"{self.path} cannot be read; it was kept at {moved}. "
+                f"Refusing to write over it -- open it and copy out what "
+                f"you need, or delete it to start fresh.")
+        return data if isinstance(data, dict) else {}
 
     def _save(self, data: dict) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -149,7 +173,9 @@ class TaskStore:
         if not subject.strip():
             raise ValueError("subject must be non-empty")
         with self._lock:
-            data = self._load()
+            # A writer: a damaged store is kept and the create refused, not
+            # emptied by building a fresh store on top of it.
+            data = self._load_for_write()
             tid = int(data.get("next_id", 1))
             data["next_id"] = tid + 1
             now = _now_iso()
@@ -216,7 +242,9 @@ class TaskStore:
         add_blockers = fields.pop("add_blocked_by", None) or []
         rem_blockers = fields.pop("remove_blocked_by", None) or []
         with self._lock:
-            data = self._load()
+            # A writer: a damaged store is kept and the update refused, not
+            # emptied by building a fresh store on top of it.
+            data = self._load_for_write()
             for t in data.get("tasks", []):
                 if int(t["id"]) == int(task_id):
                     new_status = fields.get("status")
