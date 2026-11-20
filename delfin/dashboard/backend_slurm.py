@@ -450,9 +450,15 @@ class SlurmJobBackend(JobBackend):
         # cluster_submit applies (IO1), so the dashboard route cannot
         # skip it. A "refuse" finding stops the submit; its text lands
         # in stderr, exactly where callers show an sbatch refusal. A
-        # "warn" finding rides in stderr and the submit proceeds.
+        # "warn" finding rides on the SUCCESSFUL result's stdout next to
+        # the job id (D1: stderr is only shown when rc != 0, so a
+        # warning there would reach nobody). The env comes from
+        # os.environ (D2: cluster_tools passes dict(os.environ); with
+        # none the HOME rule could not fire and the routes would see
+        # different things).
         try:
-            refused, warned = hpc_io_check.check_submit(submit_script)
+            refused, warned = hpc_io_check.check_submit(
+                submit_script, env=dict(os.environ))
         except FileNotFoundError:
             # A submit script that does not exist is sbatch's own error
             # ("No such file"), unchanged below — nothing was checked
@@ -468,13 +474,12 @@ class SlurmJobBackend(JobBackend):
         if refused:
             return subprocess.CompletedProcess(
                 args=['sbatch'], returncode=1, stdout='',
-                stderr=('submit refused: the job script would load the shared '
-                        'Lustre file system. ' + ' '.join(refused)
+                stderr=('hpc_io_check refused: the job script would load the '
+                        'shared Lustre file system. ' + ' '.join(refused)
                         + ' Fix the script and submit again.'))
         if warned:
-            # Warnings ride along, not silently: appended to stderr, which
-            # the callers surface next to the job id.
-            _warn_text = ('hpc_io_check warning: ' + ' '.join(warned))
+            # The warning rides with the result, never silently.
+            _warn_text = ('hpc_io_check warn: ' + ' '.join(warned))
         else:
             _warn_text = ''
         env_vars = self._append_profile_env(env_vars)
@@ -535,12 +540,20 @@ class SlurmJobBackend(JobBackend):
             # instead of making the user wait out the squeue rate limit.
             self._invalidate_jobs_cache()
         if _warn_text:
-            # The warning rides with the result, never silently: appended
-            # to whatever stderr sbatch produced.
-            result = subprocess.CompletedProcess(
-                args=result.args, returncode=result.returncode,
-                stdout=result.stdout,
-                stderr=(result.stderr or '') + '\n' + _warn_text)
+            # D1: a successful submit's caller reads stdout (stderr is
+            # only shown when rc != 0), so the warning goes there, next
+            # to the job id. On a failure it rides in stderr as well so
+            # the reason is not lost.
+            if result.returncode == 0:
+                result = subprocess.CompletedProcess(
+                    args=result.args, returncode=result.returncode,
+                    stdout=(result.stdout or '') + _warn_text + '\n',
+                    stderr=result.stderr)
+            else:
+                result = subprocess.CompletedProcess(
+                    args=result.args, returncode=result.returncode,
+                    stdout=result.stdout,
+                    stderr=(result.stderr or '') + '\n' + _warn_text)
         return result
 
     @staticmethod
