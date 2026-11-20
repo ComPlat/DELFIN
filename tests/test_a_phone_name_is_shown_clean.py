@@ -16,7 +16,6 @@ from __future__ import annotations
 import pytest
 
 from _messenger_people_rig import Account
-from conftest import truthful_peer
 from delfin.messenger import pairing, store
 
 

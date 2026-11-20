@@ -32,7 +32,6 @@ import os
 import pytest
 
 from _messenger_people_rig import Account
-from conftest import truthful_peer
 from delfin.agent import audit_log, outcome_tracker, session_store
 from delfin.messenger import pairing, store
 from delfin.messenger.dashboard import PairPanel

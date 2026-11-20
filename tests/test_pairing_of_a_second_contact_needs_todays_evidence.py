@@ -25,7 +25,6 @@ import time
 import pytest
 
 from _messenger_people_rig import Account
-from conftest import truthful_peer
 from delfin.agent import security_events
 from delfin.messenger import pairing, store
 from delfin.messenger.people import OWNER
