@@ -1573,6 +1573,21 @@ class Supervisor:
             # second worker that would find the session's lock taken.
             latest = await asyncio.to_thread(past_sessions, str(cwd), "", 1)
             known = str(latest[0]["sessionId"]) if latest else ""
+            if not known:
+                # The store is on disk and a session's record reaches it
+                # after the turn that made it. Asked in that window --
+                # which is exactly what "continue right after starting" is
+                # -- the listing comes back empty and this started a SECOND
+                # session for a folder that already had one running. Rare,
+                # silent, and from the outside it reads as the agent having
+                # forgotten everything.
+                #
+                # The service knows what it hosts without consulting a
+                # file. It is asked only when the store answered nothing,
+                # so no other case changes: a store entry that names a
+                # session this service does not host still starts a fresh
+                # one, as before.
+                known = self._hosted_latest_for(cwd)
             if known and (known in self.sessions or known in self.dormant
                           or known in self._waking):
                 resume = known
@@ -1634,6 +1649,36 @@ class Supervisor:
         if worktree:
             out["worktree"] = worktree
         return out
+
+    def _hosted_latest_for(self, cwd: Path) -> str:
+        """The newest session this service hosts for exactly *cwd*, or "".
+
+        For ``continue`` when the session store has not answered yet: the
+        store is a file written after a turn, while this is what the
+        service is holding right now. Running sessions come first and the
+        newest of them wins (``started_at``); then a sleeping one, newest
+        last in insertion order, since a dormant record carries no start
+        time of its own.
+
+        Exactly *cwd*, not a folder below it: ``continue`` means the
+        folder's own latest session, and a session in a sub-directory is a
+        different session with a different workspace.
+        """
+        def same(value) -> bool:
+            try:
+                return Path(str(value or "")).resolve() == cwd.resolve()
+            except (OSError, ValueError):
+                return False
+
+        running = [(getattr(s, "started_at", 0.0), sid)
+                   for sid, s in self.sessions.items()
+                   if same(s.settings.get("cwd")
+                           or s.info.get("workspace"))]
+        if running:
+            return max(running)[1]
+        asleep = [sid for sid, rec in self.dormant.items()
+                  if same((rec.get("settings") or {}).get("cwd"))]
+        return asleep[-1] if asleep else ""
 
     def _sessions_in(self, path: Path) -> list[str]:
         """Ids of the running, starting and sleeping sessions whose folder
@@ -1857,7 +1902,12 @@ class Supervisor:
             self._write_roster()             # the kernel has it now; nothing to wake
         info = {k: v for k, v in (params.get("info") or {}).items()
                 if k in ("provider", "model", "effort", "mode", "approval", "title",
-                         "banner", "notices", "tasks", "auto", "background")}
+                         "banner", "notices", "tasks", "auto", "background",
+                         "suggestions",
+                         # The session's person, when it has one. A label,
+                         # not a boundary; the header carries it along with
+                         # the session id. Nothing filters on it yet.
+                         "person")}
         keep = params.get("keep") is not False
         settings: dict[str, Any] = {"cwd": str(cwd), "keep": keep}
         title = protocol.clean_title(params.get("title") or info.get("title") or "")

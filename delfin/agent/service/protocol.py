@@ -145,8 +145,18 @@ EVENTS: dict[str, dict[str, str]] = {
                      "mode": "string", "approval": "string",
                      "title": "string?", "banner": "[string]",
                      "notices": "[string]", "tasks": "[object]?",
+                     # Optional: the person this session belongs to, in
+                     # people mode. A label, not a boundary; an entry
+                     # without one stays valid. Attached by the egress
+                     # proxy in a later step, never a credential here.
+                     "person": "string?",
                      "bypassBlocked": "string?", "bypassConfirmed": "boolean?",
-                     "auto": "string?", "background": "[object]?"},
+                     "auto": "string?", "background": "[object]?",
+                     "suggestions": "[string]?"},
+    # suggestions: what the person could send next, as the dashboard offers
+    # it in its message box (the agent's marked offer, then the open tasks
+    # it left, pending first) -- a window shows the first in its empty
+    # prompt and Tab takes it (2026-11-16: the same in every window).
     # bypassBlocked: why shift+tab steps over bypassPermissions ("" when it
     # may stop there: the managed policy allows it and isolation holds
     # each command; posture_cycle.bypass_refusal); bypassConfirmed: its
@@ -166,7 +176,7 @@ EVENTS: dict[str, dict[str, str]] = {
                         "effort": "string?", "mode": "string?", "title": "string?",
                         "tasks": "[object]?", "bypassBlocked": "string?",
                         "bypassConfirmed": "boolean?", "auto": "string?",
-                        "background": "[object]?"},
+                        "background": "[object]?", "suggestions": "[string]?"},
     # idle | running | needs_input | ended. "running" covers everything the
     # session does on its own: a turn, a follow-up, waiting out an outage.
     "session.state": {"state": "string"},

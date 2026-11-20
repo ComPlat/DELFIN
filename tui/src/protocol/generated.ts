@@ -166,10 +166,12 @@ export interface SessionInfoEvent {
   "banner": string[]
   "notices": string[]
   "tasks"?: Record<string, unknown>[] | null
+  "person"?: string | null
   "bypassBlocked"?: string | null
   "bypassConfirmed"?: boolean | null
   "auto"?: string | null
   "background"?: Record<string, unknown>[] | null
+  "suggestions"?: string[] | null
   "type": "session.info"
   "session": string
   "ts": number
@@ -186,6 +188,7 @@ export interface SessionUpdatedEvent {
   "bypassConfirmed"?: boolean | null
   "auto"?: string | null
   "background"?: Record<string, unknown>[] | null
+  "suggestions"?: string[] | null
   "type": "session.updated"
   "session": string
   "ts": number

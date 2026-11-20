@@ -60,7 +60,7 @@ import os
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 #: Default for ``agent.endpoint_max_concurrency``. Zero disables the gate.
 DEFAULT_MAX_CONCURRENCY = 16
@@ -114,6 +114,11 @@ def display_url(url: str) -> str:
         return urlunsplit((p.scheme, host, p.path, "", ""))
     except Exception:
         return ""
+
+class SlotWaitCancelled(RuntimeError):
+    """The wait for a slot was ended by its caller (``should_stop``): the
+    person pressed Stop while the request still queued for the endpoint."""
+
 
 class SlotWaitTimeout(RuntimeError):
     """No slot became free within :data:`_SLOT_WAIT_TIMEOUT_S`."""
@@ -260,9 +265,16 @@ class EndpointGate:
     client.
     """
 
-    def __init__(self, base_url: str, model: str = "") -> None:
+    def __init__(self, base_url: str, model: str = "",
+                 interactive: bool = False) -> None:
         self.base_url = base_url or ""
         self.model = model or ""
+        # Interactive = a session a person is talking to (dashboard, TUI,
+        # phone/messenger): it scans only for the reserved lowest slot, so
+        # it never queues behind headless runs (--unattended, swarm). Headless
+        # (the default) never takes slot-0. Read per gate; a request may also
+        # pass ``interactive`` at acquire() to override.
+        self.interactive = bool(interactive)
         # Per-model is the DEFAULT: a slow model's congestion must not
         # throttle the fast models behind the same endpoint. The env var
         # now only DISABLES it (flip falsy -> legacy one-limit-per-endpoint);
@@ -417,8 +429,9 @@ class EndpointGate:
 
     # -- acquire / release ---------------------------------------------------
 
-    def acquire(self, *, timeout_s: float = _SLOT_WAIT_TIMEOUT_S
-                ) -> Optional[int]:
+    def acquire(self, *, timeout_s: float = _SLOT_WAIT_TIMEOUT_S,
+                should_stop: Optional[Callable[[], bool]] = None,
+                interactive: Optional[bool] = None) -> Optional[int]:
         """Take one slot, or None when the gate is disabled.
 
         Polls the slot files with non-blocking flocks: slot ``i`` is taken
@@ -428,6 +441,13 @@ class EndpointGate:
         raises except :class:`SlotWaitTimeout` after ``timeout_s`` with no
         slot free anywhere (the caller turns that into the same
         transient-retry path a stalled request already takes).
+
+        ``interactive`` overrides the gate's session kind for one request
+        (or carries it on the gate when built with ``interactive=True``):
+        an interactive request takes slot-0 first, then any free slot (so
+        it never queues behind headless runs, and two of the person's
+        sessions use two slots); a headless request scans slots 1..N-1
+        only and, with more than one slot, never takes slot-0.
 
         With per-model limits on, the request ALSO takes one slot in the
         endpoint's own total-cap gate ``_cap_dir``, so N models each at
@@ -445,6 +465,8 @@ class EndpointGate:
             return None
         limit = self.current_limit(dirpath)
         deadline = time.monotonic() + max(0.0, float(timeout_s))
+        interactive = (self.interactive
+                       if interactive is None else bool(interactive))
         if (getattr(self, "_held_fd", None) is not None
                 or getattr(self, "_cap_fd", None) is not None):
             # Re-entrant acquire would overwrite the outer slot's descriptor
@@ -454,7 +476,8 @@ class EndpointGate:
             raise RuntimeError(
                 "EndpointGate already holds a slot; build a fresh "
                 "EndpointGate for the second request")
-        fd, index = self._take_slot(dirpath, limit, deadline)
+        fd, index = self._take_slot(dirpath, limit, deadline, should_stop,
+                                    interactive=interactive)
         if fd is None:
             return None                       # gate broken, go ungated
         self._held_fd = fd
@@ -464,9 +487,16 @@ class EndpointGate:
                 self._close(fd); self._held_fd = None
                 return None                   # cap gate broken, ungated
             try:
+                # NO reservation in the endpoint's total-cap gate: it
+                # protects the endpoint's total and must keep the FULL
+                # capacity for whoever loads it -- a cap of 2 must still
+                # serve two headless requests. The reservation only
+                # decides WHICH per-model slot a person's request takes,
+                # so a person never queues behind that model's headless
+                # runs; the cap gate just counts everyone equally.
                 cap_fd, _ = self._take_slot(cap_dir, _config_limit(),
-                                            deadline)
-            except SlotWaitTimeout:
+                                            deadline, should_stop)
+            except (SlotWaitTimeout, SlotWaitCancelled):
                 # The endpoint is saturated by OTHER models: never leave a
                 # model slot held ungated. Free it and let the caller treat
                 # the wait as what it was -- waiting on the endpoint.
@@ -479,19 +509,57 @@ class EndpointGate:
         return index
 
     def _take_slot(self, dirpath: Path, n_slots: int,
-                   deadline: float):
+                   deadline: float,
+                   should_stop: Optional[Callable[[], bool]] = None,
+                   *, interactive=None):
         """Flock one free slot file in ``dirpath`` within ``deadline``.
+
+        ``interactive`` selects the pool of slots the request scans:
+
+          - ``True``  a person's session: slot-0 first, then any free slot
+                      (two of the person's sessions use slot-0 and slot-1
+                      instead of queueing on one slot);
+          - ``False`` headless: slots ``1 .. n_slots-1`` only -- with more
+                      than one slot it NEVER takes slot-0, so the person's
+                      slot stays free even under full headless load;
+          - ``None``  no reservation (the endpoint-wide cap gate): every
+                      slot, so the endpoint's total capacity serves whoever
+                      loads it. The session kind is set per gate and per
+                      request by each surface -- not inherited from a
+                      process-wide env var, so headless children of an
+                      attended session are never mistaken for it.
+
+        So a person talking to the session never queues behind headless
+        runs, headless still progress on the rest of the cap, and the total
+        concurrency never exceeds ``n_slots``.
 
         Returns ``(fd, index)`` on success, ``(None, None)`` when the gate
         is broken (an open or flock error -- the request runs ungated),
         and raises :class:`SlotWaitTimeout` when ``deadline`` passes with
-        every slot held. While it waits it reflects the in-use count into
-        :attr:`wait_notice`, which the stream loop surfaces to the user.
+        every slot of the request's pool held. While it waits it reflects
+        the in-use count into :attr:`wait_notice`, which the stream loop
+        surfaces to the user.
         """
+        if interactive is None:
+            # The endpoint-wide cap gate: no reservation, full capacity for
+            # whoever loads it -- it protects the endpoint's total, not a
+            # person's queueing position.
+            my_slots = range(n_slots)
+        elif interactive:
+            # A person's session: slot-0 first, then any free slot, so two
+            # sessions of the person use two slots rather than queueing on
+            # the single reserved one.
+            my_slots = [*range(1), *range(1, n_slots)]
+        else:
+            # Headless: slots 1..N-1 only. With more than one slot it never
+            # takes slot-0 -- even under saturation, so headless can never
+            # put the person behind them again. A single slot (N==1) has no
+            # second slot to reserve; everyone shares it.
+            my_slots = range(1, n_slots) if n_slots > 1 else range(n_slots)
         announced = False
         while True:
             in_use = 0
-            for i in range(n_slots):
+            for i in my_slots:
                 slot = dirpath / f"slot-{i}"
                 try:
                     fd = os.open(str(slot), os.O_RDWR | os.O_CREAT, 0o600)
@@ -510,16 +578,21 @@ class EndpointGate:
                 # The fd now holds the flock for this process's lifetime;
                 # release() undoes it. A process that dies without
                 # releasing has the kernel close it: the slot frees itself.
-                if in_use:
-                    self.wait_notice = (
-                        f"waiting for a slot on "
-                        f"{self.base_url or 'endpoint'}: {in_use} in use")
+                # A slot free at once is no wait: nothing is said (it read
+                # "waiting for a slot" with a slot taken on the first pass).
                 return fd, i
             if not announced:
                 announced = True
                 self.wait_notice = (
                     f"waiting for a slot on {self.base_url or 'endpoint'}:"
                     f" {in_use} in use")
+            if should_stop is not None:
+                try:
+                    stop = bool(should_stop())
+                except Exception:
+                    stop = False
+                if stop:
+                    raise SlotWaitCancelled("stopped while waiting for a slot")
             if time.monotonic() >= deadline:
                 raise SlotWaitTimeout(
                     f"no slot on {display_url(self.base_url)} within the "
@@ -626,12 +699,42 @@ def report_result(gate: Optional["EndpointGate"], *,
         pass
 
 
-def for_client(base_url: str, model: str) -> Optional[EndpointGate]:
+_MISSING = object()
+
+
+#: Whether this process's current session serves a person (attended). A
+#: Python module global, NOT an os.environ value: it is set by the surface
+#: that built the engine (endpoint_gate.set_process_interactive) and it is
+#: NOT inherited by a child process -- a delegate, a `--unattended` run or a
+#: background job that forks+execs starts with the default ``False`` and
+#: sets its own flag if it is itself attended. This is why headless children
+#: of an attended session are never mistaken for a person.
+_process_interactive = False
+
+
+def set_process_interactive(flag: bool) -> None:
+    """Record whether this process serves a person (attended). Set by the
+    engine at session start from the surface that built it; headless runs
+    (``--unattended``, delegates, swarm members) leave it ``False``."""
+    global _process_interactive
+    _process_interactive = bool(flag)
+
+
+def for_client(base_url: str, model: str,
+               interactive: object = _MISSING) -> Optional[EndpointGate]:
     """The gate a client's request round uses, or None when disabled.
     Constructed per round so a changed setting applies without
-    rebuilding the client."""
+    rebuilding the client.
+
+    ``interactive`` is the session kind, set by the surface that built the
+    engine (``set_process_interactive``); a caller may also pass it per
+    request. An attended TUI, dashboard or phone/messenger session reserves
+    the gate's lowest slot, so a person never queues behind headless runs
+    on the same endpoint key."""
+    if interactive is _MISSING:
+        interactive = _process_interactive
     try:
-        gate = EndpointGate(base_url, model)
+        gate = EndpointGate(base_url, model, interactive=bool(interactive))
         return gate if gate.enabled else None
     except Exception:
         return None

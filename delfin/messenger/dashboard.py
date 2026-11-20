@@ -62,7 +62,13 @@ class DashboardSession:
                                       'preview': req.preview, 'options': options}))
         ev = self.state.get('_ask_user_event')
         detected = self.state.get('_pending_question')
-        if self.question and detected and not (ev and not ev.is_set()):
+        # The detected question belongs to the session whose turn found it
+        # (state['_pending_question_sid']); the tab's state dict is shared
+        # by every session the tab shows, so without this binding the OLD
+        # session's question is published as the NEW session's too and the
+        # phone's plain line is taken as its answer.
+        if self.question and detected and self.state.get('_pending_question_sid') == self.sid \
+                and not (ev and not ev.is_set()):
             choices = [f'{number}: {label}' for number, label in detected.get('options', [])]
             current.append((detected, {'kind': 'ask', 'question': self.state.get('_last_answer_text', '')[-1400:],
                                        'choices': choices, 'detected': True, 'options': []}))
@@ -130,11 +136,20 @@ class DashboardSession:
             self.pending()
             entry = self._requests.get(command.get('requestId'))
             if not entry:
-                return {'applied': False}
+                # The question was answered at the computer, expired or
+                # replaced: the phone is told so, and nothing is injected
+                # into any session as a prompt.
+                return {'applied': False, 'error': 'Request expired or belongs to another session. Call pending again.'}
             obj, fields = entry
             choice = command.get('choice')
             if fields['kind'] == 'ask':
                 if fields.get('detected'):
+                    # The question card binds to the session whose turn
+                    # found it; a reply whose question is gone (cleared
+                    # with the state, or another session's) answers
+                    # nothing and is not a prompt for anything.
+                    if self.state.get('_pending_question') is not obj:
+                        return {'applied': False, 'error': 'Request expired or belongs to another session. Call pending again.'}
                     return {'applied': bool(self.question(command.get('text', '')))}
                 return {'applied': bool(self.answer(command.get('text', '')))}
             if choice not in {o['key'] for o in fields['options']}:

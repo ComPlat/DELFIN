@@ -2,3 +2,6 @@
 # The server half runs under bash and python on Linux.
 *.sh text eol=lf
 *.py text eol=lf
+# The page a newcomer double-clicks into Notepad on an unknown Windows.
+# Not *.txt: SHA256SUMS.txt is generated and parsed here, not read there.
+START-HERE.txt text eol=crlf

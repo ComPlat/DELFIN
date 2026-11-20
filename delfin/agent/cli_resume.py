@@ -78,6 +78,7 @@ def _load_row(path: Path) -> dict[str, Any] | None:
         "started": float(data.get("created_at", 0) or 0),
         "updated_at": float(data.get("updated_at", 0) or 0),
         "model": str(data.get("model") or ""),
+        "person": str(data.get("person") or ""),
         "workspace": str(data.get("workspace") or ""),
         "turns": len(chat),
         "last_task_line": last_user,

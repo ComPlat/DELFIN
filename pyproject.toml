@@ -215,7 +215,7 @@ browser = [
 # choice: the driver imports asyncua lazily and works against an in-process
 # transport for everything else, and the test suite never needs it.
 lab-opcua = [
-    "asyncua>=1.0,<2",
+    "asyncua>=1.0,<3",
 ]
 csp = [
     "mpi4py",

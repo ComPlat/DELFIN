@@ -566,6 +566,23 @@ def _the_suite_opens_no_browser():
         os.environ["TERM_PROGRAM"] = term
 
 
+@pytest.fixture(autouse=True)
+def _each_test_starts_as_a_headless_process():
+    """The endpoint gate's session kind is a process-wide flag that an
+    attended session start sets (endpoint_gate.set_process_interactive).
+    Many tests start sessions in-process; without a reset the flag of one
+    leaks into every later test, and a gate test then measured an
+    interactive process where it built a headless one."""
+    try:
+        from delfin.agent import endpoint_gate
+    except Exception:
+        yield
+        return
+    endpoint_gate.set_process_interactive(False)
+    yield
+    endpoint_gate.set_process_interactive(False)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _the_suite_does_not_write_into_the_checkout():
     """Fail the run when new paths appeared in the checkout.
@@ -786,6 +803,81 @@ def _each_test_starts_with_no_failed_wrap(monkeypatch):
         monkeypatch.setattr(_ac, "_BWRAP_RUNTIME_FAILURE", None)
     except Exception:
         pass
+    yield
+
+
+#: Module-level markers that make something happen ONCE per process --
+#: a notice said once, an event recorded once, a measurement window the
+#: whole process feeds. In production that is the point: a person is not
+#: told the same thing on every request. In the suite one process runs
+#: every test, so the first test to trip one silences it for the rest,
+#: and a test that asserts the notice passes alone and fails behind a
+#: neighbour.
+#:
+#: Measured 2026-11-19, two of these in one evening:
+#:
+#: * ``_ENDPOINT_TTFT_S`` is fed by every completed stream round. Under
+#:   three samples the watcher's wait is the default; from three it is
+#:   computed and clamped to a 5 s floor. Stubbed rounds leaving 0.0006 s
+#:   behind were enough -- the floor decides -- and a classifier test
+#:   expecting a 0.4 s verdict to be late failed on CI as ``assert 0 ==
+#:   1`` in a shard, on a branch that does not touch the classifier.
+#: * ``_MCP_WITHHELD_REPORTED`` records a withheld tool description once
+#:   per tool. Running the test that asserts that event twice in one
+#:   process fails the second time: ``assert 'mcp_description_withheld'
+#:   in ['mcp_pinned']``. Latent rather than firing -- no current
+#:   neighbour withholds the same tool -- but two files already share the
+#:   tool name it is keyed by.
+#:
+#: Each entry is (module, attribute). Emptied, not replaced, so a
+#: reference taken at import time keeps pointing at the live object.
+#: test_a_report_once_marker_is_isolated.py asserts this list still
+#: covers what the package declares.
+_REPORT_ONCE_MARKERS: tuple[tuple[str, str], ...] = (
+    ("delfin.agent.api_client", "_OVERLAY_SAID"),
+    ("delfin.agent.api_client", "_MCP_WITHHELD_REPORTED"),
+    ("delfin.agent.api_client", "_SLOW_TEST_WS"),
+    ("delfin.agent.api_client", "_ENDPOINT_TTFT_S"),
+    ("delfin.agent.egress_proxy", "_SSH_REMOTE_NOTED"),
+    ("delfin.agent.bash_jobs", "_IN_USE_NOTED"),
+    ("delfin.agent.bash_jobs", "_IN_USE_NOTES"),
+    ("delfin.agent.bash_jobs", "_LOCK_TIMEOUTS"),
+    ("delfin.agent.mcp_client", "_PIN_NOTED"),
+    ("delfin.agent.container_exec", "_ANNOUNCED"),
+    ("delfin.agent.exchange", "_ANNOUNCED"),
+    ("delfin.agent.workspace_trust", "_ANNOUNCED"),
+    ("delfin.agent.shell_changes", "_SAID"),
+    ("delfin.agent.egress_proxy", "_SENT"),
+    ("delfin.esd_module", "_WARNED"),
+    ("delfin.messenger.store", "_REFUSED_SEEN"),
+    ("delfin.config", "_SEQUENCE_NOTES_GIVEN"),
+    ("delfin.dashboard.gfn_optimize", "_AUTO_TRIED"),
+)
+
+
+@pytest.fixture(autouse=True)
+def _a_report_once_marker_does_not_leak():
+    """Empty the once-per-process markers before each test.
+
+    Emptied in place rather than reassigned: a module that bound the
+    object at import time (or a test holding a reference) keeps seeing
+    the same container.
+
+    Modules are taken from ``sys.modules`` and never imported here. A
+    marker in a module this test never loaded cannot have been tripped,
+    and importing one to empty it would pull the dashboard (and its
+    widget stack) into every test in the suite to protect nothing.
+    """
+    import sys
+
+    for module_name, attr in _REPORT_ONCE_MARKERS:
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        try:
+            getattr(module, attr).clear()
+        except Exception:
+            continue
     yield
 
 
@@ -1541,7 +1633,7 @@ _SLOW_TEST_FILES = frozenset({
     "test_welle5l_t3b_daqiwaz_pyridine_coverage.py",
     # (b) order-dependent (pass only in the full serial context)
     "test_no_regression_undefined_names.py", "test_post_optimizer.py",
-    "test_theorem_d_asymmetric.py", "test_welle5p_c_hotfix.py",
+    "test_theorem_d_asymmetric.py",
 })
 
 

@@ -11,9 +11,75 @@ set -euo pipefail
 #
 #   delfin-people                  overview
 #   delfin-people --attach NAME    watch that person's dashboard tmux session
+#   delfin-people --keys           the launcher keys that may log in
+#   delfin-people --add-key NAME   let a new PC in (public key on stdin)
 #
 # They are one Unix user: this is an overview, not a boundary between them.
 # ============================================================================
+
+# -- letting a new person in -------------------------------------------------
+# On a server that takes passwords, the launcher registers a PC by itself:
+# the first login is with the password and remote_bootstrap.sh appends the
+# key. Where PasswordAuthentication is off -- as on a hardened box -- that
+# first login cannot happen, so a new person is locked out by a key that is
+# only added once they are in. Measured on the lab Pi on 2026-11-19.
+#
+# --add-key is that one step, with the restriction the bootstrap applies.
+# Appending by hand is what puts an unrestricted key in authorized_keys: a
+# plain `ssh-ed25519 ...` line carries agent forwarding, X11 and ~/.ssh/rc,
+# none of which the launcher uses.
+add_key() {
+    local name="$1" line body
+    # The bootstrap's own rule, leading dash included: a name is used to
+    # build a path and ends up in a key comment, and `-rf` is a name there
+    # only until something passes it to a command.
+    if [[ ! "$name" =~ ^[a-z0-9_][a-z0-9_-]{0,31}$ ]]; then
+        echo "usage: delfin-people --add-key NAME < key.pub" >&2
+        echo "NAME is the Windows user name: a-z, 0-9, _ and -" >&2
+        exit 2
+    fi
+    if [[ -f "$HOME/.config/delfin/launcher-no-keys.conf" ]]; then
+        echo "this account refuses launcher keys (launcher-no-keys.conf)" >&2
+        exit 1
+    fi
+    IFS= read -r line || true
+    line="${line%$'\r'}"
+    # The bootstrap's own check, so one route cannot accept what the other
+    # refuses. One line only: a second would be appended unchecked.
+    if ! printf '%s\n' "$line" \
+        | grep -Eq '^ssh-ed25519 [A-Za-z0-9+/]+={0,2}( [A-Za-z0-9@._-]{1,64})?$'; then
+        echo "not one ed25519 public key line; nothing was added" >&2
+        exit 1
+    fi
+    body="$(printf '%s' "$line" | cut -d' ' -f2)"
+    if grep -qsF " $body" "$HOME/.ssh/authorized_keys"; then
+        echo "that key may already log in; nothing was added"
+        exit 0
+    fi
+    (umask 077 && mkdir -p "$HOME/.ssh" \
+        && printf 'restrict,port-forwarding,pty %s delfin-launcher-%s\n' \
+            "$(printf '%s' "$line" | cut -d' ' -f1-2)" "$name" \
+            >> "$HOME/.ssh/authorized_keys")
+    echo "added for $name. Revoke by deleting its delfin-launcher-$name line."
+}
+
+if [[ "${1:-}" == "--add-key" ]]; then add_key "${2:-}"; exit 0; fi
+
+if [[ "${1:-}" == "--keys" ]]; then
+    # Who may log in without a password, and under which restriction.
+    if [[ ! -f "$HOME/.ssh/authorized_keys" ]]; then echo "no authorized_keys"; exit 0; fi
+    printf '%-24s %s\n' WHO RESTRICTION
+    while IFS= read -r line; do
+        [[ "$line" == \#* || -z "$line" ]] && continue
+        who="${line##* }"
+        case "$line" in
+            restrict,*) how="${line%% *}" ;;
+            *) how="NONE - full access" ;;
+        esac
+        printf '%-24s %s\n' "$who" "$how"
+    done < "$HOME/.ssh/authorized_keys"
+    exit 0
+fi
 
 account_home="$(getent passwd "$(id -un)" | cut -d: -f6)"
 base="$account_home/people"

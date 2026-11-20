@@ -167,8 +167,18 @@ def run(
     if isinstance(args, (str, bytes)):
         raise TypeError("contained_run.run takes an argv list, not a "
                         "command line; use contained_run.run_shell for one")
+    args = list(args)
+    if args and os.path.basename(args[0]) == "bwrap":
+        # BW1: bind targets must exist at the moment bwrap starts -- the
+        # one boundary that observes the state bwrap actually sees. An
+        # argv built earlier can name a target that vanished since (the
+        # measured EROFS failure: bwrap's mkdir-parents under a read-only
+        # bind of /). Createable targets are made to exist here, with the
+        # owner's mode; a mask is never degraded to a -try form.
+        from . import cage_binds as _cb
+        _cb.ensure_argv_bind_targets(args)
     proc = subprocess.Popen(
-        list(args), cwd=cwd, env=env, shell=False,
+        args, cwd=cwd, env=env, shell=False,
         stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         start_new_session=True,

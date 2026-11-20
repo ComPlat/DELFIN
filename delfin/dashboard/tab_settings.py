@@ -443,7 +443,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     jobmon_provider_input = widgets.Dropdown(
         options=[('Agent default', ''), ('KIT Toolbox', 'kit'),
                  ('Anthropic', 'claude'), ('OpenAI', 'openai'),
-                 ('Ollama', 'ollama')],
+                 ('Helmholtz Blablador', 'blablador'), ('Ollama', 'ollama')],
         value='', description='Provider',
         layout=widgets.Layout(width='240px', height='28px'),
     )
@@ -4730,9 +4730,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         value=(
             '<span style="color:#757575;font-size:12px;">'
             '<b>CLI backend</b> uses your Anthropic subscription via OAuth (no API key needed).<br>'
-            '<b>API backend</b> requires the <code>ANTHROPIC_API_KEY</code> environment variable '
-            '(set it in your shell before launching the dashboard). '
-            'Keys are never stored on disk.'
+            '<b>API backend</b> requires <code>ANTHROPIC_API_KEY</code>. '
+            'Set it under <b>Diagnosis &amp; API key</b> in this tab, or '
+            'export it before launching the dashboard.'
             '</span>'
         ),
     )
@@ -5003,6 +5003,366 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     )
 
     # ══════════════════════════════════════════════════════════════════════
+    # Diagnosis & repair -- so a fix never requires a terminal
+    # ══════════════════════════════════════════════════════════════════════
+    # `delfin-agent doctor` already answers "what is wrong and what fixes
+    # it": every row carries a status, a detail, prose for the person and,
+    # where there is one, the machine-actionable `command` or `setting`. It
+    # was reachable only from a command line, which on a shared machine
+    # means the fix is one most people never make.
+    #
+    # What gets a button and what does not: a `setting` is written here, the
+    # way every other row of this tab writes one. A `command` is SHOWN, to
+    # copy -- all three of them install or set up software
+    # (pip install …[test], tui --setup, mlp_setup plan), and an
+    # installation is the person's decision, not a button's.
+    diag_out = widgets.HTML(
+        '<div style="color:#78909c; font-size:12px;">'
+        'Not run yet. The check is read-only.</div>')
+    diag_btn = widgets.Button(
+        description='Run diagnosis', icon='stethoscope',
+        tooltip='Read-only: reports what is missing and what would fix it',
+        layout=widgets.Layout(width='170px'))
+
+    # The doctor's statuses are upper case (PASS/WARN/FAIL). Every lookup and
+    # every comparison below folds the case, because the first version did
+    # not: the colours all fell back to grey and `status == 'pass'` never
+    # matched, so the 24 passing rows were printed under a heading that said
+    # only what needs attention is listed.
+    _DIAG_COLOUR = {'pass': '#2e7d32', 'warn': '#ef6c00', 'fail': '#c62828'}
+
+    def _render_diagnosis(rows):
+        counts = {}
+        for r in rows:
+            counts[str(r.get('status') or '')] = counts.get(
+                str(r.get('status') or ''), 0) + 1
+        head = ' · '.join(
+            f'<b style="color:'
+            f'{_DIAG_COLOUR.get(str(s).lower(), "#546e7a")}">{n} {s}</b>'
+            for s, n in sorted(counts.items()))
+        parts = [f'<div style="font-size:12px; margin-bottom:4px;">{head}</div>']
+        for r in rows:
+            status = str(r.get('status') or '')
+            if status.lower() == 'pass':
+                continue          # only what needs attention is listed
+            colour = _DIAG_COLOUR.get(status.lower(), '#546e7a')
+            check = html.escape(str(r.get('check') or ''))
+            detail = html.escape(str(r.get('detail') or ''))
+            fix = html.escape(str(r.get('fix') or ''))
+            cmd = str(r.get('command') or '')
+            line = (f'<div style="margin:3px 0; font-size:12px;">'
+                    f'<b style="color:{colour}">{status}</b> '
+                    f'<b>{check}</b> — {detail}')
+            if fix:
+                line += f'<br><span style="color:#78909c;">fix: {fix}</span>'
+            if cmd:
+                line += ('<br><code style="font-size:11px;">'
+                         + html.escape(cmd) + '</code>')
+            parts.append(line + '</div>')
+        if len(parts) == 1:
+            parts.append('<div style="color:#2e7d32; font-size:12px;">'
+                         'Nothing needs attention.</div>')
+        return ''.join(parts)
+
+    def _run_diagnosis(_b=None):
+        diag_out.value = ('<div style="color:#78909c; font-size:12px;">'
+                          'Checking …</div>')
+        try:
+            from delfin.agent import doctor as _doc
+            rows = _doc.run_doctor(str(getattr(ctx, 'agent_workspace', '.')
+                                       or '.'))
+        except Exception as exc:
+            diag_out.value = ('<div style="color:#c62828; font-size:12px;">'
+                              'The check could not run: '
+                              + html.escape(str(exc)) + '</div>')
+            return
+        diag_out.value = _render_diagnosis(rows)
+        _repair_refresh(rows)
+
+    diag_btn.on_click(_run_diagnosis)
+
+    # -- API keys ---------------------------------------------------------
+    # Renewing a key must not require a terminal either. What this costs,
+    # stated in the tab rather than left for the reader to discover: the
+    # value travels through the browser and the websocket into the kernel,
+    # which `delfin-agent credentials set` (getpass, in the process) avoids.
+    # Loopback and a login, so it does not leave the machine -- but it is
+    # one more path, and the stricter one is named beside it.
+    #
+    # The field is cleared BEFORE the value is stored: if the store raises,
+    # the browser is already not holding it any more and the person types it
+    # again. Nothing ever echoes it, and the status line below is built from
+    # credentials.list_credentials(), which masks every value.
+    key_name = widgets.Dropdown(
+        options=['KIT_TOOLBOX_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY',
+                 'BLABLADOR_API_KEY'],
+        value='KIT_TOOLBOX_API_KEY',
+        layout=widgets.Layout(width='230px'))
+    key_value = widgets.Password(
+        placeholder='paste the key (not shown, not stored in history)',
+        layout=widgets.Layout(width='280px'))
+    key_btn = widgets.Button(description='Store key', icon='key',
+                             layout=widgets.Layout(width='140px'))
+    key_status = widgets.HTML()
+
+    def _refresh_key_status(note: str = ''):
+        try:
+            from delfin.agent import credentials as _cred
+            items = _cred.list_credentials()
+            where = _cred.configured_store()
+        except Exception as exc:
+            key_status.value = ('<div style="color:#c62828; font-size:12px;">'
+                                'cannot read the store: '
+                                + html.escape(str(exc)) + '</div>')
+            return
+        # The SOURCE is shown, not just the name: a key that comes from the
+        # environment is not stored and disappears with the shell, and -- the
+        # part that would otherwise mislead -- the lookup order is
+        # env > keyring > file, so storing a new value here has NO effect
+        # while an environment variable of that name is set. Saying "stored"
+        # without that is a dashboard telling the person something untrue.
+        if items:
+            shown = ', '.join(
+                f'{html.escape(str(n))} '
+                f'<span style="color:#90a4ae;">({html.escape(str((i or {}).get("source") or "?"))})</span>'
+                for n, i in (items.items() if hasattr(items, 'items')
+                             else [(x, {}) for x in items]))
+            body = f'found: {shown} &middot; new keys go to {html.escape(str(where))}'
+        else:
+            body = 'no key found yet'
+        env_shadow = ''
+        try:
+            sel = str(key_name.value or '')
+            src = str(((items or {}).get(sel) or {}).get('source') or '')
+            if src == 'env':
+                env_shadow = (
+                    '<br><b style="color:#ef6c00;">'
+                    + html.escape(sel) + ' currently comes from an '
+                    'environment variable, which takes precedence: a value '
+                    'stored here stays unused until that variable is gone.'
+                    '</b>')
+        except Exception:
+            env_shadow = ''
+        key_status.value = (
+            f'<div style="color:#78909c; font-size:12px;">{body}{env_shadow}'
+            + (f'<br><b style="color:#2e7d32;">{html.escape(note)}</b>'
+               if note else '')
+            + '</div>')
+
+    def _store_key(_b=None):
+        value = key_value.value
+        key_value.value = ''          # first, before anything can fail
+        name = str(key_name.value or '').strip()
+        if not value or not value.strip():
+            _refresh_key_status('nothing entered — nothing changed')
+            return
+        from delfin.agent import credentials as _cred
+        # Raised AFTER a successful write, when the previous store could
+        # not be read and was moved aside: the key IS stored, so a failure
+        # here would send the person to type it again for nothing. Looked
+        # up with getattr and defaulting to () -- an empty tuple catches
+        # nothing -- so this file does not depend on which of the two
+        # changes reaches main first.
+        _moved_aside = getattr(_cred, 'CredentialStoreUnreadable', ())
+        try:
+            _cred.set_credential(name, value)
+        except _moved_aside as exc:
+            # The message names the file, never a value, which is why it
+            # can be shown.
+            _refresh_key_status(f'{name} stored')
+            key_status.value += (
+                '<div style="color:#ef6c00; font-size:12px;">'
+                + html.escape(str(exc)) + '</div>')
+            return
+        except Exception as exc:
+            # The message of a credential error may not carry the value;
+            # only the exception's type is shown.
+            key_status.value = (
+                '<div style="color:#c62828; font-size:12px;">'
+                f'not stored ({html.escape(type(exc).__name__)}). The key was '
+                'discarded; nothing was written.</div>')
+            return
+        finally:
+            value = ''
+        _refresh_key_status(f'{name} stored')
+
+    key_btn.on_click(_store_key)
+    key_name.observe(lambda _c: _refresh_key_status(), names='value')
+    _refresh_key_status()
+
+    # -- Repair a row the diagnosis found -------------------------------
+    # The engine already exists: delfin/agent/repair.py turns a doctor row
+    # into a step (only from a row's `command` or `setting`; a prose-only
+    # remedy is not fixable) and applies ONE step per explicit approval,
+    # moving the settings file to a dated backup before any setting write.
+    # It was reachable only as the Agent tab's `/doctor repair` chat
+    # command, and `delfin-agent doctor --repair` refuses outright when
+    # stdin is not a terminal. So the repair existed and the person who
+    # needed it could not reach it.
+    #
+    # This is a thin caller of that engine, not a second one: the steps
+    # come from repair.doctor_repair_plan over the SAME rows the report
+    # above rendered, and applying goes through repair.doctor_repair_apply
+    # with its authorize callback. A dashboard that planned its own steps
+    # would be a second answer to "what can be fixed", free to drift.
+    #
+    # What the approval IS, concretely: Apply stays disabled until the
+    # person has seen this step's what-and-undo, and any change of the
+    # selection disables it again. The authorize callback then returns
+    # True, because the click it reports happened after the preview. That
+    # makes "informed" structural rather than hoped for.
+    repair_pick = widgets.Dropdown(
+        options=[('run the diagnosis first', '')], value='',
+        layout=widgets.Layout(width='420px'))
+    repair_show_btn = widgets.Button(
+        description='What would it do?', icon='question-circle',
+        layout=widgets.Layout(width='190px'))
+    repair_apply_btn = widgets.Button(
+        description='Apply this fix', icon='wrench', disabled=True,
+        button_style='warning', layout=widgets.Layout(width='170px'))
+    repair_out = widgets.HTML()
+    _repair_state: dict = {'steps': [], 'rows': [], 'previewed': None}
+
+    def _repair_refresh(rows):
+        """Offer exactly the rows the engine can act on."""
+        try:
+            from delfin.agent import repair as _rep
+            steps = _rep.doctor_repair_plan(rows)
+        except Exception as exc:
+            repair_out.value = ('<div style="color:#c62828; font-size:12px;">'
+                                'the repair plan could not be built: '
+                                + html.escape(str(exc)) + '</div>')
+            steps = []
+        _repair_state['steps'] = steps
+        _repair_state['rows'] = list(rows or [])
+        _repair_state['previewed'] = None
+        repair_apply_btn.disabled = True
+        if not steps:
+            repair_pick.options = [('nothing here can be repaired '
+                                    'automatically', '')]
+            repair_pick.value = ''
+            return
+        repair_pick.options = [
+            (f"{s.get('check', '')} — {s.get('kind', '')}", str(s.get('id')))
+            for s in steps]
+        repair_pick.value = str(steps[0].get('id'))
+
+    def _repair_show(_b=None):
+        sid = str(repair_pick.value or '')
+        if not sid:
+            return
+        try:
+            from delfin.agent import repair as _rep
+            text = _rep.doctor_repair_preview(_repair_state['steps'], sid)
+        except Exception as exc:
+            repair_out.value = ('<div style="color:#c62828; font-size:12px;">'
+                                + html.escape(str(exc)) + '</div>')
+            return
+        _repair_state['previewed'] = sid
+        repair_apply_btn.disabled = False
+        repair_out.value = (
+            '<pre style="font-size:11px; white-space:pre-wrap; '
+            'margin:4px 0;">' + html.escape(text or '(no preview)')
+            + '</pre>'
+            '<div style="color:#78909c; font-size:11px;">Apply runs exactly '
+            'this. A setting is written only after the settings file has '
+            'been copied to a dated backup; a command has no clean '
+            'inverse, which is what the undo line above says.</div>')
+
+    def _repair_selection_changed(_change=None):
+        # A preview belongs to the step it was shown for.
+        if _repair_state.get('previewed') != str(repair_pick.value or ''):
+            repair_apply_btn.disabled = True
+
+    def _repair_apply(_b=None):
+        sid = str(repair_pick.value or '')
+        if not sid or _repair_state.get('previewed') != sid:
+            repair_apply_btn.disabled = True
+            return
+        repair_apply_btn.disabled = True
+        repair_show_btn.disabled = True
+        repair_out.value = ('<div style="color:#78909c; font-size:12px;">'
+                            'Running … this can take minutes for an '
+                            'install.</div>')
+
+        def work():
+            try:
+                from delfin.agent import repair as _rep
+                res = _rep.doctor_repair_apply(
+                    sid, results=_repair_state['rows'],
+                    authorize=lambda *_a, **_k: True)
+            except Exception as exc:
+                logging.exception('doctor repair failed')
+                repair_out.value = (
+                    '<div style="color:#c62828; font-size:12px;">'
+                    'the repair itself failed: '
+                    + html.escape(str(exc)) + '</div>')
+                return
+            finally:
+                repair_show_btn.disabled = False
+            if not res.get('ok'):
+                repair_out.value = (
+                    '<div style="color:#c62828; font-size:12px;">'
+                    + html.escape(str(res.get('message', 'failed')))
+                    + '</div>')
+                return
+            inner = res.get('result') or {}
+            backup = res.get('backup_path') or inner.get('backup_path')
+            parts = ['<div style="color:#2e7d32; font-size:12px;">'
+                     'Applied.</div>']
+            out = str(inner.get('output') or inner.get('stdout') or '')
+            if out:
+                parts.append('<pre style="font-size:11px; max-height:220px; '
+                             'overflow:auto; white-space:pre-wrap;">'
+                             + html.escape(out[-4000:]) + '</pre>')
+            if backup:
+                parts.append('<div style="color:#78909c; font-size:11px;">'
+                             'previous settings kept at '
+                             + html.escape(str(backup)) + '</div>')
+            parts.append('<div style="color:#78909c; font-size:11px;">'
+                         'Run the diagnosis again to see whether the row '
+                         'has cleared.</div>')
+            repair_out.value = ''.join(parts)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    repair_show_btn.on_click(_repair_show)
+    repair_apply_btn.on_click(_repair_apply)
+    repair_pick.observe(_repair_selection_changed, names='value')
+
+    diagnosis_section = widgets.VBox([
+        widgets.HTML(
+            '<b>Diagnosis</b>'
+            '<div style="color:#78909c; font-size:11px;">What is missing and '
+            'what would fix it. Read-only; rows that pass are not listed. A '
+            'fix that installs software is shown as a command to copy, not '
+            'run from here.</div>'),
+        widgets.HBox([diag_btn]),
+        diag_out,
+        widgets.HTML(
+            '<b style="margin-top:10px; display:block;">Repair</b>'
+            '<div style="color:#78909c; font-size:11px;">Only rows whose '
+            'remedy is a command or a setting can be applied from here; '
+            'the rest say what to do. One step at a time, and only after '
+            'you have seen what it runs and how to undo it.</div>'),
+        widgets.HBox([repair_pick, repair_show_btn, repair_apply_btn]),
+        repair_out,
+        widgets.HTML('<b style="margin-top:10px; display:block;">API key</b>'
+                     '<div style="color:#78909c; font-size:11px;">'
+                     'Renew or add a key. The value is hidden while typing, '
+                     'the field is cleared as soon as you press the button, '
+                     'and it is never displayed again — the line below only '
+                     'says WHICH keys exist. In people mode this writes your '
+                     'own key, not the account\'s.<br>'
+                     '<b>The stricter route</b> is '
+                     '<code>delfin-agent credentials set '
+                     'KIT_TOOLBOX_API_KEY</code> in a terminal: there the '
+                     'value never passes through the browser.</div>'),
+        widgets.HBox([key_name, key_value, key_btn]),
+        key_status,
+    ])
+
+    # ══════════════════════════════════════════════════════════════════════
     # Main accordion
     # ══════════════════════════════════════════════════════════════════════
     main_accordion = widgets.Accordion(
@@ -5016,6 +5376,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             agent_section,
             developer_section,
             transfer_section,
+            diagnosis_section,
         ],
     )
     main_accordion.set_title(0, 'Workspace Paths')
@@ -5027,6 +5388,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     main_accordion.set_title(6, 'DELFIN Agent')
     main_accordion.set_title(7, 'Developer')
     main_accordion.set_title(8, 'SSH Transfer & Remote Archive')
+    main_accordion.set_title(9, 'Diagnosis & API key')
     main_accordion.selected_index = None  # all settings sections collapsed by default
 
     # The sections' rows line up: the first label of a row is a column of

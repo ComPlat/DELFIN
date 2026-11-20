@@ -277,6 +277,8 @@ class Rooms:
         self._active_by_person: dict[str, set] = {}
         self._reply_targets = {}
         self._incoming_files = {}
+        #: (chat, session) -> the outbox names already offered to the phone.
+        self._offered_files: dict = {}
         self._announced = deque()
         #: Schedule number -> the check the phone was last shown for it.
         self._checks = {}
@@ -748,6 +750,12 @@ class Rooms:
                 _PERSON.reset(token)
         if quote_id is not None:
             return await self.reply(text, room, chat, quote_id)
+        # SimpleX 6.4.3+ shows /'cmd args' in a bot message as a tappable
+        # command and sends the quoted form on a tap: unwrap it so a tapped
+        # command does exactly what the typed word does.
+        text = text.strip()
+        if text.startswith("/'") and text.endswith("'"):
+            text = text[2:-1].strip()
         tapped = await self.tap_answer(text, room, chat)
         if tapped is not None:
             return tapped
@@ -1440,12 +1448,15 @@ class Rooms:
     TAP_TTL_S = 600.0
 
     async def send_request(self, chat, room, item):
-        """A request card. An approval the phone may give gets a tap token:
-        /'ja TOKEN' and /'nein TOKEN' on the card are tappable, and a tap
-        answers exactly this card (it is a new message, not a reply, so the
-        token is what binds it)."""
+        """A request card. A card the phone may answer gets a tap token:
+        an approval gets /'ja TOKEN' and /'nein TOKEN'; a single-choice
+        question gets /'N TOKEN' for each option. A tap is a new message,
+        not a reply, so the token is what binds it -- through the same
+        checks as a reply to the card, once, in this chat."""
         tap = None
-        if item.get('kind') in {'confirm', 'plan'} and item.get('phoneApproval'):
+        choices = [str(c) for c in item.get('choices') or []]
+        if ((item.get('kind') in {'confirm', 'plan'} and item.get('phoneApproval'))
+                or (item.get('kind') == 'question' and choices and not item.get('multiSelect'))):
             taps = self.__dict__.setdefault('_taps', {})
             tap = secrets.token_hex(2)
             while (chat, tap) in taps:
@@ -1459,11 +1470,12 @@ class Rooms:
                 taps.pop(next(iter(taps)))
 
     async def tap_answer(self, text, room, chat):
-        """``/ja TOKEN`` / ``/nein TOKEN`` tapped on a card: the card's
-        answer, through the same checks as a reply to it. None when the line
-        is not a tap of a card in this chat (then it is for the agent)."""
+        """A tap on a card: /'ja TOKEN' / 'nein TOKEN' on an approval, or
+        /'N TOKEN' (an option number) on a question. The card's answer,
+        through the same checks as a reply to it. None when the line is not
+        a tap of a card in this chat (then it is for the agent)."""
         words = text.strip().lstrip('/').split()
-        if len(words) != 2 or yes_no(words[0]) is None:
+        if len(words) != 2:
             return None
         hit = self.__dict__.get('_taps', {}).get((chat, words[1].lower()))
         if hit is None:
@@ -1472,8 +1484,18 @@ class Rooms:
         if time.monotonic() - when > self.TAP_TTL_S:
             self._taps.pop((chat, words[1].lower()), None)
             return t('This request is no longer bound here. Show the current one with pending and reply to it.')
+        item = self._reply_targets.get((chat, str(mid))) or {}
+        choice = words[0]
+        if item.get('kind') == 'question':
+            # Only a single-choice question has taps, and only a valid
+            # option number answers it (multiSelect keeps typed answers).
+            n = len(item.get('choices') or [])
+            if item.get('multiSelect') or not choice.isdigit() or not 1 <= int(choice) <= n:
+                return None
+        elif yes_no(choice) is None:
+            return None
         self._taps.pop((chat, words[1].lower()), None)
-        return await self.reply(words[0], room, chat, mid)
+        return await self.reply(choice, room, chat, mid)
 
     async def reply(self, text, room, chat, quote_id):
         target = self._reply_targets.get((chat, str(quote_id)))
@@ -1502,6 +1524,11 @@ class Rooms:
             return result.get('error') or t('Voice message delivered as text.')
         if item.get('kind') == 'question':
             reply = await self.session(sid, 'answer', id=item['id'], text=text)
+            if not reply.get('ok') and 'expired or belongs' in str(reply.get('error', '')):
+                # The question behind the card is gone (answered at the
+                # computer, expired, another session's): the phone is told
+                # so and nothing is sent to any session as a prompt.
+                return t('This request is no longer bound here. Show the current one with pending and reply to it.')
         else:
             normalized = text.strip().lower()
             verdict = yes_no(text)
@@ -1964,6 +1991,7 @@ class Rooms:
                         await self.send(forum, in_forum(forum_label(room), t('A question or approval waits in its '
                                                                              'chat.')))
                 next_shown[(chat, 'pending')] = items
+                await self.offer_outbox_files(chat, room, sid)
             for notice in (notices if room.get('notifications', 'kurz') == 'kurz' else []):
                 await self.send(chat, notice)
                 for forum in (forums if room.get('forum', True) else []):
@@ -1974,6 +2002,48 @@ class Rooms:
 
     #: The phone gets at most this many agent notes per chat per hour.
     NOTES_PER_HOUR = 6
+
+    #: An image at most this big rides as an attachment; bigger files are
+    #: offered with a tappable fetch instead (SimpleX attachments of that
+    #: size deliver without friction; anything else stays name-only).
+    IMAGE_PUSH_MAX = 1 << 20
+    IMAGE_SUFFIXES = ('.png', '.jpg', '.jpeg', '.gif', '.webp')
+
+    async def offer_outbox_files(self, chat, room, sid):
+        """A file that appears in the session's outbox reaches the phone
+        without typing: an image under IMAGE_PUSH_MAX is pushed directly
+        (the phone shows it), everything else sends one message with its
+        name and the tappable SimpleX command /'datei NAME'. Seen at
+        start = baseline (no replay of an old outbox); each name once, so
+        a file replaced under the same name is not offered again.
+
+        A name the download refuses (media.filename changes it: quotes,
+        markup characters) is never offered: its link could not fetch it."""
+        from .media import ROOT, filename, session_hash
+        reply = await self.session(sid, 'files')
+        if reply.get('error') or not reply.get('ok'):
+            return
+        source = reply.get('outbox') or ''
+        if not source.rstrip('/').endswith(os.path.join(ROOT, session_hash(sid), 'outbox')):
+            return                      # only the session's own outbox is the source
+        names = {f['name'] for f in reply.get('files', [])}
+        known = self._offered_files.get((chat, sid))
+        if known is None:
+            # First look at this chat: the outbox as it stands is the
+            # baseline -- an old outbox is not replayed.
+            self._offered_files[(chat, sid)] = names
+            return
+        fresh = [f for f in reply.get('files', []) if f['name'] not in known]
+        known.update(f['name'] for f in fresh)
+        for f in fresh:
+            name = f['name']
+            if name != filename(name):
+                continue
+            if name.lower().endswith(self.IMAGE_SUFFIXES) and f['size'] <= self.IMAGE_PUSH_MAX:
+                await self.download(chat, sid, name)
+            else:
+                await self.send(chat, t("📎 The session has put `{name}` on the phone.\n"
+                                        "/'datei {name}' fetches it.").format(name=name))
 
     async def relay_notes(self, chat, room, notes, forums):
         """The session's deliberate notes (push_notification) to its chat:
