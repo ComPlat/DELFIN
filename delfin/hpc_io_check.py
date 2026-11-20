@@ -471,39 +471,62 @@ def _format(findings: list[Finding], name: str) -> str:
     return "\n".join(out)
 
 
+_SCRIPT_SUFFIXES = (".sh", ".bash", ".sub", ".py")
+
+
 def check_submit(script, env: dict | None = None,
                  mounts_path: MountsSource | None = None
                  ) -> tuple[list[str], list[str]]:
     """The shared submit-time check: ONE helper both submit routes call.
 
     ``script`` is a path to a submit script (Path or str) or the script
-    TEXT itself. Returns ``(refused, warned)`` -- formatted finding
-    strings split by severity, in the same form
-    ``cluster_tools.submit`` has reported them since IO1, so the
-    dashboard backend, the agent's bash gate and ``cluster_submit``
-    cannot drift apart in what they call a refusal.
+    TEXT itself. Returns ``(refused, warned)`` -- finding strings in the
+    exact form ``cluster_tools.submit`` has reported them since IO1
+    (``name:line [rule] why instead: how``, cluster_tools.py:403-404), so
+    the dashboard backend, the agent's bash gate and ``cluster_submit``
+    cannot drift apart in what they call a refusal. ``name`` is the
+    script's basename; for text passed inline it is the first word of
+    the shebang or simply ``<script>``.
+
+    ``env`` defaults to ``os.environ`` (H4): with ``None`` the HOME rule
+    could not fire and a caller that forgot env would silently weaken
+    the check. Pure-text callers that must not inherit the process env
+    pass ``env={}`` explicitly.
 
     Cost: one text read (a path) plus the regex passes of :func:`check`;
     the mounts source is one /proc/mounts read per call, injectable for
     tests. Raises OSError when a script path cannot be read -- the check
-    never fails open. Callers may catch OSError and refuse the submit
-    on their own wording.
+    never fails open (H1: a str that names a script-shaped file but
+    misses on disk raises like the Path spelling; it is never re-read as
+    script text, which would be a clean verdict for a script nobody
+    read). Callers may catch OSError and refuse the submit on their own
+    wording; backend_slurm catches FileNotFoundError and leaves the
+    missing script to sbatch's own error.
     """
-    # A Path (or a str that names an existing file) is a script path;
-    # everything else is script text. A str is only treated as a path
-    # when it names an existing file, so text is never mistaken for a
-    # missing path: a str that names nothing is checked as text.
     if isinstance(script, Path):
         text = script.read_text(encoding="utf-8", errors="replace")
+        name = script.name
+    elif (isinstance(script, str) and "\n" not in script
+          and script.endswith(_SCRIPT_SUFFIXES)):
+        # A script-shaped str is a PATH (H1): if it names nothing on
+        # disk that is an error, never a silent reinterpretation as
+        # one-line script text.
+        text = Path(script).read_text(encoding="utf-8", errors="replace")
+        name = Path(script).name
     elif (isinstance(script, str) and "\n" not in script
           and Path(script).is_file()):
         text = Path(script).read_text(encoding="utf-8", errors="replace")
+        name = Path(script).name
     else:
         text = str(script)
+        name = "<script>"
+    if env is None:
+        import os as _os
+        env = dict(_os.environ)
     findings = check(text, env=env, mounts_path=mounts_path)
 
     def _fmt(f: Finding) -> str:
-        return f"[{f.rule}] {f.why} instead: {f.instead}"
+        return f"{name}:{f.line} [{f.rule}] {f.why} instead: {f.instead}"
 
     refused = [_fmt(f) for f in findings if f.severity == "refuse"]
     warned = [_fmt(f) for f in findings if f.severity == "warn"]
