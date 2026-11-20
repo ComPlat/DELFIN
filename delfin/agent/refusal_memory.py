@@ -158,18 +158,6 @@ def _command_changes_directory(cmd: str) -> bool:
     return bool(re.search(r"(?:^|[;&|]\s*|\s)(?:cd|pushd|popd)\b", cmd or ""))
 
 
-def _redirect_targets_safe(cmd: str) -> list[str]:
-    """Alias of :func:`_redirect_targets`.
-
-    Kept because the operator-built hook (api_client.py, _bash_named_write_
-    paths) calls it by name. Since the operator ruling of the PR #308 CI
-    red, the guard lives INSIDE _redirect_targets (both the record and the
-    check path get nothing from a cd command), so both names behave
-    identically.
-    """
-    return _redirect_targets(cmd)
-
-
 def _redirect_targets(cmd: str) -> list[str]:
     """Redirect words a quote-aware reading of ``cmd`` sees.
 
