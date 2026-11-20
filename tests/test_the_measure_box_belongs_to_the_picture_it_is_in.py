@@ -68,7 +68,9 @@ def test_a_re_rendered_picture_does_not_collect_measure_boxes():
     had been given before the re-render and answering to nobody.
     """
     playwright = pytest.importorskip(
-        "playwright.sync_api", reason="needs a browser to drive the viewer")
+        "playwright.sync_api",
+        reason="needs the playwright package and its Chromium browser "
+               "to drive the viewer")
     if not _BUNDLE.is_file():
         pytest.skip("vendored 3Dmol bundle is not present")
 
