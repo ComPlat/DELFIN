@@ -337,3 +337,106 @@ key allowlist, one could not observe the log projection from outside, one on
 the allocator's arithmetic rather than the pool refusal it names. That
 rewrite loop is the reason to run a mutation harness instead of asserting
 that tests are attached.
+
+---
+
+## Addendum 2, 2026-11-20, still before any arm ran
+
+Building the four changes of Addendum 1 found six more problems, two of them
+in the registered text itself. Corrections first, then the limits that stay.
+
+### Correction A — the registered N was wrong in §5
+
+§5 says **16 tasks (8 per pool)**. Change 1 of Addendum 1 and both draws use
+**10 per pool, 20 tasks**. The registered number and the drawn number
+disagreed in the protocol, which is the one thing a protocol exists to
+prevent. **N is 20 tasks** — 10 per pool, 5 per tier per pool — × 2 arms ×
+2 repeats = **80 attempts**, of order 240 M tokens at the measured 3 M per
+run, so three nights rather than two. The resolution statement of §5 stands:
+20 pairs can show roughly 30 points and cannot resolve 10.
+
+### Correction B — the corpus figures of Addendum 1 are superseded
+
+| | Addendum 1 | now |
+|---|---|---|
+| `infra` | 80 (27 / 53) | **80 (27 / 53), name for name** |
+| `chem` | 78 (54 / 24) | **99 (70 / 29)** |
+| in neither pool | 88 | **67** |
+| unmounted over all `delfin/` | 246 | 246 |
+| exclusions that removed anything | 1 | **0** |
+
+`infra` is identical name for name: 25 rather than 18 `delfin/agent/` files
+are now classed chemistry and leave it, but none held an `infra` candidate.
+Sample sha256 `f9d9cdd2d9f17f66…`, superseding `225e5772d1dc73bd…`, seed
+20261120, `allocation_rule: balanced`; the new file records the replaced hash
+and the time. Pools `e8a484b8f2987237…`, scanned at `0eb187ff9`.
+
+### Correction C — check 2 is vacuous for one task, not two
+
+Addendum 1 named `ensemble_summary` and `validate_control_file`; both are
+tied to the superseded sample and are no longer drawn. Re-measured over all
+20 new tasks, **exactly one has no consuming suite: `describe_mlp_backends`**
+(`delfin/mlp_tools/__init__.py`) — the candidate Change 4 brought back. For
+that row the score rests on checks 1, 3 and 4, reported with the row.
+
+### Correction D — a self-call does not connect anything
+
+An attempt can add `return orphan_capability(x)` **inside the orphan's own
+body**: the call site is AST-visible under `delfin/`, so `capability_resolved`
+becomes true while nothing reaches it. That is the exact shape Change 2 was
+written to close, in a place Change 2 did not look, and it cannot occur at
+baseline — a recursive function is never a candidate, because the self-call
+counts as a mention — so only an attempt can create it.
+
+**A call site inside the definition's own function node does not count.**
+This narrows a registered endpoint, which is why it is recorded here before
+any arm ran rather than applied silently.
+
+### Added as diagnosis, not as score
+
+"Connected" is narrower than "called": a capability wired in by decorator,
+passed as a callback, or placed in a dict of function objects is genuinely
+connected and scores 0 on the primary (the secondary catches it, together
+with string literals). A **third reading** — any non-string `ast.Name` or
+attribute load of the capability in non-test product code — is recorded per
+attempt as a diagnostic field. It is not the score: adding a third scoring
+rule after the first draw is how an endpoint gets chosen for its answer.
+
+### Limits that stay, written down rather than fitted away
+
+- **The rule now admits the specialist's own module; the corpus still has
+  nothing there.** `ts_finder.py`, `ir_spectrum.py`, `nmr_spectrum.py`,
+  `uv_vis_spectrum.py` and `turbomole_version.py` hold **zero** unmounted
+  candidates. Only `fukui.py` contributes two. So Addendum 1's motivation is
+  satisfied as a rule while the measurable effect on drawn work from a
+  specialist's own module is **nil**. This result may not be read as "the
+  experiment now covers the specialists' modules".
+- **The `chem` pool is not pure.** `dashboard/__init__.py` passes S3 at 1.6 %
+  chemistry identifiers and brings 4 candidates, 3 of them git-branch
+  helpers. No threshold separates it from `fukui.py` at 1.2 %, so the share
+  cannot be raised to refuse it, and a word-count cap would drop ~10 genuine
+  MANTA chemistry files. Each drawn row carries its own name and can be
+  checked.
+- **Recall limit.** Of the 67 still unpooled, about ten are MANTA
+  geometry-repair candidates that are chemistry by subject with zero
+  vocabulary hits: the vocabulary carries program, method and observable
+  names, not structure words — chelate, isomer, ligand, torsion. Widening it
+  would move the pools again and is not done.
+- **`allocate` is off by one for an odd split with three or more strata**,
+  refusing a feasible largest-remainder allocation. Harmless at two tiers and
+  10 per pool; it is an instrument defect and is fixed rather than tolerated.
+
+### What the instrument's own build taught
+
+The S3 fragmenter could not see upper-case acronyms — `ORCA` split to
+`O`,`R`,`C`,`A`, and `SMILES_RE` carried no chemistry fragment. That is also
+why one mutation survived its first harness run: **the banner-control test
+passed for the wrong reason, seeing nothing either way.** Taking the
+upper-case run first changes the verdict on 22 files, all admitting, and the
+test was rewritten so it fails under that mutation rather than the count
+being accepted.
+
+And the instrument built to find uncalled callables had produced one of its
+own — `is_chemistry_file`, orphaned by Change 3 and deleted.
+
+Instrument state: **42 tests passed, 35 mutations applied, 35 caught.**
