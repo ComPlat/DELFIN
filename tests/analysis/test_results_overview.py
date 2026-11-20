@@ -292,27 +292,33 @@ def test_export_bytes_large_payload_single_run_js(tmp_path):
     ctx = FakeCtx()
 
     # Large payload: still exactly ONE run_js call, and the data rides
-    # in the HIDDEN BUFFER WIDGET with the script POLLING the node for
-    # the payload (the inlined multi-MB script did not survive the
-    # voila transport; the widget state channel does, and polling
-    # removes the run_js/first-set sync race).
+    # in the HIDDEN BUFFER WIDGET in ~1 MB CHUNKS (single-shot widget
+    # sync carried 0.5 MB and 3 MB but not 15 MB, measured 2026-11-20;
+    # each slice is its own widget-state sync) with the script POLLING
+    # until every expected part is present, then assembling the Blob.
     payload = b"x" * (3 * 1024 * 1024)  # 3 MB binary -> ~4 MB b64
     panel._export_bytes("big.bin", payload, "application/octet-stream")
     assert len(ctx.scripts) == 1, (
         f"expected ONE run_js call, got {len(ctx.scripts)}")
     script = ctx.scripts[0]
-    # The widget carries the full base64 payload as a tid-keyed JSON
-    # object; the script never inlines it (the voila transport drops
-    # multi-MB script messages).
     stored = json.loads(panel._export_buffer.value)
-    assert base64.b64decode(stored[next(iter(stored))]) == payload
-    # The script polls the buffer node with setInterval and assembles
-    # a Blob download once the payload arrives.
+    entry = stored[next(iter(stored))]
+    n_parts = entry["n"]
+    b64 = "".join(entry["p%d" % k] for k in range(n_parts))
+    assert n_parts >= 4, "3 MB must arrive as several ~1 MB slices"
+    assert base64.b64decode(b64) == payload
+    # The script polls, requires ALL parts, then downloads.
     assert ".export-buffer" in script
     assert "setInterval" in script
     assert "clearInterval" in script
+    assert "parts.length<entry.n" in script
     assert "atob" in script
     assert "a.download" in script
+    # The node is NOT emptied by the script: stale content can never
+    # match a fresh export because each export uses a fresh tid key
+    # (sequential downloads without a reload were requested by the
+    # user after the single-shot version needed one per download).
+    assert "node.textContent=''" not in script
 
     # Small payload: still one call, same buffer transport.
     panel._export_bytes("small.bin", b"abc", "application/octet-stream")
