@@ -15,6 +15,16 @@ SECRET = "sk-live-abcdef0123456789"
 PLACEHOLDER = "[redaction failed -- text withheld]"
 
 
+@pytest.fixture(autouse=True)
+def reset_once_log():
+    """The once-per-process log flag is global state; every test in this
+    file sees it reset so ordering inside the session cannot flip the
+    once-log assertion."""
+    memory_store._REDACT_LOGGED_ONCE = False
+    yield
+    memory_store._REDACT_LOGGED_ONCE = False
+
+
 @pytest.fixture
 def raising_redactor(monkeypatch):
     def boom(text, **kwargs):
@@ -64,7 +74,6 @@ def test_session_index_scrub_fails_closed(raising_redactor):
 def test_failure_logged_once_per_process_with_type_only(
         raising_redactor, caplog):
     caplog.set_level(logging.WARNING, logger="delfin.agent.memory_store")
-    memory_store._REDACT_LOGGED_ONCE = False  # reset per-process flag
     memory_store._without_secrets("a " + SECRET)
     memory_store._without_secrets("b " + SECRET)
     records = [r for r in caplog.records if r.name.startswith("delfin")]
