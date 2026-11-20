@@ -172,3 +172,37 @@ def test_a_command_that_is_no_commit_is_untouched(tmp_path):
                                  confirm_callback=None)
     argv = A._bash_isolation_argv("git status --porcelain", str(tmp_path), perms)
     assert "--trailer" not in " ".join(argv)
+
+
+# ------------------------------------------- and it always comes back out
+
+@pytest.mark.timeout(20)
+@pytest.mark.parametrize("cmd,trailer", [
+    # The command that hung CI shard 1 on 2026-11-20: no commit in it, a
+    # lone `&` in `2>&1`, and once a turn armed the trailer the walk over
+    # it never ended (tests/test_a_push_over_https_uses_the_gh_login_
+    # outside_the_cage.py::test_no_caged_command_sees_the_token, 300 s).
+    ("printf 'protocol=https\\nhost=github.com\\n\\n' | "
+     "git credential fill 2>&1; env", False),
+    ("git commit -m x 2>&1", True),
+    ("git add . && git commit -m 'x' >/dev/null 2>&1", True),
+    ("ls &> /tmp/x", False),
+    ("sleep 1 &", False),
+    ("echo hi \\", False),          # a backslash with nothing to escape
+    ("&", False),
+    ("\\", False),
+])
+def test_a_lone_ampersand_does_not_stop_the_walk(cmd, trailer):
+    """Input: a command whose unquoted ``&`` is a redirect or a background
+    operator, not the ``&&`` the segment branch takes. Output: the command,
+    rewritten only where a ``git … commit`` stands.
+
+    The walk consumed characters word by word and broke each word on
+    ``&``, while no branch above consumed a lone one -- so the offset
+    stood still and the loop ran forever, inside the one layer every bash
+    command of every turn passes. The marker bounds the test because the
+    regression is a hang, not a wrong answer.
+    """
+    out = A._rewrite_segments_for_trailer(cmd, "T")
+    assert ("--trailer 'T'" in out) is trailer
+    assert out.replace(" --trailer 'T'", "") == cmd

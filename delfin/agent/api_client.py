@@ -9870,6 +9870,17 @@ def _rewrite_segments_for_trailer(cmd: str, trailer: str) -> str:
         start = i
         while i < n and cmd[i] not in " \t\n;|&'\"\\":
             i += 1
+        if i == start:
+            # A breaking character that no branch above consumes, so no
+            # word begins here and the offset would never move: a lone
+            # `&` (the redirect in `2>&1`, or a background `&`, neither of
+            # which is the `&&` the branch above takes) or a `\` with
+            # nothing left to escape. Stepping over it ends the word
+            # instead of the walk; `2>&1` is then read as the two words
+            # `2>` and `1`, which changes nothing for _commit_sub_pos,
+            # since it reads the LEADING tokens of a segment.
+            i += 1
+            continue
         seg_words.append(start)
     pos = _commit_sub_pos(cmd, seg_words)
     if pos is not None:
