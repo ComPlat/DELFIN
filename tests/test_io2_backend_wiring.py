@@ -106,7 +106,8 @@ def test_sbatch_clean_script_submits_normally(backend, monkeypatch,
 def test_delphins_own_templates_pass_clean(backend, monkeypatch):
     """Every script the backend can generate must pass the check with no
     refusal. A refusal here is a DELFIN template bug to fix, not a reason
-    to weaken the rule."""
+    to weaken the rule. The HOME is on Lustre so the home rule fires —
+    the template must not rely on a script reading into it."""
     monkeypatch.delenv("DELFIN_SQUEUE_MIN_INTERVAL", raising=False)
     real_dir = Path(hpc_io_check.DEFAULT_MOUNTS)
     if not real_dir.is_file():
@@ -114,6 +115,6 @@ def test_delphins_own_templates_pass_clean(backend, monkeypatch):
     templates = Path(__file__).resolve().parents[1] / "delfin" / "submit_templates"
     for template in sorted(templates.glob("*.sh")):
         refused, warned = hpc_io_check.check_submit(
-            template, env={"HOME": "/home/nobody"})
+            template, env={"HOME": "/pfs/home/nobody"})
         assert refused == [], \
             f"DELFIN's own template {template.name} is refused: {refused}"
