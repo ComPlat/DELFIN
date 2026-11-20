@@ -611,3 +611,147 @@ Accuracy against cost per completed task, per arm — not cost as a line at the
 end of the table. Per-task cost is reported to vary by a factor of order
 hundreds across scaffolds, which makes an accuracy number without its cost
 close to meaningless.
+
+---
+
+## Addendum 5, 2026-11-20: the threshold fired. The corpus is the finding.
+
+Two validators judged the same 20 rows against the rubric of Addendum 4.
+Addendum 4 fixed the consequence in advance, and it applies:
+
+> If more than **5 of 20** rows are not usable, the corpus — not the sample
+> — is the finding, and the experiment does not run until that is reported.
+
+**Nine of twenty.** The experiment does not run.
+
+### The two readings
+
+| | validator A (protocol author) | validator B (blind) |
+|---|---|---|
+| usable | 18 | **11** |
+| underspecified | 0 | **4** (rows 1, 5, 6, 17) |
+| mis-scoped | 0 | **2** (rows 4, 7) |
+| blocked | 1 (16) | **3** (10, 14, 16) |
+| outside the rubric | 1 (14) | 0, but row 1 wants a fifth verdict |
+
+```
+both usable        11   rows 2 3 8 9 11 12 13 15 18 19 20
+both unusable       2   rows 14 16
+split               7   rows 1 4 5 6 7 10 17
+agreement       13/20 = 65 %
+to replace          9   (both-unusable + every split, per Addendum 4)
+```
+
+**Agreement is 65 %**, and that is a property of the rubric, not of the
+rows. A rubric two careful readers apply the same way is worth something;
+one they apply differently on a third of the set was partly a matter of
+taste, and Addendum 4 said it would have to be said to have been.
+
+Validator A was wrong on six of the seven splits, and in a consistent
+direction: **A checked the code and did not check the documentation.**
+Where A read a signature and a docstring, B ran `git grep` over `docs/`,
+`website/` and `.gate/`, and ran `auto_guard.protected_reason` rather than
+reasoning about it.
+
+### What B found, which is the actual result
+
+- **Row 1 `_max_heavy_bond_order`** — the comment A read as "retained"
+  says, in full, that this helper is kept *as reference for a future
+  explicit M=O / M≡N multiple-bond layer*. Connecting means building a
+  feature that does not exist; deleting reverses a written decision. A read
+  the same comment and called the row usable.
+- **Row 4 `describe_mlp_backends`** — `docs/mlp.md:149` documents
+  `from delfin.mlp_tools import describe_mlp_backends` **for users**. It is
+  a published entry point: deleting is wrong, and connecting is meaningless
+  because the product already calls the wrapped
+  `registry.describe_backends()` directly.
+- **Row 7 `est_reference_comparison`** — its real caller is
+  `.gate/practice/grade_es1.py`, **uncommitted by the operator's own
+  ruling**, so the caller is outside the repository by design and three
+  sibling functions are unmounted for the same reason.
+- **Row 10 `write_co2_scan_opi_input`** — `opi` is not importable in the
+  repository's own `delfin-ci` environment, and both files that exercise
+  the writer die on a module-level `importorskip("opi")`.
+- **Row 14 `expected_digest`** — `auto_guard.protected_reason(
+  "delfin/agent/principles_guard.py")` returns a reason; B **ran it**. The
+  file is the security core and both routes require editing it. A had
+  called this row "already landed", which is also true and is the lesser
+  fact.
+- **Rows 6 and 17** — `check_goat_e2e` and `distill_for_shipping` are
+  documented, operator-facing entry points where deletion is wrong and **no
+  consumer exists in the product at all**, so connecting means inventing
+  the surface.
+
+### Why the corpus is wrong, and it is the same shape as everything else today
+
+The population was defined by a tree scanner **whose own docstring warns**
+that "a function reached through `getattr`, **a documented entry point for
+outside users**, and a module loaded by filename from data all look
+identical to it". Rows 4, 6, 7 and 17 are exactly that case.
+
+And the task sentence — *connect this capability to the product, or delete
+it together with its tests* — **presupposes that the finding is a defect**.
+On roughly a third of the rows it therefore asks an agent to damage
+working, documented code, and then scores whether it did.
+
+So the corpus answers a neighbouring question: **"is this name unreferenced
+by a tree scan" is not "is this capability unmounted"**. That is the
+recurring defect of this project, this time in the instrument that was
+built to measure it.
+
+### Two defects in the rubric itself, neither anticipated
+
+1. **No verdict for "the code documents a decision to keep this
+   unconnected."** Row 1 is precisely that, and both offered actions are
+   wrong. A fifth verdict is needed: **declined** — the code records a
+   decision to leave the capability unconnected. Row 16 is a milder
+   instance, where the suite says the wiring is the person's to do.
+2. **A check can be *inverted* rather than vacuous.** Row 16's wiring tests
+   carry three `xfail(strict=True)` marks whose reason reads "operator
+   wiring pending". An agent that **correctly** connects the capability
+   turns three xfails into xpasses, and strict mode reports an xpass as a
+   **failure**. The rubric's mis-scoped clause anticipated a check that
+   measures nothing; it did not anticipate one that punishes the right
+   answer.
+
+Two further points, recorded: checkability is **not uniform** — the ten
+`delfin/agent/` rows sit under the baseline ratchet, which must shrink when
+a name is connected or deleted and is therefore a crisp automatic check,
+while rows 1–10 have no such invariant, so one grader applying one standard
+to all 20 would be measuring two different things. And "its own tests
+cannot be located" and "it has no own tests at all" are different states
+that the rubric merged; ten rows have no tests, which makes "delete it
+together with its tests" trivially satisfied.
+
+### What has to change before this experiment runs
+
+Not a redraw from the same pools: the pools themselves admit the four
+shapes above. The pool generator needs three mechanical exclusions, each
+testable:
+
+- a name mentioned under `docs/`, `website/` or any published reference —
+  **a documented entry point is not an orphan**, and the old
+  `documented_only` filter was deleted in Addendum 1 for a justification
+  that pointed the other way;
+- a name whose defining file `auto_guard.protected_reason` answers for —
+  the security core, decided by running the product's own function rather
+  than by a path list;
+- a name whose consuming suite is gated by `importorskip`, so the check
+  cannot run on the host the arms run on.
+
+Plus the fifth verdict, the inverted-check case, and a pre-flight that
+checks each drawn row against **every open PR** and not only against
+`main` — the sample went stale inside a day because 17 PRs landed while it
+sat.
+
+### What this costs and what it bought
+
+It costs the weekend's A/B: 80 runs are not started.
+
+It bought the reason not to trust them. The threshold was written into the
+protocol before the sample was read, two validators were used because the
+author had a prediction on record, and the rule fired on the author's own
+experiment. An A/B run on this corpus would have produced a clean number
+with a confidence interval, and about a third of it would have been
+measuring whether an agent will delete documented, working code when a
+brief tells it to.
