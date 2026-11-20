@@ -96,10 +96,20 @@ Applied in the order below, each counted and reported:
 3. ``module_absent`` -- the defining file does not exist in the comparison
    tree (``--main-ref``).
 4. ``short_name`` -- fewer than 4 characters, so a grep for it is ambiguous.
-5. ``both_pools`` -- *added here, not in the brief*: the name is defined in
-   both pools. A name-based reachability scan cannot attribute the mentions
-   to one of the two definitions, so it can be attributed to neither domain.
-   Reported separately so that the addition is visible.
+
+A fifth exclusion was written and then dropped: a name defined in both
+pools, which no name-based scan could attribute to one domain. It is
+structurally impossible. The mention count skips only the definition line of
+the pool's own definition, so a second module-level definition of the same
+name anywhere under ``delfin/`` counts as a mention and the name is never a
+candidate. Every candidate therefore has exactly one module-level
+definition under ``delfin/``. The field ``candidates_with_a_twin`` reports
+that as a number instead of asserting it, because it is the kind of
+assumption that stops holding when the scan changes.
+
+The same property is a limitation of the measure rather than of this
+script: two unreachable twins hide each other, in the original instrument
+as well as here.
 """
 from __future__ import annotations
 
@@ -344,6 +354,25 @@ def pool_roots(root: Path, chem: dict[Path, bool]):
     }
 
 
+def _twin_definitions(root: Path) -> set[str]:
+    """Names with more than one module-level definition under ``delfin/``.
+
+    Output: the set of such names. A candidate may not be one of them, and
+    the count of those that are is reported rather than assumed away.
+    """
+    seen = Counter()
+    for path in sorted((root / "delfin").rglob("*.py")):
+        try:
+            tree = ast.parse(path.read_text(errors="replace"))
+        except SyntaxError:
+            continue
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                    and not node.name.startswith("__"):
+                seen[node.name] += 1
+    return {n for n, c in seen.items() if c > 1}
+
+
 def _tracked_paths(root: Path, ref: str) -> set[str] | None:
     """Paths in ``ref``, or None when the ref cannot be read."""
     try:
@@ -409,12 +438,12 @@ def build_pools(root: Path, main_ref: str = "origin/main") -> dict:
                     prose_names.add(word)
 
     tracked = _tracked_paths(root, main_ref)
-    both = set(raw["infra"]) & set(raw["chem"])
+    twins = _twin_definitions(root)
 
     removed = Counter()
     removed_names: dict[str, list[str]] = {k: [] for k in (
         "documented_only", "defined_in_test", "module_absent",
-        "short_name", "both_pools")}
+        "short_name")}
     pools: dict[str, list[dict]] = {}
     for pool in ("infra", "chem"):
         kept = []
@@ -428,8 +457,6 @@ def build_pools(root: Path, main_ref: str = "origin/main") -> dict:
                 reason = "module_absent"
             elif len(name) < 4:
                 reason = "short_name"
-            elif name in both:
-                reason = "both_pools"
             if reason:
                 removed[f"{pool}:{reason}"] += 1
                 removed[reason] += 1
@@ -458,6 +485,9 @@ def build_pools(root: Path, main_ref: str = "origin/main") -> dict:
         "task_sentence": ("connect this capability to the product, or delete "
                           "it together with its tests"),
         "callables_scanned": {p: raw[p + "__ndefs"] for p in ("infra", "chem")},
+        "candidates_with_a_twin": {
+            p: sorted(r["name"] for r in pools[p] if r["name"] in twins)
+            for p in pools},
         "exclusions_removed": dict(removed),
         "exclusions_removed_names": removed_names,
         "pools": pools,
@@ -490,10 +520,13 @@ def report(doc: dict) -> None:
     print()
     print("exclusions removed:")
     for key in ("documented_only", "defined_in_test", "module_absent",
-                "short_name", "both_pools"):
+                "short_name"):
         print(f"    {doc['exclusions_removed'].get(key, 0):4}  {key}"
               f"   (infra {doc['exclusions_removed'].get(f'infra:{key}', 0)},"
               f" chem {doc['exclusions_removed'].get(f'chem:{key}', 0)})")
+    twins = {p: v for p, v in doc["candidates_with_a_twin"].items() if v}
+    print(f"    candidates with a second module-level definition: "
+          f"{twins or 'none'}")
     if not doc["main_ref_readable"]:
         print(f"    note: {doc['main_ref']} could not be read, so "
               "module_absent removed nothing by construction")
