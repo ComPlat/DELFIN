@@ -891,3 +891,42 @@ Instrument state: **55 tests, 66 mutations applied, 66 caught.** One
 mutation reported `SETUP FAIL` rather than failing, because restructuring
 the diff parser moved the line it anchored on — an unmeasured check, not a
 passing one. Re-anchored and driven.
+
+---
+
+## Addendum 7, 2026-11-20: a position is not an identity
+
+A rule from the operator who runs the held-out model comparison, learned
+there at a cost: **an instrument's canonicalisation step — sorting,
+deduplication — silently changes the meaning of any position-based
+endpoint.** In their case a judge read an archive whose frames are sorted
+by md5, so every "first frame" endpoint of a fair comparison, including a
+pre-registered primary one, was read on an effectively random frame.
+Emitted frame 0 and canonical frame 0 coincided for 3 to 61 % of systems;
+one tool's first-frame-clean moved 36 % → 49 % and the comparator's
+58 % → 42 %. It was found by printing one system's frame header, not by any
+check.
+
+**This protocol has that defect.** Addendum 4 says a row that is not usable
+
+> is **replaced from the same pool, same tier, by the next row the same
+> seed produces**
+
+"The next row" is a **position in a sorted pool**, and Addendum 6 rebuilt
+the pools: 179 rows became 156, with different content and therefore a
+different order. The replacement rule, written on 2026-11-20, silently
+designates different rows than it did when it was written, and nobody would
+have noticed because both readings produce a row.
+
+**Corrected: a replacement is identified, not positioned.** The draw
+records, for each replaced row, the **name** of the row that replaced it and
+the pool file sha256 both were taken from. A sample whose provenance is a
+position in a file that has since changed is not reproducible, which is the
+one thing a frozen sample is for.
+
+The general rule is adopted for everything here: **for every endpoint that
+depends on order, state which order the reader actually saw.** Applied to
+what exists today: the prefix-cache measurement's "first warm request after
+a cold one" is safe, because the order is the order the probe issued and the
+probe recorded it; the A/B's repeats are unordered and safe; the draw was
+not.
