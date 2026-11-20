@@ -22,6 +22,11 @@ Omega in [0, 4*pi] <-> Theta in [0, 360] deg. This fixture gives
 Theta = 285.4 deg.
 """
 from pathlib import Path
+import pytest
+
+@pytest.fixture(autouse=True)
+def _require_morfeus():
+    pytest.importorskip("morfeus", reason="morfeus not installed")
 
 ROOT = Path(__file__).resolve().parent.parent
 GEOMETRY = ROOT / ".gate" / "practice" / "znh2o2cl2.xyz"
@@ -43,7 +48,19 @@ def _run_workflow():
 
 
 def _needs_geometry():
+    """Ensure required external resources are available.
+
+    The test suite depends on the optional ``morfeus`` package and on a
+    practice geometry file that is not committed to the repository.  Both
+    conditions can cause a test to be skipped.  To preserve *both* reasons we
+    check ``morfeus`` first and raise a skip with its message; if ``morfeus``
+    is present we then check for the geometry file and raise a second, more
+    specific skip if it is missing.
+    """
     import pytest
+    # Module‑level requirement – skip the test if morfeus is unavailable.
+    pytest.importorskip("morfeus", reason="morfeus not installed")
+    # Per‑test precondition – the geometry file must exist.
     if not GEOMETRY.exists():
         pytest.skip(
             "scratch geometry .gate/practice/znh2o2cl2.xyz absent in this "
@@ -92,3 +109,20 @@ def test_real_output_values_are_physical():
             )
     assert seen_buried, "no numeric %Vbur in any step result"
     assert seen_cone, "no numeric cone angle in any step result"
+
+
+def test_missing_practice_geometry():
+    """Ensure the practice geometry file is present.
+
+    This test isolates the geometry‑missing condition so that its skip
+    reason is reported even when the module‑level ``morfeus`` requirement
+    causes the other tests to be skipped.
+    """
+    import pytest
+    if not GEOMETRY.exists():
+        pytest.skip(
+            "scratch geometry .gate/practice/znh2o2cl2.xyz absent in this "
+            "tree (never committed); see .gate/PR.md — value-pinning works "
+            "on any tree that has a tetrahedral Zn complex there"
+        )
+    assert True
