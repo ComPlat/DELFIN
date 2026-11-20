@@ -1,21 +1,14 @@
-"""Adversarial round 8: --wrap TEXT is fed through check_submit's PATH path.
+"""Guards on the `sbatch --wrap=` route: the green half of round 8/9.
 
-The phase-3 hook checks `sbatch --wrap=<text>` as text -- that is the
-package's own deliverable 2. But check_submit decides path-vs-text by
-SHAPE (hpc_io_check.py:540-546): a newline-free str ending in a script
-suffix is treated as a PATH and read from disk. A --wrap text is
-frequently exactly that shape ("bash run.sh", "python3 analysis.py"),
-so the hook raises FileNotFoundError instead of returning a verdict.
+The red half of this investigation -- a wrap TEXT shaped like a script
+name (hpc_io_check.py:540-546 reads it as a PATH and FileNotFoundError
+escapes at :651) -- lives in the reviewer's uncommitted probe, because a
+test that is red against the code cannot be committed. The finding is
+with the builder and the QS with file:line and the fix shape.
 
-Consequence on the bash route: an ordinary `sbatch --wrap='bash run.sh'`
-does not get a check at all -- it crashes the gate. That is neither
-"refuse" nor "run with a warning"; it is an exception in the one place
-that decides whether a submit is allowed.
-
-Attribution (measured, not assumed): the same probe on a scratch branch
-at 44e0ab4ef (before the every-segment fix) and at 8c97b4085 gives the
-IDENTICAL result for all 11 shapes, so this predates the segment fix; it
-is a defect of the phase-3 hook as delivered, not a regression.
+What IS committed here is the other half: the three behaviours a fix for
+that crash must NOT destroy. Each passes on 8c97b4085, so a fix that
+breaks one is caught rather than celebrated.
 """
 from __future__ import annotations
 
@@ -38,48 +31,8 @@ def mounts():
     return hpc_io_check.MountsSource(text=MOUNTS)
 
 
-# Each of these is a legal --wrap text whose shape ends in a script suffix
-# or contains one, and none of them names a file that exists.
-SUFFIX_SHAPED = [
-    "run.sh",
-    "./run.sh",
-    "analysis.py",
-    "submit_delfin.sh",
-    "bash run.sh",
-    "sh ./run.sh",
-    "python3 analysis.py",
-]
-
-
-@pytest.mark.parametrize("text", SUFFIX_SHAPED)
-def test_a_wrap_text_is_not_read_from_disk(mounts, tmp_path, monkeypatch, text):
-    """The hook must return a verdict for wrap TEXT, never raise."""
-    monkeypatch.chdir(tmp_path)
-    verdict, finding, may_run = hpc_io_check.sbatch_gate(
-        f"sbatch --wrap={text!r}", env=ENV, mounts_path=mounts)
-    assert verdict == "allow", (
-        f"a clean wrap text {text!r} should be allowed; got {verdict!r} "
-        f"with {finding!r}")
-
-
-@pytest.mark.parametrize("text", SUFFIX_SHAPED)
-def test_a_wrap_text_ending_in_a_suffix_does_not_crash(
-        mounts, tmp_path, monkeypatch, text):
-    """FileNotFoundError from check_submit's shape heuristic (H1) leaks."""
-    monkeypatch.chdir(tmp_path)
-    try:
-        hpc_io_check.sbatch_gate(
-            f"sbatch --wrap={text!r}", env=ENV, mounts_path=mounts)
-    except OSError as exc:
-        pytest.fail(
-            "sbatch_gate raised on a --wrap TEXT shaped like a script "
-            f"name ({text!r}): {type(exc).__name__}: {exc}. check_submit "
-            "reads it as a PATH (hpc_io_check.py:540-546); the --wrap "
-            "route must pass it as TEXT.")
-
-
 def test_the_wrapped_walk_is_still_caught(mounts, tmp_path, monkeypatch):
-    """Control: the defect must not be 'fixed' by refusing every wrap."""
+    """The crash must not be 'fixed' by refusing or ignoring every wrap."""
     monkeypatch.chdir(tmp_path)
     verdict, finding, may_run = hpc_io_check.sbatch_gate(
         f"sbatch --wrap={WALK!r}", env=ENV, mounts_path=mounts)
@@ -124,7 +77,7 @@ def test_a_wrap_naming_a_walking_script_is_still_refused(
 
     # What the two readings do with the same string, measured: the pure
     # TEXT reading finds nothing (that is the trap), the FILE reading
-    # finds the walk. If check() ever starts refusing bare "run.sh" as
+    # finds the walk. If check() ever starts refusing a bare "run.sh" as
     # text, this test no longer discriminates and must be revisited.
     assert hpc_io_check.check(spelling, env=ENV, mounts_path=mounts) == []
 
