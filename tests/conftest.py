@@ -309,6 +309,30 @@ def workspace_skills_trusted(monkeypatch):
     yield
 
 
+@pytest.fixture
+def truthful_peer(monkeypatch):
+    """``SO_PEERCRED`` answers with the connecting process, as a kernel that
+    names its peers does.
+
+    Input: none. Output: none. Semantics: a test that needs a pairing door
+    or a bridge check to ADMIT a peer must first be given the kernel's
+    answer that CI's kernel gives. On a workstation inside a nested pid
+    namespace the option reports the sandbox supervisor's pid -- an
+    ancestor whose environ is unreadable -- instead of the peer's, so
+    ``_from_an_agent`` judges the peer an agent and the check refuses for a
+    reason that has nothing to do with the code being tested. Measured
+    2026-11-20: the accepted socket answered pid 2 while the caller was pid
+    7, and one test read "the asking window is gone" for a door of its own
+    process. Tests of the REFUSAL need nothing: they pass without this.
+
+    The alternative rejected: a ``skipif`` for the namespace. It would
+    leave the admission path unasserted on exactly the hosts that fail it,
+    and the hand-over is the promise those tests exist for.
+    """
+    from delfin.agent.service import supervisor
+    monkeypatch.setattr(supervisor, "_peer_pid", lambda sock: os.getpid())
+
+
 def child_env(tmp_path) -> dict:
     """An environment for a child process a test starts, so that the
     child -- which inherits none of the suite's in-memory redirects --

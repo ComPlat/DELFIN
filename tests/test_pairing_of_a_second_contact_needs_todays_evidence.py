@@ -25,6 +25,7 @@ import time
 import pytest
 
 from _messenger_people_rig import Account
+from conftest import truthful_peer
 from delfin.agent import security_events
 from delfin.messenger import pairing, store
 from delfin.messenger.people import OWNER
@@ -125,7 +126,7 @@ def test_single_user_path_unchanged(state):
     assert store.persons() == [OWNER]
 
 
-def test_a_second_person_pairs_through_the_real_path_while_the_head_is_paired(acct):
+def test_a_second_person_pairs_through_the_real_path_while_the_head_is_paired(acct, truthful_peer):
     """Part 3, the whole scenario: the head's phone is already verified,
     then anna pairs her own phone through the SAME path (her /pair in her
     own directory, her one-time invitation, her code confirmed in her

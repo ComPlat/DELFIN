@@ -16,6 +16,7 @@ from __future__ import annotations
 import pytest
 
 from _messenger_people_rig import Account
+from conftest import truthful_peer
 from delfin.messenger import pairing, store
 
 
@@ -46,7 +47,7 @@ def _pair_and_verify(acct, name):
     acct.round()
 
 
-def test_the_bound_label_and_every_message_are_clean(acct):
+def test_the_bound_label_and_every_message_are_clean(acct, truthful_peer):
     store.save("20", person="anna", label="old phone")
     _pair_and_verify(acct, EVIL)
     label = store.contact("21")["label"]
@@ -63,7 +64,7 @@ def test_a_label_written_to_the_store_directly_is_cleaned_too(acct):
     assert _clean(store.contact("22")["label"])
 
 
-def test_a_plain_name_is_kept_control(acct):
+def test_a_plain_name_is_kept_control(acct, truthful_peer):
     _pair_and_verify(acct, "Anna Pixel 8")
     assert store.contact("21")["label"] == "Anna Pixel 8"
     pairing.forget("session:s")

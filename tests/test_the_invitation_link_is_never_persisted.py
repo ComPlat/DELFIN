@@ -32,6 +32,7 @@ import os
 import pytest
 
 from _messenger_people_rig import Account
+from conftest import truthful_peer
 from delfin.agent import audit_log, outcome_tracker, session_store
 from delfin.messenger import pairing, store
 from delfin.messenger.dashboard import PairPanel
@@ -84,7 +85,7 @@ def _code(acct, cid):
     return acct.daemon.to("@" + cid)[0].split("Code ")[1].split(".")[0]
 
 
-def test_no_file_holds_the_link_during_the_window_or_after(acct):
+def test_no_file_holds_the_link_during_the_window_or_after(acct, truthful_peer):
     rid = pairing.begin("session:p1", directory=acct.pairing_dir("anna"))
     acct.round()
     link = acct.daemon.links[0]
@@ -100,7 +101,7 @@ def test_no_file_holds_the_link_during_the_window_or_after(acct):
     assert _all_leaks(acct, link) == []
 
 
-def test_only_the_asking_process_gets_the_link(acct):
+def test_only_the_asking_process_gets_the_link(acct, truthful_peer):
     rid = pairing.begin("session:p1", directory=acct.pairing_dir("anna"))
     acct.round()
     raw = pairing.result(rid, directory=acct.pairing_dir("anna"))
@@ -168,7 +169,7 @@ def test_the_door_is_private_and_closed_when_the_pairing_ends(acct):
     del rid
 
 
-def test_the_dashboard_panel_shows_the_link_outside_the_transcript(acct):
+def test_the_dashboard_panel_shows_the_link_outside_the_transcript(acct, truthful_peer):
     rendered, chat = [], []
     panel = PairPanel(render=rendered.append, say=chat.append)
     reply = pairing.session_command("", requester="dashboard:d1", show=panel.show,
