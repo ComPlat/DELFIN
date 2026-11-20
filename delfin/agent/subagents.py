@@ -1649,6 +1649,113 @@ def _load_md_presets() -> dict[str, SubagentPreset]:
     return discovered
 
 
+#: Problems that do NOT keep a preset out of the registry.
+#:
+#: The distinction is what a problem makes the preset: UNSAFE or
+#: UNRESOLVABLE on one side -- a tool that does not exist, a write scope
+#: on a protected path, a delegation target that is not a type, a
+#: malformed schema, a name that shadows another preset -- and merely
+#: POORER on the other. A missing description and an empty body make a
+#: specialist worse to choose between; they do not make it dangerous, and
+#: refusing to load it costs the person a specialist for a cosmetic
+#: reason. They are recorded, and CI requires them of a shipped preset.
+#:
+#: Matched on the text ``validate_preset`` produces, which is why
+#: tests/test_a_preset_is_validated_before_it_becomes_a_type.py pins
+#: these two strings against it: a reworded message would silently turn
+#: an advisory problem into a blocking one.
+_ADVISORY_PROBLEMS: tuple[str, ...] = (
+    "field 'description' is required",
+    "system prompt) is empty",
+    # Order-dependent at load, and therefore no basis for refusing a
+    # preset here: the registry is built directory by directory, so a
+    # department manager read before its experts names targets that do
+    # not exist YET. Measured: a manager whose own directory is scanned
+    # alone was refused for naming two experts from another one. The
+    # delegation graph is checked once the registry is complete, by
+    # _delegation_problems, where every target is either there or is not.
+    "is not a known preset",
+)
+
+
+#: Problems that do not block a USER preset, because overriding is what a
+#: user directory is FOR. ``_build_preset_registry``'s own contract: md
+#: files in ``~/.delfin/subagents/`` may override built-ins, pack files may
+#: not. ``validate_preset`` is written for the agent-builder authoring a
+#: NEW preset, where an override is a mistake; at load it would remove a
+#: documented capability, and it did -- a user md no longer overrode the
+#: built-in ``explore``.
+_OVERRIDE_PROBLEMS: tuple[str, ...] = (
+    "overrides built-in preset",
+    "overrides an existing pack preset",
+)
+
+
+def _blocking(problems, may_override: bool = False) -> tuple[str, ...]:
+    """The problems that keep a preset out of the registry.
+
+    ``may_override``: this file comes from a directory allowed to shadow
+    an existing preset (a user's own), so an override is its purpose and
+    not a fault.
+    """
+    skip = _ADVISORY_PROBLEMS + (_OVERRIDE_PROBLEMS if may_override else ())
+    return tuple(p for p in problems if not any(a in p for a in skip))
+
+
+def _delegation_problems(registry) -> dict[str, tuple[str, ...]]:
+    """Whole-graph checks over a COMPLETE registry: ``{name: problems}``.
+
+    Two things no per-file check can see, because each needs every preset
+    to be known:
+
+    * a ``may_delegate_to`` target that is in no preset. Checked per file
+      it is order-dependent -- a manager read before its experts fails --
+      so it is checked here instead;
+    * a cycle. The runtime already bounds a loop (a child may spawn only
+      along its own preset's whitelist, and the depth cap refuses a
+      second level), so a cycle cannot run away; it is a configuration
+      mistake that would otherwise be found by a delegate failing at
+      depth, which is an expensive way to learn it.
+
+    Recorded, never raised: a registry that refused a manager over a
+    declared cycle would cost the whole department for a typo.
+    """
+    out: dict[str, tuple[str, ...]] = {}
+    for name, preset in registry.items():
+        problems: list[str] = []
+        for target in tuple(getattr(preset, "may_delegate_to", ()) or ()):
+            if target not in registry:
+                problems.append(
+                    f"may_delegate_to: {target!r} is not a known preset")
+        # A cycle reachable from this preset, by name.
+        seen, stack = set(), [name]
+        while stack:
+            cur = stack.pop()
+            for nxt in tuple(getattr(registry.get(cur), "may_delegate_to",
+                                     ()) or ()):
+                if nxt == name:
+                    problems.append(
+                        f"may_delegate_to: delegation returns to {name!r} "
+                        f"through {cur!r}; a department must not be a cycle")
+                    stack = []
+                    break
+                if nxt not in seen:
+                    seen.add(nxt)
+                    stack.append(nxt)
+        if problems:
+            out[name] = tuple(problems)
+    return out
+
+
+#: Why a markdown preset did not become a live type: ``{path: problems}``.
+#: Filled by :func:`_build_preset_registry`. A preset that fails its own
+#: validation is not loaded -- and a silent skip would be worse than no
+#: check at all, because the person sees a specialist documented and
+#: absent with no reason anywhere. The doctor and the session status read
+#: this; ``validate_preset`` had no caller in the product before.
+PRESET_LOAD_PROBLEMS: dict[str, tuple[str, ...]] = {}
+
+
 def _build_preset_registry() -> dict[str, SubagentPreset]:
     """Compose the live preset registry: built-ins first, then md overrides.
 
@@ -1698,10 +1805,44 @@ def _build_preset_registry() -> dict[str, SubagentPreset]:
             system_prompt = body.strip() or description or name
             enabled = (meta.get("enabled_setting") or "").strip()
             if enabled and not _setting_on(enabled):
-                # A department behind a switch defaults to off: not
-                # loaded into the registry, so the model is never offered
-                # the type and a call hits the unknown-type refusal.
+                # A department switched OFF is not loaded into the
+                # registry, so the model is never offered the type and a
+                # call hits the unknown-type refusal. The two shipped
+                # departments default ON (user_settings DEFAULT_SETTINGS);
+                # a setting that is absent entirely still reads as off,
+                # which is what _setting_on promises.
                 continue
+            # The check that exists for exactly this moment. It had no
+            # caller: a preset naming an unknown tool, or claiming a
+            # protected path as its write scope, became a live type.
+            # Validated here rather than in a separate pass, because a
+            # pass that runs somewhere else is a pass that can be
+            # forgotten -- a specialist is one dropped-in file and the
+            # set of them is meant to grow.
+            #
+            # The PATH is passed, not the text: the anti-override rule
+            # discards the file's own stem from the pack ids, and it can
+            # only do that when it knows which file this is. Given the
+            # text, every pack preset reports that it overrides itself.
+            #
+            # What a problem costs depends on where the file comes from.
+            # A USER preset is refused: it is new, nobody depends on it,
+            # and loading a preset whose tool list names tools that do
+            # not exist gives the model a type that cannot work. A PACK
+            # preset is kept and recorded: it ships with the product, the
+            # person sees it documented, and making it vanish at runtime
+            # would be a worse failure than an invalid field. CI is where
+            # a broken pack preset is refused
+            # (tests/test_every_shipped_preset_is_valid.py), which is a
+            # place a person reads.
+            problems = tuple(validate_preset(str(p)))
+            if problems:
+                PRESET_LOAD_PROBLEMS[str(p)] = problems
+                # A user preset is refused for a problem that makes it
+                # unsafe or unresolvable, and kept for one that only makes
+                # it poorer (see _ADVISORY_PROBLEMS).
+                if allow_override and _blocking(problems, allow_override):
+                    continue
             registry[name] = SubagentPreset(
                 name=name,
                 description=description or f"Custom subagent '{name}'",
@@ -1717,11 +1858,18 @@ def _build_preset_registry() -> dict[str, SubagentPreset]:
                 display_name=(meta.get("display_name") or "").strip(),
                 enabled_setting=enabled,
             )
+    # Whole-graph checks, now that every preset is known.
+    for _name, _probs in _delegation_problems(registry).items():
+        PRESET_LOAD_PROBLEMS[f"<registry>:{_name}"] = _probs
     return registry
 
 
-# Composed at import time: built-ins + any user/pack md files.
-SUBAGENT_PRESETS: dict[str, SubagentPreset] = _build_preset_registry()
+# Composed at import time, at the END of this module: the builder now
+# validates each markdown preset, and ``validate_preset`` is defined below.
+# Declared here so a reader meets the name where the builder is, and bound
+# at the bottom. Nothing between here and there reads it at import time
+# (every later use is inside a function), which is what makes the move safe.
+SUBAGENT_PRESETS: dict[str, SubagentPreset] = {}
 
 
 def reload_subagent_presets() -> dict[str, SubagentPreset]:
@@ -1729,6 +1877,15 @@ def reload_subagent_presets() -> dict[str, SubagentPreset]:
     user drops a new file into ``~/.delfin/subagents/``."""
     SUBAGENT_PRESETS.clear()
     SUBAGENT_PRESETS.update(_build_preset_registry())
+    # The tool schema the model is given follows the registry. Without
+    # this a preset dropped in during a session was not offered until the
+    # process restarted: the catalogue is a module-level literal whose
+    # enum was resolved at import.
+    try:
+        from .tool_catalog import refresh_subagent_tool
+        refresh_subagent_tool()
+    except Exception:
+        pass
     return SUBAGENT_PRESETS
 
 
@@ -1738,10 +1895,31 @@ def subagent_type_names() -> list[str]:
     return list(SUBAGENT_PRESETS.keys())
 
 
-# Paths an expert must never claim as its write scope: the safety frame
-# (SA0 package brief). A glob is refused when its literal prefix enters
-# one of these files or the pack directory — the model may not widen,
-# shadow or rewrite any of them through a delegated writer.
+#: Extra prefixes this check refuses beyond the gate's own list, for the
+#: delegated-writer case specifically: the pack directory (a preset that
+#: rewrites presets) and two entry points that are not individually
+#: protected paths but are how the safety frame is reached.
+#:
+#: The LIST THAT DECIDES is the write gate's,
+#: ``api_client._DEFAULT_PATH_PROTECTED_GLOBS``, read through
+#: :func:`_protected_write_prefixes`. This tuple used to be the whole
+#: answer and had drifted from it: measured 2026-11-20, 17 prefixes here
+#: against 43 globs there, of which 33 were not covered -- ``.github/**``,
+#: ``.delfin/settings.json``, ``.delfin/skills/**``,
+#: ``.delfin/trusted_workspaces.json``, ``.git``, ``HEAD``,
+#: ``delfin/agent/terminal_confirm.py``, ``file_confirm.py``,
+#: ``approval_answers.py``, ``cli_gate.py``, ``delfin/user_settings.py``
+#: and ``delfin/dashboard/tab_agent.py`` among them. A preset whose
+#: ``write_globs`` was ``.github/**`` would have passed this check: a
+#: workflow file is code CI runs.
+_EXTRA_PROTECTED_PREFIXES: tuple[str, ...] = (
+    "delfin/agent/pack/",
+    "delfin/api.py",
+    "delfin/smiles_converter",
+)
+
+# Kept for the name check below and for callers that read it; the write
+# scope is decided by _protected_write_prefixes().
 _PROTECTED_GLOB_PREFIXES: tuple[str, ...] = (
     "delfin/agent/api_client",
     "delfin/agent/engine",
@@ -1790,24 +1968,40 @@ def _known_preset_tool_names() -> frozenset[str]:
                 names.add(n)
     except Exception:
         pass
-    # The ops server's structure/geometry tools: a preset may list them
-    # bare (geometry_renumber) or namespaced (mcp__delfin-ops__
-    # geometry_renumber). Derive from the server module so a NEW
-    # tool_geometry_* the server registers stays known automatically —
-    # never a hand list, and a made-up name is still refused below.
+    # The ops server's tools: a preset may list one bare
+    # (geometry_renumber) or namespaced
+    # (mcp__delfin-ops__parse_orca_output). Derived from the server module
+    # so a tool it registers later stays known automatically — never a
+    # hand list, and a made-up name is still refused below.
+    #
+    # EVERY tool_*, not only tool_geometry_*. Measured 2026-11-20: the
+    # server defines 102 and the geometry prefix derives 19, so 83 real
+    # tools were missing from the catalogue and a preset listing one was
+    # called invalid. method-reviewer lists seven of them
+    # (parse_orca_output, compare_calculations, compare_across_functionals,
+    # extract_scf_convergence, extract_imaginary_frequencies,
+    # extract_delfin_json, find_orca_errors) and all seven exist.
     try:
         from delfin.ops_server import server as _ops_server
         for _n in dir(_ops_server):
-            if _n.startswith("tool_geometry_"):
+            if _n.startswith("tool_"):
                 _base = _n[len("tool_"):]
                 names.add(_base)
                 names.add(f"mcp__delfin-ops__{_base}")
     except Exception:
         pass
-    # The union of tools every shipped preset actually lists: these are
-    # registered by construction (their presets execute today).
-    for p in SUBAGENT_PRESETS.values():
-        names |= set(p.tools or ())
+    # The read-only surface the looking presets share, from the constant
+    # that defines it.
+    #
+    # NOT a union over SUBAGENT_PRESETS, which is what stood here. That
+    # made the catalogue self-referential: a preset's own tools entered
+    # the list of names a preset may use, so an unknown tool in a LOADED
+    # preset could never be caught -- it legitimised itself -- while the
+    # same name in a new preset was refused, and which happened depended
+    # on load order. Measured during this change: with presets refused at
+    # load the catalogue shrank from 141 names to 134 and other presets
+    # then failed on tools the first had justified.
+    names |= set(_READ_ONLY_PRESET_TOOLS)
     names.add("subagent_message")
     names.discard("")
     return frozenset(names)
@@ -1815,6 +2009,43 @@ def _known_preset_tool_names() -> frozenset[str]:
 
 def _kebab_case(name: str) -> bool:
     return bool(re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", name))
+
+
+def _protected_write_prefixes() -> tuple[str, ...]:
+    """Prefixes a preset's ``write_globs`` may never enter.
+
+    Input: nothing. Output: the write gate's own protected globs
+    (``api_client._DEFAULT_PATH_PROTECTED_GLOBS``), stripped of their
+    glob tails so a prefix comparison works, plus
+    ``_EXTRA_PROTECTED_PREFIXES``.
+
+    One source of truth on purpose. This check used to carry its own copy
+    and the two had drifted: 17 prefixes here against 43 globs in the
+    gate, 33 of them uncovered, so a preset claiming ``.github/**`` or
+    ``delfin/agent/terminal_confirm.py`` as its write scope passed. The
+    gate is the list that already decides what a write may touch; asking
+    it means a path protected there cannot be claimed here either, and a
+    path added there later is covered without a second edit.
+
+    Falls back to the local tuple if the gate's list cannot be read, so
+    the check never becomes a no-op: fewer prefixes would silently admit
+    more.
+    """
+    try:
+        from .api_client import _DEFAULT_PATH_PROTECTED_GLOBS as _gate
+    except Exception:
+        return tuple(_PROTECTED_GLOB_PREFIXES) + _EXTRA_PROTECTED_PREFIXES
+    out = set(_EXTRA_PROTECTED_PREFIXES) | set(_PROTECTED_GLOB_PREFIXES)
+    for glob in _gate or ():
+        g = str(glob)
+        # "**/x" and "x" protect the same thing for a repo-relative glob;
+        # the trailing /** or /* is a subtree, and its root is the prefix.
+        if g.startswith("**/"):
+            g = g[3:]
+        g = g.rstrip("*").rstrip("/")
+        if g:
+            out.add(g)
+    return tuple(sorted(out))
 
 
 def validate_preset(path_or_text: str) -> list[str]:
@@ -1872,17 +2103,37 @@ def validate_preset(path_or_text: str) -> list[str]:
         try:
             pack_ids = {p.stem.replace("_subagent", "") for p in
                         pack_dir.glob("*_subagent.md")}
-            # A preset validated by path is the file being introduced; its
-            # own stem is not an "existing pack preset" it overrides.
-            if not source.strip().startswith("---"):
-                try:
-                    own = Path(source).stem.replace("_subagent", "")
-                    pack_ids.discard(own)
-                except Exception:
-                    pass
             pack_ids |= {n for n in SUBAGENT_PRESETS
                          if n not in _BUILTIN_PRESETS
                          and n not in pack_ids}
+            # A preset validated by path is the file being introduced; its
+            # own stem is not an "existing pack preset" it overrides.
+            #
+            # Discarded AFTER the union, not before: the union re-adds any
+            # name already in the live registry, so discarding first put
+            # the file's own name straight back. Harmless while the
+            # registry was empty -- which it is on the first build at
+            # import -- and wrong on every rebuild, where every pack
+            # preset reported that it overrides itself. Found by calling
+            # this check from the registry builder, which is a second
+            # call.
+            if not source.strip().startswith("---"):
+                try:
+                    here = Path(source).resolve()
+                    pack_ids.discard(here.stem.replace("_subagent", ""))
+                    # ... and by its DECLARED name, when the file being
+                    # validated IS the pack file. A preset may declare a
+                    # name its filename does not carry
+                    # (metal-smiles-builder lives in
+                    # smiles-builder_subagent.md), and the stem alone then
+                    # exempts the wrong id, so the pack file reported that
+                    # it overrides itself. Only for a file inside the pack
+                    # directory: a USER file declaring a pack name is
+                    # exactly the override this rule exists to refuse.
+                    if name and here.parent == pack_dir.resolve():
+                        pack_ids.discard(name)
+                except Exception:
+                    pass
         except OSError:
             pack_ids = set()
         if name in pack_ids and name not in _BUILTIN_PRESETS:
@@ -1909,7 +2160,7 @@ def validate_preset(path_or_text: str) -> list[str]:
                 f"write_globs: {glob!r} points outside the repository")
             continue
         if any(g.startswith(pre) or g.startswith(pre.replace("/", ""))
-               for pre in _PROTECTED_GLOB_PREFIXES):
+               for pre in _protected_write_prefixes()):
             problems.append(
                 f"write_globs: {glob!r} covers a protected path "
                 "(the safety frame is never an expert's write scope)")
@@ -4910,3 +5161,17 @@ __all__ = [
     "drain_finished_subagents",
     "reap_pending_reports",
 ]
+
+
+# The live registry, bound last: _build_preset_registry calls
+# validate_preset, which is defined above this line and below its caller.
+# A preset that fails its own check does not become a type, and why is in
+# PRESET_LOAD_PROBLEMS rather than nowhere.
+SUBAGENT_PRESETS.update(_build_preset_registry())
+# ... and the schema once, now that the registry is bound: the catalogue's
+# enum was resolved at ITS import, which may have been before this.
+try:
+    from .tool_catalog import refresh_subagent_tool as _refresh_subagent_tool
+    _refresh_subagent_tool()
+except Exception:
+    pass

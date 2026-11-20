@@ -84,7 +84,7 @@
   },
   "parser": "unavailable",
   "opi": "BasisSet",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -122,7 +122,7 @@
   },
   "parser": "unavailable",
   "opi": "BasisSet",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -167,7 +167,7 @@
   },
   "parser": "unavailable",
   "opi": "BasisSet",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -201,7 +201,7 @@
   },
   "parser": "unavailable",
   "opi": "BasisSet",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -325,7 +325,7 @@
   },
   "parser": "unavailable",
   "opi": "BasisSet",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -353,7 +353,7 @@
   },
   "parser": "unavailable",
   "opi": "BasisSet",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -379,7 +379,7 @@
   },
   "parser": "unavailable",
   "opi": "BasisSet",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -514,7 +514,7 @@
   },
   "parser": "unavailable",
   "opi": "BasisSet",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -545,7 +545,7 @@
   },
   "parser": "unavailable",
   "opi": "BasisSet",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -589,7 +589,7 @@
   },
   "parser": "unavailable",
   "opi": "BasisSet",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -628,7 +628,7 @@
   },
   "parser": "unavailable",
   "opi": "BasisSet",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -651,7 +651,7 @@
   },
   "parser": "accepted",
   "opi": "BasisSet",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -692,7 +692,7 @@
   },
   "parser": "unavailable",
   "opi": "BasisSet",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -726,7 +726,7 @@
   },
   "parser": "unavailable",
   "opi": "BasisSet",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -755,7 +755,7 @@
   },
   "parser": "unavailable",
   "opi": "BasisSet",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -782,7 +782,7 @@
   },
   "parser": "unavailable",
   "opi": "BasisSet",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -824,7 +824,7 @@
   },
   "parser": "unavailable",
   "opi": "BasisSet",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -849,7 +849,7 @@
   },
   "parser": "unavailable",
   "opi": "BasisSet",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -893,7 +893,7 @@
   },
   "parser": "unavailable",
   "opi": "BasisSet",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -920,7 +920,7 @@
   },
   "parser": "unavailable",
   "opi": "BasisSet",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -944,7 +944,7 @@
   },
   "parser": "accepted",
   "opi": "BasisSet",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -976,7 +976,7 @@
   },
   "parser": "unavailable",
   "opi": "AuxBasisSet",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1009,7 +1009,7 @@
   },
   "parser": "unavailable",
   "opi": "AuxBasisSet",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1069,7 +1069,7 @@
   },
   "parser": "unavailable",
   "opi": "AuxBasisSet",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1090,7 +1090,7 @@
   },
   "parser": "unavailable",
   "opi": "AuxBasisSet",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1111,7 +1111,7 @@
   },
   "parser": "accepted",
   "opi": "AuxBasisSet",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1135,7 +1135,7 @@
   },
   "parser": "rejected",
   "opi": "Ecp",
-  "status": "grounded",
+  "status": "draft",
   "note": "ORCA 6.1.1 rejects this spelling as a simple-input keyword (probe); the ECP must be selected through the %basis block or with a differently spelled keyword."
  },
  {
@@ -1158,7 +1158,7 @@
   },
   "parser": "accepted",
   "opi": "Ecp",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1181,7 +1181,7 @@
   },
   "parser": "accepted",
   "opi": "Ecp",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1204,7 +1204,7 @@
   },
   "parser": "accepted",
   "opi": "Ecp",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1227,7 +1227,7 @@
   },
   "parser": "accepted",
   "opi": "Ecp",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1248,7 +1248,7 @@
   },
   "parser": "accepted",
   "opi": "Ecp",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1269,7 +1269,7 @@
   },
   "parser": "accepted",
   "opi": "Ecp",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1290,7 +1290,7 @@
   },
   "parser": "rejected",
   "opi": "Ecp",
-  "status": "grounded",
+  "status": "draft",
   "note": "ORCA 6.1.1 rejects this spelling as a simple-input keyword (probe); the ECP must be selected through the %basis block or with a differently spelled keyword."
  },
  {
@@ -1311,7 +1311,7 @@
   },
   "parser": "rejected",
   "opi": "Ecp",
-  "status": "grounded",
+  "status": "draft",
   "note": "ORCA 6.1.1 rejects this spelling as a simple-input keyword (probe); the ECP must be selected through the %basis block or with a differently spelled keyword."
  },
  {
@@ -1332,7 +1332,7 @@
   },
   "parser": "unavailable",
   "opi": "Ecp",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1368,7 +1368,7 @@
   },
   "parser": "accepted",
   "opi": "BasisOption",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1404,7 +1404,7 @@
   },
   "parser": "accepted",
   "opi": "BasisOption",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1428,7 +1428,7 @@
   },
   "parser": "unavailable",
   "opi": "BasisOption",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1478,7 +1478,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.Basis",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1499,7 +1499,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.AuxJ",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1520,7 +1520,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.AuxJK",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1541,7 +1541,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.AuxC",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1562,7 +1562,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.CABS",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1583,7 +1583,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.ECP",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1606,7 +1606,7 @@
   },
   "parser": "accepted",
   "opi": "BlockBasis.GhostECP",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1629,7 +1629,7 @@
   },
   "parser": "accepted",
   "opi": "BlockBasis.AllowGhostECP",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1650,7 +1650,7 @@
   },
   "parser": "accepted",
   "opi": "BlockBasis.Decontract",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1671,7 +1671,7 @@
   },
   "parser": "accepted",
   "opi": "BlockBasis.DecontractBas",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1692,7 +1692,7 @@
   },
   "parser": "accepted",
   "opi": "BlockBasis.DecontractAuxJ",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1713,7 +1713,7 @@
   },
   "parser": "accepted",
   "opi": "BlockBasis.DecontractAuxJK",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1734,7 +1734,7 @@
   },
   "parser": "accepted",
   "opi": "BlockBasis.DecontractAuxC",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1755,7 +1755,7 @@
   },
   "parser": "accepted",
   "opi": "BlockBasis.DecontractCABS",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1776,7 +1776,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.NewGTO",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1797,7 +1797,7 @@
   },
   "parser": "accepted",
   "opi": "BlockBasis.AddGTO",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1818,7 +1818,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.NewAuxJGTO",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1839,7 +1839,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.NewECP",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1860,7 +1860,7 @@
   },
   "parser": "accepted",
   "opi": "BlockBasis.DelECP",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1881,7 +1881,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.FragBasis",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1902,7 +1902,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.FragAuxJ",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1923,7 +1923,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.FragAuxJK",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1944,7 +1944,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.FragAuxC",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1965,7 +1965,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.FragCABS",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -1986,7 +1986,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.FragECP",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2007,7 +2007,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.ReadFragBasis",
-  "status": "grounded",
+  "status": "draft",
   "note": "probe with a missing file name only checks the keyword itself; ORCA would fail at run time on an unreadable file."
  },
  {
@@ -2028,7 +2028,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.ReadFragAux",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2049,7 +2049,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.ReadFragAuxJ",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2070,7 +2070,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.ReadFragAuxC",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2091,7 +2091,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.ReadFragCABS",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2112,7 +2112,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.ReadFragECP",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2133,7 +2133,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.GTOName",
-  "status": "grounded",
+  "status": "draft",
   "note": "the probe sandbox refuses file-reading keywords, so the parser verdict is unavailable although the manual documents the keyword; test it manually before writing it into an input."
  },
  {
@@ -2154,7 +2154,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.GTOAuxJName",
-  "status": "grounded",
+  "status": "draft",
   "note": "the probe sandbox refuses file-reading keywords, so the parser verdict is unavailable although the manual documents the keyword."
  },
  {
@@ -2175,7 +2175,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.GTOAuxName",
-  "status": "grounded",
+  "status": "draft",
   "note": "the probe sandbox refuses file-reading keywords, so the parser verdict is unavailable although the manual documents the keyword."
  },
  {
@@ -2196,7 +2196,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.GTOAuxJKName",
-  "status": "grounded",
+  "status": "draft",
   "note": "the probe sandbox refuses file-reading keywords, so the parser verdict is unavailable although the manual documents the keyword."
  },
  {
@@ -2217,7 +2217,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.GTOAuxCName",
-  "status": "grounded",
+  "status": "draft",
   "note": "the probe sandbox refuses file-reading keywords, so the parser verdict is unavailable although the manual documents the keyword."
  },
  {
@@ -2238,7 +2238,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockBasis.GTOCABSName",
-  "status": "grounded",
+  "status": "draft",
   "note": "the probe sandbox refuses file-reading keywords, so the parser verdict is unavailable although the manual documents the keyword."
  },
  {
@@ -2259,7 +2259,7 @@
   },
   "parser": "accepted",
   "opi": "BlockBasis.PCDTrimBas",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2280,7 +2280,7 @@
   },
   "parser": "accepted",
   "opi": "BlockBasis.PCDTrimAuxJ",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2301,7 +2301,7 @@
   },
   "parser": "accepted",
   "opi": "BlockBasis.PCDTrimAuxJK",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2322,7 +2322,7 @@
   },
   "parser": "accepted",
   "opi": "BlockBasis.PCDTrimAuxC",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2343,7 +2343,7 @@
   },
   "parser": "accepted",
   "opi": "BlockBasis.PCDThresh",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2364,7 +2364,7 @@
   },
   "parser": "accepted",
   "opi": "BlockBasis.AutoAuxSize",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2385,7 +2385,7 @@
   },
   "parser": "accepted",
   "opi": "BlockBasis.AutoAuxLMax",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2406,7 +2406,7 @@
   },
   "parser": "accepted",
   "opi": "BlockBasis.AutoAuxLLimit",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2427,7 +2427,7 @@
   },
   "parser": "accepted",
   "opi": "BlockBasis.AutoAuxF[l]",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2448,7 +2448,7 @@
   },
   "parser": "accepted",
   "opi": "BlockBasis.AutoAuxB[l]",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2469,7 +2469,7 @@
   },
   "parser": "accepted",
   "opi": "BlockBasis.AutoAuxTightB",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2490,7 +2490,7 @@
   },
   "parser": "accepted",
   "opi": "BlockBasis.OldAutoAux",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2536,7 +2536,7 @@
   },
   "parser": "accepted",
   "opi": "RelativisticCorrection",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2560,7 +2560,7 @@
   },
   "parser": "accepted",
   "opi": "RelativisticCorrection",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2583,7 +2583,7 @@
   },
   "parser": "accepted",
   "opi": "RelativisticCorrection",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2604,7 +2604,7 @@
   },
   "parser": "accepted",
   "opi": "RelativisticCorrection",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2625,7 +2625,7 @@
   },
   "parser": "accepted",
   "opi": "RelativisticCorrection",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2646,7 +2646,7 @@
   },
   "parser": "accepted",
   "opi": "RelativisticCorrection",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2667,7 +2667,7 @@
   },
   "parser": "accepted",
   "opi": "RelativisticCorrection",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2688,7 +2688,7 @@
   },
   "parser": "accepted",
   "opi": "RelativisticCorrection",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2709,7 +2709,7 @@
   },
   "parser": "accepted",
   "opi": "RelativisticCorrection",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2730,7 +2730,7 @@
   },
   "parser": "accepted",
   "opi": "RelativisticCorrection",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2751,7 +2751,7 @@
   },
   "parser": "accepted",
   "opi": "RelativisticCorrection",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2772,7 +2772,7 @@
   },
   "parser": "accepted",
   "opi": "RelativisticCorrection",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2793,7 +2793,7 @@
   },
   "parser": "accepted",
   "opi": "RelativisticCorrection",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2814,7 +2814,7 @@
   },
   "parser": "accepted",
   "opi": "RelativisticCorrection",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2835,7 +2835,7 @@
   },
   "parser": "accepted",
   "opi": "RelativisticCorrection",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2856,7 +2856,7 @@
   },
   "parser": "accepted",
   "opi": "RelativisticCorrection",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2877,7 +2877,7 @@
   },
   "parser": "accepted",
   "opi": "RelativisticCorrection",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2898,7 +2898,7 @@
   },
   "parser": "accepted",
   "opi": "RelativisticCorrection",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2919,7 +2919,7 @@
   },
   "parser": "accepted",
   "opi": "BlockRel.Method",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2940,7 +2940,7 @@
   },
   "parser": "accepted",
   "opi": "BlockRel.ModelPot",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2961,7 +2961,7 @@
   },
   "parser": "accepted",
   "opi": "BlockRel.ModelDens",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -2982,7 +2982,7 @@
   },
   "parser": "accepted",
   "opi": "BlockRel.OneCenter",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -3003,7 +3003,7 @@
   },
   "parser": "accepted",
   "opi": "BlockRel.C",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -3024,7 +3024,7 @@
   },
   "parser": "accepted",
   "opi": "BlockRel.PictureChange",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -3045,7 +3045,7 @@
   },
   "parser": "accepted",
   "opi": "BlockRel.FiniteNuc",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -3066,7 +3066,7 @@
   },
   "parser": "accepted",
   "opi": "BlockRel.PrintLevel",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -3087,7 +3087,7 @@
   },
   "parser": "accepted",
   "opi": "BlockRel.Order",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -3108,7 +3108,7 @@
   },
   "parser": "accepted",
   "opi": "BlockRel.fpFWtrafo",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -3129,7 +3129,7 @@
   },
   "parser": "accepted",
   "opi": "BlockRel.Xalpha",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -3150,7 +3150,7 @@
   },
   "parser": "accepted",
   "opi": "BlockRel.ScaleZORA",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -3171,7 +3171,7 @@
   },
   "parser": "accepted",
   "opi": "BlockRel.DLU",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -3192,7 +3192,7 @@
   },
   "parser": "accepted",
   "opi": "BlockRel.LightAtomThresh",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  },
  {
@@ -3213,7 +3213,7 @@
   },
   "parser": "accepted",
   "opi": "BlockRel.StorageLevel",
-  "status": "grounded",
+  "status": "draft",
   "note": null
  }
 ]

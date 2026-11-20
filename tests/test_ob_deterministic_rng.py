@@ -44,9 +44,14 @@ def test_switch_on_same_input_same_geometry_in_one_process():
     assert len(set(outs)) == 1
 
 
-def test_switch_on_same_geometry_across_processes():
+def test_switch_on_same_geometry_across_processes(tmp_path):
+    """conftest's ``child_env`` carries the library-path repair: on a
+    workstation with the QM programs' libraries on LD_LIBRARY_PATH the child
+    could not ``import sqlite3`` at all, so this measured nothing there."""
+    from conftest import child_env
     code = ("import sys; sys.path.insert(0, %r); from tests.test_ob_deterministic_rng import _run; "
             "print(_run(1, '1')[0])" % os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    outs = [subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout
+    outs = [subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                           check=True, env=child_env(tmp_path)).stdout
             for _ in range(2)]
     assert outs[0] == outs[1] == _run(1, "1")[0] + "\n"

@@ -355,7 +355,8 @@ class SlurmJobBackend(JobBackend):
         if sys.prefix != getattr(sys, 'base_prefix', sys.prefix) or (prefix / 'conda-meta').is_dir():
             env['DELFIN_VENV'] = str(prefix)
         repo = Path(__file__).resolve().parents[2]
-        if (repo / 'pyproject.toml').is_file() and (repo / '.git').exists():
+        from delfin.agent import safe_git as _sg
+        if (repo / 'pyproject.toml').is_file() and _sg.is_checkout(repo):
             env['DELFIN_REPO'] = str(repo)
         mpirun = shutil.which('mpirun')
         if mpirun:
