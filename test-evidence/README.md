@@ -22,3 +22,7 @@ Files in this directory state, for each measurement:
 - [`sandbox-and-mount-limits.md`](sandbox-and-mount-limits.md) — the seccomp
   listener refusal, the bwrap network-namespace failure, the git grep thread
   ceiling, and `/var/tmp` being read-only.
+- [`peer-id-and-socket-path.md`](peer-id-and-socket-path.md) —
+  `SO_PEERCRED` answering with the sandbox supervisor's pid instead of the
+  peer's, and a `TMPDIR` deep enough to overflow `sockaddr_un`, with the
+  before/after over the nine pairing-test files.
