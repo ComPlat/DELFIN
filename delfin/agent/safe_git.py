@@ -280,8 +280,39 @@ def out(cwd, *args: str, timeout: float = _DEFAULT_TIMEOUT_S) -> str:
 
 
 def is_repository(path) -> bool:
+    """Whether git itself calls ``path`` a repository. Authoritative, and
+    costs a subprocess: it also answers yes inside a subdirectory of a
+    checkout, and no for a ``.git`` that git cannot use."""
     try:
         return Path(path).exists() and run(
             ["rev-parse", "--git-dir"], path, timeout=5).returncode == 0
     except Exception:
         return False
+
+
+def is_checkout(path) -> bool:
+    """Whether ``path`` is the top of a git checkout, read from its layout.
+
+    Input: a directory. Output: True when ``path/.git`` is something git
+    can work with -- a directory holding ``HEAD``, or the ``gitdir:`` file
+    a linked worktree and a submodule get. No subprocess, so it can be
+    called for every parent of a path; ``is_repository`` is the
+    authoritative answer and costs one.
+
+    Eight call sites asked ``(path / ".git").exists()``. That is a
+    neighbouring question: an empty directory named ``.git`` answers yes,
+    and git answers "not a git repository" for the same path. Measured on
+    a workstation where something had left an empty ``/tmp/.git`` behind:
+    every path under ``/tmp`` was classified as a repository checkout, and
+    a refusal about the calculation archive named the wrong rule. Fails
+    closed -- an unreadable ``.git`` is not a checkout.
+    """
+    try:
+        dot = Path(path) / ".git"
+        if dot.is_dir():
+            return (dot / "HEAD").exists()
+        if dot.is_file():
+            return dot.read_text(errors="replace").strip().startswith("gitdir:")
+    except Exception:
+        pass
+    return False
