@@ -320,6 +320,18 @@ def check(script_text: str, *, env: dict | None = None,
     def _src(i: int) -> int:
         return (source_lines[i] if 0 <= i < len(source_lines) else i) + 1
 
+    def _cd_is_node_local(cd_target: str) -> bool:
+        """True when the cd target is node-local: a $VAR, or a path
+        that is not on Lustre either as written or expanded from the
+        script's own variables."""
+        if cd_target.startswith("$"):
+            return True
+        if _is_lustre(cd_target, lustres):
+            return False
+        expanded = _expand_env_paths(cd_target, vars_map)
+        resolved = expanded[0] if expanded else cd_target
+        return not _is_lustre(resolved, lustres)
+
     # --- Rule: interpreter / pip / pytest start on Lustre, in a loop ----
     for i, line in enumerate(lines):
         if i not in inside:
@@ -380,15 +392,7 @@ def check(script_text: str, *, env: dict | None = None,
                                    line))
             if own:
                 cd_target = own[-1].group(1).strip().strip('"\'')
-                cd_node_local = (cd_target.startswith("$")
-                                 or not _is_lustre(cd_target, lustres)
-                                 and not _is_lustre(
-                                     _expand_env_paths(
-                                         cd_target, vars_map)[0]
-                                     if _expand_env_paths(cd_target,
-                                                          vars_map)
-                                     else cd_target, lustres))
-                if cd_node_local:
+                if _cd_is_node_local(cd_target):
                     continue
                 # The shell really ends on a Lustre dir: refuse.
                 path = cd_target
@@ -400,12 +404,7 @@ def check(script_text: str, *, env: dict | None = None,
                     here = cd_m
                 if here is not None:
                     cd_target = here.group(1).strip().strip('"\'')
-                    if (cd_target.startswith("$")
-                            or not _is_lustre(cd_target, lustres)
-                            and not _is_lustre(
-                                _expand_env_paths(cd_target, vars_map)[0]
-                                if _expand_env_paths(cd_target, vars_map)
-                                else cd_target, lustres)):
+                    if _cd_is_node_local(cd_target):
                         continue
                     path = cd_target
                 else:
@@ -563,6 +562,106 @@ def check_submit(script, env: dict | None = None,
     refused = [_fmt(f) for f in findings if f.severity == "refuse"]
     warned = [_fmt(f) for f in findings if f.severity == "warn"]
     return refused, warned
+
+
+def sbatch_gate(cmd: str, env: dict | None = None,
+                mounts_path: MountsSource | None = None
+                ) -> tuple[str, str, bool]:
+    """The decision hook the agent's bash gate calls for a command that
+    runs sbatch (IO2 phase 3, the px in ``api_client.py``).
+
+    Returns ``(verdict, text, may_run)``:
+
+    - ``verdict``: ``"allow"`` when the command is not an sbatch
+      command or its script is clean; ``"refuse"`` when the script
+      carries a refuse finding; ``"warn"`` when it only carries warn
+      findings.
+    - ``text``: the finding text for refuse/warn, ``""`` for allow.
+    - ``may_run``: False only for refuse -- the command must not
+      execute; warn and allow run.
+
+    An sbatch command is one whose segment starts with the word
+    ``sbatch`` after any of ``;`` ``&&`` ``|`` ``env X=1`` ``exec``
+    ``nice`` ``command`` ``nohup`` (the same wrapper shapes
+    :func:`_strip_wrappers` handles). The script to check is the LAST
+    positional argument (an ``-o/-o``-style attached token is an
+    option, not the script); ``--wrap=<text>`` or ``--wrap <text>`` is
+    checked as script text instead. When neither a script argument nor
+    --wrap is present the verdict is allow -- sbatch reads its script
+    from stdin then, and there is nothing to inspect.
+
+    Pure over text; the same mounts-source rules as :func:`check`.
+    """
+    import shlex
+    # The LAST segment the shell would run, stripped of wrappers: the
+    # gate asks about the sbatch command the shell actually executes
+    # (a `cd /tmp && sbatch ...` runs sbatch from /tmp).
+    segments = re.split(r"&&|\|\||;|\|", cmd)
+    target = _strip_wrappers(segments[-1] if segments else cmd)
+    tokens = target.split()
+    if not tokens or tokens[0] != "sbatch":
+        return "allow", "", True
+    if env is None:
+        import os as _os
+        env = dict(_os.environ)
+    # --wrap=<text> or --wrap <text>: the wrapped text IS the script.
+    wrap = re.search(r"--wrap(?:=(?:'([^']*)'|\"([^\"]*)\"|(\S+))|\s+('([^']*)'|\"([^\"]*)\"|(\S+)))",
+                     target)
+    if wrap:
+        text = next(g for g in wrap.groups() if g is not None)
+        refused, warned = check_submit(text, env=env,
+                                       mounts_path=mounts_path)
+    else:
+        # The script is the last token that is not an option or an
+        # option's value. A token starting with '-' is an option; a
+        # leading '--' token with '=' carries its value attached. An
+        # ATTACHED short-option value (`-o<value>`, reviewer W-shape)
+        # is not the script either: the value after the single-letter
+        # flag is stripped before the positional scan.
+        stripped = []
+        for t in tokens[1:]:
+            m = re.match(r"^-([A-Za-z])(\S.*)$", t)
+            if m and m.group(1) in "oe":  # -o outfile, -e errfile
+                continue  # attached option VALUE, not a positional
+            stripped.append(t)
+        positional = [t for t in stripped if not t.startswith("-")]
+        if not positional:
+            # The whole command line was options (e.g. `sbatch
+            # -o<value>` only): no batch script is named, sbatch reads
+            # stdin. But an attached value that LOOKS like a script
+            # path is checked conservatively -- if it exists and would
+            # be refused, refuse (a wrong -o path is never a walk, so
+            # this can only fire on a real script path).
+            for t in tokens[1:]:
+                m = re.match(r"^-([A-Za-z])(\S.*)$", t)
+                if m and m.group(1) in "oe" and Path(m.group(2)).is_file():
+                    script_arg = m.group(2)
+                    break
+            else:
+                return "allow", "", True
+        else:
+            script_arg = positional[-1]
+        try:
+            refused, warned = check_submit(script_arg, env=env,
+                                           mounts_path=mounts_path)
+        except FileNotFoundError:
+            # sbatch will fail on its own with "No such file"; the gate
+            # does not add a second error for a path that names nothing.
+            return "allow", "", True
+        except OSError:
+            # A token like `-o<missing>` was taken as the script because
+            # an attached option value is indistinguishable from a bare
+            # path by shape alone; if it names nothing the command goes
+            # to sbatch, which refuses it. Same rule as FileNotFoundError.
+            return "allow", "", True
+    if refused:
+        return ("refuse",
+                "hpc_io_check refused: the sbatch script would load the "
+                "shared Lustre file system. " + " ".join(refused)
+                + " Fix the script and submit again.", False)
+    if warned:
+        return "warn", "hpc_io_check warn: " + " ".join(warned), True
+    return "allow", "", True
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -541,13 +541,17 @@ class SlurmJobBackend(JobBackend):
             self._invalidate_jobs_cache()
         if _warn_text:
             # D1: a successful submit's caller reads stdout (stderr is
-            # only shown when rc != 0), so the warning goes there, next
-            # to the job id. On a failure it rides in stderr as well so
-            # the reason is not lost.
+            # only shown when rc != 0), so the warning goes there. It
+            # goes BEFORE the "Submitted batch job N" line: 15 dashboard
+            # call sites take the LAST whitespace token of stdout as the
+            # job id (e.g. tab_submit.py:714, tab_recalc.py:156), so a
+            # warning after it would displace the id (consumer
+            # regression, wave-33 round 5). On a failure it rides in
+            # stderr so the reason is not lost.
             if result.returncode == 0:
                 result = subprocess.CompletedProcess(
                     args=result.args, returncode=result.returncode,
-                    stdout=(result.stdout or '') + _warn_text + '\n',
+                    stdout=_warn_text + '\n' + (result.stdout or ''),
                     stderr=result.stderr)
             else:
                 result = subprocess.CompletedProcess(
