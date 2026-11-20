@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from delfin import hpc_io_check
 from delfin.qm_runtime import (
     binary_env_var_name,
     canonical_tool_name,
@@ -444,6 +445,32 @@ class SlurmJobBackend(JobBackend):
                 stderr=(f'Invalid time limit {str(time_limit)!r}: {problem}. Use HH:MM:SS, '
                         'D-HH:MM:SS, or a duration such as 48h, 2d or 90min.'),
             )
+        # IO2: the Lustre metadata-load check runs on the submit script
+        # BEFORE sbatch runs it — the same rule the agent's
+        # cluster_submit applies (IO1), so the dashboard route cannot
+        # skip it. A "refuse" finding stops the submit; its text lands
+        # in stderr, exactly where callers show an sbatch refusal. A
+        # "warn" finding rides in stderr and the submit proceeds.
+        try:
+            refused, warned = hpc_io_check.check_submit(submit_script)
+        except OSError as problem:
+            return subprocess.CompletedProcess(
+                args=['sbatch'], returncode=1, stdout='',
+                stderr=f'cannot read submit script {submit_script}: {problem}. '
+                       'The Lustre metadata check never fails open: fix the '
+                       'path and submit again.')
+        if refused:
+            return subprocess.CompletedProcess(
+                args=['sbatch'], returncode=1, stdout='',
+                stderr=('submit refused: the job script would load the shared '
+                        'Lustre file system. ' + ' '.join(refused)
+                        + ' Fix the script and submit again.'))
+        if warned:
+            # Warnings ride along, not silently: appended to stderr, which
+            # the callers surface next to the job id.
+            _warn_text = ('hpc_io_check warning: ' + ' '.join(warned))
+        else:
+            _warn_text = ''
         env_vars = self._append_profile_env(env_vars)
         env_vars = self._append_runtime_location_env(env_vars)
         # USR1 for preemptive sync: half the walltime, capped 30s–300s
@@ -501,6 +528,13 @@ class SlurmJobBackend(JobBackend):
             # The queue just changed by our own doing -- show it at once
             # instead of making the user wait out the squeue rate limit.
             self._invalidate_jobs_cache()
+        if _warn_text:
+            # The warning rides with the result, never silently: appended
+            # to whatever stderr sbatch produced.
+            result = subprocess.CompletedProcess(
+                args=result.args, returncode=result.returncode,
+                stdout=result.stdout,
+                stderr=(result.stderr or '') + '\n' + _warn_text)
         return result
 
     @staticmethod

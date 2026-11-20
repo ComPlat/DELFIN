@@ -65,9 +65,13 @@ _WALK_FLAGS = re.compile(
 )
 _MAXDEPTH = re.compile(r"-maxdepth\s+(\d+)")
 
-# Interpreters whose start reads every .so/.pth on their path.
+# Interpreters whose start reads every .so/.pth on their path. The word
+# must be complete: it ends at whitespace OR at the end of the line --
+# a bare `pytest` as the last word of a line (the commonest job-script
+# spelling, wave-33 review F1) was invisible when only \s counted.
 _INTERPRETER = re.compile(
-    r"(?:^|\s|/)(?:python3?(?:\d+(?:\.\d+)*)?|pip3?|conda|pytest)\s", re.M)
+    r"(?:^|\s|/)(?:python3?(?:\d+(?:\.\d+)*)?|pip3?|conda|pytest)(?=\s|$)",
+    re.M)
 
 _LOOP_HEADS = re.compile(r"(?:^|\n)\s*(?:for\s+\S+\s+in|while\s)[^\n]*\n", re.M)
 
@@ -89,38 +93,103 @@ def _strip_env_prefixes(line: str) -> str:
         line = m.group(1)
 
 
-def _join_continuations(text: str) -> str:
+def _join_continuations(text: str) -> tuple[str, list[int]]:
     """Join backslash line continuations so a command and its paths sit
-    on one logical line (line numbers then follow the last continued
-    line, which is where the walk fires)."""
+    on one logical line. Returns ``(joined, source_lines)`` where
+    ``source_lines[i]`` is the 0-based SOURCE line index of logical line
+    ``i`` -- a report must name the line the user can open (F5, wave-33
+    review): a walk on real line 5 behind continuations was reported as
+    line 4."""
     out = []
+    source: list[int] = []
     buf = ""
-    for line in text.splitlines():
+    buf_start = 0
+    for idx, line in enumerate(text.splitlines()):
+        if not buf:
+            buf_start = idx
         buf += line
         if buf.rstrip().endswith("\\"):
             buf = buf.rstrip()[:-1] + " "
             continue
         out.append(buf)
+        source.append(buf_start)
         buf = ""
     if buf:
         out.append(buf)
-    return "\n".join(out)
+        source.append(buf_start)
+    return "\n".join(out), source
+
+
+def _strip_wrappers(cmd: str) -> str:
+    """Drop wrappers that do not change what runs (wave-33 review F4):
+    leading `bash -c`/`sh -c` (their argument is the command),
+    `command`, `nice`, `exec` prefixes, VAR=val prefixes (existing
+    helper) and one level of grouping parentheses around the command.
+    The command word must then anchor the rule; before this a wrapper
+    hid the walk from it."""
+    cmd = _strip_env_prefixes(cmd)
+    while True:
+        m = re.match(r"\s*(?:bash|sh)\s+-c\s+(?:'([^']*)'|\"([^\"]*)\")\s*$",
+                     cmd)
+        if m:
+            cmd = m.group(1) or m.group(2) or ""
+            continue
+        m = re.match(r"\s*(?:command|nice|exec|env|nohup)\s+(.*)", cmd)
+        if m:
+            cmd = m.group(1)
+            continue
+        m = re.match(r"\s*\(\s*(.*)\s*\)\s*$", cmd)
+        if m and ("&&" in m.group(1) or ";" not in m.group(1)):
+            # A single command or a chain inside parentheses; a lone
+            # `( cmd )` in a script is one command.
+            cmd = m.group(1)
+            continue
+        return cmd
+
+
+def _collect_vars(text: str, env: dict | None) -> dict[str, str]:
+    """Every variable a script assigns itself plus the caller's env --
+    the map `$VAR` expansion needs so a variable cannot hide a Lustre
+    path (wave-33 review F3). Script assignments win: they run."""
+    merged: dict[str, str] = {}
+    merged.update(env or {})
+    for m in re.finditer(
+            r"(?:^|\n)\s*(?:export\s+)?([A-Za-z_]\w*)=(?:\"([^\"]*)\"|'([^']*)'|(\S*))",
+            text):
+        merged[m.group(1)] = m.group(2) or m.group(3) or m.group(4) or ""
+    return merged
 
 
 def _expand_env_paths(line: str, env: dict | None) -> list[str]:
-    """Absolute paths on the line, with $HOME / ${HOME} (and quoted
-    "$HOME/...") expanded from env, and /.. resolved away."""
+    """Absolute paths on the line, with $VAR / ${VAR} expanded from the
+    script's own assignments and the caller's env (F3: only $HOME was
+    expanded, so any other variable hid a Lustre path completely),
+    `~/` from HOME, and /.. resolved away."""
     env = env or {}
-    paths = re.findall(r"(\"\$HOME[^\"]*\"|/[^\s\"';&|]+)", line)
+    paths = re.findall(
+        r"(~/(?:[\w./-]*)|\"\$\{?\w+\}?[^\"]*\"|\$\{?\w+\}?|/[^\s\"';&|]+)",
+        line)
     out = []
     for p in paths:
         p = p.strip("\"")
-        home = str(env.get("HOME", ""))
-        p = p.replace("${HOME}", home).replace("$HOME", home)
+        if p.startswith("~/"):
+            home = str(env.get("HOME", ""))
+            p = home + p[1:] if home else p
+        # Expand every $VAR / ${VAR}, repeatedly (nested assignments),
+        # resolving from the merged map.
+        for _ in range(3):
+            expanded = re.sub(r"\$\{(\w+)\}|\$(\w+)",
+                              lambda m: str(env.get(m.group(1) or m.group(2),
+                                                    m.group(0))),
+                              p)
+            if expanded == p:
+                break
+            p = expanded
         if "/.." in p:
             from posixpath import normpath
             p = normpath(p)
-        out.append(p)
+        if p and not p.startswith("$"):
+            out.append(p)
     return out
 
 
@@ -223,10 +292,18 @@ def check(script_text: str, *, env: dict | None = None,
     home_lustre = _path_is_lustre_home(env, lustres)
     if not lustres:
         return []
-    text = _join_continuations(script_text)
+    text, source_lines = _join_continuations(script_text)
     lines = text.splitlines()
     inside = _loop_lines(lines)
     findings: list[Finding] = []
+    vars_map = _collect_vars(script_text, env)
+
+    # A helper the line-numbered rules use: the 1-based SOURCE line of
+    # logical line ``i`` (F5: continuations collapsed the count, so a
+    # walk on real line 5 was reported as line 4).
+
+    def _src(i: int) -> int:
+        return (source_lines[i] if 0 <= i < len(source_lines) else i) + 1
 
     # --- Rule: interpreter / pip / pytest start on Lustre, in a loop ----
     for i, line in enumerate(lines):
@@ -248,7 +325,7 @@ def check(script_text: str, *, env: dict | None = None,
             continue
         if re.match(r"(python|pip)", interp_word):
             findings.append(Finding(
-                "lustre_interpreter_in_loop", i + 1, "warn",
+                "lustre_interpreter_in_loop", _src(i), "warn",
                 "an interpreter or pip started once per loop item on Lustre "
                 "reads its environment (.pth, shared objects) from the shared "
                 "file system every iteration -- the measured 43M open/close "
@@ -258,7 +335,7 @@ def check(script_text: str, *, env: dict | None = None,
                 " and run it from there"))
         if "pytest" in interp_word:
             findings.append(Finding(
-                "pytest_from_lustre_checkout", i + 1, "refuse",
+                "pytest_from_lustre_checkout", _src(i), "refuse",
                 "pytest run from a HOME/Lustre checkout stats the whole tree "
                 "of tests and the installed environment on the shared file "
                 "system (the 16.11.2026 incident)",
@@ -278,19 +355,38 @@ def check(script_text: str, *, env: dict | None = None,
         if m and is_pytest_shape:
             tail = line[m.end():]
             arg = re.search(r"(/[^\s\"']+)", tail)
-            here = re.search(r"(?:cd\s+|;\s*cd\s+)\"?(\$[\w{]+|/[^\s\"';]+)",
-                             script_text)
-            # A cd onto $TMPDIR (or another node-local variable) is the
-            # FIX this rule asks for: the checkout there is node-local.
-            if here and here.group(1).startswith("$"):
-                continue
+            # The cd that counts is the LAST one on or before this line
+            # (F2: the exemption was searched over the whole script, so
+            # any `cd $TMPDIR` anywhere excused every pytest line after
+            # it -- but the last cd wins the cwd). A node-local $VAR cd
+            # at the point of the pytest is the FIX this rule asks for;
+            # a later cd back onto a Lustre path is not excused.
+            text_before = "\n".join(lines[:i + 1])
+            here = None
+            for cd_m in re.finditer(
+                    r"(?:^|\n|;)\s*cd\s+\"?([^\n;]+)", text_before):
+                here = cd_m
+            if here is not None:
+                cd_target = here.group(1).strip().strip('"\'')
+                # A node-local variable or a resolved node-local dir:
+                # the checkout is not on Lustre.
+                if (cd_target.startswith("$")
+                        or not _is_lustre(
+                            _expand_env_paths(cd_target + "/x",
+                                              vars_map)[0].rsplit("/x", 1)[0],
+                            lustres)
+                        and not _is_lustre(cd_target, lustres)):
+                    continue
             path = arg.group(1) if arg else (
                 here.group(1) if here else str((env or {}).get("HOME", "")))
-            if _is_lustre(path, lustres) or home_lustre:
-                if not any(f.rule == "pytest_from_lustre_checkout" and f.line == i + 1
+            path = _expand_env_paths(path, vars_map)[0] if path.startswith("$") else path
+            if _is_lustre(path, lustres) or home_lustre or (
+                    not arg and not here
+                    and _is_lustre(str(vars_map.get("HOME", "")), lustres)):
+                if not any(f.rule == "pytest_from_lustre_checkout" and f.line == _src(i)
                            for f in findings):
                     findings.append(Finding(
-                        "pytest_from_lustre_checkout", i + 1, "refuse",
+                        "pytest_from_lustre_checkout", _src(i), "refuse",
                         "pytest run from a HOME/Lustre checkout stats the whole "
                         "tree of tests and the installed environment on the "
                         "shared file system (the 16.11.2026 incident)",
@@ -302,7 +398,7 @@ def check(script_text: str, *, env: dict | None = None,
     # ls needs -R; rsync -a / cp -r recurse by their flags. Leading
     # VAR=val words are env prefixes (LC_ALL=C du ...), stripped first.
     for i, line in enumerate(lines):
-        cmd = _strip_env_prefixes(line)
+        cmd = _strip_wrappers(line)
         head = re.match(r"\s*(du|find|ls|rsync|cp)\b", cmd)
         # A single-line loop ('for i in 1 2; do du ...; done') hides the
         # command behind the loop head; also try the post-'do' segment
@@ -328,9 +424,10 @@ def check(script_text: str, *, env: dict | None = None,
         depth = _MAXDEPTH.search(cmd)
         if depth and int(depth.group(1)) <= 1:
             continue
-        # Absolute paths on the line, $HOME expanded from env; $TMPDIR,
-        # a relative path or the job's own run directory are fine.
-        paths = _expand_env_paths(cmd, env)
+        # Absolute paths on the line, every $VAR expanded from the
+        # script's own assignments and env (F3), $TMPDIR, a relative
+        # path or the job's own run directory are fine.
+        paths = _expand_env_paths(cmd, vars_map)
         # L5 fix: a stage-in -- one job folder copied TO a node-local
         # destination -- is the fix the rule asks for, not a walk. But a
         # copy whose SOURCE is HOME, a workspace root or a mount point
@@ -345,7 +442,7 @@ def check(script_text: str, *, env: dict | None = None,
         if not any(_is_lustre(p, lustres) for p in paths):
             continue
         findings.append(Finding(
-            "tree_walk_on_lustre", i + 1, "refuse", _WALK_WHY, _WALK_INSTEAD))
+            "tree_walk_on_lustre", _src(i), "refuse", _WALK_WHY, _WALK_INSTEAD))
 
     # --- Rule: scratch on Lustre -> warn --------------------------------
     for i, line in enumerate(lines):
@@ -355,7 +452,7 @@ def check(script_text: str, *, env: dict | None = None,
         path = m.group(2) or m.group(3)
         if path and _is_lustre(path, lustres):
             findings.append(Finding(
-                "scratch_on_lustre", i + 1, "warn",
+                "scratch_on_lustre", _src(i), "warn",
                 "ORCA/xtb/CREST scratch on the shared Lustre file system "
                 "writes and stats millions of small files during the run "
                 "(bwUniCluster wiki: keep scratch on the node)",
