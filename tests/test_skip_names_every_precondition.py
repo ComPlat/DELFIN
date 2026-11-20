@@ -8,13 +8,13 @@ there is on a machine that has ``opi`` -- was never shown.
 
 That masking is a decision, not an observed outcome, and a file that can
 only skip on this host proves nothing about it. This file tests the
-decision instead: it drives ``tests/_skip_reasons.skip_listing_all``
-directly with each combination of preconditions and reads the reason out of
-the ``Skipped`` exception.
+decision instead: it drives ``tests/_skip_reasons.missing`` directly with
+each combination of preconditions and reads what it returns.
 
 Input: one reason per precondition, ``None`` for the ones in place -- all
 four combinations.
-Output: whether a skip is raised and which reasons its message names.
+Output: ``None`` when nothing is missing, else a message naming every
+missing one.
 
 Both directions are simulated, so nothing here depends on what this host
 has installed: a reason string stands for an absent precondition, ``None``

@@ -30,9 +30,8 @@ is therefore two lines at each call site::
     if reason:
         pytest.skip(reason)
 
-Kept in one place rather than copied into each file because eleven test
-modules need this construct, and an eleventh copy is an eleventh place to
-drift.
+Kept in one place rather than copied into each file because six test
+modules need this construct, and a sixth copy is a sixth place to drift.
 """
 from __future__ import annotations
 
