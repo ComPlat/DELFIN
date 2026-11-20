@@ -1800,6 +1800,15 @@ def reload_subagent_presets() -> dict[str, SubagentPreset]:
     user drops a new file into ``~/.delfin/subagents/``."""
     SUBAGENT_PRESETS.clear()
     SUBAGENT_PRESETS.update(_build_preset_registry())
+    # The tool schema the model is given follows the registry. Without
+    # this a preset dropped in during a session was not offered until the
+    # process restarted: the catalogue is a module-level literal whose
+    # enum was resolved at import.
+    try:
+        from .tool_catalog import refresh_subagent_tool
+        refresh_subagent_tool()
+    except Exception:
+        pass
     return SUBAGENT_PRESETS
 
 
@@ -5082,3 +5091,10 @@ __all__ = [
 # A preset that fails its own check does not become a type, and why is in
 # PRESET_LOAD_PROBLEMS rather than nowhere.
 SUBAGENT_PRESETS.update(_build_preset_registry())
+# ... and the schema once, now that the registry is bound: the catalogue's
+# enum was resolved at ITS import, which may have been before this.
+try:
+    from .tool_catalog import refresh_subagent_tool as _refresh_subagent_tool
+    _refresh_subagent_tool()
+except Exception:
+    pass
