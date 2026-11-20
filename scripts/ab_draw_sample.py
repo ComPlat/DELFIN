@@ -167,7 +167,11 @@ def main(argv=None) -> int:
     sample["pools_file"] = str(pools_path)
     sample["pools_file_sha256"] = _sha256(pools_path)
     tree = doc.get("generated_for")
-    sample["pools_tree_sha"] = _tree_sha(Path(tree)) if tree else None
+    # The sha the scan ran on, from the document; the live HEAD beside it,
+    # because a tree that has moved since the scan is a fact about the draw.
+    sample["pools_tree_sha"] = doc.get("tree_sha")
+    sample["tree_sha_at_draw"] = _tree_sha(Path(tree)) if tree else None
+    sample["pools_scanned_at"] = doc.get("scanned_at")
     if replaced:
         sample["replaced"] = replaced
 
@@ -176,6 +180,10 @@ def main(argv=None) -> int:
     print(f"wrote {out}  sha256 {_sha256(out)}")
     print(f"seed {sample['seed']}  tasks {sample['n_tasks']}  "
           f"tree {sample['pools_tree_sha']}")
+    if (sample["tree_sha_at_draw"]
+            and sample["tree_sha_at_draw"] != sample["pools_tree_sha"]):
+        print(f"note: the tree is now at {sample['tree_sha_at_draw']}, not "
+              "the sha the pools were scanned on")
     for pool in POOLS:
         print(f"    {pool}: drawn {sample['drawn_counts'][pool]} "
               f"of available {sample['pool_counts_by_tier'][pool]}")

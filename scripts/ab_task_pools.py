@@ -115,6 +115,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import datetime as dt
 import io
 import json
 import re
@@ -373,6 +374,20 @@ def _twin_definitions(root: Path) -> set[str]:
     return {n for n, c in seen.items() if c > 1}
 
 
+def _head_sha(root: Path) -> str | None:
+    """HEAD of ``root``, or None when it is not a readable git tree.
+
+    Recorded in the document so that the draw reports the sha the scan ran
+    on, not the sha the tree happens to be at when it is drawn from.
+    """
+    try:
+        out = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                             capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() or None if out.returncode == 0 else None
+
+
 def _tracked_paths(root: Path, ref: str) -> set[str] | None:
     """Paths in ``ref``, or None when the ref cannot be read."""
     try:
@@ -467,6 +482,9 @@ def build_pools(root: Path, main_ref: str = "origin/main") -> dict:
 
     return {
         "generated_for": str(root),
+        "tree_sha": _head_sha(root),
+        "scanned_at": dt.datetime.now(dt.timezone.utc).isoformat(
+            timespec="seconds"),
         "main_ref": main_ref,
         "main_ref_readable": tracked is not None,
         "chemistry_rule": {
