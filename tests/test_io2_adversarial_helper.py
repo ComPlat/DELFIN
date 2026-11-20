@@ -122,16 +122,31 @@ def test_the_helper_reports_exactly_what_cluster_tools_reports(lustre, tmp_path)
 
 # --- 5. A caller that forgets `env` gets a weaker check -------------------
 
-def test_forgetting_env_does_not_silently_disable_the_home_rule(lustre):
-    """``env`` defaults to None, and with it ``_path_is_lustre_home``
-    (:47) cannot fire, so the $HOME rule goes quiet. Measured: the quoted
-    $HOME walk is refused with env and allowed without it -- and a script
-    with an absolute Lustre path still refuses, so a caller never notices
-    the difference on the scripts it happens to test."""
+def test_forgetting_env_expands_home_from_os_environ(lustre, monkeypatch):
+    """The mechanism, not this host's HOME: ``env`` defaults to None and
+    ``check_submit`` must then expand $HOME from ``os.environ`` so the rule
+    still works. Pinning *this host's* HOME on /pfs would assert machine
+    state instead (H4 of the first round, corrected: I had written it that
+    way and the builder was right to push back)."""
     script = '#!/bin/bash\nfind "$HOME/work" -type f\n'
-    assert hpc_io_check.check_submit(
-        script, env={"HOME": "/pfs/home/u"})[0], "with env it must refuse"
+
+    # A Lustre HOME in the process env: no env passed, the rule must fire.
+    monkeypatch.setenv("HOME", "/pfs/home/u")
     assert hpc_io_check.check_submit(script)[0], (
-        "omitting env must not make the $HOME-on-Lustre rule disappear; if "
-        "the home cannot be known the caller must say so, not inherit a "
-        "silent pass")
+        "env omitted must expand $HOME from os.environ and refuse a Lustre "
+        "home")
+
+    # A node-local HOME in the process env: nothing to refuse, and that is
+    # correct -- it proves the refusal above came from the HOME, not luck.
+    monkeypatch.setenv("HOME", "/home/u")
+    assert not hpc_io_check.check_submit(script)[0]
+
+
+def test_an_explicit_env_wins_over_os_environ(lustre, monkeypatch):
+    """The other half: a caller that knows the cluster HOME passes it, and
+    that value is used rather than the process's."""
+    script = '#!/bin/bash\nfind "$HOME/work" -type f\n'
+    monkeypatch.setenv("HOME", "/home/u")
+    assert hpc_io_check.check_submit(script, env={"HOME": "/pfs/home/u"})[0]
+    monkeypatch.setenv("HOME", "/pfs/home/u")
+    assert not hpc_io_check.check_submit(script, env={"HOME": "/home/u"})[0]
