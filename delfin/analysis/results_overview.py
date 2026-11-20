@@ -446,6 +446,11 @@ def initial_xyz_png_bytes(calc_dir: str, size: int = 320, show_h=True,
     # Bond detection: covalent radii sum x BOND_FACTOR (Cordero 2008).
     cov = [_XYZ_COVALENT.get(s, _XYZ_COVALENT_DEFAULT) for s in sym]
     bonds = _detect_bonds(sym, cov, rotated)
+    if bond_orders is None:
+        # First source: the calc's own SMILES (correct even for
+        # metal-coordinated heteroaromatics, calc 428).
+        from delfin.analysis._smiles_orders import smiles_bond_orders
+        bond_orders = smiles_bond_orders(sym, bonds, calc_dir)
     bond_orders = bond_orders if bond_orders is not None \
         else _rdkit_bond_orders(sym, bonds, rotated)
 
@@ -466,6 +471,19 @@ def initial_xyz_png_bytes(calc_dir: str, size: int = 320, show_h=True,
     label = {i: (s + _h_suffix.get(hetero_h_count.get(i, 0), "")
                  if s in _hetero else s)
              for i, s in enumerate(sym)}
+    # Hydroxyl reading direction: the label sits on the side of the O
+    # away from its single heavy partner.  C right of O -> text left
+    # of O -> "HO"; C left of O -> "OH".
+    _odeg = [0] * len(sym)
+    for i, j in bonds:
+        _odeg[i] += 1
+        _odeg[j] += 1
+    for i, s in enumerate(sym):
+        if s == "O" and hetero_h_count.get(i, 0) == 1 and _odeg[i] == 2:
+            _pc = next((j if k == i else k) for k, j in bonds
+                       if i in (k, j) and sym[j if k == i else k] != "H")
+            label[i] = ("HO" if rotated[i][0] < rotated[_pc][0]
+                        else "OH")
     keep = [i for i, s in enumerate(sym) if s != "H"]
     keepset = set(keep)
     remap = {old_i: new_i for new_i, old_i in enumerate(keep)}
@@ -973,7 +991,14 @@ def _render_skeleton(sym, rotated, bonds, size,
                 idx in (a, b) and tuple(sorted((a, b))) in _dbl_here
                 for a, b in bonds)
             if not on_double:
-                s = "OH"
+                # Direction along the O-C bond, not global x: the
+                # partner sits at the other end of the O's only bond.
+                # The label reads away from the partner: when the C
+                # sits to the right of the O the text goes left of the
+                # O, so it must read "HO" (and vice versa).
+                _pc = next((j if i == idx else i) for i, j in bonds
+                           if idx in (i, j))
+                s = "HO" if rotated[idx][0] < rotated[_pc][0] else "OH"
         if s in _implicit:
             continue
         x, y = rotated[idx][0], rotated[idx][1]
