@@ -88,6 +88,28 @@ def test_explain_works_for_share_items():
     assert explain("TCutPNO") is not None
 
 
+def test_a_grounded_record_has_a_committed_quote_file():
+    """A grounded record claims evidence that must be checkable on any
+    machine. QUOTE_FILE is the only evidence this share's records can
+    point at; if it is absent (as on a fresh checkout -- it is
+    gitignored and was never committed), no record may claim grounded.
+    Fails, not skips: the claim must be visible on every machine. The
+    content of the quotes is checked by
+    test_grounded_records_have_verified_quotes, which additionally needs
+    the manual text."""
+    grounded = sorted(rid for rid, rec in SHARE_BY_ID.items()
+                      if rec["status"] == "grounded")
+    if not QUOTE_FILE.exists():
+        assert not grounded, (
+            f"{len(grounded)} records claim 'grounded' but their "
+            f"evidence file {QUOTE_FILE} is absent on this machine; "
+            "demote them to 'draft' or commit the evidence"
+        )
+    quotes = json.loads(QUOTE_FILE.read_text())
+    missing = [rid for rid in grounded if not quotes.get(rid)]
+    assert not missing, f"grounded records with no quotes: {missing[:10]}"
+
+
 @pytest.mark.parametrize("rid", sorted(SHARE_BY_ID), ids=str)
 def test_grounded_records_have_verified_quotes(rid):
     record = SHARE_BY_ID[rid]
