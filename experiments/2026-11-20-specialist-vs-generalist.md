@@ -930,3 +930,107 @@ what exists today: the prefix-cache measurement's "first warm request after
 a cold one" is safe, because the order is the order the probe issued and the
 probe recorded it; the A/B's repeats are unordered and safe; the draw was
 not.
+
+---
+
+## Addendum 8, 2026-11-20: the corpus and the swarm share one population
+
+The draw was taken and is **held, not ready**. The reason is not a defect in
+the sample; it is a fact about the corpus.
+
+Addendum 7's replacement rule worked exactly as written — the seed's own
+generator supplied `watcher_status` for `push_if_configured` and
+`_step_finished` for `remove_read_dir`, with both names and the pool sha256
+recorded. **Both replacements are in flight as well.** `watcher_status` is
+the *other* capability named in the very same swarm brief.
+
+So the apparatus checked all twenty rows against the thirteen briefs
+running at that moment, and then the whole corpus:
+
+> **18 of the 24 `infra` `nowhere` candidates — 75 % — are named by swarm
+> briefs that were running while the draw was taken.** Two `chem` rows as
+> well; 20 of 156 in all. Six of that tier are free, and a balanced draw
+> needs five from it.
+
+The matches are task **subjects**, not incidental mentions, each checked in
+context. The previous draw had four in-flight rows, not two.
+
+**The swarm is doing this experiment's work type, on this experiment's
+population, tonight.** Row-level replacement does not terminate, and no
+mechanical refusal is possible: neither worktree has a commit, a push or a
+pull request, so the signal exists only as a running process — which
+Addendum 6's pre-flight cannot see and, by decision, does not try to.
+
+### The decision
+
+**Wait for the wave to land, then rebuild the pools.** Of the three
+available courses this is the only one that leaves a measurement intact:
+
+- *Draw `infra` from `test-only` only* (42 candidates, none in flight) is
+  refused. It abandons the 5 + 5 balance Addendum 1 registered, and it does
+  so asymmetrically — `infra` all one tier while `chem` stays balanced —
+  which reintroduces the tier/domain confound Addendum 1 exists to remove,
+  in a worse form than the one it replaced.
+- *Register the overlap and draw anyway* is refused. Measuring an arm on
+  work a third party is finishing concurrently is not a measurement.
+
+**And if `infra` `nowhere` falls below five once the wave lands, that is the
+answer to the power question, not a workaround.** The tier has 24
+candidates for a draw of five, and the exclusions already removed 14 `infra`
+rows; one more wave of this kind and it cannot supply a balanced draw at
+all. That would be a finding about the corpus — the same class of finding as
+Addendum 5 — and it gets reported as one.
+
+### The scheduling rule this makes necessary
+
+The collision is structural and will recur. The experiment needs a **stable**
+population; the swarm is actively consuming it, which is the swarm doing its
+job. Nothing coordinates them, and tonight that was 75 % of one tier.
+
+So, registered as a condition of any future draw:
+
+> **The A/B runs when the swarm is not working the same population.** The
+> drawn rows are declared off-limits for the duration of the run, and a
+> draw taken while briefs on those rows are in flight is void.
+
+This is sequencing, not machinery: the debt wave reduces the population and
+the experiment measures what remains. Running them together produces a
+number about neither. It also means **this experiment is not a
+same-weekend-as-the-wave activity**, which is a cost and is stated as one.
+
+### The hash chain, five entries
+
+| sha256 | file | what it is |
+|---|---|---|
+| `225e5772d1dc73bd…` | (survives in the next file's `replaced`) | first draw, tiers proportional |
+| `f9d9cdd2d9f17f66…` | `sample-superseded.json` | first balanced draw, from `pools6` |
+| `e8b3de1fb6728a7e…` | `sample-superseded-2.json` | same rows after corrections D and F, content unchanged |
+| `bf7fa54fa189e270…` | `sample-superseded-3.json` | first draw from the rebuilt pools, 15 of 20 rows new |
+| `df2bd08868b6bbe3…` | `sample-held.json` | both in-flight rows replaced by the seed's rule — and both replacements in flight too |
+
+The artefacts directory holds **no current draw**, and its README says so.
+A file named `final_sample.json` that must not be used is a trap for the
+next reader, so it was renamed.
+
+### Also recorded
+
+**The instrument class is collinear with the pool.** All 66 `infra` rows are
+four-check+ratchet; all 15 three-check rows are `chem`; **no three-check row
+was drawn** in either of the last two draws. So Addendum 6 B's "report by
+instrument class, not pooled" is, for these samples, the same cut as "report
+by pool", and **no statement of the form "the effect differs by instrument"
+is available.** A third stratum would mean 30 tasks and 120 attempts against
+a measured ceiling near 50 runs a day; it is not added, and the limitation
+is reported instead. The primary endpoint is unaffected, because the arms
+are paired per task and the class is constant within a pair.
+
+**A uniqueness check in the mutation harness found three unmeasured checks
+in one evening.** Twice a restructure moved a mutation's anchor and once a
+recorded field gained a second occurrence, so the pattern stopped being
+unique; each time the harness refused to score a mutation it could not place
+rather than reporting it caught. *That is a better argument for the check
+than the mutations it confirms.* Two assertions also had to move onto rows
+that actually carry the field, because on a row with none the mutation that
+empties the field passed — a check that observed nothing, twice more.
+
+Instrument state: **59 tests, 81 mutations applied, 81 caught.**
