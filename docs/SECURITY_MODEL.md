@@ -85,7 +85,7 @@ terminal session (grants, isolation flags, posture, session restore,
 with status 2 instead of doing less than it was asked. Settings, hooks and
 MCP servers that come from a checked-out repository are ignored until the
 directory is trusted (`/trust`). A test configuration is not on that list
-and cannot be: pytest executes the workspace's own `conftest.py` before it
+and cannot be: pytest executes the workspace's own conftest file before it
 collects anything, and the verification run at the end of an editing turn
 (`agent.auto_verify`, default `smart`) starts pytest in the workspace
 without asking. That run therefore goes into the same cage as the
@@ -1150,7 +1150,7 @@ users fall back to the unkeyed form, which they report as unverified.
 
 - **A workspace's test configuration runs, inside the cage.** The
   verification run at the end of an editing turn, and the `run_tests` tool,
-  both execute the workspace's `conftest.py` and its pytest plugins: that
+  both execute the workspace's conftest file and its pytest plugins: that
   is what running a project's tests means. Nobody is asked, because the
   verification run is not a tool call. What bounds it is the cage -- writes
   confined to the session's roots, `/` read-only, a fresh `/tmp`,
