@@ -96,7 +96,7 @@ mounts a fresh tmpfs there). Five tests came back as setup ERRORS.
 | `test_knowledge_curation.py` | 1 failed | 24 passed |
 | two caged-command files | 11 failed, 879 passed | 733 passed, 158 skipped |
 | `test_a_run_can_hide_paths_from_its_cage.py` + `test_no_cage_reaches_anyones_pairing_door.py` | 2 failed, 6 passed, 7 errors | 6 passed, 8 skipped, 1 failed |
-| every file naming the sandbox gate (11 files) | 2 failed, 6 passed, 7 errors (subset) | 817 passed, 179 skipped, 1 failed, 5 errors |
+| all 10 files naming the sandbox gate | 2 failed, 6 passed, 7 errors (a subset of these) | 817 passed, 184 skipped, 1 failed |
 | `DELFIN_EXPECT_ISOLATION=1` on the caged files | — | 4 failed, 2 passed (the promise is still enforced) |
 
 The skip lines name the refusing layer, measured:
@@ -127,8 +127,7 @@ That measurement is why the fix landed in `tests/conftest.py`.
 - **The skips are skips.** On this host the confinement tests make no
   assertion; they report that the host cannot host the measurement. The
   ordinary-host arm is what CI runs, and I did not run it.
-- **The remaining 1 failure and 5 errors** in
-  `test_no_cage_reaches_anyones_pairing_door.py` (`KeyError: 'link'`) and in
-  the gate-consuming set reproduce identically at the baseline. I did not
-  find their cause; they are recorded in `scratch/PR.md` as open, not
-  claimed as fixed.
+- **The remaining failure** in
+  `test_no_cage_reaches_anyones_pairing_door.py` (`KeyError: 'link'`)
+  reproduces identically at the baseline. I did not find its cause; it is
+  recorded in `scratch/PR.md` as open, not claimed as fixed.
