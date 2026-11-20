@@ -139,13 +139,15 @@ def _second_opinion(tmp_path, monkeypatch, runner, dialog):
 
 def test_a_slow_verdict_within_the_setting_asks_nobody(
         tmp_path, monkeypatch, settings):
-    # Scaled down: default 0.2 s, setting 0.2 s * 5 (the lower bound is
-    # lifted for the test so it stays fast), runner 0.4 s.
+    # Scaled down: default 0.2 s, setting 5 s (the lower bound is lifted for
+    # the test), runner 1.5 s -- a verdict well past the default and well
+    # inside the setting. The margins used to be 2x on both sides, and a
+    # loaded CI runner crossed one of them.
     monkeypatch.setattr(A, "_CLASSIFIER_TIMEOUT_S", 0.2)
     monkeypatch.setattr(A, "_CLASSIFIER_TIMEOUT_BOUNDS_S", (0.1, 120.0))
-    settings(1.0)
+    settings(5.0)
     dialog = Dialog()
-    runner = Runner(ALLOW, delay=0.4)
+    runner = Runner(ALLOW, delay=1.5)
     out = _second_opinion(tmp_path, monkeypatch, runner, dialog)
     assert out is None
     assert dialog.shown == []
@@ -157,7 +159,10 @@ def test_the_same_verdict_without_the_setting_times_out_and_asks(
     monkeypatch.setattr(A, "_CLASSIFIER_TIMEOUT_S", 0.2)
     settings(None)
     dialog = Dialog()
-    runner = Runner(ALLOW, delay=0.4)
+    # 15x the timeout, so the test measures the timeout and not the
+    # scheduler: with 0.4 s a loaded runner accepted the verdict instead.
+    # The call returns at the timeout, so the larger delay costs nothing.
+    runner = Runner(ALLOW, delay=3.0)
     _second_opinion(tmp_path, monkeypatch, runner, dialog)
     assert len(dialog.shown) == 1
     assert "watcher" in dialog.shown[0][1].lower()
