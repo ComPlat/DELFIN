@@ -129,6 +129,13 @@ def test_index_and_export_wrappers_withhold_on_a_redactor_failure(
     text = f"index text with {GH}"
     assert GH not in session_index._scrub(text)
     assert GH not in session_export._scrub(text)
+    # Equality, not just absence: the package promises ONE placeholder
+    # constant. `session_index._scrub` spells the literal out by hand
+    # (session_index.py:321) instead of importing REDACT_FAILED_PLACEHOLDER,
+    # so a later edit to one string would silently split the vocabulary while
+    # this absence-only check stayed green.
+    assert session_index._scrub(text) == memory_store.REDACT_FAILED_PLACEHOLDER
+    assert session_export._scrub(text) == memory_store.REDACT_FAILED_PLACEHOLDER
 
 
 # -- the failure is logged once, with the exception type only --------------
