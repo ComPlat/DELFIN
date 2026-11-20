@@ -23,16 +23,8 @@ Theta = 285.4 deg.
 """
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parent.parent
 GEOMETRY = ROOT / ".gate" / "practice" / "znh2o2cl2.xyz"
-
-# The full chain ends at the real morfeus package. A machine that has the
-# practice geometry but not morfeus must see a skip that names the package,
-# not a bare ModuleNotFoundError out of the registry import.
-pytest.importorskip("morfeus",
-                    reason="morfeus (morfeus-ml) is not installed")
 
 
 def _run_workflow():
