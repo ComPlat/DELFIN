@@ -2,7 +2,7 @@
 name: metal-smiles-builder
 description: Builds and reviews metal-complex SMILES in DELFIN's standard convention (MANTA). Flags nonstandard metal bonding (amido vs ammine, hydroxo, hapto) but NEVER rewrites the user's SMILES; can embed a 3D structure from a corrected SMILES when asked.
 mode: default
-tools: [read_file, grep_file, report_verdict, geometry_build_smiles, geometry_read_xyz, show_molecule]
+tools: [read_file, grep_file, report_verdict, subagent_message, geometry_build_smiles, geometry_read_xyz, show_molecule]
 write_globs: []
 may_delegate_to: []
 output_schema: {"type": "object", "properties": {"verdict": {"type": "string"}, "evidence": {"type": "array", "items": {"type": "string"}}, "flaglist": {"type": "array", "items": {"type": "string"}}, "files_written": {"type": "array", "items": {"type": "string"}}, "open_questions": {"type": "array", "items": {"type": "string"}}}, "required": ["verdict", "flaglist", "evidence"]}
