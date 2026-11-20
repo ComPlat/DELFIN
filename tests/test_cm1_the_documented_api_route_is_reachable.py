@@ -25,6 +25,7 @@ import sys
 import tempfile
 import threading
 
+from conftest import child_env
 from delfin.agent import code_mode
 
 
@@ -82,7 +83,7 @@ def test_unknown_and_missing_subcommands_still_refuse(capsys):
     assert "stub" in err, "the usage line must name the route it now has"
 
 
-def test_a_generated_stub_reaches_a_tool_through_the_real_route():
+def test_a_generated_stub_reaches_a_tool_through_the_real_route(tmp_path):
     """End to end: the documented stub, imported by a program the real
     runner starts, reaches an executor call over a real RpcServer.
 
@@ -105,7 +106,7 @@ def test_a_generated_stub_reaches_a_tool_through_the_real_route():
             [sys.executable, "-m", "delfin.agent.code_mode", "stub"],
             capture_output=True, text=True, timeout=120,
             cwd=base,
-            env=dict(os.environ,
+            env=dict(os.environ, **child_env(tmp_path),
                      PYTHONPATH=os.path.dirname(
                          os.path.dirname(os.path.dirname(
                              os.path.abspath(code_mode.__file__))), )))
@@ -134,7 +135,7 @@ def test_a_generated_stub_reaches_a_tool_through_the_real_route():
         shutil.rmtree(base, ignore_errors=True)
 
 
-def test_a_stub_without_the_env_var_refuses_instead_of_pretending():
+def test_a_stub_without_the_env_var_refuses_instead_of_pretending(tmp_path):
     """Without the socket path the stub raises and names the runner.
 
     This is the property ``make_client`` exists for: no connection means no
@@ -146,7 +147,7 @@ def test_a_stub_without_the_env_var_refuses_instead_of_pretending():
         written = subprocess.run(
             [sys.executable, "-m", "delfin.agent.code_mode", "stub"],
             capture_output=True, text=True, timeout=120, cwd=base,
-            env=dict(os.environ,
+            env=dict(os.environ, **child_env(tmp_path),
                      PYTHONPATH=os.path.dirname(
                          os.path.dirname(os.path.dirname(
                              os.path.abspath(code_mode.__file__))), )))
