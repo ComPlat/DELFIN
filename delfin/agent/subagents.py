@@ -1667,13 +1667,84 @@ def _load_md_presets() -> dict[str, SubagentPreset]:
 _ADVISORY_PROBLEMS: tuple[str, ...] = (
     "field 'description' is required",
     "system prompt) is empty",
+    # Order-dependent at load, and therefore no basis for refusing a
+    # preset here: the registry is built directory by directory, so a
+    # department manager read before its experts names targets that do
+    # not exist YET. Measured: a manager whose own directory is scanned
+    # alone was refused for naming two experts from another one. The
+    # delegation graph is checked once the registry is complete, by
+    # _delegation_problems, where every target is either there or is not.
+    "is not a known preset",
 )
 
 
-def _blocking(problems) -> tuple[str, ...]:
-    """The problems that keep a preset out of the registry."""
-    return tuple(p for p in problems
-                 if not any(a in p for a in _ADVISORY_PROBLEMS))
+#: Problems that do not block a USER preset, because overriding is what a
+#: user directory is FOR. ``_build_preset_registry``'s own contract: md
+#: files in ``~/.delfin/subagents/`` may override built-ins, pack files may
+#: not. ``validate_preset`` is written for the agent-builder authoring a
+#: NEW preset, where an override is a mistake; at load it would remove a
+#: documented capability, and it did -- a user md no longer overrode the
+#: built-in ``explore``.
+_OVERRIDE_PROBLEMS: tuple[str, ...] = (
+    "overrides built-in preset",
+    "overrides an existing pack preset",
+)
+
+
+def _blocking(problems, may_override: bool = False) -> tuple[str, ...]:
+    """The problems that keep a preset out of the registry.
+
+    ``may_override``: this file comes from a directory allowed to shadow
+    an existing preset (a user's own), so an override is its purpose and
+    not a fault.
+    """
+    skip = _ADVISORY_PROBLEMS + (_OVERRIDE_PROBLEMS if may_override else ())
+    return tuple(p for p in problems if not any(a in p for a in skip))
+
+
+def _delegation_problems(registry) -> dict[str, tuple[str, ...]]:
+    """Whole-graph checks over a COMPLETE registry: ``{name: problems}``.
+
+    Two things no per-file check can see, because each needs every preset
+    to be known:
+
+    * a ``may_delegate_to`` target that is in no preset. Checked per file
+      it is order-dependent -- a manager read before its experts fails --
+      so it is checked here instead;
+    * a cycle. The runtime already bounds a loop (a child may spawn only
+      along its own preset's whitelist, and the depth cap refuses a
+      second level), so a cycle cannot run away; it is a configuration
+      mistake that would otherwise be found by a delegate failing at
+      depth, which is an expensive way to learn it.
+
+    Recorded, never raised: a registry that refused a manager over a
+    declared cycle would cost the whole department for a typo.
+    """
+    out: dict[str, tuple[str, ...]] = {}
+    for name, preset in registry.items():
+        problems: list[str] = []
+        for target in tuple(getattr(preset, "may_delegate_to", ()) or ()):
+            if target not in registry:
+                problems.append(
+                    f"may_delegate_to: {target!r} is not a known preset")
+        # A cycle reachable from this preset, by name.
+        seen, stack = set(), [name]
+        while stack:
+            cur = stack.pop()
+            for nxt in tuple(getattr(registry.get(cur), "may_delegate_to",
+                                     ()) or ()):
+                if nxt == name:
+                    problems.append(
+                        f"may_delegate_to: delegation returns to {name!r} "
+                        f"through {cur!r}; a department must not be a cycle")
+                    stack = []
+                    break
+                if nxt not in seen:
+                    seen.add(nxt)
+                    stack.append(nxt)
+        if problems:
+            out[name] = tuple(problems)
+    return out
 
 
 #: Why a markdown preset did not become a live type: ``{path: problems}``.
@@ -1767,7 +1838,7 @@ def _build_preset_registry() -> dict[str, SubagentPreset]:
                 # A user preset is refused for a problem that makes it
                 # unsafe or unresolvable, and kept for one that only makes
                 # it poorer (see _ADVISORY_PROBLEMS).
-                if allow_override and _blocking(problems):
+                if allow_override and _blocking(problems, allow_override):
                     continue
             registry[name] = SubagentPreset(
                 name=name,
@@ -1784,6 +1855,9 @@ def _build_preset_registry() -> dict[str, SubagentPreset]:
                 display_name=(meta.get("display_name") or "").strip(),
                 enabled_setting=enabled,
             )
+    # Whole-graph checks, now that every preset is known.
+    for _name, _probs in _delegation_problems(registry).items():
+        PRESET_LOAD_PROBLEMS[f"<registry>:{_name}"] = _probs
     return registry
 
 

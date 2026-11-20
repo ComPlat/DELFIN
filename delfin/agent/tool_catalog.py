@@ -35,11 +35,20 @@ def _subagent_description() -> str:
     writers = _subagent_writers()
     if writers:
         which = ", ".join(repr(w) for w in writers)
-        what = (f"Read-only except {which}, which can change something "
-                "(each within its own permission mode and write scope).")
+        what = f"All read-only except {which}, which may write"
+        # Kept whatever the registry says, and it is the one claim here
+        # that is about a permission rather than a mode: the full-permission
+        # delegate is the parent's own surface. The phrase "FULL" and the
+        # word "read-only" are both required to survive compaction
+        # (tests/test_tool_schema_budget.py::_SAFETY_PHRASES) -- the
+        # derived text dropped them once, which told the model less about
+        # a delegate's reach than the hand-written sentence had.
+        if "general-purpose" in writers:
+            what += "; 'general-purpose' gets the parent's FULL permissions"
+        what += "."
     else:
         what = "Every type is read-only."
-    return ("Delegate a self-contained task to an isolated sub-agent that "
+    return ("Delegate a self-contained task to an isolated sub-agent; "
             "returns one summary. " + what + " Caps: "
             + _subagent_caps_phrase() + ".")
 

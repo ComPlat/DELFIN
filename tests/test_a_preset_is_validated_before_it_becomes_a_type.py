@@ -118,7 +118,6 @@ def test_a_valid_user_preset_still_loads(user_dir):
 @pytest.mark.parametrize("stem,template,name,expect", [
     ("bad_tool", UNKNOWN_TOOL, "bad-tool-preset", "not a known tool"),
     ("bad_scope", PROTECTED_SCOPE, "bad-scope-preset", "protected"),
-    ("bad_delegate", UNKNOWN_DELEGATE, "bad-delegate-preset", "may_delegate_to"),
 ])
 def test_an_invalid_user_preset_does_not_become_a_type(user_dir, stem,
                                                        template, name, expect):
@@ -224,3 +223,59 @@ def test_an_unsafe_problem_stays_blocking_even_beside_an_advisory_one():
         "---\nname: c-name\nmode: plan\ntools: [no_such_tool_at_all]\n"
         "---\n\nbody\n")
     assert S._blocking(both), both
+
+
+def test_an_unknown_delegation_target_is_recorded_and_does_not_block(user_dir):
+    """Deliberately NOT a reason to refuse the preset.
+
+    Checked per file the test is order-dependent: the registry is built
+    directory by directory, so a department manager read before its
+    experts names targets that do not exist yet and would be thrown away
+    for it. Measured: a manager alone in its own directory was refused for
+    naming two experts from another. The graph is checked once the
+    registry is complete, where a target either exists or does not --
+    ``_delegation_problems`` -- and the finding is recorded under
+    ``<registry>:<name>``.
+    """
+    _write(user_dir, "bad_delegate", UNKNOWN_DELEGATE, "bad-delegate-preset")
+    registry = S._build_preset_registry()
+    assert "bad-delegate-preset" in registry, (
+        "an unknown delegation target threw the preset away; that check is "
+        "order-dependent and belongs to the whole-graph pass")
+    recorded = S.PRESET_LOAD_PROBLEMS.get("<registry>:bad-delegate-preset")
+    assert recorded and any("not a known preset" in p for p in recorded), (
+        f"the graph check did not record it: {S.PRESET_LOAD_PROBLEMS}")
+
+
+def test_a_declared_cycle_is_recorded(user_dir):
+    """The runtime already bounds a loop -- a child spawns only along its
+    own whitelist and the depth cap refuses a second level -- so a cycle
+    cannot run away. It is a configuration mistake, and finding it by a
+    delegate failing at depth is an expensive way to learn it."""
+    _write(user_dir, "ring_a", """---
+name: ring-a
+description: delegates to ring-b
+mode: plan
+tools: [read_file]
+may_delegate_to: [ring-b]
+---
+
+body
+""", "ring-a")
+    _write(user_dir, "ring_b", """---
+name: ring-b
+description: delegates back to ring-a
+mode: plan
+tools: [read_file]
+may_delegate_to: [ring-a]
+---
+
+body
+""", "ring-b")
+    registry = S._build_preset_registry()
+    assert "ring-a" in registry and "ring-b" in registry, (
+        "a declared cycle must not cost the department its presets")
+    found = [v for k, v in S.PRESET_LOAD_PROBLEMS.items()
+             if k.startswith("<registry>:ring-")]
+    assert found and any("cycle" in p for v in found for p in v), (
+        f"the cycle was not recorded: {S.PRESET_LOAD_PROBLEMS}")
