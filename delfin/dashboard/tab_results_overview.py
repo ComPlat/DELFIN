@@ -680,16 +680,15 @@ class ResultsOverviewPanel:
         # (only the last script ran -> empty Blob, no download).  The
         # payload itself travels in the widget state of _export_buffer,
         # which Voila syncs reliably regardless of output clearing.
-        # Small payloads (<=2 MB b64) stay inlined in the script; larger
-        # ones go through the buffer DOM node.
-        if len(b64) <= 2 * 1024 * 1024:
-            data_js = f"const b64={_json.dumps(b64)};"
-        else:
-            self._export_buffer.value = _json.dumps({tid: b64})
-            data_js = (
-                "const b64=(function(){"
-                "const node=document.querySelector('.export-buffer');"
-                "return node ? node.textContent : '';})()")
+        # ONE run_js call, payload ALWAYS inlined: the buffer-widget
+        # transport failed in voila because run_js clears the shared
+        # JS output (and with it the just-set widget state sync) before
+        # the browser executed the script (empty DOM node -> empty b64);
+        # and the .export-buffer class was added only after run_js, so
+        # the first export found no node at all.  The voila transport
+        # delivers one script message reliably at multi-MB sizes (the
+        # CSV inlined path always worked), so everything rides in it.
+        data_js = f"const b64={_json.dumps(b64)};"
         js = (
             "(function(){"
             f"const fileName={_json.dumps(filename)};"
@@ -713,7 +712,6 @@ class ResultsOverviewPanel:
             "})();"
         )
         run_js(js)
-        self._export_buffer.add_class("export-buffer")
         self._export_status.value = (
             f"<span style='color:#28a745'>{_html.escape(filename)} "
             f"heruntergeladen ({len(payload) // 1024} KB).</span>")

@@ -291,21 +291,19 @@ def test_export_bytes_large_payload_single_run_js(tmp_path):
     panel = refs["results_overview"]
     ctx = FakeCtx()
 
-    # >2 MB base64 payload: the widget-transport path must be used.
+    # Large payload: still exactly ONE run_js call, and the data rides
+    # INLINED in the script (the buffer-DOM transport failed in voila:
+    # run_js clears the output before the browser sees the widget state,
+    # and the class was attached only after run_js).
     payload = b"x" * (3 * 1024 * 1024)  # 3 MB binary -> ~4 MB b64
     panel._export_bytes("big.bin", payload, "application/octet-stream")
     assert len(ctx.scripts) == 1, (
         f"expected ONE run_js call, got {len(ctx.scripts)}")
-    # The buffer widget must carry the full base64 payload as JSON.
-    assert panel._export_buffer.value != ""
-    assert json.loads(panel._export_buffer.value)
-    stored = json.loads(panel._export_buffer.value)
-    key = next(iter(stored))
-    assert base64.b64decode(stored[key]) == payload
-    # The script must read the buffer DOM node (class-based selector),
-    # not inline the data.
-    assert ".export-buffer" in ctx.scripts[0]
-    assert "atob" in ctx.scripts[0]
+    expected_b64 = base64.b64encode(payload).decode("ascii")
+    script = ctx.scripts[0]
+    assert expected_b64 in script
+    assert "atob" in script
+    assert "a.download" in script
 
     # Small payload: still one call, data inlined, buffer unused.
     panel._export_bytes("small.bin", b"abc", "application/octet-stream")
