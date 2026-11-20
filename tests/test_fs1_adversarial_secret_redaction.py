@@ -143,6 +143,51 @@ def test_the_failure_is_logged_once_without_the_text(redactor_fails, caplog):
     assert GH not in records[0].getMessage()
 
 
+# -- fail closed must not become fail forever ------------------------------
+
+def test_every_wrapper_redacts_again_after_the_redactor_recovers(monkeypatch):
+    """Withholding is for the duration of the failure, not for the process.
+
+    A wrapper that latches its failure state is a different defect with the
+    same root: after one transient redactor error every later write is
+    withheld, so the memory store and the task state silently stop accepting
+    text. The operator found exactly this in service/redact.py (the withhold
+    flag was never cleared). These wrappers must recover on their own.
+    """
+    from delfin.agent import output_guard
+
+    healthy = output_guard.scrub_secrets
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("redactor exploded")
+
+    # 1. while the redactor fails: withheld, no secret
+    monkeypatch.setattr(output_guard, "scrub_secrets", boom)
+    failed = [memory_store._without_secrets(f"note {GH}"),
+              task_state._scrub(f"note {GH}"),
+              session_index._scrub(f"note {GH}"),
+              session_export._scrub(f"note {GH}")]
+    assert [GH in t for t in failed] == [False, False, False, False]
+    assert failed == [PLACEHOLDER] * 4
+
+    # 2. the redactor works again: redaction resumes, plain text flows
+    monkeypatch.setattr(output_guard, "scrub_secrets", healthy)
+    recovered = [memory_store._without_secrets(f"note {GH}"),
+                 task_state._scrub(f"note {GH}"),
+                 session_index._scrub(f"note {GH}"),
+                 session_export._scrub(f"note {GH}")]
+    assert [GH in t for t in recovered] == [False, False, False, False]
+    assert [PLACEHOLDER in t for t in recovered] == [False, False, False, False]
+
+
+def test_a_wrapper_does_not_withhold_text_that_holds_no_secret(monkeypatch):
+    """The recovery control, stated the other way round: a plain note must
+    survive a healthy redactor untouched, so 'withhold' is not the normal
+    outcome and the case above cannot pass by withholding everything."""
+    out = memory_store._without_secrets("the complex was optimised at BP86")
+    assert out == "the complex was optimised at BP86"
+
+
 # -- the guard keeps the next wrapper honest -------------------------------
 
 def test_the_guard_detects_the_real_known_followups():
