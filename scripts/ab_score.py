@@ -269,12 +269,47 @@ def _defined_anywhere(root: Path, name: str) -> list[str]:
     return hits
 
 
+def _call_sites(root: Path, name: str) -> list[str]:
+    """Where ``name`` is actually *called* in the product, by syntax tree.
+
+    Input: the tree and the capability name. Output: ``file:line`` for every
+    ``ast.Call`` under ``delfin/``, outside test files, whose callee is that
+    name plainly or as an attribute.
+
+    Why it is recorded and does not decide the score: the scan counts a name
+    in a string literal as a reference, because name-based dispatch is real
+    in this product and a scan that ignored it called two live functions
+    unreachable. The same rule means a string literal naming the capability
+    is enough to move it out of the unreachable set -- and a string literal
+    is something the agent can write. This number is what lets that be
+    checked afterwards instead of assumed, for both arms.
+    """
+    out = []
+    for path in sorted((root / "delfin").rglob("*.py")):
+        if path.name.startswith("test_") or path.name.endswith("_test.py"):
+            continue
+        try:
+            tree = ast.parse(path.read_text(errors="replace"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            hit = (isinstance(func, ast.Name) and func.id == name) or \
+                  (isinstance(func, ast.Attribute) and func.attr == name)
+            if hit:
+                out.append(f"{path.relative_to(root)}:{node.lineno}")
+    return out
+
+
 def capability_route(root: Path, task: dict) -> dict:
     """Where the capability stands in the attempt tree.
 
     Input: the attempt tree and the task row. Output: ``{"route", "mentions",
-    "definitions"}`` with route in ``connected``, ``deleted``,
-    ``still_unreachable``, ``deleted_but_named``.
+    "call_sites", "definitions"}`` with route in ``connected``, ``deleted``,
+    ``still_unreachable``, ``deleted_but_named``. ``call_sites`` is a
+    diagnosis, not part of the score (see ``_call_sites``).
     """
     name = task["name"]
     defs_here = _defined_anywhere(root, name)
@@ -289,7 +324,8 @@ def capability_route(root: Path, task: dict) -> dict:
         route = "connected" if mentions else "still_unreachable"
     else:
         route = "deleted_but_named" if mentions else "deleted"
-    return {"route": route, "mentions": mentions, "definitions": defs_here}
+    return {"route": route, "mentions": mentions,
+            "call_sites": _call_sites(root, name), "definitions": defs_here}
 
 
 # --------------------------------------------------------------------------

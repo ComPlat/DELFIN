@@ -214,6 +214,36 @@ def test_a_connected_capability_scores_one(tmp_path):
     assert all(rec["checks"].values())
 
 
+def test_a_string_literal_is_a_mention_and_the_call_sites_say_otherwise(
+        tmp_path):
+    """The hole in check 1, measured rather than left to be discovered.
+
+    A name in a string literal counts as a reference, because name-based
+    dispatch is real here. So a string literal the agent writes is enough
+    to move a capability out of the unreachable set. The call-site count is
+    recorded beside the route so that the aggregate can be re-derived
+    without it, for both arms.
+    """
+    bundle = _attempt(tmp_path, "connected")
+    rec = _score(bundle)
+    assert rec["route_detail"]["call_sites"], rec["route_detail"]
+    # The same tree with the call replaced by a bare string still reads as
+    # connected, and the call-site list is then empty.
+    repo = bundle["post"]
+    _write(repo / "delfin" / "agent" / "caller.py",
+           "from delfin.agent.widget import used_helper\n\n\n"
+           "DISPATCH = ('orphan_capability',)\n\n\n"
+           "def run():\n    return used_helper()\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "string only")
+    rec2 = score_mod.capability_route(repo, {
+        "name": CAP, "file": "delfin/agent/widget.py", "line": 1,
+        "pool": "infra"})
+    assert rec2["route"] == "connected"
+    assert rec2["mentions"] >= 1
+    assert rec2["call_sites"] == []
+
+
 def test_a_proper_deletion_scores_one_and_is_a_different_route(tmp_path):
     rec = _score(_attempt(tmp_path, "deleted"))
     assert rec["route"] == "deleted"
