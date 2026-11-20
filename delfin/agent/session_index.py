@@ -316,7 +316,9 @@ def _scrub(text: str) -> str:
         from .memory_store import _without_secrets
         return _without_secrets(text)
     except Exception:
-        return text
+        # _without_secrets itself fails closed now; this guard keeps the
+        # import/lookup path from ever leaking on an unexpected error.
+        return "[redaction failed -- text withheld]"
 
 
 def _source_state(session_id: str):

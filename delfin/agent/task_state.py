@@ -304,12 +304,15 @@ class TaskState:
 
 
 def _scrub(text: str) -> str:
-    """Remove credential material via the house redactor. Never raises."""
-    try:
-        from .output_guard import scrub_secrets
-        return scrub_secrets(text)
-    except Exception:
-        return text
+    """Remove credential material via the house redactor. Fails closed.
+
+    On a redactor failure the text is withheld: a fixed placeholder goes
+    out, never the unscrubbed input. The failure is logged once per
+    process via ``memory_store._without_secrets``'s shared flag -- the
+    exception type only, never the text.
+    """
+    from .memory_store import _without_secrets
+    return _without_secrets(text)
 
 
 def _flat(text: str) -> str:
