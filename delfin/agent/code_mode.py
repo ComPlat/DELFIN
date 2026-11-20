@@ -4,15 +4,23 @@ Instead of one model turn per tool call, the model writes ONE short program
 against a typed API of DELFIN's read-only tools. The program runs in the
 existing bash cage (``api_client._bash_isolation_argv``) and reaches the
 tools only over a narrow local RPC that lands in the SAME central gate every
-direct call takes (``KitToolExecutor._dispatch_under_rules``, api_client.py:18282).
+direct call takes (``KitToolExecutor.execute``).
+
+There is exactly ONE launcher, and it is not in this module: the bash tool.
+``api_client._code_mode_child_env`` recognises a runner command, starts the
+:class:`RpcServer` and exports the socket to the caged child. A second
+launcher here would build its own argv -- without the cage, the wall-clock
+ceiling or the output truncation the bash tool owns -- and would be a way
+round them.
 
 Phase 1 = READ-ONLY tools only. A call to any write/submit/delete tool is
 refused with a message naming the direct route. The allow-list is enforced
 per call, twice: once in :class:`Connection` (this module) and again inside
 the agent-side RPC server wrapper before the executor is touched.
 
-The model runs a program like::
+The model obtains the API module and runs a program like::
 
+    python -m delfin.agent.code_mode stub > tools_api.py
     python -m delfin.agent.code_mode run my_program.py
 
 inside the cage. ``DELFIN_CODE_MODE_RPC`` (the socket path) is exported ONLY
@@ -23,9 +31,7 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import contextvars
-from shlex import quote as _shlex_quote
 import sys
 from typing import Any, Callable, Iterable, Optional
 
@@ -47,18 +53,6 @@ _DIRECT_ROUTE_HINT = (
 #: Results are capped before they return to the model: a program that
 #: tabulates a whole run tree must not flood the context.
 MAX_RESULT_BYTES = 200_000
-
-#: Default wall-clock limit for one program run.
-DEFAULT_TIMEOUT_S = 120.0
-
-
-class ProgramTimeout(RuntimeError):
-    """The program ran longer than its wall-clock limit."""
-
-
-class ProgramError(RuntimeError):
-    """The program failed (non-zero exit); stderr is part of the message."""
-
 
 def _check_allowed(name: str) -> Optional[str]:
     """Refusal text for a tool outside the read-only allow-list, else None."""
@@ -103,12 +97,6 @@ class Connection:
         # entry and nothing lower; rules are evaluated inside execute.
         return _cap_result(self._executor.execute(
             name, arguments, self._permissions))
-
-
-def serve_request(request: dict, executor: Any,
-                  permissions: Any = None) -> str:
-    """One-shot request handling (no connection state kept)."""
-    return Connection(executor, permissions).handle(request)
 
 
 def runner_program_path(cmd: str) -> Optional[str]:
@@ -299,8 +287,8 @@ def generate_stub() -> str:
     lines = [
         '"""Code Mode API — DELFIN\'s read-only tools as typed functions.',
         "",
-        "Import this in your program (it is added to sys.path by the "
-        "runner): from code_mode_api import delfin_tools",
+        "Save this file as tools_api.py next to your program, then: "
+        "import tools_api and call the functions below.",
         "",
         "Every call goes through the agent's central gate. Refusals raise.",
         '"""',
@@ -338,56 +326,37 @@ def generate_stub() -> str:
     return "\n".join(lines) + "\n"
 
 
-def run_program(program_path: str, timeout_s: float = DEFAULT_TIMEOUT_S,
-                rpc_path: str = "", workspace: str = "") -> str:
-    """Run the model's program and return its stdout (capped).
-
-    In the product the command runs through the bash tool, hence inside
-    ``_bash_isolation_argv``'s cage. Here (agent side) we run it with the
-    same wall-clock limit and cap so the process boundaries stay identical.
-    The socket path is exported only to this child.
-    """
-    argv = ["/bin/bash", "-c",
-            "%s -m delfin.agent.code_mode run %s"
-            % (sys.executable, _shlex_quote(program_path))]
-    env = dict(os.environ)
-    if rpc_path:
-        env["DELFIN_CODE_MODE_RPC"] = rpc_path
-    else:
-        env.pop("DELFIN_CODE_MODE_RPC", None)
-    if workspace:
-        env["PYTHONPATH"] = (workspace + os.pathsep + env.get("PYTHONPATH", "")
-                             ).rstrip(os.pathsep)
-    try:
-        proc = subprocess.run(
-            argv, capture_output=True, timeout=timeout_s, env=env,
-            cwd=workspace or None)
-    except subprocess.TimeoutExpired as exc:
-        raise ProgramTimeout(
-            "Code Mode program exceeded the %.0fs limit; batch smaller "
-            "(fewer tool calls per run) or pass a higher timeout_s next run"
-            % timeout_s
-        ) from exc
-    out = proc.stdout.decode("utf-8", errors="replace")
-    err = proc.stderr.decode("utf-8", errors="replace")
-    if proc.returncode != 0:
-        raise ProgramError("exit %d: %s" % (proc.returncode, err.strip()))
-    return _cap_result(out)
-
-
 def main(argv: Optional[list[str]] = None) -> int:
-    """``python -m delfin.agent.code_mode run <program>`` — the program side."""
+    """``python -m delfin.agent.code_mode <stub|run> ...``.
+
+    Two subcommands, both documented in the Code Mode skill:
+
+    * ``stub`` writes the typed API (:func:`generate_stub`) to stdout, so
+      ``... stub > tools_api.py`` materialises the module a program imports.
+      Without this branch the documented command printed the ``run`` usage and
+      exited 2, so the API module could not be obtained at all.
+    * ``run <program.py>`` executes the program: the program side of the RPC.
+
+    There is no third subcommand and no in-module launcher. A program is
+    started by the bash tool, where ``api_client._code_mode_child_env``
+    recognises this command, starts the RPC server and exports the socket to
+    the caged child; the bash tool owns the cage, the wall-clock ceiling and
+    the output truncation for it.
+
+    Returns 0 on success, 2 for a usage error.
+    """
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv == ["stub"]:
+        sys.stdout.write(generate_stub())
+        return 0
     if len(argv) != 2 or argv[0] != "run":
-        print("usage: python -m delfin.agent.code_mode run <program.py>",
-              file=sys.stderr)
+        print("usage: python -m delfin.agent.code_mode stub | "
+              "run <program.py>", file=sys.stderr)
         return 2
     program = argv[1]
     sys.path.insert(0, os.path.dirname(os.path.abspath(program)))
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    stub_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-    # The stub is materialised next to the program by the caller (the bash
-    # command writes it with the generated_stub() text); import by name.
+    # The stub is materialised next to the program by the caller; import by name.
     import runpy
     try:
         runpy.run_path(program, run_name="__main__")
