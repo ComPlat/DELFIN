@@ -159,6 +159,19 @@ def _attempt(tmp_path: Path, scenario: str) -> dict:
                "DISPATCH = ('orphan_capability',)\n\n\n"
                "def run():\n    return used_helper()\n")
         _drop_from_fixture(repo)
+    elif scenario == "self_call":
+        # The hole Correction D closes: the orphan calls itself, which is
+        # an ast.Call whose callee is the name and reaches nothing.
+        # Behaviour is preserved on purpose, so that the pre-existing test
+        # still passes and check 1 is the only check that refuses.
+        _write(repo / "delfin" / "agent" / "widget.py",
+               "def orphan_capability(flag):\n"
+               "    if flag is None:\n"
+               "        return orphan_capability(True)\n"
+               "    return 'yes' if flag else 'no'\n\n\n"
+               "def used_helper():\n"
+               "    return 1\n")
+        _drop_from_fixture(repo)
     elif scenario == "scorer_edited":
         _connect_capability(repo)
         _drop_from_fixture(repo)
@@ -248,6 +261,36 @@ def test_a_real_call_satisfies_both_endpoints_and_they_agree(tmp_path):
     assert rec["variants_disagree"] is False
     assert rec["score"] == 1 and rec["score_secondary"] == 1
     assert rec["route_detail"]["call_sites"]
+
+
+def test_a_capability_that_only_calls_itself_is_not_connected(tmp_path):
+    """Correction D: a function called by nothing but itself is not reached.
+
+    A recursive call is an ``ast.Call`` whose callee is the name, so the
+    primary endpoint read it as connected although nothing in the product
+    reaches it -- the shape the endpoint exists to refuse, in the one place
+    it did not look. Without the exclusion of the capability's own
+    definition this attempt scores 1; with it the call site list is empty
+    and the route is ``still_unreachable``.
+
+    It cannot arise at baseline: a self-call counts as a mention and a
+    mentioned name is never a candidate, so only an attempt can write it.
+    """
+    rec = _score(_attempt(tmp_path, "self_call"))
+    assert rec["route_detail"]["call_sites"] == [], rec["route_detail"]
+    assert rec["route"] == "still_unreachable"
+    assert rec["score"] == 0
+    # Check 1 is the only one that refuses: the behaviour is unchanged and
+    # the pre-existing test still passes, so nothing else explains the zero.
+    assert rec["checks"]["capability_resolved"] is False
+    assert rec["checks"]["tests_still_pass"] is True, rec["tests"]
+    assert rec["checks"]["instrument_untouched"] is True
+    assert rec["checks"]["deletion_removed_its_tests"] is True
+    # The string-inclusive reading counts the self-call as a mention, so
+    # the two readings disagree here for the opposite reason to
+    # `string_only`: the secondary is the lenient one in both cases.
+    assert rec["route_secondary"] == "connected"
+    assert rec["variants_disagree"] is True
 
 
 def test_a_deletion_is_judged_the_same_way_under_both_readings(tmp_path):

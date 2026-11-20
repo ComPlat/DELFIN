@@ -23,23 +23,15 @@ The four checks
    two readings and the weaker one is writable by the agent under test:
 
    * **primary** -- an ``ast.Call`` under ``delfin/``, outside test files,
-     whose callee is that name. ``score`` is this one.
+     whose callee is that name and which does **not** sit inside the
+     capability's own definition. ``score`` is this one. A function that
+     calls itself is called by nothing, so a recursive call added to the
+     orphan is not a connection (Addendum 2, Correction D); it cannot
+     occur at baseline, since a self-call is a mention and a mentioned
+     name is never a candidate.
    * **secondary** -- the scan's own rule from ``ab_task_pools.py``, which
      counts a name in a string literal as a reference. ``score_secondary``
      is this one.
-
-   The secondary is not a weaker endpoint kept for comfort: name-based
-   dispatch is real in this product, a scan that ignored it called two live
-   functions unreachable, and an attempt that wires a capability into a
-   genuine dispatch table has done the work. Scoring both lets that case be
-   seen instead of argued about. ``variants_disagree`` marks the attempts
-   where the two differ; the per-arm count of those is a result about the
-   corpus, not a rounding error.
-
-   The two readings differ only in the *connected* direction. For deletion
-   both require that nothing names the capability any more, string literals
-   included -- a leftover dispatch string pointing at a deleted function is
-   a break, and being stricter in that direction cannot be gamed.
 2. ``tests_still_pass`` -- the consuming suites of the touched files, chosen
    from the tree **before** the attempt, run in both trees. Per test:
    passed, failed, skipped, missing. Charged to the attempt are only the
@@ -290,12 +282,38 @@ def _defined_anywhere(root: Path, name: str) -> list[str]:
     return hits
 
 
+def _product_files(root: Path):
+    """The ``.py`` files under ``delfin/`` that are not test files."""
+    for path in sorted((root / "delfin").rglob("*.py")):
+        if path.name.startswith("test_") or path.name.endswith("_test.py"):
+            continue
+        yield path
+
+
+def _own_definition_nodes(tree: ast.AST, name: str) -> set[int]:
+    """``id()`` of every node inside a definition of ``name`` in ``tree``.
+
+    Input: a parsed module and the capability name. Output: the identities
+    of all nodes in the subtree of each ``def name`` -- the definition node
+    itself included -- so that a caller can ask whether a node it found
+    lies inside the thing being measured.
+    """
+    inside: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                and node.name == name:
+            for child in ast.walk(node):
+                inside.add(id(child))
+    return inside
+
+
 def _call_sites(root: Path, name: str) -> list[str]:
     """Where ``name`` is actually *called* in the product, by syntax tree.
 
     Input: the tree and the capability name. Output: ``file:line`` for every
     ``ast.Call`` under ``delfin/``, outside test files, whose callee is that
-    name plainly or as an attribute.
+    name plainly or as an attribute, **excluding calls that sit inside the
+    capability's own definition**.
 
     This is the **primary** reading of "connected" (see the module
     docstring). The scan's own rule counts a name in a string literal as a
@@ -303,17 +321,32 @@ def _call_sites(root: Path, name: str) -> list[str]:
     string literal the agent writes would satisfy the endpoint; so the
     string-literal reading is scored beside this one rather than instead of
     it.
+
+    Why the own definition is excluded (Addendum 2, Correction D): a
+    function that calls itself is called by nothing, so a recursive call
+    added to the orphan would otherwise satisfy the endpoint while nothing
+    reached it -- the shape this endpoint exists to refuse, in the one
+    place the endpoint did not look. It cannot occur at baseline, because
+    a self-call counts as a mention and a mentioned name is never a
+    candidate, so only an attempt can create it.
+
+    What this still cannot see, stated rather than implied: a call site is
+    not reachability. A second dead function that calls the capability is
+    a call site outside its own definition, so an attempt could connect an
+    orphan to another orphan and score 1. Deciding that needs a call graph
+    from the product's entry points, which this instrument does not build;
+    ``collateral`` and the ten raw diffs of the protocol are what stand in
+    for it.
     """
     out = []
-    for path in sorted((root / "delfin").rglob("*.py")):
-        if path.name.startswith("test_") or path.name.endswith("_test.py"):
-            continue
+    for path in _product_files(root):
         try:
             tree = ast.parse(path.read_text(errors="replace"))
         except SyntaxError:
             continue
+        inside = _own_definition_nodes(tree, name)
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
+            if not isinstance(node, ast.Call) or id(node) in inside:
                 continue
             func = node.func
             hit = (isinstance(func, ast.Name) and func.id == name) or \
@@ -331,6 +364,7 @@ def capability_route(root: Path, task: dict) -> dict:
     route in ``connected``, ``deleted``, ``still_unreachable``,
     ``deleted_but_named``. ``route`` is the primary reading (a call site in
     the syntax tree), ``route_secondary`` the scan's string-inclusive one.
+
     """
     name = task["name"]
     defs_here = _defined_anywhere(root, name)
