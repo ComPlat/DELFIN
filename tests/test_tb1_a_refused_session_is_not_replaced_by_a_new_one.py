@@ -75,7 +75,6 @@ def store(tmp_path, monkeypatch):
 @pytest.fixture
 def holder(store, tmp_path):
     """A second live process holding SID's writer lock."""
-    import os
     from tests.conftest import child_env
     env = child_env(tmp_path)
     env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
