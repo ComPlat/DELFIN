@@ -42,7 +42,7 @@ output_schema: {"type": "object", "properties": {"verdict": {"type":
 department: structure       # optional: groups experts under a manager
 may_delegate_to: []         # managers only; experts must leave it empty
 display_name: Mole          # optional human name; never the key
-enabled_setting: agent.departments.structure  # default OFF
+enabled_setting: agent.departments.structure  # a department switch
 ---
 <body = the expert's system prompt>
 ```

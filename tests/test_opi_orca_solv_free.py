@@ -11,7 +11,7 @@ import math
 
 import pytest
 
-pytest.importorskip("opi")
+from _skip_reasons import absent_reason, orca_reason, missing  # noqa: E402
 
 from delfin.tools.adapters import orca_solv_free_opi as solvfree
 from delfin.tools._registry import get as registry_get
@@ -33,6 +33,22 @@ O2_COORDINATES = [
 ]
 
 _EH_TO_KJ = 2625.499639479947  # Hartree -> kJ/mol, DELFIN's conv constant
+
+
+def _needs_opi() -> None:
+    """Skip when opi is absent, naming it.
+
+    This file was gated by a module-level ``pytest.importorskip("opi")``.
+    Twelve of its twenty-seven tests build or validate an input through
+    OPI's blocks and do need it; the other fifteen -- electron counting,
+    spin validation, dG_solv reading, the redox and pKa arithmetic, the
+    registry entry -- never import it. The collection skip discarded those
+    fifteen on every machine without the package. Asking here keeps that
+    coverage and still names the reason.
+    """
+    reason = absent_reason("opi")
+    if reason:
+        pytest.skip(reason)
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +89,7 @@ def test_spin_refused_mult_below_one():
 # input build: gas and solvated legs on the SAME geometry level
 # ---------------------------------------------------------------------------
 def test_build_gas_leg_has_no_solvation_keyword(tmp_path):
+    _needs_opi()
     gas_inp, _solv_inp = solvfree.build_solv_free_inputs(
         tmp_path,
         elements=H2O_ELEMENTS,
@@ -95,6 +112,7 @@ def test_build_gas_leg_has_no_solvation_keyword(tmp_path):
 
 
 def test_build_solv_leg_cpcm_water(tmp_path):
+    _needs_opi()
     _gas_inp, solv_inp = solvfree.build_solv_free_inputs(
         tmp_path,
         elements=H2O_ELEMENTS,
@@ -116,6 +134,7 @@ def test_build_solv_leg_cpcm_water(tmp_path):
 
 
 def test_build_solv_leg_smd_water(tmp_path):
+    _needs_opi()
     _gas_inp, solv_inp = solvfree.build_solv_free_inputs(
         tmp_path,
         elements=H2O_ELEMENTS,
@@ -135,6 +154,7 @@ def test_build_solv_leg_smd_water(tmp_path):
 
 
 def test_legs_share_geometry_and_method(tmp_path):
+    _needs_opi()
     gas_inp, solv_inp = solvfree.build_solv_free_inputs(
         tmp_path,
         elements=H2O_ELEMENTS,
@@ -162,6 +182,7 @@ def test_legs_share_geometry_and_method(tmp_path):
 # refusals
 # ---------------------------------------------------------------------------
 def test_validate_unknown_solvent_refused():
+    _needs_opi()
     errors, _warnings = solvfree.validate_solv_free(
         elements=H2O_ELEMENTS, charge=0, mult=1,
         functional="B3LYP", basis="def2-SVP", ri=False,
@@ -171,6 +192,7 @@ def test_validate_unknown_solvent_refused():
 
 
 def test_validate_unknown_model_refused():
+    _needs_opi()
     errors, _warnings = solvfree.validate_solv_free(
         elements=H2O_ELEMENTS, charge=0, mult=1,
         functional="B3LYP", basis="def2-SVP", ri=False,
@@ -180,6 +202,7 @@ def test_validate_unknown_model_refused():
 
 
 def test_validate_alpb_refused_outside_xtb():
+    _needs_opi()
     errors, _warnings = solvfree.validate_solv_free(
         elements=H2O_ELEMENTS, charge=0, mult=1,
         functional="B3LYP", basis="def2-SVP", ri=False,
@@ -189,6 +212,7 @@ def test_validate_alpb_refused_outside_xtb():
 
 
 def test_validate_wrong_spin_refused():
+    _needs_opi()
     errors, _warnings = solvfree.validate_solv_free(
         elements=O2_ELEMENTS, charge=0, mult=2,
         functional="B3LYP", basis="def2-SVP", ri=False,
@@ -198,6 +222,7 @@ def test_validate_wrong_spin_refused():
 
 
 def test_validate_missing_coordinates_refused():
+    _needs_opi()
     errors, _warnings = solvfree.validate_solv_free(
         elements=H2O_ELEMENTS, charge=0, mult=1,
         functional="B3LYP", basis="def2-SVP", ri=False,
@@ -208,6 +233,7 @@ def test_validate_missing_coordinates_refused():
 
 
 def test_validate_ok_returns_no_errors():
+    _needs_opi()
     errors, warnings = solvfree.validate_solv_free(
         elements=H2O_ELEMENTS, charge=0, mult=1,
         functional="B3LYP", basis="def2-SVP", ri=False,
@@ -218,6 +244,7 @@ def test_validate_ok_returns_no_errors():
 
 
 def test_validate_mixing_levels_between_legs_refused():
+    _needs_opi()
     # the two legs must share one method/geometry set; asking for different
     # functionals on the gas and solvated sides must be refused out loud
     errors, _warnings = solvfree.validate_solv_free(
@@ -327,8 +354,16 @@ def test_orca_parser_accepts_solvated_input(tmp_path):
     """Hand the OPI-built solvated input to ORCA's own parser via
     ``delfin.orca_knowledge.probe.probe_input`` (<= 2 cores, small molecule,
     parser check only — the probe guard keeps it a probe, not a calculation).
-    Skipped with a reason when the ORCA binary is absent."""
+
+    Two independent preconditions: OPI to build the input, and an ORCA
+    binary to read it. Both are named, so a machine that has OPI and no
+    ORCA is told about the ORCA.
+    """
     from delfin.orca_knowledge.probe import probe_input
+
+    reason = missing(absent_reason("opi"), orca_reason())
+    if reason:
+        pytest.skip(reason)
 
     _gas_inp, solv_inp = solvfree.build_solv_free_inputs(
         tmp_path,
@@ -345,8 +380,6 @@ def test_orca_parser_accepts_solvated_input(tmp_path):
         ncores=1,
     )
     result = probe_input(solv_inp.read_text(), timeout_s=300)
-    if result["verdict"] == "unavailable":
-        pytest.skip("ORCA binary not available for probe")
     assert result["verdict"] in ("parsed", "finished"), (
         "ORCA rejected the OPI-built solvated input; messages: "
         f"{result['messages']}"
