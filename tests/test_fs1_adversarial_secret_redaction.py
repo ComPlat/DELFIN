@@ -35,12 +35,19 @@ PLACEHOLDER = "[redaction failed -- text withheld]"
 
 @pytest.fixture
 def redactor_fails(monkeypatch):
-    """The house redactor raises; the once-per-process log flag is reset."""
+    """The house redactor raises.
+
+    The once-per-process log flag is reset only when the module has it: on a
+    tree without the fix the attribute is absent, and the fixture must not
+    turn that into a setup error -- the case has to fail on its assertion,
+    so the control shows the DEFECT and not a missing symbol.
+    """
     def boom(*args, **kwargs):
         raise RuntimeError("redactor exploded")
 
     monkeypatch.setattr("delfin.agent.output_guard.scrub_secrets", boom)
-    monkeypatch.setattr(memory_store, "_REDACT_LOGGED_ONCE", False)
+    if hasattr(memory_store, "_REDACT_LOGGED_ONCE"):
+        monkeypatch.setattr(memory_store, "_REDACT_LOGGED_ONCE", False)
 
 
 # -- the memory store: what actually lands on disk --------------------------
@@ -146,16 +153,19 @@ def test_the_guard_detects_the_real_known_followups():
 
     repo = Path(__file__).resolve().parent.parent
     path = repo / "tests" / "test_fs1_no_fail_open_redactors.py"
+    assert path.is_file(), f"the guard file is missing: {path.name}"
     spec = importlib.util.spec_from_file_location("fs1_guard", path)
     guard = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(guard)
 
     hits = set(guard.fail_open_redactors())
-    assert ("api_client.py", "_redact_tool_result") in hits
-    assert ("working_state.py", "_scrub") in hits
+    found = [("api_client.py", "_redact_tool_result") in hits,
+             ("working_state.py", "_scrub") in hits]
+    assert found == [True, True], (
+        f"the guard does not find the excluded defects: {found}")
 
 
 def test_the_placeholder_is_one_constant_not_a_retold_literal():
-    assert memory_store.REDACT_FAILED_PLACEHOLDER == PLACEHOLDER
+    assert getattr(memory_store, "REDACT_FAILED_PLACEHOLDER", "") == PLACEHOLDER
     assert task_state._scrub("plain text") == "plain text"
     assert session_index._scrub("plain text") == "plain text"
