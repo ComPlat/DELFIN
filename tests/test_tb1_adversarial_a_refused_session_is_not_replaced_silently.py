@@ -134,13 +134,15 @@ def env(tmp_path, monkeypatch):
         return _FakeEngine(new)
 
     monkeypatch.setattr(engine_mod, "AgentEngine", _factory)
-    # The tab's periodic path is the only thing that can notice a holder
-    # going away (``_background_tick``, :11605). Its period is a module
-    # constant read at every reschedule (:836), so shortening it makes the
-    # wait observable in a second or two instead of tens of seconds -- the
-    # assertion stays the same, only the clock does not depend on speed.
+    # A "Wait" that works must poll the lock itself: on a tab refused during
+    # load no engine exists, and both of the tab's recurring mechanisms are
+    # registered only when one is minted (_wire_phase5_callbacks, :11474 ->
+    # :11513 and :11636). So the period shortened here is whatever the patch
+    # polls with; the assertion stays the same, only the clock stops
+    # depending on machine speed.
     from delfin.dashboard import tab_agent as _ta
     monkeypatch.setattr(_ta, "_BACKGROUND_REFRESH_S", 0.2, raising=False)
+    monkeypatch.setattr(_ta, "_HELD_WAIT_INTERVAL_S", 0.2, raising=False)
     return {"tmp": tmp_path, "created": created, "SS": SS}
 
 
@@ -571,12 +573,11 @@ def test_an_innocent_sentence_naming_the_choice_does_not_fork(env):
 def test_a_live_holder_is_never_opened_and_a_closed_tab_writes_nothing(env):
     """QS conditions 2 and 3: a live holder means no open; a closed tab, no write.
 
-    The first half needs the tab's own periodic path to run with the holder
-    still alive -- two ticks of ``_background_tick`` (10 s each,
-    tab_agent.py:11605/:836) -- and nothing may happen. The second half
-    closes the tab, ends the holder, lets the tick's period pass again, and
-    requires that the closed tab wrote no session: a timer outliving its tab
-    would write into the store with nobody looking.
+    The first half needs the tab's own wait poll to run with the holder still
+    alive, and nothing may happen while it runs. The second half closes the
+    tab, ends the holder, lets another period pass, and requires that the
+    closed tab wrote no session: a timer outliving its tab would write into
+    the store with nobody looking.
     """
     _write_session(env, SID, "held job", "held-turn")
     proc = _held_by_a_live_process(env)
@@ -616,6 +617,88 @@ def test_a_live_holder_is_never_opened_and_a_closed_tab_writes_nothing(env):
             if not state.get("_closed"):
                 tab["refs"]["shutdown"](save=False)
     finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=30)
+
+
+def test_a_wait_that_cannot_read_the_lock_ends_visibly_not_silently(env):
+    """QS's one required amendment: a failing poll must not wait forever.
+
+    ``_tick_wait`` wraps its whole re-arming body in ``except Exception: pass``
+    (tab_agent.py:14627-14628). A "Wait" that copies that shape dies without a
+    word: the person keeps waiting, the tab keeps a refusal it can never clear,
+    and nothing on screen says so. The patch must instead END the wait and say
+    it failed for this conversation. The lock read is a local import inside the
+    load path (:12070), so it can be made to raise without touching the store.
+
+    The red here is on OUTCOME, not on wording: the refusal must be gone (the
+    tab must not still believe it is waiting) and the chat must carry a line
+    the person can read. A patch that ends the wait but names its cause
+    differently still passes, which is the point -- the contract is "it stops
+    and it says so", not a sentence I chose.
+    """
+    _write_session(env, SID, "held job", "held-turn")
+    proc = _held_by_a_live_process(env)
+    tab = None
+    try:
+        tab = _tab(env)
+        state = tab["refs"]["state"]
+        _open_held_conversation(tab, env)
+        assert "held by a live session" in _chat_text(state)
+
+        typed = "wait for me"
+        _choose_wait(tab)
+        # The person keeps writing while the tab waits; that text belongs to
+        # them and no poll may touch it.
+        tab["input"].value = typed
+        assert tab["input"].value == typed, (
+            "the text must still be in the box while waiting")
+        assert state.get("_held_refused") is not None, (
+            "the tab never entered a wait, so a failing poll cannot be judged "
+            "here: the patch must record the refusal it is waiting on")
+
+        # The lock can no longer be read: every later poll raises.
+        from delfin.agent import session_store as _SS
+        real = _SS.session_lock_holder
+
+        def _broken(sid):
+            raise OSError("lock unreadable for this test")
+
+        _SS.session_lock_holder = _broken
+        try:
+            deadline = time.monotonic() + 20.0
+            while time.monotonic() < deadline:
+                if state.get("_held_refused") is None:
+                    break
+                time.sleep(0.05)
+        finally:
+            _SS.session_lock_holder = real
+
+        assert state.get("_held_refused") is None, (
+            "a poll that cannot read the lock must END the wait instead of "
+            "waiting forever on a check that always fails")
+        # Only what the PRODUCT said: the person's own typed "Wait" is in the
+        # chat too (the choice was sent as a line), so reading the whole
+        # transcript would let my own text satisfy this assertion.
+        said = "\n".join(str(m.get("content") or "")
+                         for m in state.get("chat_messages") or []
+                         if str(m.get("role") or "") != "user")
+        assert ("wait" in said.lower()
+                and ("fail" in said.lower() or "error" in said.lower()
+                     or "could not" in said.lower())), (
+            "the end of a failed wait must reach the person as one line, "
+            f"not silence; the tab said: {said[-400:]!r}")
+        assert env["created"] == [], (
+            "ending a failed wait must not start a session")
+        assert tab["input"].value == typed, (
+            "the text must survive the failed wait -- the person never sent it")
+    finally:
+        if tab is not None:
+            try:
+                tab["refs"]["shutdown"](save=False)
+            except Exception:
+                pass
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=30)
