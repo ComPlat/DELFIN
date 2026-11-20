@@ -121,21 +121,36 @@ def _join_continuations(text: str) -> tuple[str, list[int]]:
 
 
 def _strip_wrappers(cmd: str) -> str:
-    """Drop wrappers that do not change what runs (wave-33 review F4):
-    leading `bash -c`/`sh -c` (their argument is the command),
-    `command`, `nice`, `exec` prefixes, VAR=val prefixes (existing
-    helper) and one level of grouping parentheses around the command.
-    The command word must then anchor the rule; before this a wrapper
-    hid the walk from it."""
-    cmd = _strip_env_prefixes(cmd)
+    """Drop wrappers that do not change what runs (wave-33 review F4 +
+    W1/W2): leading `bash -c`/`sh -c` (their QUOTED argument is the
+    command; trailing $0 names are dropped), `command`, `nice` with or
+    without its own adjustment (-n 10, -10), `env` with or without
+    assignments / -i (re-stripped inside the loop), `nohup`, and one
+    level of grouping parentheses. The command word must then anchor
+    the rule; before this a wrapper hid the walk from it."""
     while True:
-        m = re.match(r"\s*(?:bash|sh)\s+-c\s+(?:'([^']*)'|\"([^\"]*)\")\s*$",
-                     cmd)
+        cmd = _strip_env_prefixes(cmd)
+        m = re.match(
+            r"\s*(?:bash|sh)\s+-c\s+(?:'([^']*)'|\"([^\"]*)\")(?:\s.*)?$",
+            cmd)
         if m:
             cmd = m.group(1) or m.group(2) or ""
             continue
-        m = re.match(r"\s*(?:command|nice|exec|env|nohup)\s+(.*)", cmd)
+        m = re.match(r"\s*(?:command|nohup|exec)\s+(.*)", cmd)
         if m:
+            cmd = m.group(1)
+            continue
+        # nice with or without its own arguments: nice -n 10 cmd,
+        # nice -10 cmd, nice cmd.
+        m = re.match(r"\s*nice(?:\s+-n\s+\S+|\s+-\d+)?\s+(.*)", cmd)
+        if m and m.group(1):
+            cmd = m.group(1)
+            continue
+        # env: env X=1 ... / env -i ... / env ...  -- assignments are
+        # stripped by _strip_env_prefixes on the next loop pass.
+        m = re.match(r"\s*env(?:\s+-i|\s+(?:-\w+\s+)*[A-Za-z_]\w*=(?:\S+|\"[^\"]*\"|'[^']*'))*\s+(.+)",
+                     cmd)
+        if m and m.group(1):
             cmd = m.group(1)
             continue
         m = re.match(r"\s*\(\s*(.*)\s*\)\s*$", cmd)
@@ -355,34 +370,51 @@ def check(script_text: str, *, env: dict | None = None,
         if m and is_pytest_shape:
             tail = line[m.end():]
             arg = re.search(r"(/[^\s\"']+)", tail)
-            # The cd that counts is the LAST one on or before this line
-            # (F2: the exemption was searched over the whole script, so
-            # any `cd $TMPDIR` anywhere excused every pytest line after
-            # it -- but the last cd wins the cwd). A node-local $VAR cd
-            # at the point of the pytest is the FIX this rule asks for;
-            # a later cd back onto a Lustre path is not excused.
-            text_before = "\n".join(lines[:i + 1])
-            here = None
-            for cd_m in re.finditer(
-                    r"(?:^|\n|;)\s*cd\s+\"?([^\n;]+)", text_before):
-                here = cd_m
-            if here is not None:
-                cd_target = here.group(1).strip().strip('"\'')
-                # A node-local variable or a resolved node-local dir:
-                # the checkout is not on Lustre.
-                if (cd_target.startswith("$")
-                        or not _is_lustre(
-                            _expand_env_paths(cd_target + "/x",
-                                              vars_map)[0].rsplit("/x", 1)[0],
-                            lustres)
-                        and not _is_lustre(cd_target, lustres)):
+            # The cd that counts is the LAST one on the pytest's OWN
+            # line (a chained `cd a && cd b` is two cds on one line:
+            # the shell ends up in b), or — when the line has none —
+            # the last cd on the lines before it (W3: taking any
+            # earlier line's cd missed `cd /tmp && cd /pfs/...` and
+            # falsely excused/accused on the chain direction).
+            own = list(re.finditer(r"(?:^|&&|;)\s*cd\s+\"?([^&;\n]+)",
+                                   line))
+            if own:
+                cd_target = own[-1].group(1).strip().strip('"\'')
+                cd_node_local = (cd_target.startswith("$")
+                                 or not _is_lustre(cd_target, lustres)
+                                 and not _is_lustre(
+                                     _expand_env_paths(
+                                         cd_target, vars_map)[0]
+                                     if _expand_env_paths(cd_target,
+                                                          vars_map)
+                                     else cd_target, lustres))
+                if cd_node_local:
                     continue
-            path = arg.group(1) if arg else (
-                here.group(1) if here else str((env or {}).get("HOME", "")))
-            path = _expand_env_paths(path, vars_map)[0] if path.startswith("$") else path
+                # The shell really ends on a Lustre dir: refuse.
+                path = cd_target
+            else:
+                text_before = "\n".join(lines[:i])
+                here = None
+                for cd_m in re.finditer(
+                        r"(?:^|\n|&&|;)\s*cd\s+\"?([^&;\n]+)", text_before):
+                    here = cd_m
+                if here is not None:
+                    cd_target = here.group(1).strip().strip('"\'')
+                    if (cd_target.startswith("$")
+                            or not _is_lustre(cd_target, lustres)
+                            and not _is_lustre(
+                                _expand_env_paths(cd_target, vars_map)[0]
+                                if _expand_env_paths(cd_target, vars_map)
+                                else cd_target, lustres)):
+                        continue
+                    path = cd_target
+                else:
+                    path = str(vars_map.get("HOME", ""))
+            path = (_expand_env_paths(path, vars_map)[0]
+                    if path.startswith("$") else path)
             if _is_lustre(path, lustres) or home_lustre or (
-                    not arg and not here
-                    and _is_lustre(str(vars_map.get("HOME", "")), lustres)):
+                    not arg and path == str(vars_map.get("HOME", ""))
+                    and _is_lustre(path, lustres)):
                 if not any(f.rule == "pytest_from_lustre_checkout" and f.line == _src(i)
                            for f in findings):
                     findings.append(Finding(
