@@ -266,6 +266,52 @@ def test_tab_widget_build_without_display(tmp_path, monkeypatch):
     ipywidgets  # noqa: B018  (import proves the widget stack is available)
 
 
+import base64
+
+
+def test_export_bytes_large_payload_single_run_js(tmp_path):
+    """A large export (>2 MB b64) travels via the buffer widget and calls
+    run_js exactly once: every extra run_js clears the shared JS output
+    and wipes the previously queued chunks before the browser runs them
+    (voila), which broke all image-bearing exports."""
+    pytest.importorskip("ipywidgets")
+    from delfin.dashboard import tab_results_overview as tab
+
+    class FakeCtx:
+        archive_dir = str(tmp_path / "empty_archive")
+        calc_dir = str(tmp_path / "empty_calc")
+        scripts = []
+
+        def run_js(self, script, *, keep=False):
+            self.scripts.append(script)
+
+    (tmp_path / "empty_archive").mkdir()
+    (tmp_path / "empty_calc").mkdir()
+    widget, refs = tab.create_tab(FakeCtx())
+    panel = refs["results_overview"]
+    ctx = FakeCtx()
+
+    # >2 MB base64 payload: the widget-transport path must be used.
+    payload = b"x" * (3 * 1024 * 1024)  # 3 MB binary -> ~4 MB b64
+    panel._export_bytes("big.bin", payload, "application/octet-stream")
+    assert len(ctx.scripts) == 1, (
+        f"expected ONE run_js call, got {len(ctx.scripts)}")
+    # The buffer widget must carry the full base64 payload as JSON.
+    assert panel._export_buffer.value != ""
+    assert json.loads(panel._export_buffer.value)
+    stored = json.loads(panel._export_buffer.value)
+    key = next(iter(stored))
+    assert base64.b64decode(stored[key]) == payload
+    # The script must read the buffer DOM node (class-based selector),
+    # not inline the data.
+    assert ".export-buffer" in ctx.scripts[0]
+    assert "atob" in ctx.scripts[0]
+
+    # Small payload: still one call, data inlined, buffer unused.
+    panel._export_bytes("small.bin", b"abc", "application/octet-stream")
+    assert len(ctx.scripts) == 2
+
+
 def test_extract_custom_regex_occurrences(tmp_path):
     calc = make_calc(tmp_path, "403")
     (calc / "output.out").write_text(

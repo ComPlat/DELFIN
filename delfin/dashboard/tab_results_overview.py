@@ -179,6 +179,12 @@ class ResultsOverviewPanel:
         self._xlsx_btn = widgets.Button(description="Export XLSX")
         self._zip_btn = widgets.Button(description="LaTeX (tex+pngs)")
         self._export_status = widgets.HTML()
+        # Chunked export transport: the widget state reaches the browser
+        # reliably (Voila syncs it), unlike a stream of run_js messages
+        # which clear each other before execution.  The JS side reads
+        # this DOM node's textContent and assembles the Blob.
+        self._export_buffer = widgets.HTML(
+            value="", layout=widgets.Layout(display="none"))
         # Custom columns section (semantics shared with the calculations
         # browser table panel: text/regex/jsonpath per arbitrary file).
         self._custom_acc = widgets.Accordion(children=[widgets.VBox()])
@@ -236,6 +242,7 @@ class ResultsOverviewPanel:
             self._show_3d_opt,
             self._show_h,
             self._pngs,
+            self._export_buffer,
         ])
         self.widget.add_class("ro-tab-root")
 
@@ -664,64 +671,31 @@ class ResultsOverviewPanel:
                 "im Dashboard nicht moeglich.</span>")
             return
         b64 = _base64.b64encode(payload).decode("ascii")
-        total = (len(b64) + self._EXPORT_CHUNK_B64 - 1) // self._EXPORT_CHUNK_B64
         self._export_seq = getattr(self, "_export_seq", 0) + 1
         tid = f"ro{self._export_seq}"
 
-        if total <= 1:  # small export: single shot as before
-            js = (
-                "(function(){"
-                f"const fileName={_json.dumps(filename)};"
-                f"const mimeType={_json.dumps(mime)};"
-                f"const b64={_json.dumps(b64)};"
-                "try{"
-                "const bin=atob(b64);"
-                "const len=bin.length;"
-                "const bytes=new Uint8Array(len);"
-                "for(let i=0;i<len;i++){bytes[i]=bin.charCodeAt(i);}"
-                "const blob=new Blob([bytes],{type:mimeType});"
-                "const url=URL.createObjectURL(blob);"
-                "const a=document.createElement('a');"
-                "a.href=url;a.download=fileName;"
-                "document.body.appendChild(a);a.click();"
-                "setTimeout(function(){URL.revokeObjectURL(url);"
-                "if(a.parentNode){a.parentNode.removeChild(a);}},1500);"
-                "}catch(err){console.error('Download failed:', err);}"
-                "})();"
-            )
-            run_js(js)
-            self._export_status.value = (
-                f"<span style='color:#28a745'>{_html.escape(filename)} "
-                f"heruntergeladen ({len(payload) // 1024} KB).</span>")
-            return
-
-        # transfer phase: register buffer, stream chunks, assemble
-        init_js = (
+        # ONE run_js call for the whole download: every run_js clears
+        # the shared JS output first, so a stream of per-chunk messages
+        # wipes the previous chunks before the browser executes them
+        # (only the last script ran -> empty Blob, no download).  The
+        # payload itself travels in the widget state of _export_buffer,
+        # which Voila syncs reliably regardless of output clearing.
+        # Small payloads (<=2 MB b64) stay inlined in the script; larger
+        # ones go through the buffer DOM node.
+        if len(b64) <= 2 * 1024 * 1024:
+            data_js = f"const b64={_json.dumps(b64)};"
+        else:
+            self._export_buffer.value = _json.dumps({tid: b64})
+            data_js = (
+                "const b64=(function(){"
+                "const node=document.querySelector('.export-buffer');"
+                "return node ? node.textContent : '';})()")
+        js = (
             "(function(){"
-            "window.__roChunks = window.__roChunks || {};"
-            f"window.__roChunks[{_json.dumps(tid)}] = [];"
-            "})();"
-        )
-        run_js(init_js)
-        for i in range(total):
-            chunk = b64[i * self._EXPORT_CHUNK_B64:
-                        (i + 1) * self._EXPORT_CHUNK_B64]
-            run_js(
-                "(function(){"
-                f"window.__roChunks[{_json.dumps(tid)}].push("
-                f"{_json.dumps(chunk)});"
-                "})();"
-            )
-            self._export_status.value = self._progress_html(
-                i + 1, total, filename)
-        final_js = (
-            "(function(){"
-            f"const tid={_json.dumps(tid)};"
             f"const fileName={_json.dumps(filename)};"
             f"const mimeType={_json.dumps(mime)};"
+            + data_js +
             "try{"
-            "const parts=window.__roChunks[tid]||[];"
-            "const b64=parts.join('');"
             "const bin=atob(b64);"
             "const len=bin.length;"
             "const bytes=new Uint8Array(len);"
@@ -733,15 +707,16 @@ class ResultsOverviewPanel:
             "document.body.appendChild(a);a.click();"
             "setTimeout(function(){URL.revokeObjectURL(url);"
             "if(a.parentNode){a.parentNode.removeChild(a);}},1500);"
-            "delete window.__roChunks[tid];"
-            "}catch(err){console.error('Download failed:', err);}"
+            "if (window.__roBuffer) window.__roBuffer.textContent='';"
+            "}catch(err){console.error('Download failed:', err);"
+            "throw err;}"
             "})();"
         )
-        run_js(final_js)
+        run_js(js)
+        self._export_buffer.add_class("export-buffer")
         self._export_status.value = (
             f"<span style='color:#28a745'>{_html.escape(filename)} "
-            f"heruntergeladen ({len(payload) // 1024} KB, "
-            f"{total} Teile).</span>")
+            f"heruntergeladen ({len(payload) // 1024} KB).</span>")
 
     def _on_export_csv(self, _btn=None) -> None:
         if self._table is None:
