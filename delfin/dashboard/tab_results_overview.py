@@ -581,6 +581,14 @@ class ResultsOverviewPanel:
                 # the earlier dashboards shipped); fall back to a
                 # freshly drawn one.
                 _smp = _os.path.join(row["path"], "SMILES.png")
+                if not _os.path.exists(_smp):
+                    try:
+                        _gen = smiles_png_bytes(smiles)
+                        if _gen:
+                            with open(_smp, "wb") as _fh:
+                                _fh.write(_gen)
+                    except OSError:
+                        pass
                 png = (open(_smp, "rb").read()
                        if _os.path.exists(_smp)
                        else smiles_png_bytes(smiles))
@@ -910,7 +918,18 @@ class ResultsOverviewPanel:
             if want_2d and smiles:
                 # The calc's own SMILES.png, unchanged (raster): the
                 # redrawn vector variant is dropped - user request.
+                # Older calcs have no SMILES.png on disk: generate it
+                # once from the DELFIN_Data.json SMILES so the same
+                # file exists for later runs (user request 2026-11-21).
                 _smp = os.path.join(row["path"], "SMILES.png")
+                if not os.path.exists(_smp):
+                    try:
+                        _gen = smiles_png_bytes(smiles)
+                        if _gen:
+                            with open(_smp, "wb") as _fh:
+                                _fh.write(_gen)
+                    except OSError:
+                        pass
                 png = (open(_smp, "rb").read()
                        if os.path.exists(_smp) else None)
                 if png:
