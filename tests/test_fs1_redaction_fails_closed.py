@@ -85,11 +85,20 @@ def test_failure_logged_once_per_process_with_type_only(
 # --- service/redact.py (FS1's fourth owned file, QS ruling 2026-11-15) ---
 
 def test_service_redactor_shape_pass_fails_closed(
-        raising_redactor, tmp_path, monkeypatch):
+        tmp_path, monkeypatch):
     # The shape pass raising must withhold the text, like every other
     # FS1 wrapper -- on be43f5b46 the "except: pass" returned it raw.
+    # Redactor binds output_guard._redact_secrets into self._shapes at
+    # __init__ (redact.py:30-31), so patch THAT name before constructing;
+    # patching scrub_secrets (a different function) leaves the shape pass
+    # working -- the operator's node run and nacht-s6's probe22 proved it.
+    from delfin.agent import output_guard
     from delfin.agent.service import redact as service_redact
 
+    def boom(text, **kwargs):
+        raise RuntimeError("redactor exploded")
+
+    monkeypatch.setattr(output_guard, "_redact_secrets", boom)
     red = service_redact.Redactor()
     out = red.text(f"bearer {SECRET}")
     assert SECRET not in out

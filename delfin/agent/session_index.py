@@ -394,7 +394,7 @@ def _index_session_locked(session_id: str) -> bool:
                     "INSERT INTO documents "
                     "(session_id, created_at, title, text) "
                     "VALUES (?, ?, ?, ?)",
-                    (session_id, created2, title2, _scrub(text2)))
+                    (session_id, created2, _scrub(title2), _scrub(text2)))
                 kind2, _, _ = doc_id2.partition(":")
                 m2 = float(doc_id2.split(":")[1])
                 s2 = int(doc_id2.split(":")[2])
