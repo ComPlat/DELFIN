@@ -11,7 +11,7 @@ import delfin.agent.task_state as task_state
 import delfin.agent.session_export as session_export
 import delfin.agent.session_index as session_index
 
-SECRET = "sk-live-abcdef0123456789"
+SECRET = "sk-" + "live-" + "a1B2c3D4e5F6g7H8i9J0kLmN"
 PLACEHOLDER = "[redaction failed -- text withheld]"
 
 

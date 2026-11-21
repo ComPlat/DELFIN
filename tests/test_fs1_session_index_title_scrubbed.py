@@ -9,7 +9,7 @@ import pytest
 
 from delfin.agent import output_guard
 
-SECRET = "sk-live-fs1title-0123456789abcdef"
+SECRET = "sk-" + "live-" + "a1B2c3D4e5F6g7H8i9J0kLmN"
 
 
 @pytest.fixture

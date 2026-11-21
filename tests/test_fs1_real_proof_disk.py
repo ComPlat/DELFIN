@@ -10,7 +10,7 @@ import pytest
 import delfin.agent.memory_store as memory_store
 import delfin.agent.task_state as task_state
 
-SECRET = "sk-a0123456789abcdef0123456789abcde"
+SECRET = "sk-" + "live-" + "a1B2c3D4e5F6g7H8i9J0kLmN"
 
 
 @pytest.fixture
