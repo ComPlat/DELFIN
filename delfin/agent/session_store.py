@@ -614,17 +614,32 @@ _NOT_A_SESSION_NAMES = frozenset({SUPERVISOR_HEARTBEAT_FILE})
 _NOT_A_SESSION_SUFFIXES = (".turn.json",)
 
 
+def is_shared_record(path: "str | Path") -> bool:
+    """Whether a file in the sessions directory belongs to another writer.
+
+    Input: a path or name. Output: True for a record that is not this
+    directory's own content and must survive a prune.
+    """
+    return Path(path).name in _NOT_A_SESSION_NAMES
+
+
 def is_session_file(path: "str | Path") -> bool:
     """Whether a file in the sessions directory is a stored session.
 
     Input: a path or name. Output: True only for a session save.
     Semantics: a mid-turn checkpoint (``<sid>.turn.json``) and the shared
-    records above are in the same directory and are not sessions.
+    records above live in the same directory and are not sessions.
+
+    Not the same question as "may this be pruned": a stale checkpoint is
+    garbage that ``cleanup_old_sessions`` must remove, and asking THIS
+    predicate there made the prune keep every checkpoint for good --
+    caught by test_cleanup_old_sessions_prunes_stale_checkpoints, which
+    is why the two questions are two functions.
     """
     name = Path(path).name
     if not name.endswith(".json"):
         return False
-    if name in _NOT_A_SESSION_NAMES:
+    if is_shared_record(name):
         return False
     return not name.endswith(_NOT_A_SESSION_SUFFIXES)
 
@@ -2234,8 +2249,8 @@ def cleanup_old_sessions(*, max_age_days: int = 30) -> int:
     cutoff = time.time() - max_age_days * 86_400
     removed = 0
     for f in _SESSIONS_DIR.glob("*.json"):
-        if not is_session_file(f):
-            continue   # pruning sessions must not prune a shared record
+        if is_shared_record(f):
+            continue   # another writer's record; a stale checkpoint IS pruned
         try:
             mtime = f.stat().st_mtime
         except OSError:

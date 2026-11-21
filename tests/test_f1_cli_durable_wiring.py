@@ -219,3 +219,59 @@ def test_plan_without_journal_says_so(monkeypatch, tmp_path, capsys):
     # ternary inside the f-string list took the whole prefixed string
     # as its true case.
     assert "no-such-session" in out, out
+
+
+# -- the heartbeat record shares the sessions directory --------------------
+
+def test_the_heartbeat_record_is_not_a_session(tmp_path, monkeypatch):
+    """It lives in the sessions directory on purpose -- that is what a
+    login node and a compute node both reach -- so every reader of that
+    directory has to skip it.
+
+    Measured: when the record acquired a producer, the resume picker
+    returned ['bbb2', 'aaa1', 'supervisor_heartbeat'], a window reopening
+    a kept session compared the wrong id, and `continue` started a second
+    session for a folder that already had one.
+    """
+    from delfin.agent import session_store
+    from delfin.agent.service import durable_host
+
+    monkeypatch.setattr(session_store, "_SESSIONS_DIR", tmp_path)
+    durable_host.write_supervisor_heartbeat(["s1"], pid=4242,
+                                            root=str(tmp_path))
+    record = tmp_path / durable_host.HEARTBEAT_FILE
+    assert record.is_file(), "the writer put it in the sessions directory"
+
+    assert not session_store.is_session_file(record)
+    assert session_store.is_shared_record(record)
+    # And the other direction, so the predicate cannot answer "no" to
+    # everything: a session save and a mid-turn checkpoint.
+    assert session_store.is_session_file(tmp_path / "abc123.json")
+    assert not session_store.is_session_file(tmp_path / "abc123.turn.json")
+    assert not session_store.is_shared_record(tmp_path / "abc123.turn.json")
+
+
+def test_pruning_sessions_keeps_the_heartbeat_and_drops_a_checkpoint(
+        tmp_path, monkeypatch):
+    """The two questions are not the same one: a stale checkpoint is
+    garbage the prune must remove, the shared record is not its to
+    remove."""
+    import os
+    import time
+
+    from delfin.agent import session_store
+    from delfin.agent.service import durable_host
+
+    monkeypatch.setattr(session_store, "_SESSIONS_DIR", tmp_path)
+    durable_host.write_supervisor_heartbeat(["s1"], pid=4242,
+                                            root=str(tmp_path))
+    record = tmp_path / durable_host.HEARTBEAT_FILE
+    stale = tmp_path / "abc123.turn.json"
+    stale.write_text("{}")
+    old = time.time() - 40 * 86_400
+    for p in (record, stale):
+        os.utime(p, (old, old))
+
+    session_store.cleanup_old_sessions(max_age_days=30)
+    assert record.is_file(), "the prune removed another writer's record"
+    assert not stale.exists(), "the prune no longer removes stale checkpoints"
