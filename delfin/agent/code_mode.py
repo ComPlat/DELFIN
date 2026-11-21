@@ -287,8 +287,11 @@ def generate_stub() -> str:
     lines = [
         '"""Code Mode API — DELFIN\'s read-only tools as typed functions.',
         "",
-        "Import this in your program (it is added to sys.path by the "
-        "runner): from code_mode_api import delfin_tools",
+        "Save this file where your program can import it -- the "
+        "documented route is `python -m delfin.agent.code_mode stub > "
+        "tools_api.py` -- then `import tools_api` and call the functions "
+        "below, or `from tools_api import delfin_tools` for the same "
+        "functions under one name.",
         "",
         "Every call goes through the agent's central gate. Refusals raise.",
         '"""',
