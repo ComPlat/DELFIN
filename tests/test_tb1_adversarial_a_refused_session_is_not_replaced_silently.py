@@ -31,6 +31,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -41,6 +42,29 @@ import ipywidgets as widgets                                     # noqa: E402
 
 SID = "tb1a000000000001"
 FREE = "tb1a0000000000f0"
+
+
+def _join_threads_started_since(baseline, grace_s=3.0):
+    """Wait for threads that appeared after ``baseline`` to finish; return any
+    still alive.
+
+    A ``threading.Timer`` runs its callback in its own thread and cannot be
+    joined from outside, so this cannot force order -- it gives a finishing
+    callback the chance to complete *inside* the test that started it, and
+    reports the ones that never ended. Not an assertion about the patch: on
+    main no tab thread outlives its close, so a report here is a real leak.
+    """
+    deadline = time.monotonic() + grace_s
+    while True:
+        live = [t for t in threading.enumerate()
+                if t.is_alive() and t.ident not in baseline
+                and t is not threading.current_thread()]
+        if not live or time.monotonic() >= deadline:
+            return [t.name for t in live]
+        for t in live:
+            # Timer threads are non-daemon-free but carry no work once their
+            # function returns; joining with a short timeout drains them.
+            t.join(timeout=0.1)
 
 
 def _walk(widget):
@@ -143,7 +167,24 @@ def env(tmp_path, monkeypatch):
     from delfin.dashboard import tab_agent as _ta
     monkeypatch.setattr(_ta, "_BACKGROUND_REFRESH_S", 0.2, raising=False)
     monkeypatch.setattr(_ta, "_HELD_WAIT_INTERVAL_S", 0.2, raising=False)
-    return {"tmp": tmp_path, "created": created, "SS": SS}
+    # Threads alive before any tab exists: the ones the test must not leak.
+    baseline = {t.ident for t in threading.enumerate() if t.is_alive()}
+    yield {"tmp": tmp_path, "created": created, "SS": SS, "baseline": baseline}
+    # Teardown FIRST drains what a tab started, while _SESSIONS_DIR still points
+    # at THIS test's directory (monkeypatch undoes it after this fixture). A
+    # timer that re-arms after its tab closed then writes here, not into the
+    # next test's store -- measured on main: without this drain, a file minted
+    # by the previous test appeared in the next test's dir and failed it.
+    settled = set(_session_files({"tmp": tmp_path}))
+    _join_threads_started_since(baseline)
+    # The observable that matters (QS condition ii): after the drain, no
+    # session file appeared that was not already there when the test ended.
+    # Asserting on thread NAMES would be a claim about product threads I have
+    # not verified; a late write is a fact.
+    late = sorted(set(_session_files({"tmp": tmp_path})) - settled)
+    assert not late, (
+        "a session file appeared after the test ended, so a write outlived "
+        f"the tab and could land in the next test: {late}")
 
 
 def _chat_text(state) -> str:
