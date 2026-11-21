@@ -8,8 +8,11 @@ as ONE skip naming the package and the geometry reason was never shown --
 including on a machine that has morfeus, where it is the only reason there
 is.
 
-That file can only ever skip here, so its own run proves nothing: measured
-on delfin-ci, 3 skipped and nothing passed. This file tests the decision
+That file can only ever skip here, so its own run proves nothing: it holds
+two tests, and measured on delfin-ci -- where neither precondition is
+present -- both skip with both reasons named, 2 skipped and nothing passed.
+Two is also the ceiling: a file of two tests cannot report more. This file
+tests the decision
 instead of the outcome. It calls ``_needs_geometry`` directly with each
 combination of the two preconditions put in place, and reads the reason out
 of the ``Skipped`` exception. Both directions are simulated, so the result
@@ -129,3 +132,28 @@ def test_the_file_has_no_module_level_skip_left():
         "a module-level importorskip masks the per-test reason again")
     assert "autouse" not in source, (
         "an autouse fixture that skips the module is the same masking")
+
+
+def test_the_skip_count_in_this_docstring_cannot_exceed_the_file():
+    """Pin the number the docstring above states, to the file it is about.
+
+    The docstring said 3 skipped where the file holds two tests, so the
+    figure was not merely stale: no run of a two-test file can report it.
+    An uncheckable number drifts silently, and this one was read as
+    evidence that the real chain had been exercised.
+
+    Input: the test functions defined in ``test_ds1_real_run.py``, counted
+    from its source. Output: the count, compared against the figure this
+    module's own docstring quotes. Counting from the source rather than
+    from a run keeps the pin host-independent -- a run here skips, and a
+    skipped test reports nothing.
+    """
+    import re
+
+    defined = re.findall(r"^def (test_\w+)", MODULE_PATH.read_text(),
+                         flags=re.MULTILINE)
+    quoted = re.search(r"(\d+) skipped and nothing passed", __doc__ or "")
+    assert quoted, "the docstring no longer states a skip count"
+    assert int(quoted.group(1)) == len(defined), (
+        f"the docstring says {quoted.group(1)} skipped; "
+        f"{MODULE_PATH.name} defines {len(defined)} tests: {defined}")
