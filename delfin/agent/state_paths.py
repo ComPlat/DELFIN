@@ -755,6 +755,18 @@ def workspace_state_dir(workspace: Any) -> Path:
 
 #: ``(module, attribute, relative path under the redirected home)``.
 USER_STATE_SINKS: tuple[tuple[str, str, str], ...] = (
+    # What earlier runs learned about the models. It was on
+    # USER_STATE_REAL_HOME as "read-mostly" until 2026-11-21, when the
+    # operator's file was measured gone after a suite run: _save_disk_cache
+    # REPLACES the file with this process's live entries, so one test that
+    # resolves one stubbed model rewrites the whole store with its own
+    # fabricated record (measured: a single entry naming
+    # https://endpoint.invalid). A test has no business reading the
+    # operator's model knowledge, so the suite redirects it -- and
+    # KEPT_BY_A_LIVE_RUN keeps it real for a live run, which is what the
+    # old "a run legitimately reads it" reason was about.
+    ("delfin.agent.model_capabilities", "_CACHE_PATH",
+     "model_capabilities_cache.json"),
     ("delfin.messenger.activation", "_DIR", "messenger_sessions"),
     # Phone pairing requests: a test's request would be answered by the
     # real gateway with a real invitation.
@@ -965,9 +977,6 @@ USER_STATE_REAL_HOME: tuple[tuple[str, str, str], ...] = (
     ("delfin.agent.manual_extractor", "_DEFAULT_INDEX",
      "read-mostly: the indexed documentation; redirecting it would only "
      "hide the real manuals from a run that legitimately searches them"),
-    ("delfin.agent.model_capabilities", "_CACHE_PATH",
-     "read-mostly: what earlier runs learned about the models; a "
-     "redirect would hide the real cache from a run that reads it"),
     ("delfin.agent.credentials", "_DEFAULT_PATH",
      "read-mostly and secret: the credential store, isolated separately "
      "by the secrets deny-list rather than by a redirect"),
@@ -1014,6 +1023,11 @@ KEPT_BY_A_LIVE_RUN: frozenset[tuple[str, str]] = frozenset({
     ("delfin.agent.benchmark", "_DEFAULT_RUNS_DIR"),
     ("delfin.agent.benchmark_runner", "_RUN_LOCK_DIR"),
     ("delfin.agent.audit_log", "_default_log_path"),
+    # What earlier runs learned about the models: a live attempt runs with
+    # the user's provider and should not re-probe every window from the
+    # wire. It is redirected for the SUITE (see USER_STATE_SINKS), which is
+    # where the fabricated records came from.
+    ("delfin.agent.model_capabilities", "_CACHE_PATH"),
     # The three ways a LIVING run must stay reachable through. A scratch
     # attempt is a real process doing real work; these are not "its
     # past", they are its connections to whoever runs it:
