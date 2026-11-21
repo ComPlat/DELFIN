@@ -847,15 +847,6 @@ _HOOK_TOOLS = frozenset({"hook"})
 _DENIED_DECISIONS = frozenset({"denied", "error", "block"})
 
 
-def _parse_log(path: Path) -> list[dict]:
-    """Every record of one log file, in file order -- ``_scan``'s records.
-
-    Kept because two call sites read a rotated log by path; it holds no
-    parse of its own, so there is one reader in this module.
-    """
-    return _scan(path)[0]
-
-
 def latest_rotated_log(path: Path) -> Optional[Path]:
     """The most recent ``audit-YYYY-Www.log`` beside ``path``, if any."""
     try:

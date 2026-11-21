@@ -284,7 +284,13 @@ def test_the_two_readers_of_the_log_cannot_disagree(tmp_path):
         fh.write("42\n")                 # valid JSON, not a record
 
     tail = audit_log.read_last_n(10, log_path=path)
-    whole = audit_log._parse_log(path)
+    # _scan is the one reader: records and the verification of the
+    # same bytes. The _parse_log wrapper this line used to call was
+    # left behind by the consolidation -- its docstring claimed two
+    # call sites read a rotated log through it, and both of them
+    # call _scan directly, so nothing in delfin/ named it and only
+    # this test kept it alive.
+    whole, _ = audit_log._scan(path)
 
     assert tail == whole, (tail, whole)
     assert all(isinstance(r, dict) for r in tail), tail
