@@ -1040,13 +1040,14 @@ def _pyrazolate_complete(sym, bonds, taken, matched):
         if not any(any(sym[k] in metal for k in _nb_full.get(n, ()))
                    for n in ns):
             continue
-        # The pyrazolate kekule pattern is fixed: both doubles on the
-        # two C-C edges (23-24, 24-25 style) never touch the N-N edge
-        # nor the coordinated N.  A single sweep double on a wrong edge
-        # blocks the pattern (its endpoints sit in `taken`), so the
-        # ring's edge doubles are REBUILT from scratch: existing ones
-        # are removed and their atoms freed ONLY if those atoms carry
-        # no double outside the ring.
+        # Pyrazolate kekule: one C=N double at the UNBOUND (deprotonated)
+        # N - its lone pair is in the pi system - and one C=C; the
+        # coordinated N stays single (its valence is spent on the dative
+        # bond).  Only when the unbound N carries an H (neutral pyrazole)
+        # do both doubles go on the C-C edges instead.  Existing ring
+        # doubles are rebuilt from scratch: they are removed and their
+        # atoms freed ONLY if those atoms carry no double outside the
+        # ring.
         coord_n = next(n for n in ns
                        if any(sym[k] in metal for k in _nb_full.get(n, ())))
         ring_edges = {(min(a, b), max(a, b)) for a, b in edges}
@@ -1066,16 +1067,37 @@ def _pyrazolate_complete(sym, bonds, taken, matched):
                 for x in p:
                     if x not in out_dbl:
                         taken.discard(x)
-        # Doubles on the two C-C edges that do not touch the coordinated
-        # N: for a 5-ring N-N-C-C-C the C-C edges are the 2nd and 3rd.
-        c_seq = [k for k in ring if sym[k] == "C"]
-        # The two C-C edges: consecutive carbons in the ring order.
+        # Doubles: neutral pyrazole (unbound N carries an H) -> both
+        # doubles on the C-C edges; pyrazolate -> one C=N at the unbound
+        # N and one C=C.  The N-C edge to the unbound N is ring edges[?]:
+        # pick the ring edge that joins an N (not coord_n) with a C.
+        nb_full = _nb_full
+        unbound_ns = [n for n in ns if n != coord_n]
+        has_h = any(sym[k] == "H" for o in unbound_ns
+                    for k in nb_full.get(o, ()))
         cand = [(min(a, b), max(a, b)) for a, b in edges
                 if sym[a] == "C" and sym[b] == "C"]
-        for p in cand[:2]:
-            matched[p] = 2
-            taken.add(p[0])
-            taken.add(p[1])
+        if has_h:
+            for p in cand[:2]:
+                matched[p] = 2
+                taken.add(p[0])
+                taken.add(p[1])
+        else:
+            for un in unbound_ns:
+                nc = [(min(a, b), max(a, b)) for a, b in edges
+                      if a == un and sym[b] == "C" or b == un and sym[a] == "C"]
+                if nc:
+                    matched[nc[0]] = 2
+                    taken.add(nc[0][0])
+                    taken.add(nc[0][1])
+                    break
+            for p in cand:
+                if p[0] in taken or p[1] in taken:
+                    continue
+                matched[p] = 2
+                taken.add(p[0])
+                taken.add(p[1])
+                break
     return matched
 
 
