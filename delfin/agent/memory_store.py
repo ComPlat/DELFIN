@@ -24,6 +24,17 @@ from typing import Any
 from . import german as _german
 from . import safe_git
 
+import logging
+
+_LOG = logging.getLogger(__name__)
+
+# One fixed placeholder for every redaction failure in the agent package:
+# a failing redactor must never fall back to the unscrubbed input, but the
+# reader must also see a stable, greppable marker instead of nothing.
+REDACT_FAILED_PLACEHOLDER = "[redaction failed -- text withheld]"
+# Set once the first redaction failure of this process has been logged;
+# later failures return the placeholder without another log line.
+_REDACT_LOGGED_ONCE = False
 
 _DEFAULT_PATH = state_root() / "agent_memory.json"
 _STOPWORDS = {
@@ -336,12 +347,24 @@ def load_memories(path: Path | None = None) -> list[dict[str, Any]]:
 
 
 def _without_secrets(text):
-    """Memory text with credentials redacted. Never raises."""
+    """Memory text with credentials redacted. Fails closed.
+
+    If the house redactor raises, the text is withheld -- a placeholder
+    goes out, never the unscrubbed input. The failure is logged once per
+    process with the exception type only (never the text, which may hold
+    the secret).
+    """
+    global _REDACT_LOGGED_ONCE
     try:
         from .output_guard import scrub_secrets
         return scrub_secrets(str(text or ""))
-    except Exception:
-        return text
+    except Exception as exc:  # noqa: BLE001 -- fail closed on any redactor error
+        if not _REDACT_LOGGED_ONCE:
+            _REDACT_LOGGED_ONCE = True
+            _LOG.warning(
+                "secret redaction failed, text withheld "
+                "(exception type: %s)", type(exc).__name__)
+        return REDACT_FAILED_PLACEHOLDER
 
 
 def save_memory(
