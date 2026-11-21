@@ -643,6 +643,18 @@ _STDIN_REFUSAL = (
 )
 
 
+_GLOB_REFUSAL = (
+    "hpc_io_check refused: the word '{word}' given to sbatch is a shell "
+    "pattern. Bash expands it BEFORE sbatch sees an argument, so the script "
+    "that actually runs is whichever file the pattern happens to match -- "
+    "the gate cannot tell which one that is and cannot check it. Name the "
+    "job script exactly, or submit a file that exists: `sbatch [options] "
+    "job.sh`. If you meant a file whose name really contains that "
+    "character, quote or escape it (`sbatch 'wal*.sh'`), and it is checked "
+    "like any other file."
+)
+
+
 def _sbatch_names_a_script(side: str, cd_dir: str = "") -> bool:
     """Does this ``sbatch`` segment name a script it can be checked by?
 
@@ -1294,6 +1306,96 @@ def _shell_command_head(text: str, cd_dir: str = "") -> str | None:
     return word
 
 
+def _shell_words_with_quoting(text: str) -> list[tuple[str, str, bool]]:
+    """Split *text* into shell words, KEEPING the quoting information.
+
+    Returns one ``(raw, cleaned, has_active_glob)`` triple per word:
+
+    - ``raw``: the word as written, quote and escape characters included;
+    - ``cleaned``: what the shell would hand the program before PATHNAME
+      EXPANSION (quotes removed, ``\\x`` escapes resolved) -- the same
+      string ``shlex.split`` produces;
+    - ``has_active_glob``: whether ``*``, ``?`` or ``[`` occurs in it
+      OUTSIDE quotes and unescaped, i.e. whether bash would expand it.
+
+    Why a second splitter at all: ``shlex.split`` strips the quotes, so
+    ``"/a/wal*.sh"`` and ``/a/wal*.sh`` become the SAME token (measured,
+    ``tests/test_zz_io2_quote_survival.py``). The quoted/unquoted decision
+    the glob rule needs therefore cannot be read from its result, and
+    pairing its list with ``shlex.split(..., posix=False)`` by index is
+    unsound -- that list disagrees on ``--wrap="a b"`` and on ``"$X"/*.sh``
+    (measured: 2 of 12 shapes misaligned, ``tests/test_zz_io2_rawword_probe.py``).
+    One pass that produces both forms keeps them aligned by construction.
+
+    This is deliberately NOT a shell parser: it models exactly the states
+    that decide whether a metacharacter is active (unquoted, single-quoted,
+    double-quoted, backslash-escaped).
+    """
+    words: list[tuple[str, str, bool]] = []
+    raw: list[str] = []
+    cleaned: list[str] = []
+    active = False
+    quote = ""
+    i = 0
+    n = len(text)
+
+    def _flush() -> None:
+        nonlocal raw, cleaned, active
+        if raw:
+            words.append(("".join(raw), "".join(cleaned), active))
+        raw, cleaned, active = [], [], False
+
+    while i < n:
+        ch = text[i]
+        if quote == "":
+            if ch in " \t\n":
+                _flush()
+                i += 1
+                continue
+            if ch == "\\":
+                raw.append(ch)
+                if i + 1 < n:
+                    raw.append(text[i + 1])
+                    cleaned.append(text[i + 1])
+                    i += 2
+                else:
+                    i += 1
+                continue
+            if ch in ("'", '"'):
+                quote = ch
+                raw.append(ch)
+                i += 1
+                continue
+            if ch in "*?[":
+                active = True
+            raw.append(ch)
+            cleaned.append(ch)
+            i += 1
+            continue
+        raw.append(ch)
+        if quote == "'":
+            if ch == "'":
+                quote = ""
+            else:
+                cleaned.append(ch)
+            i += 1
+            continue
+        # Inside double quotes: a backslash is special only before $ ` " \.
+        if ch == "\\" and i + 1 < n and text[i + 1] in '$`"\\':
+            raw.append(text[i + 1])
+            cleaned.append(text[i + 1])
+            i += 2
+            continue
+        if ch == '"':
+            quote = ""
+            i += 1
+            continue
+        cleaned.append(ch)
+        i += 1
+    _flush()
+    return words
+
+
 def _gate_names_existing_file(token: str, cd_dir: str = "") -> bool:
     """Does *token* name a file that exists (as written, or in *cd_dir*)?
 
@@ -1610,6 +1712,19 @@ def _gate_sbatch_segment(segment: str, env: dict,
             # Nothing was named and no channel was present: sbatch would
             # read its script from stdin, and there is nothing to inspect.
             return "refuse", _STDIN_REFUSAL, False
+        # s8's ruling (round 18): an UNQUOTED glob metacharacter in the
+        # script word means bash picks the file by pattern expansion
+        # BEFORE sbatch runs. The gate cannot name the file that will run,
+        # so it refuses -- and it refuses even when every current match
+        # would be clean, because the next file to appear in that
+        # directory changes the answer (measured fail-open: `sbatch
+        # <dir>/wal*.sh` was allowed while `sbatch <dir>/walk.sh` refused).
+        # The quoting decision comes from _shell_words_with_quoting, NOT
+        # from `last`, because shlex has already stripped the quotes.
+        for raw_word, cleaned_word, has_glob in _shell_words_with_quoting(target):
+            if has_glob and cleaned_word == positional[-1]:
+                return ("refuse",
+                        _GLOB_REFUSAL.format(word=raw_word), False)
         # A here-document attached to a submit that names NO file is the
         # script itself (`sbatch -J x <<EOF ...`): refused under ruling
         # (a). With a file named above, the body is that file's stdin.
