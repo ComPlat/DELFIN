@@ -701,11 +701,15 @@ class ResultsOverviewPanel:
         # never blocking).
         parts = [b64[k:k + _EXPORT_CHUNK_B64]
                  for k in range(0, len(b64), _EXPORT_CHUNK_B64)]
-        self._export_buffer.value = _json.dumps(
-            {tid: {"n": len(parts), "p0": parts[0]}})
-        for k in range(1, len(parts)):
-            self._export_buffer.value = _json.dumps(
-                {tid: {"n": len(parts), **{f"p{k}": parts[k]}}})
+        entry = {"n": len(parts)}
+        for k, part in enumerate(parts):
+            entry[f"p{k}"] = part
+            # ONE full payload per sync: every value assignment carries
+            # ALL parts written so far, so the browser's poll sees a
+            # consistent (if partial) entry and the FINAL sync has the
+            # complete set - never a slice-only view that breaks the
+            # round-trip mid-stream.
+            self._export_buffer.value = _json.dumps({tid: entry})
         js = (
             "(function(){"
             f"const fileName={_json.dumps(filename)};"
