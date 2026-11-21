@@ -1092,7 +1092,9 @@ def plot_scan_result(datapath):
     ref_idx = 0
     ref_d = distances[ref_idx]
     ref_E = energies_kcal[ref_idx]
-    rel_energies = energies_kcal - ref_E
+    rel_energies = (energies_kcal - ref_E) * 4.184  # kJ/mol, matches
+    # the results-overview table unit (kJ/mol) - user report 2026-11-21:
+    # the diagram said kcal/mol while the table said kJ/mol.
 
     fig_rel, ax_rel = plt.subplots(figsize=(8, 5))
     ax_rel.plot(
@@ -1104,7 +1106,7 @@ def plot_scan_result(datapath):
     _apply_common_scan_plot_style(
         ax_rel,
         "M–C distance [Å]",
-        "ΔE [kcal/mol] (rel. to first point)",
+        "ΔE [kJ/mol] (rel. to first point)",
         f"Relaxed Surface Scan (ΔE vs {ref_d:.2f} Å)",
     )
     fig_rel.tight_layout()
@@ -1133,7 +1135,8 @@ def plot_orientation_result(csv_path, png_path):
 
     fig_orient, ax_orient = plt.subplots(figsize=(8, 5))
     ax_orient.plot(
-        ang_valid, rel_valid,
+        ang_valid, rel_valid * 4.184,  # kcal/mol -> kJ/mol, matches the
+        # results-overview table unit (user report 2026-11-21)
         color='#1976d2', linewidth=2.0,
         marker='o', markersize=5,
         markerfacecolor='white', markeredgecolor='#1976d2', markeredgewidth=1.2,
@@ -1141,7 +1144,7 @@ def plot_orientation_result(csv_path, png_path):
     _apply_common_scan_plot_style(
         ax_orient,
         "Rotation angle about z [deg]",
-        "ΔE [kcal/mol] (rel. to min)",
+        "ΔE [kJ/mol] (rel. to min)",
         "CO₂ orientation scan (fixed distance)",
     )
     fig_orient.tight_layout()

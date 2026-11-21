@@ -851,6 +851,37 @@ class ResultsOverviewPanel:
     def _tex_escape(cls, text: str) -> str:
         return str(text).translate(cls._TEX_ESCAPE)
 
+    def _downscale_png_bytes(png: bytes, target_px: int = 1400) -> bytes:
+        """Shrink an embedded PNG so the PDF stays printable-sized.
+
+        The relative-scan PNGs are saved at ~2370x1469 px; embedded
+        at 0.62\\textwidth (~16 cm) that is far beyond the ~300 dpi a
+        printer resolves, and each copy costs ~1.5 MB in the PDF
+        (17 MB total, user report 2026-11-21).  Downscale to
+        ``target_px`` on the long edge with PIL; returns the input
+        unchanged when PIL is missing or the image is already small.
+        """
+        try:
+            import io
+            from PIL import Image
+        except ImportError:
+            return png
+        try:
+            img = Image.open(io.BytesIO(png))
+            w, h = img.size
+            long_edge = max(w, h)
+            if long_edge <= target_px:
+                return png
+            factor = target_px / long_edge
+            img = img.resize((max(1, int(w * factor)),
+                              max(1, int(h * factor))),
+                             Image.LANCZOS)
+            out = io.BytesIO()
+            img.save(out, format="PNG", optimize=True)
+            return out.getvalue()
+        except Exception:
+            return png
+
     def _latex_bytes(self) -> bytes:
         """LaTeX source: one page per calculation, in the ticked order.
 
@@ -967,6 +998,8 @@ class ResultsOverviewPanel:
                 try:
                     with open(rel_only[0]["abs"], "rb") as fh:
                         scan_png = fh.read(8 * 1024 * 1024)
+                    scan_png = _downscale_png_bytes(
+                        scan_png, target_px=1400)
                     path = _add_image(scan_png, row["label"], "rss")
                     lines.append(
                         r"\begin{center}"
