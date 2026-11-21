@@ -10,6 +10,10 @@ additively with :func:`delfin.dashboard.tab_registry.register_tab`, so
 from __future__ import annotations
 
 import base64 as _base64
+
+# base64 chars per widget sync (module level: the export
+# method reads it as a plain name)
+_EXPORT_CHUNK_B64 = 1_000_000
 import csv as _csv
 import html as _html
 import io as _io
@@ -638,7 +642,6 @@ class ResultsOverviewPanel:
                     zf.writestr(f"{label}/{p['rel']}", data)
         return out.getvalue()
 
-    _EXPORT_CHUNK_B64 = 1_000_000  # base64 chars per widget sync
 
     def _progress_html(self, done: int, total: int, filename: str) -> str:
         """Status line with a progress bar (transfer phase)."""

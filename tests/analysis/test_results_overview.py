@@ -347,7 +347,7 @@ def _extract_export_js(tmp_path):
     return ctx.scripts[0]
 
 
-def test_export_bytes_script_is_valid_javascript(monkeypatch):
+def test_export_bytes_script_is_valid_javascript(monkeypatch, tmp_path):
     """The generated download script must parse as real JavaScript.
 
     The browser received a script with a syntax error once (the data_js
