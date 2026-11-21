@@ -43,11 +43,9 @@ REDACTOR_NAMES = {"scrub_secrets", "_without_secrets", "_redact_secrets",
 #   session_store.py::_redact_checkpoint -- the nested _walk closure hit
 #   turn_metrics.py::_clean_error      -- :85-86 except returns the
 #       unscrubbed error string, which is written to disk
-#   redact.py::text                    -- service redactor: :54-55 except
-#       pass around the shape pass, :43-44 an unreadable credential store
-#       empties the held-value list; fix delivered as the FS1 operator
-#       patch .gate/fs1_service_redact_fail_closed.patch -- remove this
-#       entry once the operator has committed it.
+#   redact.py::text                    -- FIXED by the operator's commit
+#       c5eca63a0 (shape pass withheld, store recovery honoured); the
+#       entry is removed -- it was a follow-up marker, not a licence.
 KNOWN_FOLLOWUPS = {
     ("api_client.py", "_redact_tool_result"),
     ("working_state.py", "_scrub"),
@@ -56,7 +54,6 @@ KNOWN_FOLLOWUPS = {
     ("session_store.py", "_walk"),
     ("session_store.py", "_redact_checkpoint"),
     ("turn_metrics.py", "_clean_error"),
-    ("redact.py", "text"),
 }
 
 
