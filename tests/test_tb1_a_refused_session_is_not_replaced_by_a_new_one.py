@@ -1,0 +1,559 @@
+"""TB1: a tab that was refused a session does not quietly start a new one.
+
+Seen 2026-11-17: a kept session is held by another live process; opening it
+in a tab shows "This conversation is held by a live session ... start a new
+session from it." and returns. The tab holds no session, so the NEXT line
+the person types starts a brand-new, empty session — silently. The person
+believes they write into the held conversation; the text lands in a stranger
+session and the held one never sees it.
+
+Target behaviour, while the refused state stands:
+  - a send does NOT start a session (nothing new in the session store),
+  - the text stays in the input box (never lost, never sent anywhere),
+  - one line shows the two choices: "Start a new session from it" and "Wait".
+  - choosing a session in the list, "New session", or the holder ending
+    clears the refused state.
+
+The widgets are the real ones (tab_agent.create_tab, as
+tests/test_a_reload_takes_over_from_its_dying_kernel.py drives them); the
+holder is a real second process, as in the field.
+"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import threading
+import time
+
+import pytest
+
+pytest.importorskip("ipywidgets")
+
+from delfin.agent import session_store as ss                       # noqa: E402
+
+SID = "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6"
+
+_HOLD = r"""
+import sys, time
+from pathlib import Path
+from delfin.agent import session_store as ss
+ss._SESSIONS_DIR = Path(sys.argv[1])
+ss.set_lock_identity(kernel="holder-proc")
+ss.acquire_session_lock(sys.argv[2])
+print("HELD", flush=True)
+for line in sys.stdin:
+    if line.strip() == "release":
+        ss.release_session_lock(sys.argv[2])
+        print("RELEASED", flush=True)
+"""
+
+
+def _chat_text(state) -> str:
+    return "\n".join(str(m.get("content") or "")
+                     for m in state.get("chat_messages") or [])
+
+
+# --- bounded waits -----------------------------------------------------------
+# Every wait in this file counts POLLS, never seconds: a bare pytest call in a
+# suite gets --timeout=300, and a wall-clock bound shrinks on a loaded runner
+# exactly when the machine is slow, so the fixture would blame the product for
+# its own starved window (QS finding 4; wave-17 lesson 5, and s4's file uses
+# the same shape). At _POLL_PAUSE_S each these are 30 s of patience on an idle
+# node -- a runner only makes them LAST longer, never shorter.
+_POLL_PAUSE_S = 0.05
+_READY_POLLS = 1200            # the holder child printing HELD
+_KILL_WAIT_POLLS = 400         # a killed child leaving exit status
+_PID_DEATH_POLLS = 600         # the holder's pid gone (teardown)
+_OPEN_POLLS = 1200             # the tab noticing the holder let go
+_DRAIN_POLLS = 60              # tab threads finishing inside their own test
+
+
+def _live_threads_since(baseline):
+    """Threads alive now that did not exist at *baseline*."""
+    return [t for t in threading.enumerate()
+            if t.is_alive() and t.ident not in baseline
+            and t is not threading.current_thread()]
+
+
+def _drain_threads_since(baseline, polls: int = _DRAIN_POLLS):
+    """Wait for tab threads started after *baseline* to finish; report the ones
+    that did not.
+
+    Why this exists: the tab's polling timer runs its callback in its own
+    thread. If a test ends while one is pending, the callback fires after the
+    test and its autosave lands in whichever session store is active by then
+    -- measured, not assumed: s4's fixture teardown caught exactly that
+    (``test_tb1_adversarial_a_refused_session_is_not_replaced_silently.py:
+    178-187``, "a session file appeared after the test ended") when this file
+    ran before hers in the same process. Draining inside the test that started
+    the thread keeps the late write where it can be attributed.
+
+    Counted in polls, never seconds, so a loaded runner only makes it slower
+    (wave-17 lesson 5). Returns the names of threads that never ended -- the
+    caller decides whether that is a failure.
+    """
+    for _ in range(polls):
+        live = _live_threads_since(baseline)
+        if not live:
+            return []
+        for thread in live:
+            thread.join(timeout=_POLL_PAUSE_S)
+    return [t.name for t in _live_threads_since(baseline)]
+
+
+def _read_line_within(stream, polls: int):
+    """One line from *stream*, or "" when none arrived inside *polls*.
+
+    A thread does the blocking read so the wait stays bounded on a child that
+    is alive but silent -- a plain readline() would block past the suite's own
+    timeout and report a product failure for a fixture hang (QS finding 2).
+    """
+    box = {}
+
+    def _pull():
+        try:
+            box["line"] = stream.readline()
+        except (OSError, ValueError) as exc:     # closed pipe / closed file
+            box["error"] = f"{exc!r}"
+
+    thread = __import__("threading").Thread(target=_pull, daemon=True,
+                                            name="tb1-holder-readline")
+    thread.start()
+    for _ in range(polls):
+        if "line" in box or "error" in box:
+            break
+        time.sleep(_POLL_PAUSE_S)
+    if "error" in box:
+        pytest.fail(f"reading the holder child's output failed: {box['error']}")
+    return box.get("line") or ""
+
+
+def _wait_quietly(proc, polls: int) -> str:
+    """Wait up to *polls* for *proc* to exit; return a note when it did not."""
+    for _ in range(polls):
+        if proc.poll() is not None:
+            return ""
+        time.sleep(_POLL_PAUSE_S)
+    return f", still running after {polls} polls"
+
+
+def _drain(stream) -> str:
+    """Everything readable on *stream* right now; never blocks for long."""
+    try:
+        return stream.read() or ""
+    except (OSError, ValueError) as exc:         # closed pipe / closed file
+        return f"<stderr unreadable: {exc!r}>"
+
+
+@pytest.fixture
+def store(tmp_path, monkeypatch):
+    path = tmp_path / "sessions"
+    path.mkdir()
+    monkeypatch.setattr(ss, "_SESSIONS_DIR", path)
+    # A saved conversation with history, so a fork/new-session-from-it has
+    # something real to start from.
+    history = []
+    for i in range(4):
+        history += [{"role": "user", "content": f"task {i}"},
+                    {"role": "assistant", "content": f"answer {i}"}]
+    ss.save_session(SID, mode="solo", engine_messages=history,
+                    chat_messages=[dict(m, role_label="") for m in history],
+                    workspace=str(tmp_path / "ws"))
+    ss.release_session_lock(SID)
+    return path
+
+
+@pytest.fixture
+def holder(store, tmp_path):
+    """A second live process holding SID's writer lock."""
+    # The child inherits none of this process's in-memory redirects: it
+    # resolves every ~/.delfin sink of its own at import time. The suite's
+    # conftest.child_env is the one place that knows all of them (private
+    # HOME, DELFIN_SCRATCH_STATE, the Jupyter runtime dir, the keyring
+    # backend, LD_LIBRARY_PATH) -- a hand-rolled `env["HOME"] = ...` here
+    # missed the others and left the child writing into the real home
+    # (operator's full-suite run: test_every_delfin_child_start_passes_
+    # child_env named this fixture at :87).
+    from conftest import child_env
+    env = child_env(tmp_path)
+    env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _HOLD, str(store), SID],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, env=env)
+    # Readiness in BOUNDED POLLS, not a blocking readline (QS finding 2): a
+    # child that is alive but silent -- a slow import, a lock wait -- left a
+    # plain readline() to block until the suite's own --timeout killed the
+    # run, and the failure then read as a product failure instead of "the
+    # fixture's child never answered". A child that dies at import must fail
+    # the fixture with the child's OWN stderr, not hang (operator finding 3).
+    line = _read_line_within(proc.stdout, _READY_POLLS)
+    if not line or not line.strip():
+        rc = proc.poll()
+        if rc is None:
+            proc.kill()
+        wait_note = _wait_quietly(proc, _KILL_WAIT_POLLS)
+        stderr_text = _drain(proc.stderr)
+        pytest.fail(
+            "the holder child never became ready "
+            f"(exit {rc}{wait_note}): {stderr_text[-800:]}")
+    assert line.strip() == "HELD", (
+        f"the holder child printed {line.strip()!r} instead of HELD")
+    try:
+        yield proc
+    finally:
+        # Teardown reports what it could not do instead of swallowing it: a
+        # silent `except: pass` here hid a live child twice already.
+        problems = []
+        try:
+            proc.stdin.write("release\n")
+            proc.stdin.flush()
+        except (OSError, ValueError) as exc:      # BrokenPipeError is an OSError
+            problems.append(f"sending 'release' to the holder failed: {exc!r}")
+        if proc.poll() is None:
+            proc.kill()
+        wait_note = _wait_quietly(proc, _KILL_WAIT_POLLS)
+        if proc.poll() is None:
+            problems.append("the holder child survived SIGKILL" + wait_note)
+        # Wait until the child pid is DEAD before the next test starts: the
+        # operator's node run (green run of pair v3) showed a later test's
+        # holder child refused with SessionLockedError naming a LIVE pid --
+        # pid reuse on a busy node can make a just-killed child's pid look
+        # alive to acquire_session_lock's os.kill(pid, 0) check. Counted in
+        # polls, never seconds, so a loaded runner only makes it slower and
+        # never shortens the window (QS finding 4, wave-17 lesson 5).
+        for _ in range(_PID_DEATH_POLLS):
+            if not ss._pid_alive(proc.pid):
+                break
+            time.sleep(_POLL_PAUSE_S)
+        if ss._pid_alive(proc.pid):
+            problems.append(
+                f"the holder pid {proc.pid} is still alive after "
+                f"{_PID_DEATH_POLLS} polls; the next test's holder child "
+                "would hit SessionLockedError")
+        (store / f"{SID}.lock").unlink(missing_ok=True)
+        if problems:
+            pytest.fail("holder teardown: " + "; ".join(problems))
+
+
+def _open_tab(tmp_path, monkeypatch):
+    from delfin import user_settings
+    from delfin.agent import scheduler as S
+    from delfin.dashboard import tab_agent
+    from delfin.dashboard.context import DashboardContext
+    # Redirected HOME first: _open_tab writes a settings file next to the
+    # real home otherwise (user_settings.py:518-519); a developer's file
+    # must never be touched by a test (reviewer finding F3).
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(S, "_GLOBAL", S.Scheduler(path=tmp_path / "cron.json"))
+    path = user_settings.get_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"agent": {
+        "provider": "ollama", "model": "fake-model",
+        "permission_profile": "all_free", "probe_endpoint": False}}))
+    for name in ("calc", "archive", "office", "ws"):
+        (tmp_path / name).mkdir(exist_ok=True)
+    ctx = DashboardContext(calc_dir=tmp_path / "calc",
+                           archive_dir=tmp_path / "archive",
+                           office_dir=tmp_path / "office")
+    ctx.run_js = lambda script: None
+    ctx.agent_workspace = str(tmp_path / "ws")
+    ctx.sessions_managed = True
+    # OFFLINE: no real engine is ever built. tab_agent imports AgentEngine
+    # inside _ensure_engine (tab_agent.py:12533), so the module attribute
+    # is what the patch replaces — a stub with the keys the tab reads and
+    # a client with kill. A real kit engine would probe ki-toolbox
+    # (operator refusal 2026-11; _probe_endpoint_in_background :12850).
+    created_engines = []
+    session_state = {}
+    saved_states = {}
+
+    class _StubClient:
+        def __init__(self):
+            self.calls = []
+
+        def kill(self):
+            self.calls.append("kill")
+
+    class _StubEngine:
+        def __init__(self, sid=""):
+            self.session_id = sid
+            self.client = _StubClient()
+            self.messages = []
+            self.role_outputs = {}
+            self.route = ["solo_agent"]
+            self.current_role = ""
+            self.mode = "solo"
+            self.backend = "stub"
+            self.created = created_engines
+            self.is_cycle_complete = True
+            self.current_role_index = 0
+            self.request_stop = lambda: None
+            self.reset_cycle = lambda mode=None: None
+
+        def get_status(self):
+            return {"mode": self.mode, "backend": self.backend, "role": "",
+                    "role_index": 0, "role_total": 1, "input_tokens": 0,
+                    "output_tokens": 0, "cost_usd": 0.0}
+
+        def restore_state(self, data):
+            session_state.update(data if isinstance(data, dict) else {})
+            return type("R", (), {"restored": 1, "failed": 0})()
+
+        def export_state(self):
+            saved_states.setdefault("state", self.messages)
+            return {}
+
+    def _factory(*args, **kwargs):
+        engine = _StubEngine(kwargs.get("session_id", "") or "")
+        created_engines.append(engine)
+        return engine
+
+    from delfin.agent import engine as engine_mod
+    monkeypatch.setattr(engine_mod, "AgentEngine", _factory)
+    baseline = {t.ident for t in threading.enumerate() if t.is_alive()}
+    tab, refs = tab_agent.create_tab(ctx)
+    refs["_stub"] = {"engines": created_engines, "state": session_state,
+                     "exported": saved_states}
+    refs["_baseline"] = baseline
+    return tab, refs
+
+
+def _find_send_button(widget):
+    """The REAL chat Send button: the one with the delfin-agent-send class
+    (delfin/dashboard/tab_agent.py:10024). Two buttons are described
+    'Send'; the hidden bug-report one (tab_agent.py:9045) is built first,
+    so the description alone picks the wrong one (reviewer finding F2)."""
+    if "delfin-agent-send" in set(getattr(widget, "_dom_classes", ()) or ()):
+        return widget
+    for child in getattr(widget, "children", ()) or ():
+        found = _find_send_button(child)
+        if found is not None:
+            return found
+    return None
+
+
+def _host(refs) -> dict:
+    """The real host adapter dict: refs["host_adapter"] is a FACTORY
+    (tab_agent.py:25791), not the dict itself."""
+    return refs["host_adapter"]()
+
+
+def _press_send(tab, refs, text):
+    """The gesture the person makes: text in the box, the REAL chat Send
+    pressed. _host_send restores the draft itself
+    (tab_agent.py:25734-25746), so 'text kept' through it proves nothing
+    (reviewer F2)."""
+    _host(refs)["input"].value = text
+    btn = _find_send_button(tab)
+    assert btn is not None, "the real chat Send button was not found"
+    btn.click()
+
+
+def _writable_sessions():
+    return sorted(r["session_id"] for r in ss.list_sessions()
+                  if not r.get("deleted"))
+
+
+def _close_tab(refs):
+    """Close the tab the way the person does, then let what it started finish.
+
+    ``shutdown(save=False)`` alone is not enough: the tab's polling timer runs
+    its callback in its own thread, and a callback that fires after the test
+    writes its autosave into whichever session store is current by then --
+    the next test's. Measured, not assumed: s4's fixture teardown caught
+    exactly that late file ("a session file appeared after the test ended",
+    test_tb1_adversarial_a_refused_session_is_not_replaced_silently.py:184-187)
+    when this module ran before hers in one process.
+
+    The drain gives such a write the chance to land INSIDE its own test, where
+    it can be attributed. It deliberately does not assert on live threads: a
+    re-arming interval timer stays alive by design, so "a thread is alive" is
+    not a defect -- "a file appeared after the test" is (the observable s4
+    proved, and the one this package is about).
+    """
+    refs["shutdown"](save=False)
+    _drain_threads_since(refs.get("_baseline", set()))
+
+
+def test_a_send_after_the_refusal_starts_no_session_and_keeps_the_text(
+        tmp_path, monkeypatch, store, holder):
+    """THE red test. Today: the refusal stores nothing, the send mints a new
+    empty session and the typed text is wiped."""
+    tab, refs = _open_tab(tmp_path, monkeypatch)
+    try:
+        state = refs["state"]
+        assert state.get("active_session_id") != SID
+        assert _writable_sessions() == [SID]
+        # The person opens the held conversation; the open is refused.
+        refs["load_session"](SID)
+        assert "held by a live session" in _chat_text(state)
+        # The person types their next line into the box and presses the
+        # REAL chat Send button -- the gesture the person makes.
+        # THE DEFECT, observable on main (first, so the red line names the
+        # behaviour, not a missing key -- reviewer F1): the send mints a
+        # fresh engine + a brand-new empty session, and the text goes to a
+        # stranger conversation.
+        _press_send(tab, refs, "please continue the analysis")
+        assert len(refs["_stub"]["engines"]) == 0, (
+            "a send while refused must not mint a new engine: "
+            "the text went to a stranger")
+        assert _writable_sessions() == [SID], (
+            "a send while refused must not start a new session: "
+            "the text went to a stranger")
+        # One line names both choices.
+        chat = _chat_text(state)
+        assert "Start a new session from it" in chat
+        assert "Wait" in chat
+        # The typed text was never lost and never sent anywhere.
+        assert _host(refs)["input"].value == "please continue the analysis"
+        assert not state.get("_last_user_message")
+        # And the refusal remembered WHAT it refused (the key the patch
+        # sets; asserted LAST so the red line above names the defect, not
+        # the missing variable -- reviewer finding F1).
+        assert state.get("_held_refused", {}).get("session_id") == SID
+    finally:
+        _close_tab(refs)
+
+
+def test_choosing_start_makes_exactly_one_session_from_the_held_one(
+        tmp_path, monkeypatch, store, holder):
+    tab, refs = _open_tab(tmp_path, monkeypatch)
+    try:
+        state = refs["state"]
+        refs["load_session"](SID)
+        # The refusal precondition must actually be reached: on main the
+        # refusal stores nothing, so the observable fact is the refusal
+        # line in the chat.
+        assert "held by a live session" in _chat_text(state)
+        n_before = len(_writable_sessions())
+        _press_send(tab, refs, "Start a new session from it")
+        sessions = _writable_sessions()
+        # On main the choice line does not exist and the send mints a
+        # stranger session with empty history; the first assertion below
+        # (exactly one new session, history from the held one) is what
+        # distinguishes the feature from today's silent defect.
+        assert len(sessions) == n_before + 1, (
+            "exactly one new session, the held one untouched")
+        assert SID in sessions
+        # The new session starts from the held one's history.
+        new_sid = [s for s in sessions if s != SID][0]
+        data = ss.load_session(new_sid)
+        history = [m.get("content") for m in data.get("engine_messages", [])]
+        assert "task 3" in history and "answer 3" in history
+        assert state.get("_held_refused") is None, (
+            "the choice cleared the refused state")
+    finally:
+        _close_tab(refs)
+
+
+def test_wait_then_the_holder_ends_and_the_tab_opens_the_conversation(
+        tmp_path, monkeypatch, store, holder):
+    tab, refs = _open_tab(tmp_path, monkeypatch)
+    try:
+        state = refs["state"]
+        refs["load_session"](SID)
+        assert "held by a live session" in _chat_text(state)
+        assert state.get("active_session_id") != SID
+        # The person answers "Wait": the state stays, the tab watches the
+        # holder on its own (the Wait branch arms the refused-tab poller,
+        # its own bounded timer — no engine exists to arm a background
+        # tick, reviewer F6).
+        _press_send(tab, refs, "Wait")
+        assert "Waiting" in _chat_text(state), (
+            "the Wait reply is acknowledged and the text stays")
+        # The holder ends; nothing else changes. The tab notices on its own.
+        # Bounded polls (QS finding 4); the refresh is what surfaces the
+        # poller's work, and a failing refresh must be SEEN, not swallowed
+        # (QS finding 3: this loop is the Wait path's whole purpose).
+        holder.stdin.write("release\n")
+        holder.stdin.flush()
+        _read_line_within(holder.stdout, _KILL_WAIT_POLLS)
+        refresh_errors = []
+        for _ in range(_OPEN_POLLS):
+            if state.get("active_session_id") == SID:
+                break
+            try:
+                refs["refresh_chat"]()
+            except Exception as exc:                # noqa: BLE001 - recorded
+                refresh_errors.append(f"{exc!r}")
+            time.sleep(_POLL_PAUSE_S)
+        assert state.get("active_session_id") == SID, (
+            "when the holder ends, the tab opens the held conversation "
+            f"(refresh_chat failures seen: {refresh_errors[:3]})")
+        assert state.get("_held_refused") is None
+        assert _writable_sessions() == [SID]
+        # And now a send goes to THAT conversation, not to a stranger.
+        _press_send(tab, refs, "now it is mine")
+        assert _writable_sessions() == [SID]
+    finally:
+        _close_tab(refs)
+
+
+def test_a_new_session_choice_clears_the_refused_state(
+        tmp_path, monkeypatch, store, holder):
+    tab, refs = _open_tab(tmp_path, monkeypatch)
+    try:
+        state = refs["state"]
+        refs["load_session"](SID)
+        assert "held by a live session" in _chat_text(state)
+        # The real "New session" gesture: "(+ New Session", "") selected
+        # in the Session dropdown, the Load button pressed
+        # (_on_load_session, tab_agent.py:25125-25131 -> _on_new_cycle).
+        # Calling _load_saved_session("") would bypass it.
+        session_dd = None
+
+        def _find_dropdown(widget):
+            nonlocal session_dd
+            if (session_dd is None
+                    and isinstance(widget, __import__(
+                        "ipywidgets").Dropdown)
+                    and widget.description == "Session:"):
+                session_dd = widget
+            for child in getattr(widget, "children", ()) or ():
+                _find_dropdown(child)
+
+        _find_dropdown(tab)
+        assert session_dd is not None, "the Session dropdown was not found"
+        session_dd.value = ""
+        load_btn = None
+
+        def _find_load(widget):
+            nonlocal load_btn
+            if (load_btn is None
+                    and getattr(widget, "description", "") == "Load"
+                    and widget.tooltip == "Load the selected session"):
+                load_btn = widget
+            for child in getattr(widget, "children", ()) or ():
+                _find_load(child)
+
+        _find_load(tab)
+        assert load_btn is not None, "the Load button was not found"
+        load_btn.click()
+        assert state.get("_held_refused") is None, (
+            "choosing a different session clears the refused state")
+        assert _writable_sessions() == [SID]
+    finally:
+        _close_tab(refs)
+
+
+def test_an_ordinary_send_with_no_refusal_still_starts_its_session(
+        tmp_path, monkeypatch, store):
+    """The green direction (QS condition 4, second half): with NO refused
+    state, a send must behave exactly as today — exactly one session
+    started, the guard must not block the normal path."""
+    tab, refs = _open_tab(tmp_path, monkeypatch)
+    try:
+        state = refs["state"]
+        assert state.get("_held_refused") is None
+        n_before = len(_writable_sessions())
+        _press_send(tab, refs, "an ordinary first message")
+        assert len(refs["_stub"]["engines"]) >= 1, (
+            "an ordinary send with no refusal must mint an engine, "
+            f"minted {len(refs['_stub']['engines'])}")
+        assert len(_writable_sessions()) >= n_before + 1, (
+            "an ordinary send with no refusal must start a session")
+    finally:
+        _close_tab(refs)
