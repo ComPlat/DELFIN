@@ -6,6 +6,47 @@ A protocol that names a seed, a sample hash and a pool file, while those
 files live in a temporary directory, is a protocol whose evidence cannot be
 checked. These were in `/tmp` until 2026-11-20, which no backup covers.
 
+## The committed copies are redacted, and the hashes below are the originals
+
+Every file here recorded the absolute path of the scratch directory it was
+produced in, and one recorded an interpreter under a home directory. A
+public file carries neither: the path encodes a home directory and the
+site's group-account name, which the personal-data guard refused on the
+branch, before the merge.
+
+The committed bytes are therefore **not** the bytes the producing run
+wrote. Two substitutions were applied, and nothing else:
+
+```
+s#/tmp/<tool>-<uid>/-home-<...>/<session>/scratchpad#<session-scratch>#g
+s#/home/<account>/#~/#g
+```
+
+Twelve values in six files, all of them path provenance:
+`generated_for`, `pools_tree`, `pools_file`, `answered_from`,
+`interpreter`. No seed, count, sha, tier or task row changed.
+
+The `sha256` values quoted in this file and in each artefact's own
+`replaced` and `pools_file_sha256` fields are of the **pre-redaction**
+bytes, which is what the producing run hashed. The chain stays checkable in
+both directions: apply the two substitutions above to an original and the
+committed file is reproduced byte for byte.
+
+| file | sha256 as produced | sha256 as committed |
+|---|---|---|
+| `pools6.json` | `e8a484b8f2987237…` | `b8a0bc2dd96f5f6f…` |
+| `pools-f767a1865.json` | `e58f97d70d0931df…` | `6aecf03514c4341f…` |
+| `sample-superseded.json` | `f9d9cdd2d9f17f66…` | `6e893b2312509ef2…` |
+| `sample-superseded-2.json` | `e8b3de1fb6728a7e…` | `65b39d0eb43221ae…` |
+| `sample-superseded-3.json` | `bf7fa54fa189e270…` | `fced0d10f60920d5…` |
+| `sample-held.json` | `df2bd08868b6bbe3…` | `2377baed44a04867…` |
+
+A redacted path is no longer resolvable, and `ab_draw_sample.py` reads
+`generated_for` to compare the tree's HEAD against the sha the scan ran on.
+Drawing from a file in this directory would therefore record
+`tree_sha_at_draw: null` — an unobserved check that reads like a measured
+one — so the draw **refuses** a redacted path and says to re-run the scan.
+
 ## There is no current draw. The latest one is held.
 
 `sample-held.json` (sha256 `df2bd08868b6bbe3…`) is the draw of 2026-11-20

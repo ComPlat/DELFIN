@@ -60,6 +60,25 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+#: The prefixes a committed artefact's path provenance is rewritten to:
+#: an absolute scratch or home path encodes a home directory and the site
+#: group-account name, which no file in a public repository carries. The
+#: rewrite is a redaction, so the path is no longer resolvable.
+_REDACTED_PREFIXES = ("<", "~")
+
+
+def is_redacted(path: str | None) -> bool:
+    """True when ``path`` is a redacted provenance string, not a tree.
+
+    Input: the ``generated_for`` field of a pools document. A draw reads
+    that path to compare the tree's HEAD against the sha the scan ran on;
+    a redacted value cannot be read, and a draw that proceeded would
+    record ``tree_sha_at_draw: null`` -- an unobserved check reported as
+    a measured one.
+    """
+    return bool(path) and str(path).startswith(_REDACTED_PREFIXES)
+
+
 def _tree_sha(root: Path) -> str | None:
     """HEAD of ``root``, or None when it is not a readable git tree."""
     try:
@@ -209,6 +228,14 @@ def main(argv=None) -> int:
 
     pools_path = Path(args.pools)
     doc = json.loads(pools_path.read_text())
+    if is_redacted(doc.get("generated_for")):
+        print(f"refusing to draw: the pools document records a redacted "
+              f"path ({doc['generated_for']}). A committed artefact carries "
+              "no host path, so the tree it was scanned from cannot be read "
+              "from here and 'the tree has moved since the scan' would be "
+              "recorded as unknown rather than checked. Re-run "
+              "ab_task_pools.py against the tree to draw from it.")
+        return 2
     sample = draw(doc, args.seed, args.per_pool, args.allocation)
     sample["pools_file"] = str(pools_path)
     sample["pools_file_sha256"] = _sha256(pools_path)
