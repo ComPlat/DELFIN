@@ -37,7 +37,6 @@ test-only	build_fixtures	delfin/agent/pack/benchmark/setup/w17_data_fixtures.py:
 test-only	bwrap_substitution	delfin/agent/shared_tmp.py:248
 test-only	category_names	delfin/agent/compaction_quality.py:169
 test-only	check_ordering	delfin/agent/prompt_head.py:95
-test-only	count_descendants	delfin/agent/process_budget.py:269
 test-only	decide_recovery	delfin/agent/durable.py:142
 test-only	distill_for_shipping	delfin/agent/memory_distill.py:380
 test-only	enforce_quota	delfin/agent/shared_tmp.py:307
