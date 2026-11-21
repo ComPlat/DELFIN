@@ -367,11 +367,6 @@ def upload(report_dir: Path, *, ask=None) -> str:
         return f"remote copy skipped: {exc}"
 
 
-def push_if_configured(report_dir: Path, *, ask=None) -> str:
-    """:func:`upload`; kept for callers of the earlier name."""
-    return upload(report_dir, ask=ask)
-
-
 def file_report(collected: dict, *, description: str, surface: str) -> Path:
     """Write the report through ``bug_report.write_bug_report``."""
     from .bug_report import write_bug_report
