@@ -1152,6 +1152,22 @@ users fall back to the unkeyed form, which they report as unverified.
 
 ## Residual risks
 
+- **A log read is verified, but a log read long after the fact is verified
+  against what is on disk then.** Every reader of the audit log goes through
+  one scan, which returns the records and the `verify` verdict on the same
+  bytes, so the answer "what did you change" (the changes report, reached by
+  the changes tool and by `/changes`) never quotes records from a log it has
+  not checked. When a quoted log is not intact the rendered answer says
+  `NOT INTACT: <file>` on its first line, above the changes; a log edited,
+  cut or emptied outside DELFIN would otherwise answer with whatever the
+  tampering left in it. What this does not do: the verdict is recomputed per
+  read, so it says the log is intact NOW, not that it always was — a reader
+  who wants history has to keep the earlier reports, and a process holding
+  the account key can write a chain that verifies. The one gap accepted as
+  not tampering is a write in flight: the line is written before its head
+  file, so a log slightly longer than its head is allowed only when the
+  extra bytes continue the chain; anything else stays a problem.
+
 - **A workspace's test configuration runs, inside the cage.** The
   verification run at the end of an editing turn, and the `run_tests` tool,
   both execute the workspace's conftest file and its pytest plugins: that

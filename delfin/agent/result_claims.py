@@ -77,10 +77,6 @@ _BASIS_RE = re.compile(
     r"(?i)\b(def2-[A-Z]+[A-Z0-9]*|cc-pV[A-Z]+Z|aug-cc-pV[A-Z]+Z|"
     r"[scdtq][fp]?[tzq]?vp[2p]?|SVP|TZVP|TZVPP|QZVP|6-31[+*]*[Gd*]*\(?"
     r"[0-9dp]*\)?|6-311[+*]*[Gd*]*\(?[0-9dp]*\)?|STO-3G|MINIX|ma-def2-[A-Z]+)\b")
-_SOLVENT_RE = re.compile(
-    r"(?i)\b(?:solvent|solvated(?:\s+in)?|in)\s+"
-    r"(water|acetone|acetonitrile|dmso|methanol|ethanol|toluene|benzene|"
-    r"thf|dcm|dichloromethane|chloroform|dmf|hexane|gas\s+phase|vacuum)\b")
 
 
 @dataclass
@@ -131,10 +127,6 @@ def _splits(answer: str) -> list[tuple[str, float, str]]:
 
 def _has_method_basis(sentence: str) -> bool:
     return bool(_METHOD_RE.search(sentence) and _BASIS_RE.search(sentence))
-
-
-def _has_solvent(sentence: str) -> bool:
-    return bool(_SOLVENT_RE.search(sentence))
 
 
 def check(answer_text, evidence: Optional[Iterable] = None) -> list[Claim]:
