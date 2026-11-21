@@ -667,7 +667,8 @@ def _sbatch_names_a_script(side: str, cd_dir: str = "") -> bool:
     if _stdin_redirect_of_segment(side):
         return False
     try:
-        tokens = shlex.split(_strip_wrappers(side))
+        tokens = [_expand_ansi_c_quoting(t)
+                  for t in shlex.split(_strip_wrappers(side))]
     except ValueError:
         return False
     for t in tokens[1:]:
@@ -1375,6 +1376,55 @@ def _substituted_outcome(prefix: str, body: str, env: dict,
     return "allow", "", True
 
 
+def _expand_ansi_c_quoting(token: str) -> str:
+    """Expand a leading ``$'...'`` word the way bash does, for NAME tests.
+
+    `shlex` does not know ANSI-C quoting: it returns ``$'/x/walk.sh'`` as
+    ``$/x/walk.sh``, so the existing-file test finds nothing and the
+    missing-name pass allows -- while bash expands it and hands sbatch a
+    real, walking file (round 15, fail-open found by probing: `sbatch
+    $'<walking file>'` was allowed where the plain path refused).
+
+    Only the escapes that change a FILE NAME matter here (``\\\\``, ``\\'``,
+    ``\\"``); anything exotic is left as written, so the name test simply
+    finds no file and the caller's fail-closed rules apply.
+
+    A ``shlex``-split token for ``$'/x/walk.sh'`` comes back as the literal
+    ``$/x/walk.sh``: shlex strips the quotes and keeps the dollar, so the
+    prefix to recognise is a BARE ``$`` followed by the old body, not
+    ``$'``. Both shapes are handled, because the untokenised text still
+    carries the quotes (round 15).
+    """
+    if token.startswith("$'") and token.endswith("'") and len(token) >= 3:
+        body = token[2:-1]
+    elif token.startswith("$") and len(token) >= 2:
+        # shlex-stripped form: `$/x/walk.sh` (already unquoted).
+        body = token[1:]
+    else:
+        return token
+    out: list[str] = []
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        if ch == "\\" and i + 1 < len(body):
+            nxt = body[i + 1]
+            if nxt in ("\\", "'", '"'):
+                out.append(nxt)
+                i += 2
+                continue
+            if nxt == "n":
+                out.append("\n")
+                i += 2
+                continue
+            if nxt == "t":
+                out.append("\t")
+                i += 2
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _gate_sbatch_segment(segment: str, env: dict,
                          mounts_path: MountsSource | None,
                          cd_dir: str = ""
@@ -1424,7 +1474,9 @@ def _gate_sbatch_segment(segment: str, env: dict,
         # split of the last word (reviewer round 6, the quoted-path
         # hole: `sbatch "my dir/run.sh"` split on the space, the last
         # token named nothing, and the missing-file rule let it pass).
-        tokens = shlex.split(target)
+        # shlex leaves `$'...'` unexpanded (round 15), which hid a real
+        # FILE from the name test; expand it first so the file is seen.
+        tokens = [_expand_ansi_c_quoting(t) for t in shlex.split(target)]
     except ValueError:
         # Unbalanced quotes: fall back to the raw split; sbatch itself
         # would fail the same way and no script is hidden either way.
