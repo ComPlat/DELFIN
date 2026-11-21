@@ -146,3 +146,26 @@ def test_shell_heredoc_of_data_for_sbatch_is_still_allowed(lustre, tmp_path):
     cmd = f"sbatch {script} <<'EOF'\nsbatch /pfs/data6/should-not-matter.sh\nEOF"
     verdict, text, may_run = _gate(cmd)
     assert verdict == "allow" and may_run, text
+
+
+def test_a_note_that_merely_quotes_a_walk_still_runs(lustre, tmp_path):
+    """A non-shell reader keeps the body as DATA.
+
+    This is the guard that caught my own first fix: judging every body as
+    shell refused `cat <<'NOTE'` carrying a command in its text, which is
+    an ordinary note, not a job. `cat`/`tee`/`python` read data.
+    """
+    script = _script(tmp_path, CLEAN, name="clean.sh")
+    cmd = ("cat <<'NOTE' > note.txt\n"
+           "du -sh /pfs/data6/workspace/\n"
+           "NOTE\n"
+           f"sbatch {script}")
+    verdict, text, may_run = _gate(cmd)
+    assert verdict == "allow" and may_run, text
+
+
+def test_shell_body_walk_without_any_sbatch_is_refused(lustre):
+    """No submit at all, still a walk inside a program a shell runs."""
+    verdict, text, may_run = _gate("bash <<'EOF'\ndu -sh /pfs/data6\nEOF")
+    assert verdict == "refuse" and not may_run
+    assert "tree_walk_on_lustre" in text

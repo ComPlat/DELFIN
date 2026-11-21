@@ -918,10 +918,56 @@ def _split_gate_segments(cmd: str) -> list[str]:
     return segments
 
 
+_SHELL_WORDS = frozenset({"bash", "sh", "dash", "zsh", "ksh", "mksh", "ash",
+                          "yash", "rbash", "lksh", "posh"})
+
+
+def _shell_command_head(text: str) -> str | None:
+    """The shell word when *text* runs a shell that reads its STDIN as
+    commands, else ``None``.
+
+    ``bash``/``sh``/``dash``/``zsh``/``ksh`` (and an absolute path to one)
+    with no ``-c`` and no script argument run whatever arrives on stdin --
+    so ``bash <<'EOF' ... EOF`` and ``bash -s <<'EOF' ... EOF`` execute
+    the here-document body exactly as ``bash -c '...'`` executes its
+    argument, which :func:`_strip_wrappers` already unwraps. QS lead
+    nacht-s8, round 10: the gate refused the ``-c`` spelling and allowed
+    its here-document twin.
+
+    Deliberately NOT a shell: any other reader (python, cat, tee, perl,
+    awk, ...) treats a body as data -- ``delfin/agent/shell_words.py:241``
+    records the bug that followed from judging a python body as shell text.
+    """
+    import shlex
+    head = _strip_wrappers(text)
+    try:
+        tokens = shlex.split(head.split("\n", 1)[0])
+    except ValueError:
+        tokens = head.split("\n", 1)[0].split()
+    if not tokens:
+        return None
+    word = tokens[0].rsplit("/", 1)[-1]
+    if word not in _SHELL_WORDS:
+        return None
+    # A script or a -c argument means the body is NOT the program.
+    rest = tokens[1:]
+    for i, tok in enumerate(rest):
+        if tok in ("-c", "--command"):
+            return None
+        if tok in ("-s", "--stdin") or re.fullmatch(r"-[A-Za-z]*s[A-Za-z]*",
+                                                    tok):
+            continue
+        if tok.startswith("-") or re.fullmatch(r"[+]-?[A-Za-z]+", tok):
+            continue  # an option, including the `+o` pair form
+        return None  # a script argument: the body is stdin DATA
+    return word
+
+
 def _verdict(refused: list[str], warned: list[str]) -> tuple[str, str, bool]:
     """Turn a ``check_submit`` result into the gate's ``(verdict, text,
-    may_run)``. ONE place, so the path route, the ``--wrap`` route and the
-    here-document route cannot word a refusal differently."""
+    may_run)``. ONE place, so the path route, the ``--wrap`` route, the
+    here-document route and a shell body cannot word a refusal
+    differently."""
     if refused:
         return ("refuse",
                 "hpc_io_check refused: the sbatch script would load the "
@@ -929,6 +975,52 @@ def _verdict(refused: list[str], warned: list[str]) -> tuple[str, str, bool]:
                 + " Fix the script and submit again.", False)
     if warned:
         return "warn", "hpc_io_check warn: " + " ".join(warned), True
+    return "allow", "", True
+
+
+def _substituted_outcome(prefix: str, body: str, env: dict,
+                         mounts_path: MountsSource | None,
+                         submitted: bool = False
+                         ) -> tuple[str, str, bool]:
+    """The verdict for a here-document body, decided by WHO reads it.
+
+    Three sinks, three answers -- the body is only judged by what the
+    reader does with it:
+
+    - ``submitted=True`` (the segment is ``sbatch``): the body IS the batch
+      script, so it is judged as script text, never file-resolved.
+    - a shell that reads its stdin as commands (``bash``, ``sh``, …): the
+      body IS the program, so its submits are gated and its text goes
+      through the metadata rules -- the same treatment ``bash -c '…'``
+      already gets from :func:`_strip_wrappers`.
+    - any other reader (``cat``, ``tee``, ``python``, ``perl``, …): the
+      body is DATA. Nothing to judge; judged as shell it would refuse a
+      harmless note that merely quotes a command (QS lead round 10 memory:
+      a python body once opened the whole filesystem for a session when a
+      scan read it as shell).
+
+    An empty body runs nothing and is allowed.
+    """
+    if not body.strip():
+        return "allow", "", True
+    if submitted:
+        return _verdict(*check_submit(body, env=env, mounts_path=mounts_path,
+                                      is_text=True))
+    if _shell_command_head(prefix) is not None:
+        # A shell runs the body as a COMMAND: judge it as one. Its submits
+        # are gated by the same function (a nested submit is not a special
+        # case), and its text goes through the metadata rules.
+        if "sbatch" in body:
+            verdict, text, runs = sbatch_gate(body, env=env,
+                                              mounts_path=mounts_path)
+            if verdict != "allow":
+                return verdict, text, runs
+        findings = check(body, env=env, mounts_path=mounts_path)
+        refused = [f"{f.rule}: {f.why}" for f in findings
+                   if f.severity == "refuse"]
+        warned = [f"{f.rule}: {f.why}" for f in findings
+                  if f.severity != "refuse"]
+        return _verdict(refused, warned)
     return "allow", "", True
 
 
@@ -972,6 +1064,14 @@ def _gate_sbatch_segment(segment: str, env: dict,
         # would fail the same way and no script is hidden either way.
         tokens = target.split()
     if not tokens or tokens[0] != "sbatch":
+        if heredoc_body is not None and heredoc_body.strip():
+            # Not a submit itself, but a shell that reads its stdin runs
+            # the body as commands (`bash <<EOF ... sbatch x ... EOF`) --
+            # the same program as `bash -c '...'`, which this gate already
+            # refuses. A non-shell reader (python, cat, ...) keeps the body
+            # as data and stays allowed (QS lead nacht-s8, round 10).
+            return _substituted_outcome(target, heredoc_body, env,
+                                        mounts_path)
         return "allow", "", True
     # Drop redirections and everything after them: `sbatch run.sh
     # 2>&1` or `sbatch run.sh > log` must not leave the redirect (or
@@ -1032,6 +1132,10 @@ def _gate_sbatch_segment(segment: str, env: dict,
                 if heredoc_body is None or not heredoc_body.strip():
                     return "allow", "", True
                 script_arg = ""
+                # No argument names a file, so the body is what sbatch
+                # reads as its script.
+                return _substituted_outcome(target, heredoc_body, env,
+                                            mounts_path, submitted=True)
         else:
             script_arg = positional[-1]
         # A here-document is attached to this submit, so its script may be
@@ -1048,10 +1152,8 @@ def _gate_sbatch_segment(segment: str, env: dict,
             if cd_dir and not os.path.isabs(candidate):
                 candidate = os.path.join(cd_dir, candidate)
             if not Path(candidate).is_file() and heredoc_body.strip():
-                refused, warned = check_submit(heredoc_body, env=env,
-                                               mounts_path=mounts_path,
-                                               is_text=True)
-                return _verdict(refused, warned)
+                return _substituted_outcome(target, heredoc_body, env,
+                                            mounts_path, submitted=True)
         # Resolve a relative script against the cd target, not the
         # process cwd (operator live run, IO1 L4 class).
         resolved: str | None = script_arg
