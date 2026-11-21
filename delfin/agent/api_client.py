@@ -9330,6 +9330,16 @@ _DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
     ".npmrc", "**/.npmrc", ".pypirc", "**/.pypirc", ".pgpass", "**/.pgpass",
     ".kube/**", "**/.kube/**", ".docker/config.json", "**/.docker/config.json",
     ".envrc", "**/.envrc", "*.env", "**/*.env",
+    # Two home secrets that sandbox.home_secret_paths masks in the cage and
+    # that nothing denied at the tool level, so the cage mask was their only
+    # layer -- and that mask is emitted only when the path already exists
+    # when the argv is built. Measured 2026-11-21: of 31 secret paths, a
+    # fresh HOME got ONE mask, and reading the unmasked file inside the cage
+    # succeeded. The other 29 are denied here as well (approval_codes,
+    # trust_store, messenger_sessions, messenger_pairing, user_schedules,
+    # credentials*), which is why these two are the ones added.
+    ".claude", ".claude/**", "**/.claude/**",
+    ".local/share/delfin-messenger/**", "**/delfin-messenger/**",
     # Common SSH private-key names even outside a .ssh/ directory.
     "id_rsa", "id_rsa.*", "id_dsa", "id_ecdsa", "id_ed25519",
     "**/id_rsa", "**/id_dsa", "**/id_ecdsa", "**/id_ed25519",
