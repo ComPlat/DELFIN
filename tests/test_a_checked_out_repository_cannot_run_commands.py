@@ -155,7 +155,7 @@ def test_a_withheld_definition_is_recorded_in_the_audit_log(tmp_path):
     H.load_hooks(ws)
     # The conftest redirects audit_log's default path into this test's own
     # directory, so this reads the file the refusal was written to.
-    records = audit_log._parse_log(audit_log._default_log_path())[-50:]
+    records = audit_log._scan(audit_log._default_log_path())[0][-50:]
     withheld = [r for r in records if r.get("tool") == "workspace_trust"]
     assert withheld, records
     assert withheld[0]["decision"] == "denied"
@@ -177,8 +177,8 @@ def test_the_refusal_is_announced_once_not_per_tool_call(tmp_path):
     WT.reset_announcements()
     for _ in range(5):
         H.load_hooks(ws)
-    records = [r for r in audit_log._parse_log(
-        audit_log._default_log_path())[-200:]
+    records = [r for r in audit_log._scan(
+        audit_log._default_log_path())[0][-200:]
         if r.get("tool") == "workspace_trust"]
     assert len(records) == 1, records
 
