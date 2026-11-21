@@ -522,9 +522,13 @@ def _engine_factory_builder(default_task: Any) -> Any:
                 "the pilot setting cannot be installed on this backend")
         # pilot_slot(), not _PilotSlot() inline: the module's own slot
         # vocabulary, so the reaper that belongs to it releases the slot
-        # around every call (the with-statement did the same before).
+        # around every call. The slot outlives this function: it is the
+        # session's channel, claimed and reaped per call by the runner
+        # below, so it is not entered as a context manager here. The
+        # with-statement it replaces exited at build time, releasing a
+        # slot no call had taken; a manual __enter__ without its __exit__
+        # breaks as soon as __enter__ does any work.
         slot = pilot_slot()
-        slot.__enter__()
 
         def _runner(_slot=slot, **kw):
             try:

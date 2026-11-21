@@ -227,12 +227,12 @@ def _share(words, *, workspace, ask=None, say=None, **_):
         # turns -- the ask prompt scrolled away, the session restarted --
         # can list what is open here instead of letting every dialog
         # expire unheard.
-        open = ks.open_dialogs()
-        if not open:
+        dialogs = ks.open_dialogs()
+        if not dialogs:
             return "no share dialog is open"
         from .session_messages import _plain
         lines = []
-        for d in open:
+        for d in dialogs:
             blocked = " (blocked by the check; reword and start again)" \
                 if d.blocked else ""
             lines.append(f"  {d.id}  {d.kind} {d.mode} "
