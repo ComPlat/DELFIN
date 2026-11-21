@@ -24,8 +24,7 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("opi")
-
+from _skip_reasons import absent_reason  # noqa: E402
 from delfin.tools.opi_chain import (  # noqa: E402
     build_orca_input,
     read_geometry_xyz,
@@ -108,9 +107,23 @@ class TestGeometryParsing:
 
 
 class TestBuildInput:
-    """The OPI input writer composes Opt/Freq/MOREAD without inventing syntax."""
+    """The OPI input writer composes Opt/Freq/MOREAD without inventing syntax.
+
+    Every test here calls ``build_orca_input``, which builds on OPI's blocks,
+    so each one names OPI for itself. This was a module-level
+    importorskip("opi") and the module also holds the adapter-contract,
+    validation and geometry-parsing tests below, which never touch OPI: the
+    collection skip discarded those to report a package they do not use.
+    """
+
+    @staticmethod
+    def _needs_opi():
+        reason = absent_reason("opi")
+        if reason:
+            pytest.skip(reason)
 
     def test_opt_input_contains_opt(self, tmp_path):
+        self._needs_opi()
         inp = build_orca_input(
             tmp_path, job_kind="OPT", elements=["O", "H", "H"],
             coordinates=[[0, 0, 0.1173], [0, 0.7572, -0.4692],
@@ -121,6 +134,7 @@ class TestBuildInput:
         assert "!opt" in text or "!Opt" in text
 
     def test_freq_input_has_temp_and_pressure(self, tmp_path):
+        self._needs_opi()
         inp = build_orca_input(
             tmp_path, job_kind="FREQ", elements=["O", "H", "H"],
             coordinates=[[0, 0, 0.1173], [0, 0.7572, -0.4692],
@@ -133,6 +147,7 @@ class TestBuildInput:
         assert "temp 298.15" in text
 
     def test_moread_writes_moinp_block_when_gbw_present(self, tmp_path):
+        self._needs_opi()
         gbw = tmp_path / "prev.gbw"
         gbw.write_bytes(b"fake gbw")
         inp = build_orca_input(
@@ -148,6 +163,7 @@ class TestBuildInput:
         assert '"freq.gbw"' in text
 
     def test_moread_refused_when_gbw_missing(self, tmp_path):
+        self._needs_opi()
         with pytest.raises(FileNotFoundError):
             build_orca_input(
                 tmp_path, job_kind="FREQ", elements=["O", "H", "H"],

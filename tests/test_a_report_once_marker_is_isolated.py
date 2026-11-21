@@ -123,8 +123,20 @@ _NOT_A_MARKER: dict[str, str] = {
 }
 
 
+def _dotted(path: pathlib.Path, root: pathlib.Path) -> str:
+    """``delfin/agent/api_client.py`` -> ``delfin.agent.api_client``.
+
+    The registry in conftest is keyed by the dotted module name, and the
+    guard below compares PAIRS against it, so this side must speak the
+    same language. A path key made the comparison fall back to bare
+    attribute names, which is the defect this function exists to remove.
+    """
+    rel = path.relative_to(root.parent).with_suffix("")
+    return ".".join(rel.parts)
+
+
 def _declared_markers() -> dict[str, set[str]]:
-    """{module path: {name}} for once-shaped module-level containers."""
+    """{dotted module: {name}} for once-shaped module-level containers."""
     found: dict[str, set[str]] = {}
     root = pathlib.Path(__file__).resolve().parent.parent / "delfin"
     for path in sorted(root.rglob("*.py")):
@@ -152,7 +164,7 @@ def _declared_markers() -> dict[str, set[str]]:
                 continue
             for name in names:
                 if _ONCE_NAME.match(name) and name not in _NOT_A_MARKER:
-                    found.setdefault(str(path), set()).add(name)
+                    found.setdefault(_dotted(path, root), set()).add(name)
     return found
 
 
@@ -165,12 +177,18 @@ def test_the_package_grew_no_marker_the_registry_does_not_know():
     _NOT_A_MARKER with its reason -- a decision on the record, rather
     than a pattern loosened until it matches nothing.
     """
-    registered = {attr for _m, attr in _REPORT_ONCE_MARKERS}
+    # PAIRS, not bare names. Reading only the attribute asked "is this
+    # name registered somewhere" instead of "is THIS module's marker
+    # registered": _ANNOUNCED is registered for three modules
+    # (container_exec, exchange, workspace_trust), so a fourth module
+    # declaring _ANNOUNCED = set() satisfied the guard and was never
+    # emptied between tests -- the exact leak this file exists to stop.
+    registered = set(_REPORT_ONCE_MARKERS)
     missing: list[str] = []
-    for path, names in _declared_markers().items():
+    for module, names in _declared_markers().items():
         for name in sorted(names):
-            if name not in registered:
-                missing.append(f"{path}: {name}")
+            if (module, name) not in registered:
+                missing.append(f"{module}: {name}")
 
     assert not missing, (
         "once-per-process markers that no test isolates:\n  "

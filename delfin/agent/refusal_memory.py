@@ -177,8 +177,14 @@ def _redirect_targets(cmd: str) -> list[str]:
     words resolve against a base this module cannot know, so return [] --
     the pass only ever ADDS candidates, so returning nothing there is
     always safe. This protects BOTH consumers: the record path in the
-    gate (the operator-built hook folds these targets into the ledger)
-    and same_change's check path.
+    gate -- api_client._bash_named_write_paths folds these targets into
+    the ledger -- and same_change's check path.
+
+    Named here because an alias, _redirect_targets_safe, used to sit above
+    this function and claimed in its own docstring that the hook called IT
+    by name. It did not: the hook has always called this function, and the
+    alias was reached by nothing. It is deleted, and the caller is written
+    down so the next reader does not have to find it twice.
     """
     if _command_changes_directory(cmd):
         return []

@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import pytest
 
-pytest.importorskip("opi")
+from _skip_reasons import absent_reason, orca_reason, missing  # noqa: E402
 
 from delfin.tools.adapters.orca_eprnmr_opi import (  # noqa: E402
     NucleusSelection,
@@ -138,7 +138,22 @@ class TestValidate:
 
 
 class TestBuildInput:
+    """The EPR/NMR input writer, on OPI's blocks.
+
+    Only the two tests that produce a file need OPI; the refusal tests below
+    raise before any file is written and run everywhere. This was a
+    module-level importorskip("opi"), which took the fifteen tests that never
+    touch OPI with it.
+    """
+
+    @staticmethod
+    def _needs_opi():
+        reason = absent_reason("opi")
+        if reason:
+            pytest.skip(reason)
+
     def test_written_with_eprnmr_block_and_nuclei(self, tmp_path):
+        self._needs_opi()
         inp = build_eprnmr_input(
             tmp_path,
             elements=ELEMENTS,
@@ -162,6 +177,7 @@ class TestBuildInput:
     def test_shift_and_ssall_flags_typed(self, tmp_path):
         """NMR shielding (shift) and J couplings (ssall) are typed NucleiFlag
         fields, not hand-written strings."""
+        self._needs_opi()
         inp = build_eprnmr_input(
             tmp_path,
             elements=ELEMENTS,
@@ -318,9 +334,17 @@ class TestRegistration:
 
 class TestProbe:
     def test_orca_parser_accepts_built_input(self, tmp_path):
-        """ORCA's own parser must accept the input the block writes (when
-        ORCA is installed); skipped with a reason where it is absent."""
+        """ORCA's own parser must accept the input the block writes.
+
+        Two independent preconditions: OPI to write the input at all, and an
+        ORCA binary to read it. Both are named, so a machine that has OPI and
+        no ORCA reads that, instead of the package it does have.
+        """
         from delfin.orca_knowledge.probe import probe_input
+
+        reason = missing(absent_reason("opi"), orca_reason())
+        if reason:
+            pytest.skip(reason)
 
         inp = build_eprnmr_input(
             tmp_path,
@@ -335,6 +359,4 @@ class TestProbe:
             base_name="eprnmr",
         )
         verdict = probe_input(inp.read_text())
-        if verdict["verdict"] == "unavailable":
-            pytest.skip("ORCA binary not installed; parser probe skipped")
         assert verdict["verdict"] not in ("rejected",), verdict["messages"]

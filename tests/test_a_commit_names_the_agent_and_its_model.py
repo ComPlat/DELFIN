@@ -1,10 +1,18 @@
 """A commit names the agent and the model that wrote it.
 
-Asked for on 2026-09-15: the way Claude Code ends its commits with a
-co-author line naming itself and its model, the DELFIN agent ends its own
-with ``Co-Authored-By: DELFIN-Agent (<model>)``. On by default, off with
+Asked for on 2026-09-15: a commit an agent makes ends with a co-author
+line naming the agent and the model behind it,
+``Co-Authored-By: DELFIN-Agent (<model>)``. On by default, off with
 ``agent.commit_coauthor = false``, and the user's own instructions or
 remembered preferences win over it.
+
+What this file checks is the PROMPT: that the model is told to write the
+line. The mechanical half -- the rewrite that appends it whatever the
+model does, and the call that arms it -- is in
+tests/test_a_commit_carries_the_model_that_wrote_it.py, because for
+months the prompt was the only half there was: nothing called
+``set_commit_trailer_model``, so the rewrite never fired and the line
+appeared only when a model remembered to type it.
 """
 
 from __future__ import annotations
