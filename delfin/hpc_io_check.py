@@ -1432,6 +1432,28 @@ def _expand_ansi_c_quoting(token: str) -> str:
                     out.append(chr(int(hexits, 16)))
                     i += 4
                     continue
+            # \uHHHH and \UHHHHHHHH are the same family one width up, and
+            # round 17 measured that they hid a walking file exactly as
+            # \x2f did. bash decodes all three, so all three are decoded
+            # here -- the family is the escape grammar, not a list of
+            # spellings that happens to be complete today.
+            if nxt == "u" and i + 5 < len(body):
+                hexits = body[i + 2:i + 6]
+                if all(c in "0123456789abcdefABCDEF" for c in hexits):
+                    out.append(chr(int(hexits, 16)))
+                    i += 6
+                    continue
+            if nxt == "U" and i + 9 < len(body):
+                hexits = body[i + 2:i + 10]
+                if all(c in "0123456789abcdefABCDEF" for c in hexits):
+                    try:
+                        out.append(chr(int(hexits, 16)))
+                    except (ValueError, OverflowError):
+                        # Out of range: leave it as written, so the name
+                        # test finds no file and the caller fails closed.
+                        out.append(body[i:i + 10])
+                    i += 10
+                    continue
             if nxt in "01234567":
                 octits = ""
                 j = i + 1
