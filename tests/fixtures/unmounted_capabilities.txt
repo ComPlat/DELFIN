@@ -55,7 +55,6 @@ test-only	open_dialogs	delfin/agent/knowledge_share.py:399
 test-only	pdf_xfa_data	delfin/agent/office.py:3514
 test-only	prompt_block	delfin/agent/user_model.py:655
 test-only	quality_report	delfin/agent/compaction_quality.py:75
-test-only	query_job_states	delfin/agent/job_monitor.py:369
 test-only	read_last_n	delfin/agent/audit_log.py:695
 test-only	recall_levels	delfin/agent/memory_distill.py:495
 test-only	replay_step	delfin/agent/cli_resume.py:304
