@@ -20,7 +20,6 @@ nowhere	_all_targets_inside	delfin/agent/workspace_selfservice.py:82
 test-only	_bypass_failure_asks	delfin/agent/api_client.py:14120
 test-only	_claim_sentence	delfin/agent/verify_guard.py:2056
 nowhere	_default_kit_permissions	delfin/agent/api_client.py:11839
-nowhere	_diff_line_counts	delfin/agent/audit_log.py:642
 test-only	_disabled_keyring_factory	delfin/agent/credentials.py:360
 nowhere	_edited_paths	delfin/agent/benchmark.py:1226
 nowhere	_fake_engine_factory_builder	delfin/agent/explore_pilot.py:531
