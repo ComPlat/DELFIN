@@ -270,3 +270,55 @@ def cmd_durable(args) -> int:
           f"sessions: {sessions}")
     return 0
 
+
+# --------------------------------------------------------------------------
+# Recovery plan — what a restart may do with one session's in-flight turn
+# --------------------------------------------------------------------------
+
+def render_recovery_plan(plan) -> str:
+    """The plan as the person on the login node reads it.
+
+    One line per journaled step, verdict first: the person decides
+    whether to repeat what a crash left open, and the lines that must
+    not be repeated silently say so.
+    """
+    lines = [f"session {plan.session}: "
+             f"{'in-flight turn, resume at turn ' + str(plan.resume_turn)}"
+             if plan.in_flight else "no in-flight turn: the session resumes "
+             "normally"]
+    for d in plan.decisions:
+        name = d.verdict.name
+        extra = ""
+        if d.verdict.name == "MUST_ASK":
+            extra = (" -- a person decides: is the step's effect present?"
+                     if d.side_effecting else "")
+        lines.append(f"  turn {d.turn} step {d.step} {d.tool or '(tool)'}: "
+                     f"{name}{extra}")
+    if not plan.decisions and plan.in_flight:
+        lines.append("  (no journaled steps to judge)")
+    return "\n".join(lines)
+
+
+def cmd_durable_plan(args) -> int:
+    """``delfin-agent durable plan <session>``.
+
+    The public caller of ``durable.decide_recovery``: reads the real
+    checkpoint and step journal of one session and prints what a
+    restart may repeat, what it must not, and what a person must
+    decide. Offline: it reads and prints, it changes nothing.
+    """
+    from .. import durable
+
+    session = getattr(args, "durable_session", "") or ""
+    if not session:
+        print("delfin-agent durable plan: a session id is required",
+              file=sys.stderr)
+        return 1
+    try:
+        plan = durable.decide_recovery(session)
+    except Exception as exc:
+        print(f"delfin-agent durable plan: failed: {exc}", file=sys.stderr)
+        return 1
+    print(render_recovery_plan(plan))
+    return 0
+

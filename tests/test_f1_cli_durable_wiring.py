@@ -161,3 +161,57 @@ def _read_child_heartbeat(svc):
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+
+
+# -- the crash-recovery plan: decide_recovery through the CLI ---------------
+
+def _plan_run(args, monkeypatch, tmp_path):
+    """Dispatch `durable plan ...` through the real parser, against a
+    redirected session store (the same discipline _run uses)."""
+    import delfin.agent.session_store as session_store
+
+    monkeypatch.setattr(session_store, "_SESSIONS_DIR", tmp_path)
+    parser = build_parser()
+    ns = parser.parse_args(args)
+    return ns.func(ns)
+
+
+def test_plan_prints_what_a_restart_may_repeat(monkeypatch, tmp_path, capsys):
+    """`durable plan <session>` judges the real checkpoint and journal.
+
+    The journal holds one OPEN side-effecting step (bash) and one
+    FINISHED step. The plan through the CLI must say: the open one
+    needs a person (MUST_ASK -- the default checker cannot confirm the
+    side effect), the finished one is never repeated (FINISHED). Red
+    before the wiring: `plan` was not an action, decide_recovery had no
+    caller in delfin/.
+    """
+    import delfin.agent.step_journal as step_journal
+    import delfin.agent.session_store as session_store
+
+    sid = "f1-plan-probe"
+    # Redirect FIRST, then write: the journal resolves _SESSIONS_DIR per
+    # call, so the writes must land after the redirect or the plan reads
+    # a different (empty) store. Measured: writes before the redirect
+    # landed in the fixture's dir and the plan said "no in-flight turn".
+    monkeypatch.setattr(session_store, "_SESSIONS_DIR", tmp_path)
+    step_journal.start_step(sid, turn=3, step=1, tool="bash",
+                            arguments={"command": "cp a b"})
+    step_journal.finish_step(sid, turn=3, step=2, tool="read_file", ok=True)
+    parser = build_parser()
+    ns = parser.parse_args(["durable", "plan", sid])
+    rc = ns.func(ns)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "MUST_ASK" in out, out
+    assert "FINISHED" in out, out
+    assert "bash" in out and "read_file" in out, out
+
+
+def test_plan_without_journal_says_so(monkeypatch, tmp_path, capsys):
+    """A session with nothing in flight resumes normally, said plainly."""
+    rc = _plan_run(["durable", "plan", "no-such-session"],
+                   monkeypatch, tmp_path)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "no in-flight turn" in out, out
