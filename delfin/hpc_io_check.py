@@ -708,8 +708,107 @@ def sbatch_gate(cmd: str, env: dict | None = None,
     return "warn", texts[0], may_run
 
 
+_GATE_HEREDOC_RE = re.compile(r"<<(-?)\s*(?:(['\"])([\w.-]+)\2|([\w.-]+))")
+
+
+def _consume_gate_heredoc(cmd: str, i: int) -> tuple[str, int] | None:
+    """From ``<<`` at *i*, return ``(the whole redirect + body, next index)``.
+
+    ``None`` when *i* is not a here-document start: ``<<<`` is a
+    here-STRING and needs no terminator, and a bare ``<<`` with no word
+    after it is a syntax error the shell would reject.
+
+    An unterminated body runs to the end of the string -- that is what
+    the shell would read as the script, and stopping early would hand
+    the caller a segment the shell never sees.
+
+    Local copy of the idea in ``delfin.agent.shell_words`` on purpose
+    (see :func:`_split_gate_segments`): the gate's reading must not
+    change because another module's splitter changed.
+    """
+    if cmd[i:i + 3] == "<<<":
+        return None
+    m = _GATE_HEREDOC_RE.match(cmd, i)
+    if m is None:
+        return None
+    tag = m.group(3) or m.group(4)
+    if not tag:
+        return None
+    strip_tabs = bool(m.group(1))
+    nl = cmd.find("\n", m.end())
+    if nl == -1:
+        # Redirect without a body: nothing to consume beyond the token.
+        return cmd[i:], len(cmd)
+    body_start = nl + 1
+    pos = body_start
+    while pos <= len(cmd):
+        end = cmd.find("\n", pos)
+        if end == -1:
+            end = len(cmd)
+        line = cmd[pos:end]
+        candidate = line.lstrip("\t") if strip_tabs else line
+        if candidate.strip() == tag:
+            # The newline AFTER the terminator is left behind on purpose:
+            # it separates this command from the next one (the shell runs
+            # them as two commands, and so must the gate).
+            return cmd[i:end], end
+        if end >= len(cmd):
+            break
+        pos = end + 1
+    return cmd[i:], len(cmd)
+
+
+def _heredoc_of_segment(text: str) -> tuple[str | None, str]:
+    """Split one segment into ``(here-document body, segment without it)``.
+
+    ``(None, text)`` when the segment starts no here-document. The body
+    is everything between the ``<<tag`` line and the terminator (or to
+    the end of the text when the terminator is missing -- that is what
+    the shell would read).
+
+    Only a ``<<`` at quote depth 0 starts a here-document: a ``<<``
+    inside a quoted argument (``--wrap='a << b'``) is that argument's
+    text, not a redirect, and must not truncate the segment.
+    """
+    quote: str | None = None
+    i = 0
+    while i < len(text) - 1:
+        ch = text[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if quote:
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            i += 1
+            continue
+        if ch == "<" and text[i:i + 2] == "<<" and text[i:i + 3] != "<<<":
+            consumed = _consume_gate_heredoc(text, i)
+            if consumed is not None:
+                whole, end = consumed
+                m = _GATE_HEREDOC_RE.match(text, i)
+                tag = (m.group(3) or m.group(4)) if m else ""
+                nl = whole.find("\n")
+                if nl == -1:
+                    return "", text[:i] + text[end:]
+                rest = whole[nl + 1:]
+                lines = rest.split("\n")
+                if tag and len(lines) > 1 and lines[-1].strip() == tag:
+                    body = "\n".join(lines[:-1])
+                else:
+                    body = rest
+                return body, text[:i] + text[end:]
+        i += 1
+    return None, text
+
+
 def _split_gate_segments(cmd: str) -> list[str]:
-    """Split a command line on ``;`` ``&&`` ``|`` ``||`` at quote depth 0.
+    """Split a command line on ``;`` ``&&`` ``|`` ``||`` ``&`` or newline
+    at quote depth 0.
 
     A separator inside single or double quotes (a ``--wrap='<cmd>;
     <cmd>'`` text, a ``"<dir>/a;b/run.sh"`` path) belongs to that
@@ -719,6 +818,20 @@ def _split_gate_segments(cmd: str) -> list[str]:
     terminates a segment -- the shell backgrounds the left side and
     runs the right side independently, so nothing may hide behind it
     either way.
+
+    A NEWLINE terminates a segment too (QS lead round 10 on the draft
+    PR): the shell treats it exactly like ``;``, so
+    ``echo start`` newline ``sbatch walk.sh`` used to keep the submit
+    inside a segment whose first word was ``echo`` and reached sbatch
+    unchecked. A CRLF line ending is treated the same way -- bash does
+    not split on a lone CR, but a command pasted from a Windows editor
+    must not have its lines glued into one segment either.
+
+    A here-document is consumed whole, body included, into the segment
+    that starts it: the body is DATA the running program reads (for
+    ``sbatch <<EOF`` it is the batch script itself) and must never be
+    split into pseudo-commands. The newline after the terminator is left
+    behind as the separator between this command and the next.
 
     NOT the same function as ``delfin.agent.shell_words._split_shell_segments``
     (the auto-allow splitter): that one is quote-aware too, but it
@@ -752,6 +865,26 @@ def _split_gate_segments(cmd: str) -> list[str]:
             current.append(ch)
             i += 1
             continue
+        if ch == "<" and cmd[i:i + 2] == "<<":
+            # A here-document: redirect + body belong to THIS segment.
+            consumed = _consume_gate_heredoc(cmd, i)
+            if consumed is not None:
+                whole, i = consumed
+                current.append(whole)
+                continue
+        if ch == "\n":
+            # A newline runs the left side and then the right side, just
+            # like `;` (QS round 10: a multi-line command hid a submit).
+            segments.append("".join(current))
+            current = []
+            i += 1
+            continue
+        if ch == "\r" and cmd[i:i + 2] == "\r\n":
+            # CRLF: the CR belongs to neither segment.
+            segments.append("".join(current))
+            current = []
+            i += 2
+            continue
         if ch == ";" or ch == "|":
             # The operator TERMINATES the segment and is never kept in
             # it: a trailing `&&` inside the segment text made shlex
@@ -782,6 +915,20 @@ def _split_gate_segments(cmd: str) -> list[str]:
     return segments
 
 
+def _verdict(refused: list[str], warned: list[str]) -> tuple[str, str, bool]:
+    """Turn a ``check_submit`` result into the gate's ``(verdict, text,
+    may_run)``. ONE place, so the path route, the ``--wrap`` route and the
+    here-document route cannot word a refusal differently."""
+    if refused:
+        return ("refuse",
+                "hpc_io_check refused: the sbatch script would load the "
+                "shared Lustre file system. " + " ".join(refused)
+                + " Fix the script and submit again.", False)
+    if warned:
+        return "warn", "hpc_io_check warn: " + " ".join(warned), True
+    return "allow", "", True
+
+
 def _gate_sbatch_segment(segment: str, env: dict,
                          mounts_path: MountsSource | None,
                          cd_dir: str = ""
@@ -798,7 +945,13 @@ def _gate_sbatch_segment(segment: str, env: dict,
     have done, so it fails closed.
     """
     import shlex
-    target = _strip_wrappers(segment)
+    # A here-document in this segment: its BODY is data the program reads,
+    # and for `sbatch <<EOF ... EOF` the body IS the batch script (QS round
+    # 10). Strip it out of the segment first so neither the body text nor
+    # the `<<tag` token can be mistaken for an argument, then judge it as
+    # script text where it is the script -- exactly like `--wrap`.
+    heredoc_body, target = _heredoc_of_segment(segment)
+    target = _strip_wrappers(target)
     # A subshell's closing paren rides on the LAST segment
     # (`sbatch walk.sh)`): drop a lone trailing `)` so the script
     # argument is not polluted by it. Only a single trailing char, and
@@ -826,7 +979,13 @@ def _gate_sbatch_segment(segment: str, env: dict,
             break
         argv.append(t)
     # --wrap=<text> or --wrap <text>: the wrapped text IS the script.
-    wrap = re.search(r"--wrap(?:=(?:'([^']*)'|\"([^\"]*)\"|(\S+))|\s+('([^']*)'|\"([^\"]*)\"|(\S+)))",
+    # The first non-None group is the TEXT: the quoted alternations of the
+    # space form come FIRST, so the quote characters never end up as part
+    # of the argument (`--wrap 'a; b'` used to capture "'a; b'", quotes
+    # and all, which shlex then read as one token whose leading quote hid
+    # the text). Found by my own adversarial pass, IO2 round 10.
+    wrap = re.search(r"--wrap(?:=(?:'([^']*)'|\"([^\"]*)\"|(\S+))|"
+                     r"\s+(?:'([^']*)'|\"([^\"]*)\"|(\S+)))",
                      target)
     if wrap:
         text = next(g for g in wrap.groups() if g is not None)
@@ -863,9 +1022,33 @@ def _gate_sbatch_segment(segment: str, env: dict,
                     script_arg = m.group(2)
                     break
             else:
-                return "allow", "", True
+                # No script argument named. A here-document attached to
+                # this submit IS its stdin (`sbatch <<EOF ... EOF`), and
+                # that is judged further down; without one there is no
+                # script to inspect.
+                if heredoc_body is None or not heredoc_body.strip():
+                    return "allow", "", True
+                script_arg = ""
         else:
             script_arg = positional[-1]
+        # A here-document is attached to this submit, so its script may be
+        # the BODY (stdin) rather than a file: `sbatch -J name <<EOF ...`
+        # names no file at all, and an unrecognised option VALUE is
+        # indistinguishable from a script name by shape alone (the same
+        # ambiguity the `-o<value>` branch above names). The deciding fact
+        # is whether the named argument IS a file -- here, or from the cd
+        # target for a relative name. When it is not, the body is what
+        # sbatch would run and is judged as text (a body is script
+        # content, never a file name).
+        if heredoc_body is not None:
+            candidate = script_arg
+            if cd_dir and not os.path.isabs(candidate):
+                candidate = os.path.join(cd_dir, candidate)
+            if not Path(candidate).is_file() and heredoc_body.strip():
+                refused, warned = check_submit(heredoc_body, env=env,
+                                               mounts_path=mounts_path,
+                                               is_text=True)
+                return _verdict(refused, warned)
         # Resolve a relative script against the cd target, not the
         # process cwd (operator live run, IO1 L4 class).
         resolved: str | None = script_arg
@@ -892,14 +1075,7 @@ def _gate_sbatch_segment(segment: str, env: dict,
             # path by shape alone; if it names nothing the command goes
             # to sbatch, which refuses it. Same rule as FileNotFoundError.
             return "allow", "", True
-    if refused:
-        return ("refuse",
-                "hpc_io_check refused: the sbatch script would load the "
-                "shared Lustre file system. " + " ".join(refused)
-                + " Fix the script and submit again.", False)
-    if warned:
-        return "warn", "hpc_io_check warn: " + " ".join(warned), True
-    return "allow", "", True
+    return _verdict(refused, warned)
 
 
 def main(argv: list[str] | None = None) -> int:
