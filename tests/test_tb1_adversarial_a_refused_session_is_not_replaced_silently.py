@@ -846,3 +846,48 @@ def test_a_wait_whose_timer_cannot_start_says_so_instead_of_dying_quietly(env):
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=30)
+
+
+def test_the_wait_choice_is_understood_in_lower_case(env):
+    """A person who types "wait" has chosen to wait, not to be ignored.
+
+    The refusal offers the label "Wait"; anyone typing by hand may write it in
+    lower case, and the patch normalises the whole trimmed message against the
+    two labels case-insensitively. That normalisation is the one place where
+    the patch writes into the text variable, so it needs a witness of its own:
+    every other case in this file sends the label exactly as offered.
+
+    Red on main: there is no refused state at all, so "wait" is an ordinary
+    message and the tab mints a session for it.
+    """
+    _write_session(env, SID, "held job", "held-turn")
+    proc = _held_by_a_live_process(env)
+    try:
+        before = set(_session_files(env))
+        tab = _tab(env)
+        state = tab["refs"]["state"]
+        try:
+            _open_held_conversation(tab, env)
+            assert "held by a live session" in _chat_text(state)
+
+            _type_and_send(tab, "wait")
+            assert env["created"] == [], (
+                "a lower-case \"wait\" is the Wait choice, so the tab must not "
+                "start a session for it")
+            assert set(_session_files(env)) == before, (
+                "a lower-case \"wait\" must write no session")
+            assert state.get("active_session_id") != SID, (
+                "choosing Wait while the holder is alive must not open it")
+            assert tab["input"].value == "wait", (
+                "the Wait choice keeps the person's text in the box "
+                f"(the patch says so at :21483-21489); got {tab['input'].value!r}")
+            said = _chat_text(state).lower()
+            assert "wait" in said, (
+                "taking the Wait choice must be answered in the chat; it "
+                f"said: {_chat_text(state)[-300:]!r}")
+        finally:
+            tab["refs"]["shutdown"](save=False)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=30)
