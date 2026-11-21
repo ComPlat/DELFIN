@@ -54,6 +54,64 @@ def _chat_text(state) -> str:
                      for m in state.get("chat_messages") or [])
 
 
+# --- bounded waits -----------------------------------------------------------
+# Every wait in this file counts POLLS, never seconds: a bare pytest call in a
+# suite gets --timeout=300, and a wall-clock bound shrinks on a loaded runner
+# exactly when the machine is slow, so the fixture would blame the product for
+# its own starved window (QS finding 4; wave-17 lesson 5, and s4's file uses
+# the same shape). At _POLL_PAUSE_S each these are 30 s of patience on an idle
+# node -- a runner only makes them LAST longer, never shorter.
+_POLL_PAUSE_S = 0.05
+_READY_POLLS = 1200            # the holder child printing HELD
+_KILL_WAIT_POLLS = 400         # a killed child leaving exit status
+_PID_DEATH_POLLS = 600         # the holder's pid gone (teardown)
+_OPEN_POLLS = 1200             # the tab noticing the holder let go
+
+
+def _read_line_within(stream, polls: int):
+    """One line from *stream*, or "" when none arrived inside *polls*.
+
+    A thread does the blocking read so the wait stays bounded on a child that
+    is alive but silent -- a plain readline() would block past the suite's own
+    timeout and report a product failure for a fixture hang (QS finding 2).
+    """
+    box = {}
+
+    def _pull():
+        try:
+            box["line"] = stream.readline()
+        except (OSError, ValueError) as exc:     # closed pipe / closed file
+            box["error"] = f"{exc!r}"
+
+    thread = __import__("threading").Thread(target=_pull, daemon=True,
+                                            name="tb1-holder-readline")
+    thread.start()
+    for _ in range(polls):
+        if "line" in box or "error" in box:
+            break
+        time.sleep(_POLL_PAUSE_S)
+    if "error" in box:
+        pytest.fail(f"reading the holder child's output failed: {box['error']}")
+    return box.get("line") or ""
+
+
+def _wait_quietly(proc, polls: int) -> str:
+    """Wait up to *polls* for *proc* to exit; return a note when it did not."""
+    for _ in range(polls):
+        if proc.poll() is not None:
+            return ""
+        time.sleep(_POLL_PAUSE_S)
+    return f", still running after {polls} polls"
+
+
+def _drain(stream) -> str:
+    """Everything readable on *stream* right now; never blocks for long."""
+    try:
+        return stream.read() or ""
+    except (OSError, ValueError) as exc:         # closed pipe / closed file
+        return f"<stderr unreadable: {exc!r}>"
+
+
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     path = tmp_path / "sessions"
@@ -75,77 +133,74 @@ def store(tmp_path, monkeypatch):
 @pytest.fixture
 def holder(store, tmp_path):
     """A second live process holding SID's writer lock."""
-    from delfin.agent import session_store as _ss_child
-    env = dict(os.environ)
-    # A private HOME for the child too (wave 33: tests redirect every
-    # ~/.delfin sink; the child resolves its own at import time).
-    env["HOME"] = str(tmp_path / "child_home")
-    (tmp_path / "child_home").mkdir(exist_ok=True)
-    env.pop("JUPYTER_RUNTIME_DIR", None)
-    env["PYTHON_KEYRING_BACKEND"] = "keyring.backends.null.Keyring"
+    # The child inherits none of this process's in-memory redirects: it
+    # resolves every ~/.delfin sink of its own at import time. The suite's
+    # conftest.child_env is the one place that knows all of them (private
+    # HOME, DELFIN_SCRATCH_STATE, the Jupyter runtime dir, the keyring
+    # backend, LD_LIBRARY_PATH) -- a hand-rolled `env["HOME"] = ...` here
+    # missed the others and left the child writing into the real home
+    # (operator's full-suite run: test_every_delfin_child_start_passes_
+    # child_env named this fixture at :87).
+    from conftest import child_env
+    env = child_env(tmp_path)
     env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
     proc = subprocess.Popen(
         [sys.executable, "-c", _HOLD, str(store), SID],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, env=env)
-    # Readiness WITH a timeout: a child that dies at import (broken store
-    # path, import error) must fail the fixture with the child's own
-    # stderr -- not hang, and not fail later with an opaque assertion on
-    # an empty readline (operator finding 3, 01:30: the holder child never
-    # printed HELD and the test died in setup with BrokenPipe +
-    # SessionLockedError from a still-live pid).
-    line = None
-    deadline = time.monotonic() + 30.0
-    try:
-        line = proc.stdout.readline()
-    except Exception:
-        pass
-    if line is None or not line.strip():
+    # Readiness in BOUNDED POLLS, not a blocking readline (QS finding 2): a
+    # child that is alive but silent -- a slow import, a lock wait -- left a
+    # plain readline() to block until the suite's own --timeout killed the
+    # run, and the failure then read as a product failure instead of "the
+    # fixture's child never answered". A child that dies at import must fail
+    # the fixture with the child's OWN stderr, not hang (operator finding 3).
+    line = _read_line_within(proc.stdout, _READY_POLLS)
+    if not line or not line.strip():
         rc = proc.poll()
-        stderr_text = ""
         if rc is None:
             proc.kill()
-        try:
-            proc.wait(10)
-        except Exception:
-            pass
-        try:
-            stderr_text = proc.stderr.read() or ""
-        except Exception:
-            pass
+        wait_note = _wait_quietly(proc, _KILL_WAIT_POLLS)
+        stderr_text = _drain(proc.stderr)
         pytest.fail(
             "the holder child never became ready "
-            f"(exit {rc}): {stderr_text[-800:]}")
+            f"(exit {rc}{wait_note}): {stderr_text[-800:]}")
     assert line.strip() == "HELD", (
         f"the holder child printed {line.strip()!r} instead of HELD")
     try:
         yield proc
     finally:
+        # Teardown reports what it could not do instead of swallowing it: a
+        # silent `except: pass` here hid a live child twice already.
+        problems = []
         try:
             proc.stdin.write("release\n")
             proc.stdin.flush()
-            proc.stdout.readline()
-        except Exception:
-            pass
+        except (OSError, ValueError) as exc:      # BrokenPipeError is an OSError
+            problems.append(f"sending 'release' to the holder failed: {exc!r}")
         if proc.poll() is None:
             proc.kill()
-            proc.wait(10)
+        wait_note = _wait_quietly(proc, _KILL_WAIT_POLLS)
+        if proc.poll() is None:
+            problems.append("the holder child survived SIGKILL" + wait_note)
         # Wait until the child pid is DEAD before the next test starts: the
         # operator's node run (green run of pair v3) showed a later test's
         # holder child refused with SessionLockedError naming a LIVE pid --
         # pid reuse on a busy node can make a just-killed child's pid look
-        # alive to acquire_session_lock's os.kill(pid, 0) check. Wait for
-        # the pid to be gone, then remove this test's own lock file so the
-        # next test starts from an unlocked store.
-        deadline = time.monotonic() + 15.0
-        while time.monotonic() < deadline:
+        # alive to acquire_session_lock's os.kill(pid, 0) check. Counted in
+        # polls, never seconds, so a loaded runner only makes it slower and
+        # never shortens the window (QS finding 4, wave-17 lesson 5).
+        for _ in range(_PID_DEATH_POLLS):
             if not ss._pid_alive(proc.pid):
                 break
-            time.sleep(0.1)
-        assert not ss._pid_alive(proc.pid), (
-            f"the holder pid {proc.pid} is still alive 15 s after teardown; "
-            "the next test's holder child would hit SessionLockedError")
+            time.sleep(_POLL_PAUSE_S)
+        if ss._pid_alive(proc.pid):
+            problems.append(
+                f"the holder pid {proc.pid} is still alive after "
+                f"{_PID_DEATH_POLLS} polls; the next test's holder child "
+                "would hit SessionLockedError")
         (store / f"{SID}.lock").unlink(missing_ok=True)
+        if problems:
+            pytest.fail("holder teardown: " + "; ".join(problems))
 
 
 def _open_tab(tmp_path, monkeypatch):
@@ -352,20 +407,24 @@ def test_wait_then_the_holder_ends_and_the_tab_opens_the_conversation(
         assert "Waiting" in _chat_text(state), (
             "the Wait reply is acknowledged and the text stays")
         # The holder ends; nothing else changes. The tab notices on its own.
+        # Bounded polls (QS finding 4); the refresh is what surfaces the
+        # poller's work, and a failing refresh must be SEEN, not swallowed
+        # (QS finding 3: this loop is the Wait path's whole purpose).
         holder.stdin.write("release\n")
         holder.stdin.flush()
-        holder.stdout.readline()
-        deadline = time.time() + 30
-        while time.time() < deadline:
+        _read_line_within(holder.stdout, _KILL_WAIT_POLLS)
+        refresh_errors = []
+        for _ in range(_OPEN_POLLS):
             if state.get("active_session_id") == SID:
                 break
             try:
                 refs["refresh_chat"]()
-            except Exception:
-                pass
-            time.sleep(0.2)
+            except Exception as exc:                # noqa: BLE001 - recorded
+                refresh_errors.append(f"{exc!r}")
+            time.sleep(_POLL_PAUSE_S)
         assert state.get("active_session_id") == SID, (
-            "when the holder ends, the tab opens the held conversation")
+            "when the holder ends, the tab opens the held conversation "
+            f"(refresh_chat failures seen: {refresh_errors[:3]})")
         assert state.get("_held_refused") is None
         assert _writable_sessions() == [SID]
         # And now a send goes to THAT conversation, not to a stranger.
