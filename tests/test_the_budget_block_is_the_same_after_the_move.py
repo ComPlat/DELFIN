@@ -175,32 +175,57 @@ def test_the_budget_block_at_50_percent_is_silent():
     assert eng._build_budget_block() == ""
 
 
-WIND_DOWN = (
-    "# Run budget wind-down (auto-injected)\n"
-    "- 85% of this run's budget is spent. Start wrapping up NOW: complete "
-    "or checkpoint the current step, commit/save state, mark tasks, and "
-    "summarise open work. If a follow-up run makes sense, note exactly "
-    "where to resume. Do not start new large work items."
-)
+# The block now carries every ceiling in force as ``spent of ceiling``,
+# so its text depends on which dials are set and a single pinned string
+# can no longer stand for all of them. The invariant halves are pinned
+# instead: the heading, the percentage, and the instruction.
+#
+# This REVERSES the decision recorded below as "the ceiling list goes to
+# the attention detail, not [the block]". The reversal is not a
+# preference; it is a correction, and the evidence is three field
+# sessions on models with no published rate (27.3 M, 124.1 M and 363.5 M
+# input tokens, every one recording cost_usd 0.0, the last ending
+# "session korrupt"). On the third, a $10.00 ceiling read 0 % for 363 M
+# tokens and 1,696 tool calls. A bare "105% of this run's budget is
+# spent" cannot be checked against anything: it names neither the figure
+# nor what the figure is against, so nobody reading it could see that
+# the denominator was a dollar amount nothing was ever measured in.
+def _wind_down(dims: str) -> str:
+    return (
+        "# Run budget wind-down (auto-injected)\n"
+        f"- 85% of this run's budget is spent ({dims}). Start wrapping up "
+        "NOW: complete or checkpoint the current step, commit/save state, "
+        "mark tasks, and summarise open work. If a follow-up run makes "
+        "sense, note exactly where to resume. Do not start new large work "
+        "items."
+    )
 
-EXHAUSTED = (
-    "# Run budget EXHAUSTED\n"
-    "- 105% of this run's budget is spent. Finish your CURRENT sentence "
-    "of work only: save state, mark task statuses honestly, and summarise "
-    "what remains. No new work."
-)
+
+def _exhausted(dims: str) -> str:
+    return (
+        "# Run budget EXHAUSTED\n"
+        f"- 105% of this run's budget is spent ({dims}). Finish your "
+        "CURRENT sentence of work only: save state, mark task statuses "
+        "honestly, and summarise what remains. No new work."
+    )
+
+
+#: The token ceiling is on by default, so it is in every dimension list.
+TOKENS_IDLE = "0 of 200.0 M input+output tokens (0 %)"
 
 
 def test_the_budget_block_wind_down_text_is_unchanged():
     eng = _engine_via_new(run_budget_usd=10.0, cost_usd=8.5,
                           _measured_cost_turns=3)
-    assert eng._build_budget_block() == WIND_DOWN
+    assert eng._build_budget_block() == _wind_down(
+        f"$8.50 of $10.00 (85 %); {TOKENS_IDLE}")
 
 
 def test_the_budget_block_exhausted_text_is_unchanged():
     eng = _engine_via_new(run_budget_usd=10.0, cost_usd=10.5,
                           _measured_cost_turns=3)
-    assert eng._build_budget_block() == EXHAUSTED
+    assert eng._build_budget_block() == _exhausted(
+        f"$10.50 of $10.00 (105 %); {TOKENS_IDLE}")
 
 
 def test_the_budget_block_names_every_ceiling_in_force():
@@ -209,8 +234,11 @@ def test_the_budget_block_names_every_ceiling_in_force():
                           _measured_cost_turns=21)
     block = eng._build_budget_block()
     assert block.startswith("# Run budget EXHAUSTED")
-    assert "$10.00" not in block                 # the ceiling list goes to
-    assert block == EXHAUSTED                    # the attention detail, not
+    # Every dial with its own denominator, in the block the MODEL reads
+    # and not only in the inbox detail a person reads.
+    assert block == _exhausted(
+        "$10.50 of $10.00 (105 %); 0s of 600s (0 %); "
+        f"21 of 20 turns (105 %); {TOKENS_IDLE}")
 
 
 def test_the_budget_attention_goes_to_the_inbox_once_per_level():
@@ -226,7 +254,8 @@ def test_the_budget_attention_goes_to_the_inbox_once_per_level():
     kind, kw = seen[0]
     assert kind == "budget_warning"
     assert kw["title"] == "Run budget at 80% — the agent is winding down"
-    assert "85% of the run budget ($10.00)" in kw["detail"]
+    assert ("85% of the run budget ($8.50 of $10.00 (85 %); "
+            f"{TOKENS_IDLE})") in kw["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +273,12 @@ def test_the_unmeasured_notice_text_is_unchanged():
            "rate" in block
     assert "- Measured instead: 1 turn(s), 1,000 input + 500 output " \
            "tokens." in block
-    assert "For a ceiling that can be enforced, set " \
+    # The token ceiling is on by default, so what the notice OFFERS in
+    # place of the price is now that ceiling with its denominator, and
+    # the "set one of these" line names only the dials still unset.
+    assert "- The token ceiling IS measured and still ends this run: " \
+           "1.5 k of 200.0 M (0 %), agent.run_budget_tokens." in block
+    assert "For a further ceiling that can be enforced, set " \
            "agent.run_budget_turns or agent.run_budget_s, or pick a " \
            "model id with a published rate." in block
 
@@ -510,8 +544,9 @@ def test_the_exhausted_notice_names_the_dial_that_is_binding(monkeypatch):
     and the ceiling it listed left the binding cap out entirely.
     """
     seen = []
-    # 21 of 20 is the 105% the pinned text above carries, so this also
-    # shows the model-facing block is byte-identical whichever dial binds.
+    # 21 of 20 is the same 105% the USD case carries, so this also shows
+    # the block's wording is the same whichever dial binds -- only the
+    # dimension list differs, and it differs because the dials do.
     eng = _engine_via_new(run_budget_requests=20)
     monkeypatch.setattr(type(eng._budget_ledger()), "_requests_taken",
                         lambda self: 21)
@@ -519,7 +554,8 @@ def test_the_exhausted_notice_names_the_dial_that_is_binding(monkeypatch):
     monkeypatch.setattr(A, "emit_attention",
                         lambda kind, **k: seen.append((kind, k)))
     block = eng._build_budget_block()
-    assert block == EXHAUSTED, block
+    assert block == _exhausted(
+        f"21 of 20 requests (105 %); {TOKENS_IDLE}"), block
     assert seen, "no notice reached the inbox"
     detail = " ".join(str(v) for v in seen[0][1].values())
     assert "agent.run_budget_requests" in detail, detail

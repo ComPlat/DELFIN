@@ -266,7 +266,9 @@ def _fitness_note(client, name: str) -> str:
         from . import model_capabilities as mc
         provider = str(getattr(client, "provider", "")
                        or getattr(client, "_provider", "") or "")
-        caps = mc.resolve(provider, name, str(getattr(client, "_base_url", "") or ""))
+        caps = mc.resolve(
+            provider, name, str(getattr(client, "_base_url", "") or ""),
+            api_key=str(getattr(client, "_api_key", "") or ""))
         warn = mc.agent_fitness(provider, name, caps)
     except Exception:
         return ""
