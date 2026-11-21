@@ -553,6 +553,40 @@ def initial_xyz_png_bytes(calc_dir: str, size: int = 320, show_h=True,
     bond_orders = {(remap[i], remap[j]): o
                    for (i, j), o in bond_orders.items()
                    if i in keepset and j in keepset}
+    # Label collisions: two atoms projecting onto nearly the same 2D
+    # point (Cl label on top of the metal label, user report pages
+    # 109-112) both labels become unreadable.  Push each atom of a
+    # colliding pair APART along its bond direction away from the
+    # pair centre; only atoms that are actually labelled move.
+    _MET = set(_XYZ_MASS) - {"H", "B", "C", "N", "O", "F", "Si", "P",
+                             "S", "Cl", "Br", "I"}
+    labelled = [k for k, s in enumerate(sym_vis) if s not in ("C",)]
+    adj_vis = {}
+    for i, j in bonds_vis:
+        adj_vis.setdefault(i, []).append(j)
+        adj_vis.setdefault(j, []).append(i)
+    min_sep = 0.06 * (rotated[:, 0].max() - rotated[:, 0].min()
+                      + rotated[:, 1].max() - rotated[:, 1].min())
+    pts2 = rotated[:, :2]
+    for a in labelled:
+        for b in labelled:
+            if b <= a:
+                continue
+            d = pts2[b] - pts2[a]
+            dist = float(numpy.hypot(d[0], d[1]))
+            if dist >= min_sep:
+                continue
+            # push a and b apart along the direction away from each
+            # other; prefer the bond direction when the pair is bonded
+            if dist < 1e-6:
+                vec = numpy.array([1.0, 0.0])
+            else:
+                vec = d / dist
+            shift = 0.5 * (min_sep - dist)
+            rotated[a][0] -= vec[0] * shift
+            rotated[a][1] -= vec[1] * shift
+            rotated[b][0] += vec[0] * shift
+            rotated[b][1] += vec[1] * shift
     return _render_skeleton(sym_vis, rotated, bonds_vis, size,
                             bond_orders=bond_orders, fmt=fmt)
 
@@ -1085,12 +1119,20 @@ def _render_skeleton(sym, rotated, bonds, size,
     # hides entirely under the base line (bug: upgrades were computed
     # and drawn but invisible).
     _dbl = {tuple(sorted(p)) for p in bond_orders} if bond_orders else set()
+    # Metal-ligand bonds are drawn thinner and grey (user report 2026-11-21,
+    # Aufgabe 5): they are dative bonds and must read as different from the
+    # covalent ligand skeleton.
+    _MET = set(_XYZ_MASS) - {"H", "B", "C", "N", "O", "F", "Si", "P",
+                             "S", "Cl", "Br", "I"}
     for i, j in heavy_bonds:
         if tuple(sorted((i, j))) in _dbl:
             continue
+        is_metal_bond = sym[i] in _MET or sym[j] in _MET
         ax.plot([rotated[i][0], rotated[j][0]],
                 [rotated[i][1], rotated[j][1]],
-                color="black", lw=1.8, solid_capstyle="round", zorder=1)
+                color="0.45" if is_metal_bond else "black",
+                lw=1.0 if is_metal_bond else 1.8,
+                solid_capstyle="round", zorder=1)
     for i, j in h_bonds:
         ax.plot([rotated[i][0], rotated[j][0]],
                 [rotated[i][1], rotated[j][1]],
