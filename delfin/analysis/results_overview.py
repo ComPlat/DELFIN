@@ -180,12 +180,13 @@ def _smiles_from_3d(calc_dir: str):
 
     Fallback for older calcs whose DELFIN_Data.json carries no
     input.smiles (46 of 115 do).  The heavy+H graph minus metals is
-    built as an RDKit molecule with the XYZ coordinates as conformer,
-    then rdDetermineBonds assigns connectivity and orders; a short
-    charge sweep finds the fragment charge that admits a valid
-    ordering (proven on 106-138_106: charge -2 yields the fully
-    kekulized complex).  None if RDKit is absent or no ordering is
-    valid for any charge in the sweep.
+      built as an RDKit molecule with the XYZ coordinates as conformer,
+      then rdDetermineBonds assigns connectivity and orders; a short
+      charge sweep finds the fragment charge that admits a valid
+      ordering (proven on 106-138_106: charge -2 yields the fully
+      kekulized complex; 106-138_109 needs -3, 106-138_108..113 need
+      -2).  None if RDKit is absent or no ordering is valid for any
+      charge in the sweep.
     """
     try:
         from rdkit import Chem
@@ -208,7 +209,7 @@ def _smiles_from_3d(calc_dir: str):
         conf.SetAtomPosition(n, (float(atoms[i][1]), float(atoms[i][2]),
                                  float(atoms[i][3])))
     mol.AddConformer(conf)
-    for charge in (0, -1, 1, -2, 2):
+    for charge in (0, 1, -1, 2, -2, 3, -3, 4, -4):
         try:
             trial = Chem.RWMol(mol)
             rdDetermineBonds.DetermineConnectivity(trial)
@@ -754,7 +755,7 @@ def _rdkit_bond_orders(sym, bonds, positions):
     # The complex may be an anion/cation (e.g. 428: Co complex -1):
     # try small charges until one fits, else fall back.
     orders_ok = False
-    for charge in (+1, -1, 0, +2, -2):
+    for charge in (1, -1, 0, 2, -2, 3, -3, 4, -4):
         try:
             probe = Chem.Mol(mol)
             rdDetermineBonds.DetermineBondOrders(
@@ -781,22 +782,51 @@ def _rdkit_bond_orders(sym, bonds, positions):
     # ring carbons, no H): the metal bond consumes its lone pair, so
     # its ring double bonds sit BETWEEN CARBONS - never C=N (user,
     # 428 pyrrole ligand).  Drop N doubles at such N; the adjacent C
-    # keeps the alternation from its other ring edge.
+    # keeps the alternation from its other edge.
+    # SIX-membered rings are pyridine-type: the coordinated ring N
+    # KEEPS its C=N double bond (removing it left pyridine rings with
+    # 2 instead of 3 doubles, user report 106-138_108..113).  The drop
+    # therefore applies only when the N sits in a FIVE-membered ring
+    # (pyrrole/pyrazolate).  Ring membership is decided on the heavy-
+    # atom graph by walking 3 and 4 steps back to the N itself.
     _METALS = set(_XYZ_MASS) - {"H", "B", "C", "N", "O", "F", "Si",
                                 "P", "S", "Cl", "Br", "I"}
     _neigh = {}
     for a, b in bonds:
         _neigh.setdefault(a, []).append(b)
         _neigh.setdefault(b, []).append(a)
+
+    def _in_ring_of_size(atom, size, hops):
+        """True if a cycle of length `size` returns to `atom` within
+        `hops` heavy-atom steps (H and metals excluded from the walk)."""
+        targets = {size}
+        frontier = [(atom, frozenset())]
+        for _ in range(hops):
+            nxt = []
+            for node, path in frontier:
+                for k in _neigh.get(node, ()):
+                    if sym[k] in _METALS or sym[k] == "H":
+                        continue
+                    if k in path:
+                        continue
+                    if k == atom and len(path) + 1 == size:
+                        return True
+                    nxt.append((k, path | {node}))
+            frontier = nxt
+        return False
+
     drop = set()
     for atom, ns in _neigh.items():
         # Target the metal-coordinated deprotonated N: it must have a
-        # metal neighbour, no H, and exactly two ring-carbon neighbours.
+        # metal neighbour, no H, and exactly two ring-carbon neighbours,
+        # and sit in a five-membered ring (pyrrolate); a pyridine-type
+        # N in a six-membered ring keeps its C=N double bond.
         if sym[atom] != "N" or not any(sym[k] in _METALS for k in ns):
             continue
         hs = [k for k in ns if sym[k] == "H"]
         cs = [k for k in ns if sym[k] == "C"]
-        if len(hs) == 0 and len(cs) == 2:
+        if len(hs) == 0 and len(cs) == 2 \
+                and _in_ring_of_size(atom, 5, 4):
             for k in ns:
                 if sym[k] != "H":
                     drop.add(tuple(sorted((atom, k))))
