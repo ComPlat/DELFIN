@@ -195,6 +195,14 @@ def test_several_positionals_are_judged_on_the_first(lustre, jobs):
 
     Measured before the fix: verdict='allow' -- the gate read the LAST
     positional, found clean.sh, and never looked at walk.sh.
+
+    KIND: a GUARD, not a control. Re-measured at c026e3eb5 (before the
+    first-positional change) this row was ALREADY green: that commit picked
+    a positional naming an existing file and here that is walk.sh. The
+    allow in the round-19 probe came from the 43285ce79 shape, not this
+    one. 2978fcf16's message claims otherwise and the following commit
+    corrects it. Kept because s8 asked for the rule to be pinned, and an
+    unpinned guard decays.
     """
     verdict, text, may_run = _v(
         f"sbatch {jobs / 'walk.sh'} {jobs / 'clean.sh'}")
