@@ -125,7 +125,7 @@ def test_single_user_path_unchanged(state):
     assert store.persons() == [OWNER]
 
 
-def test_a_second_person_pairs_through_the_real_path_while_the_head_is_paired(acct):
+def test_a_second_person_pairs_through_the_real_path_while_the_head_is_paired(acct, truthful_peer):
     """Part 3, the whole scenario: the head's phone is already verified,
     then anna pairs her own phone through the SAME path (her /pair in her
     own directory, her one-time invitation, her code confirmed in her

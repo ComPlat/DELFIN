@@ -51,3 +51,21 @@ another repository whose log line had grown past two hundred entries. Both
 answer "was this driven?" only for as long as someone remembers where to
 look. A file beside the change answers it in a `git log`, and travels with
 a clone.
+
+## Files
+
+Kept as an index because the directory now holds more than one file,
+and the one-line summaries say which measurement a reader wants
+without opening three files. Added by the branch that brought the
+first three.
+
+- [`agent-session-variables.md`](agent-session-variables.md) — the three
+  ambient variables a DELFIN agent session exports, and the tests that
+  measured them instead of the module.
+- [`sandbox-and-mount-limits.md`](sandbox-and-mount-limits.md) — the seccomp
+  listener refusal, the bwrap network-namespace failure, the git grep thread
+  ceiling, and `/var/tmp` being read-only.
+- [`peer-id-and-socket-path.md`](peer-id-and-socket-path.md) —
+  `SO_PEERCRED` answering with the sandbox supervisor's pid instead of the
+  peer's, and a `TMPDIR` deep enough to overflow `sockaddr_un`, with the
+  before/after over the nine pairing-test files.

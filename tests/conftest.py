@@ -255,6 +255,23 @@ def _teardown_new_paths(before: frozenset,
 _LIFELINE_NAMES = ("DELFIN_LIFELINE_PID", "DELFIN_LIFELINE_TICKS")
 _LIFELINE_SAVED: dict = {}
 
+#: Variables a DELFIN agent session exports to everything it starts, and
+#: which a suite run from one therefore inherits. Each is read by the
+#: product as a state of the RUNNING process, so a test that does not unset
+#: it measures the shell instead of the code:
+#:
+#: * ``DELFIN_AGENT_SESSION`` (``approval_guard.ENV_MARKER``): the mark
+#:   every agent child carries. ``knowledge_share`` refuses to share or
+#:   curate, the trust store refuses a write, ``file_confirm`` answers as
+#:   the person, and ``_classifier_settings`` ignores
+#:   ``DELFIN_CLASSIFIER=off`` when it is set.
+#: * ``DELFIN_SESSION_SCRATCH``: the cage's session scratch directory, read
+#:   by ``orca`` (for a caged run) and exported by the bash tool. A test of
+#:   ``_scrubbed_bash_env`` asserts it is NOT exported when no scratch can
+#:   be made -- true on CI, false in a shell that already carries one.
+AGENT_SESSION_MARKER = "DELFIN_AGENT_SESSION"
+_CAGE_SESSION_VARS = (AGENT_SESSION_MARKER, "DELFIN_SESSION_SCRATCH")
+
 #: Credential variables (a provider's key, a forge token, any secret): the
 #: rule of tui/spike/check_tmux.py's is_credential, held to the same
 #: answer by tests/test_the_tui_e2e_harness_passes_no_credentials.py.
@@ -290,6 +307,30 @@ def workspace_skills_trusted(monkeypatch):
 
     monkeypatch.setattr(_skills, "_project_skill_dir", _trusted)
     yield
+
+
+@pytest.fixture
+def truthful_peer(monkeypatch):
+    """``SO_PEERCRED`` answers with the connecting process, as a kernel that
+    names its peers does.
+
+    Input: none. Output: none. Semantics: a test that needs a pairing door
+    or a bridge check to ADMIT a peer must first be given the kernel's
+    answer that CI's kernel gives. On a workstation inside a nested pid
+    namespace the option reports the sandbox supervisor's pid -- an
+    ancestor whose environ is unreadable -- instead of the peer's, so
+    ``_from_an_agent`` judges the peer an agent and the check refuses for a
+    reason that has nothing to do with the code being tested. Measured
+    2026-11-20: the accepted socket answered pid 2 while the caller was pid
+    7, and one test read "the asking window is gone" for a door of its own
+    process. Tests of the REFUSAL need nothing: they pass without this.
+
+    The alternative rejected: a ``skipif`` for the namespace. It would
+    leave the admission path unasserted on exactly the hosts that fail it,
+    and the hand-over is the promise those tests exist for.
+    """
+    from delfin.agent.service import supervisor
+    monkeypatch.setattr(supervisor, "_peer_pid", lambda sock: os.getpid())
 
 
 def child_env(tmp_path) -> dict:
@@ -1448,20 +1489,112 @@ def isolation_is_expected() -> bool:
         "1", "true", "yes")
 
 
-def sandbox_is_functional() -> bool:
-    """Whether bwrap can actually confine anything here.
+#: Where a directory OUTSIDE /tmp may live, in the order a real lockbox
+#: does: the system temporary root for long-lived files, then the user's own
+#: home. ``tempfile.gettempdir()`` is deliberately not a candidate -- on most
+#: systems it IS /tmp, which the caller must not get.
+_OUTSIDE_TMP_CANDIDATES = (
+    Path("/var/tmp"),
+    Path.home(),
+)
 
-    Production's own probe, not a second one: a private copy in the test
-    file probed the MINIMAL wrap (``bwrap --ro-bind / / true``) while the
-    real wrap also asks for ``--dev /dev --proc /proc --tmpfs /tmp``. On a
-    host where the minimal probe passes and the full one does not, the
+
+def outside_tmp() -> "Path | None":
+    """A writable directory that is not under /tmp, or None.
+
+    Input: nothing. Output: a ``Path`` the caller may create files under, or
+    None where this host offers none. Semantics: each candidate is checked
+    by CREATING a directory in it and removing it again -- the create is the
+    measurement -- and a candidate that resolves into /tmp is rejected
+    whatever its name, because a cage mounts a fresh tmpfs there and a
+    lockbox beneath it would be invisible for the wrong reason.
+
+    Rejected: ``os.access(path, os.W_OK)`` alone, which the sibling fixture
+    in ``test_a_caged_command_runs_without_asking.py`` uses. It answers the
+    permission bit, not whether the mount accepts writes: a path whose MODE
+    looks writable on a read-only mount answers True, and the fixture then
+    failed in setup with ``OSError: [Errno 30]`` instead of saying what it
+    needed.
+    """
+    import tempfile as _tempfile
+    for base in _OUTSIDE_TMP_CANDIDATES:
+        try:
+            if not base.is_dir():
+                continue
+            if str(base.resolve()).startswith(("/tmp/", "/private/tmp/")):
+                continue
+            made = _tempfile.mkdtemp(prefix="dx-outside-", dir=str(base))
+        except OSError:
+            continue
+        try:
+            if not str(Path(made).resolve()).startswith(
+                    ("/tmp/", "/private/tmp/")):
+                return base
+        finally:
+            try:
+                Path(made).rmdir()
+            except OSError:
+                pass
+    return None
+
+
+def sandbox_is_functional() -> bool:
+    """Whether the wrap these tests drive a command through can run here.
+
+    Production's own probe first, not a second one: a private copy in the
+    test file probed the MINIMAL wrap (``bwrap --ro-bind / / true``) while
+    the real wrap also asks for ``--dev /dev --proc /proc --tmpfs /tmp``. On
+    a host where the minimal probe passes and the full one does not, the
     gate opened for a wrap that cannot be built.
+
+    ``_bwrap_functional`` is necessary and not sufficient, measured
+    2026-11-20: on a workstation that is already inside a seccomp filter,
+    bwrap builds its cage (so ``_bwrap_functional`` is True) and the caged
+    command still cannot run, because the layers that hold its network both
+    fail there -- a listener filter gets EBUSY
+    (``SECCOMP_SET_MODE_FILTER | NEW_LISTENER``), and
+    ``bwrap --unshare-net`` dies on ``loopback: Failed RTM_NEWADDR:
+    Permission denied``. Eleven tests in the two caged-command files then
+    failed on "refused: sandbox could not be applied" while passing on CI,
+    where the runner is not filtered.
+
+    So the question is asked where the tests put it: a command is driven
+    through the product's own executor, in the mode these tests use, and
+    the answer is whether it came back refused BY THE CAGE. Asking the
+    product rather than re-deriving its decision means a new layer that
+    cannot run here skips these tests with a reason instead of failing
+    them.
     """
     try:
         from delfin.agent.api_client import _bwrap_functional
-        return bool(_bwrap_functional())
+        if not bool(_bwrap_functional()):
+            return False
     except Exception:
         return False
+    return _a_caged_command_can_run()
+
+
+def _a_caged_command_can_run() -> bool:
+    """Drive ``true`` through the executor; False when the cage refused it.
+
+    The refusal is the product's own wording ("refused: sandbox could not
+    be applied"), which is what the caged tests would otherwise fail on.
+    A host where the command runs, prints, and is not refused is functional
+    whether or not a cage was involved: those are the tests' own
+    preconditions, and they assert the confinement separately.
+    """
+    import json
+    import tempfile
+    try:
+        from delfin.agent.api_client import KitToolPermissions, _doc_executor
+        with tempfile.TemporaryDirectory(prefix="dx-probe-") as tmp:
+            perms = KitToolPermissions(mode="default", workspace=tmp)
+            out = json.loads(_doc_executor.execute(
+                "bash", {"command": "true", "description": "probe"}, perms))
+    except Exception:
+        return False
+    return "refused: sandbox could not be applied" not in str(
+        out.get("stderr", ""))
 
 
 def requires_a_working_sandbox(fn):
@@ -1475,14 +1608,44 @@ def requires_a_working_sandbox(fn):
         def _fail(*args, **kwargs):
             pytest.fail(
                 f"{_ISOLATION_EXPECTED_ENV} is set, so this environment "
-                "promises a working sandbox, but bwrap could not build the "
-                "wrap the agent uses. Confinement is NOT being tested here."
+                "promises a working sandbox, but a caged command was "
+                f"refused here: {sandbox_refusal_reason()}. Confinement is "
+                "NOT being tested here."
             )
         return _fail
     return pytest.mark.skip(
-        reason=("no functional bwrap (unprivileged container?); set "
-                f"{_ISOLATION_EXPECTED_ENV}=1 to make this a failure")
+        reason=(f"a caged command is refused here ({sandbox_refusal_reason()}); "
+                f"set {_ISOLATION_EXPECTED_ENV}=1 to make this a failure")
     )(fn)
+
+
+def sandbox_refusal_reason() -> str:
+    """Why :func:`sandbox_is_functional` said no, in the product's words.
+
+    Names the layer that actually refused, so the skip line is read for what
+    it is. On the workstation measured 2026-11-20 bwrap itself was fine and
+    the network layers were not (a listener seccomp filter got EBUSY, and
+    ``bwrap --unshare-net`` could not bring its loopback up), so a fixed
+    "no functional bwrap" message sent the reader after the wrong thing.
+    """
+    import json
+    import tempfile
+    try:
+        from delfin.agent.api_client import (
+            KitToolPermissions, _bwrap_functional, _doc_executor)
+        if not bool(_bwrap_functional()):
+            return "bwrap cannot build the wrap the agent uses"
+        with tempfile.TemporaryDirectory(prefix="dx-probe-") as tmp:
+            perms = KitToolPermissions(mode="default", workspace=tmp)
+            out = json.loads(_doc_executor.execute(
+                "bash", {"command": "true", "description": "probe"}, perms))
+        stderr = str(out.get("stderr", ""))
+    except Exception as exc:                          # noqa: BLE001 - report it
+        return f"the probe could not run ({exc})"
+    if "refused: sandbox could not be applied" in stderr:
+        first = stderr.strip().splitlines()[0] if stderr.strip() else ""
+        return first.replace("refused: sandbox could not be applied ", "")[:200]
+    return "the probe command did not run"
 
 
 # ---------------------------------------------------------------------------
@@ -1721,6 +1884,24 @@ def pytest_configure(config):
     )
     import os
     for name in _LIFELINE_NAMES:
+        if name in os.environ:
+            _LIFELINE_SAVED[name] = os.environ.pop(name)
+    # The suite measures the code, not the shell it was started from: a
+    # DELFIN agent session exports its marker to everything it starts, so a
+    # suite run from one would ask "am I inside an agent session" everywhere
+    # the product asks it. Measured 2026-11-20 on a workstation whose shell
+    # carried DELFIN_AGENT_SESSION=985466 and DELFIN_SESSION_SCRATCH, on the
+    # commit CI runs green: test_zz_u12_second_opinion failed on the
+    # classifier switch (a nested agent ignores DELFIN_CLASSIFIER=off by
+    # design), test_knowledge_agent_surface failed on sharing ("this runs
+    # inside an agent session"), and test_sx2_session_scratch_export failed
+    # on an exported scratch directory -- all three passing under `env -u`.
+    # Removed for the session and handed back in pytest_unconfigure, like
+    # the lifeline variables above -- not per test, because a test may call
+    # monkeypatch.undo() (the classifier test does), which would put the
+    # host's copy back mid-test. The tests that measure what happens INSIDE
+    # an agent session set the marker themselves and are unaffected.
+    for name in _CAGE_SESSION_VARS:
         if name in os.environ:
             _LIFELINE_SAVED[name] = os.environ.pop(name)
     # A dashboard built by a test (a voila server, a create_tab without a
