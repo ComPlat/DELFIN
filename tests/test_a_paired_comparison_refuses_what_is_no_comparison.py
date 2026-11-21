@@ -436,3 +436,90 @@ def test_nothing_rides_along(tmp_path, cmd):
     import re
     from delfin.agent import api_client as A
     assert not any(re.search(p, cmd) for p in A._DEFAULT_BASH_AUTO_ALLOW), cmd
+
+
+# ---------------------------------------------------------------------------
+# the pre-registration file
+# ---------------------------------------------------------------------------
+
+def _prereg_file(tmp_path, name="prereg.json", body=None, when=900.0):
+    p = tmp_path / name
+    p.write_text(body if body is not None else json.dumps({
+        "id": "exp-1", "hypothesis": "the change matters",
+        "switch": "PROJ_FAST",
+        "why_chain": ["one judge per comparison", "the arm reads the switch"],
+        "expectation": "ok rate does not drop",
+        "reading": "a never-worse case is a regression",
+        "pool_size": "small"}))
+    os.utime(p, (when, when))
+    return p
+
+
+def test_a_written_down_prereg_before_the_stamp_is_before_measurement(
+        tmp_path):
+    v = _pair(prereg=str(_prereg_file(tmp_path)))
+    assert v["prereg"] == "before_measurement", v
+
+
+def test_a_prereg_with_no_written_down_content_is_not_before_measurement(
+        tmp_path):
+    # a file that exists before the stamp is not a pre-registration just
+    # by existing: its content must survive the experiment module's own
+    # pre_register gate
+    v = _pair(prereg=str(_prereg_file(tmp_path, body="   \n")))
+    assert v["prereg"].startswith("not_written_down:"), v["prereg"]
+
+
+def test_a_prereg_missing_its_reading_is_named_by_the_module(tmp_path):
+    body = {"id": "e", "hypothesis": "h", "switch": "s", "why_chain": ["w"],
+            "expectation": "ok rate does not drop",
+            "pool_size": "small"}   # no reading
+    v = _pair(prereg=str(_prereg_file(tmp_path, body=json.dumps(body))))
+    assert v["prereg"].startswith("not_written_down:"), v["prereg"]
+    assert "reading" in v["prereg"], v["prereg"]
+
+
+def test_a_prereg_written_after_the_first_stamp_still_is(tmp_path):
+    v = _pair(prereg=str(_prereg_file(tmp_path, when=1100.0)))
+    assert v["prereg"] == "written_after_the_first_arm_was_stamped", v
+
+
+def test_a_missing_prereg_file_is_missing(tmp_path):
+    v = _pair(prereg=str(tmp_path / "nope.json"))
+    assert v["prereg"] == "missing", v
+
+
+def test_the_prereg_verdict_changes_no_state_and_no_exit_code(tmp_path):
+    good = _pair(prereg=str(_prereg_file(tmp_path)))
+    bad = _pair(prereg=str(_prereg_file(tmp_path, name="p2.json",
+                                        body="   \n")))
+    plain = _pair()
+    for v in (good, bad, plain):
+        assert v["state"] == "needs_human_check", v["reasons"]
+        assert P.exit_code(v) == P.exit_code(plain)
+
+
+def test_compare_arms_reports_the_prereg_verdict(tmp_path):
+    from conftest import child_env
+    env = child_env(tmp_path)
+    env["PYTHONPATH"] = str(Path(P.__file__).resolve().parents[2])
+    a, b = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
+    a.write_text("\n".join(json.dumps(r) for r in _arm()))
+    b.write_text("\n".join(json.dumps(r) for r in _changed()))
+    for arm, val in (("a", "0"), ("b", "1")):
+        r = _cli("provenance", "--code", str(a), "--prefix", "PROJ_",
+                 "--command", f"PROJ_FAST={val} python run.py",
+                 "--save", f"t-{arm}", cwd=str(tmp_path), env=env)
+        assert r.returncode == 0, r.stderr
+    good = _prereg_file(tmp_path)
+    r = _cli("compare-arms", str(a), str(b), "--stamp-a", "t-a",
+             "--stamp-b", "t-b", "--axis", "PROJ_FAST", "--ok", "ok",
+             "--prereg", str(good), cwd=str(tmp_path), env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "pre-registration: before_measurement" in r.stdout, r.stdout
+    blank = _prereg_file(tmp_path, name="blank.json", body="   \n")
+    r = _cli("compare-arms", str(a), str(b), "--stamp-a", "t-a",
+             "--stamp-b", "t-b", "--axis", "PROJ_FAST", "--ok", "ok",
+             "--prereg", str(blank), cwd=str(tmp_path), env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "pre-registration: not_written_down" in r.stdout, r.stdout

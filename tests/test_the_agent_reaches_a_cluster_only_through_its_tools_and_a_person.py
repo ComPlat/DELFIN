@@ -299,7 +299,9 @@ def test_cluster_run_never_submits_cancels_or_reads_a_secret(world, command, cod
                      mode="bypassPermissions")
     assert _error(got)["code"] == code, got
     assert world.asked == [] and world.ran("sbatch") == [] and world.ran("scancel") == []
-    (row,) = [r for r in audit_log.read_last_n(20) if r.get("tool") == "cluster_run"]
+    (row,) = [r for r in audit_log._scan(
+        audit_log._default_log_path())[0][-20:]
+        if r.get("tool") == "cluster_run"]
     assert row["decision"] == "denied" and row["command"] == command
 
 
@@ -388,7 +390,9 @@ def test_a_batch_is_asked_once_in_every_mode_and_then_submitted(world):
     assert "4 cores" in preview and "budget: 2.5 of 100 jobh used" in preview
     (line,) = world.ran("sbatch")
     assert "--comment=delfin-commit=" + SHA in line
-    rows = [r for r in audit_log.read_last_n(20) if r.get("tool") == "cluster_submit"]
+    rows = [r for r in audit_log._scan(
+        audit_log._default_log_path())[0][-20:]
+        if r.get("tool") == "cluster_submit"]
     assert rows and rows[-1]["decision"] == "ok" and rows[-1]["job_ids"] == ["4242"]
     # Watched for this session: the job watcher's outcome reaches it.
     assert got["submitted"][0]["results_to"] == "fe/kcist-4242"
@@ -412,7 +416,9 @@ def test_a_batch_that_fails_partway_names_and_watches_what_was_submitted(world):
     assert "do NOT submit them again" in got["next"]
     watches = job_monitor.load_watched(job_monitor._agent_watch_path(world.ws))["jobs"]
     assert list(watches) == ["kcist:4242"]
-    row = [r for r in audit_log.read_last_n(20) if r.get("tool") == "cluster_submit"][-1]
+    row = [r for r in audit_log._scan(
+        audit_log._default_log_path())[0][-20:]
+        if r.get("tool") == "cluster_submit"][-1]
     assert row["decision"] == "error" and row["job_ids"] == ["4242"]
 
 
@@ -434,7 +440,9 @@ def test_a_refused_batch_is_audited_as_it_was_asked(world):
         {"folder": "fe"}, {"folder": "sp", "kind": "orca"}]}))
     assert got["code"] == "batch_refused" and "names its .inp" in got["error"]
     assert world.asked == [] and world.ran("sbatch") == []
-    (row,) = [r for r in audit_log.read_last_n(20) if r.get("tool") == "cluster_submit"]
+    (row,) = [r for r in audit_log._scan(
+        audit_log._default_log_path())[0][-20:]
+        if r.get("tool") == "cluster_submit"]
     assert row["decision"] == "denied" and row["command"] == "submit 2 job(s) to kcist: fe, sp"
     assert row["folders"] == ["fe", "sp"]
 

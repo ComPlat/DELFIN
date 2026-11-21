@@ -124,7 +124,7 @@ def test_repeated_refused_act_is_counted(tmp_path):
     _write(log, tool="bash", decision="auto", command="rm -rf /tmp/nope")
     r = _summarize(log, finished=False)
     # The audit writer lists a denied bash command under ``commands`` too
-    # (audit_log.py:1035-1038), so the first stream occurrence IS the
+    # (audit_log.py:1007-1010), so the first stream occurrence IS the
     # denial; a repeat is each occurrence beyond it. One retry -> 1.
     assert r.repeats == 1
 

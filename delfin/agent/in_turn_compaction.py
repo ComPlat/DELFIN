@@ -112,18 +112,6 @@ def _fold_parts(content: str) -> tuple[str, list[str], int]:
     return "\n".join(state).strip(), digests, unlisted
 
 
-def _is_goal(msg: dict) -> bool:
-    """A real user goal: user role, not a synthetic machine turn."""
-    if msg.get("role") != "user":
-        return False
-    content = msg.get("content", "")
-    if not isinstance(content, str):
-        return False
-    return not content.lstrip().startswith(
-        ("[Command results]", "[Verify]", "[System]",
-         "[Conversation summary", "[Working state"))
-
-
 def _tool_chars(messages: list[dict]) -> int:
     return sum(len(str(m.get("content", "")))
                for m in messages if m.get("role") == "tool")

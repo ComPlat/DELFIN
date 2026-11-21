@@ -241,7 +241,9 @@ def test_the_first_submit_of_a_new_commit_comes_back_at_once(world):
     (key, entry), = _batch_watch(world).items()
     assert key == got["queued"] and entry["kind"] == "cluster"
     assert entry["remote_id"] == key.split(":", 1)[1] and entry["session_id"] == SID
-    row = [r for r in audit_log.read_last_n(20) if r.get("tool") == "cluster_submit"][-1]
+    row = [r for r in audit_log._scan(
+        audit_log._default_log_path())[0][-20:]
+        if r.get("tool") == "cluster_submit"][-1]
     assert row["decision"] == "ok" and row["queued"] == key
     assert install.state(connection.connect("kcist"), SHA) == "running"
 
@@ -365,7 +367,9 @@ def test_the_next_submit_starts_a_stopped_install_again(world):
     assert world.installer_pid() != stopped_pid
     with pytest.raises(ProcessLookupError):
         os.killpg(stopped_pid, 0)                      # the stopped session is gone
-    assert [r for r in audit_log.read_last_n(20) if r.get("tool") == "cluster_install"
+    assert [r for r in audit_log._scan(
+        audit_log._default_log_path())[0][-20:]
+        if r.get("tool") == "cluster_install"
             and r.get("mode") == "auto_install-restart"], "the restart is audited"
 
 

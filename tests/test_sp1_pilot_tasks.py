@@ -72,7 +72,7 @@ _FACTS = {
         ("delfin/agent/explore_pilot.py", 225, "verify_citations"),
     ],
     "sp1_scoring_result": [
-        ("delfin/agent/benchmark.py", 1938, "score_outcome"),
+        ("delfin/agent/benchmark.py", 1915, "score_outcome"),
         ("delfin/agent/benchmark.py", 520, "BenchmarkResult"),
     ],
     "sp1_pilot_wiring": [
