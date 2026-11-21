@@ -14,27 +14,28 @@ def solvation():
                 cutoff_nm=0.9, ewald_tolerance=0.0005)
 
 
-def mock_solvation(monkeypatch, mode='success'):
+def mock_solvation(monkeypatch, mode='success', setup=install_mock):
     import delfin.tools.adapters.bio_openmm_system as module
-    install_mock(monkeypatch)
+    setup(monkeypatch)
     base = module.run_worker
     def worker(script, options, versions, **kwargs):
         runtime = base(script, options, versions, **kwargs)
         root = kwargs['work_dir']
         lines = (root / 'input.pdb').read_text().splitlines()[:-1]
+        count = len(read_json(root / 'topology.json')['atoms'])
         if mode == 'moved_protein':
             lines = [line.replace('11.104', '12.104') for line in lines]
-        for index, (name, element, x, y, z) in enumerate([('O', 'O', 20., 20., 20.), ('H1', 'H', 20.9, 20., 20.), ('H2', 'H', 20., 20.9, 20.)], 7):
+        for index, (name, element, x, y, z) in enumerate([('O', 'O', 20., 20., 20.), ('H1', 'H', 20.9, 20., 20.), ('H2', 'H', 20., 20.9, 20.)], count + 1):
             lines.append(f'HETATM{index:5d} {name:^4s} HOH W   1    {x:8.3f}{y:8.3f}{z:8.3f}{1.:6.2f}{0.:6.2f}          {element:>2s}')
         (root / 'solvated.pdb').write_text('\n'.join(lines + ['END']) + '\n')
         topology = read_json(root / 'topology.json')
         positions = read_json(root / 'positions.json')
-        for index, (name, element) in enumerate([('O', 'O'), ('H1', 'H'), ('H2', 'H')], 6):
+        for index, (name, element) in enumerate([('O', 'O'), ('H1', 'H'), ('H2', 'H')], count):
             topology['atoms'].append(dict(index=index, name=name, element=element, chain='W', residue_id='1', residue_name='HOH', insertion_code=''))
         positions['values'] += [[2., 2., 2.], [2.09, 2., 2.], [2., 2.09, 2.]]
         if mode == 'moved_protein':
             positions['values'][0][0] += .1
-        topology['bonds'] += [[6, 7], [6, 8]]
+        topology['bonds'] += [[count, count + 1], [count, count + 2]]
         (root / 'topology.json').write_text(json.dumps(topology))
         (root / 'positions.json').write_text(json.dumps(positions))
         xml = ET.parse(root / 'system.xml').getroot()

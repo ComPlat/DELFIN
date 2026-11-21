@@ -1,7 +1,7 @@
 # Werkzeuge, Processing und Visualisierung
 
-Der aktuelle Katalog enthält 46 Verträge und 28 Ausführungsbindungen. Die Zahlen
-beschreiben Software-Schnittstellen, nicht 28 wissenschaftlich validierte Engines.
+Der aktuelle Katalog enthält 48 Verträge und 30 Ausführungsbindungen. Die Zahlen
+beschreiben Software-Schnittstellen, nicht 30 wissenschaftlich validierte Engines.
 Die Laufzeitabfrage des Katalogs ist maßgeblich; Grenzen einzelner Adapter sind
 in der [Workflow-Referenz](../BIOMOLECULAR_WORKFLOWS.md) beschrieben.
 
@@ -16,7 +16,7 @@ in der [Workflow-Referenz](../BIOMOLECULAR_WORKFLOWS.md) beschrieben.
 | Qualitäts-/Kontaktanalyse | PoseBusters, PLIP, ProLIF, Pose-RMSD | Fehlerhafte Posen bleiben sichtbar; ProLIF benötigt passende Graphen/H-Atome und Mapping |
 | MedChem-Daten | Exakter Assay-Join mit Zuständen, Einheiten, Bedingungen, Zensierung, Replikaten | Kein stilles Vermischen von IC50, Ki, Docking-Score oder inkompatiblen Einheiten |
 | Vorhersage | ESMFold-v1-Adapter; Import, Konfidenz und Modellauswahl | Einzelprotein und lokale Gewichte; keine allgemeine Cofolding-Unterstützung |
-| Systemaufbau | ff14SB-Protein in Vakuum oder TIP3P/Na+/K+/Cl- mit PME | Keine Liganden-Parameterzuweisung; explizite orthorhombische Box |
+| Systemaufbau | ff14SB-Protein mit optional einem SMIRNOFF-Liganden in Vakuum oder TIP3P/Na+/K+/Cl- mit PME | Explizite SDF-Ladungen und lokales OFFXML; orthorhombische Box |
 | Dynamik | Begrenzte Minimierung und LangevinMiddle-Dynamik, Checkpoint-Fortsetzung | CPU/Reference, feste Box, kein NPT; kein wissenschaftlicher Äquilibrierungsnachweis |
 | Trajektorien | MDAnalysis-basierte Ausrichtung, RMSD/RMSF und Trägheitsradius | Explizite Atomauswahl/Gewichtung; periodisch nur bestätigtes `as_stored`, kein Unwrapping |
 
@@ -63,3 +63,5 @@ Diese Bereiche brauchen jeweils eigene, versionsgebundene Adapter und
 Abnahmekriterien. Eine generische Shell-Kommando-Vorlage ersetzt keine Integration.
 Die bestehende ORCA-QM/MM-Funktionalität ersetzt nicht die noch fehlende Auswahl
 von Bio-Region, Grenzatomen, Caps, Ladung, Multiplizität und Embedding.
+
+Details zum [Ligandenparameter-Vertrag](LIGAND_PARAMETERIZATION.md).

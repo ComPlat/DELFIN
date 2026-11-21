@@ -32,6 +32,8 @@ RECIPES = {
         Recipe('meeko', '0.7.1', modules=('meeko',), commands=('mk_prepare_ligand.py', 'mk_prepare_receptor.py', 'mk_export.py'), dependencies=('rdkit', 'gemmi', 'scipy')),
         Recipe('pdbfixer', '1.12', modules=('pdbfixer', 'openmm'), dependencies=('openmm=8.4.0',)),
         Recipe('openmm', '8.4.0', modules=('openmm',)),
+        Recipe('openmmforcefields', '0.15.0', modules=('openmmforcefields.generators', 'openff.toolkit', 'openmm', 'rdkit'),
+               dependencies=('openff-toolkit=0.17.0', 'openmm=8.4.0', 'rdkit')),
         Recipe('mdanalysis', '2.9.0', modules=('MDAnalysis', 'MDAnalysis.analysis.align', 'numpy'), dependencies=('biopython',)),
         Recipe('prolif', '2.2.3', modules=('prolif', 'MDAnalysis', 'rdkit')),
         Recipe('plip', '3.0.1', modules=('plip', 'openbabel'), commands=('plip',)),

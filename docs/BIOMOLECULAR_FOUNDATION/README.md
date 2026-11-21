@@ -1,6 +1,6 @@
 # Biomolekulares Fundament: Architektur, Betrieb und QM-Parität
 
-Stand: 20. November 2026, Draft PR #746. Dieses Verzeichnis beschreibt das
+Stand: 21. November 2026, Draft PR #746. Dieses Verzeichnis beschreibt das
 Fundament für agentengesteuerte Docking-, MedChem-, Strukturmodellierungs- und
 Simulationsworkflows. Der QM-Teil von DELFIN ist der Maßstab für Betriebsqualität.
 Die vollständige Parität ist noch nicht erreicht.
@@ -116,3 +116,7 @@ In dieser Entwicklungsumgebung werden weder Pakete/Modelle installiert noch
 wissenschaftliche Engines oder echte Cluster-Jobs gestartet. Mock-Tests belegen
 Verträge und Fehlerbehandlung; die externe Abnahme muss die echte Laufzeit und
 wissenschaftlich geeignete Referenzfälle prüfen.
+
+Der neue [Ligandenparameter- und Protein-Ligand-MD-Pfad](LIGAND_PARAMETERIZATION.md)
+verbindet explizite SDF-Ladungen und lokale Kraftfelder mit Systemaufbau,
+Dynamik und Analyse. Echte Engine-Abnahme steht noch aus.

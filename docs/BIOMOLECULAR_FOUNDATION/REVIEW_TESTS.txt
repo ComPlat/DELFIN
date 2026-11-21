@@ -44,3 +44,4 @@ tests/test_the_biomolecular_offline_example_uses_the_real_pipeline.py
 tests/test_the_installer_and_the_doctor_find_the_same_orca.py
 tests/test_the_installer_explains_a_blocked_download.py
 tests/test_tool_contracts.py
+tests/test_bio_ligand_parameters.py

@@ -23,7 +23,7 @@ class BioWorkflowPlan(StepAdapter):
     required_artifacts = produces
     example_kwargs = {"template": "docking"}
     params = (ParamSpec("plan", "dict"), ParamSpec("template", "str",
-              description="processing, docking, medchem, md, or predictor ID; exactly one of plan/template"))
+              description="processing, docking, medchem, md, protein_ligand_md, or predictor ID; exactly one of plan/template"))
     data_keys = (DataKeySpec("valid", "bool"), DataKeySpec("execution_ready", "bool"), DataKeySpec("blockers", "list"))
 
     def validate_params(self, **kwargs):

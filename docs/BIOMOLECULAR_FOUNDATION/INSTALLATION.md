@@ -25,6 +25,7 @@ abzunehmen.
 | Meeko | 0.7.1 | Import und Version; RDKit, gemmi, scipy; Vorbereitungs-/Exportkommandos |
 | PDBFixer | 1.12 | Import und Version; OpenMM 8.4.0 |
 | OpenMM | 8.4.0 | Import und Version |
+| OpenMMForceFields | 0.15.0 | Generatoren, OpenFF Toolkit 0.17.0, OpenMM 8.4.0 und RDKit |
 | MDAnalysis | 2.9.0 | MDAnalysis, Align-Modul und NumPy; Biopython |
 | ProLIF | 2.2.3 | ProLIF, MDAnalysis und RDKit |
 | PLIP | 3.0.1 | PLIP und Open Babel; PLIP-Kommando |

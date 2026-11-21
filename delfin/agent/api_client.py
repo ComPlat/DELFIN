@@ -5906,7 +5906,7 @@ def _read_only_reason(resolved, perms) -> str:
         path = Path(resolved)
         workspace = Path(getattr(perms, "workspace", "") or ".")
         for parent in (path, *path.parents):
-            if (parent / ".git").exists():
+            if safe_git.is_checkout(parent):
                 if parent != workspace:
                     return (f"the repository checkout at {parent}, which is "
                             "not your workspace — work inside your own "
@@ -9755,7 +9755,41 @@ def _commit_trailer_value() -> str:
         email = (
             (DEFAULT_SETTINGS.get("agent") or {})
             .get("commit_coauthor_email", "") or "")
-    return f"Co-Authored-By: DELFIN-Agent ({model}) <{email}>"
+    line = f"Co-Authored-By: DELFIN-Agent ({model}) <{email}>"
+    label = _agent_label()
+    return f"{line}\nAgent: {label}" if label else line
+
+
+#: Characters a swarm label may carry into a commit message. Everything
+#: else is dropped, so an environment variable cannot write a second
+#: trailer, a newline or shell metacharacters into the message.
+_LABEL_OK = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    " ._/-@+")
+
+
+def _agent_label() -> str:
+    """Which run produced the commit, from ``DELFIN_AGENT_LABEL``, or "".
+
+    Input: the environment variable, set by whatever started this agent
+    (the swarm writes "<wave>/<id> via <provider>"). Output: one line's
+    worth of it, at most 120 characters, restricted to ``_LABEL_OK``.
+
+    Why it is sanitised rather than passed through: the value lands in a
+    commit message, which is text other tools parse. A newline in it would
+    end the trailer block and let the rest be read as a trailer of its own,
+    and a label is not a place from which to write one.
+
+    Why an environment variable at all: the model is DELFIN's own
+    knowledge, but which agent of which wave is the orchestrator's, and
+    the orchestrator is not part of this repository. The variable is the
+    seam. Absent, the trailer is the co-author line alone, exactly as
+    before.
+    """
+    import os as _os
+    raw = str(_os.environ.get("DELFIN_AGENT_LABEL", "") or "")
+    kept = "".join(c for c in raw.split("\n")[0] if c in _LABEL_OK).strip()
+    return kept[:120]
 
 
 def _commit_trailer_rewrite(cmd: str) -> str:
@@ -9836,6 +9870,17 @@ def _rewrite_segments_for_trailer(cmd: str, trailer: str) -> str:
         start = i
         while i < n and cmd[i] not in " \t\n;|&'\"\\":
             i += 1
+        if i == start:
+            # A breaking character that no branch above consumes, so no
+            # word begins here and the offset would never move: a lone
+            # `&` (the redirect in `2>&1`, or a background `&`, neither of
+            # which is the `&&` the branch above takes) or a `\` with
+            # nothing left to escape. Stepping over it ends the word
+            # instead of the walk; `2>&1` is then read as the two words
+            # `2>` and `1`, which changes nothing for _commit_sub_pos,
+            # since it reads the LEADING tokens of a segment.
+            i += 1
+            continue
         seg_words.append(start)
     pos = _commit_sub_pos(cmd, seg_words)
     if pos is not None:
@@ -14231,6 +14276,23 @@ def bind_agent_workspace(
         return None
     perms.agent_workspace_dir = resolved
     return resolved
+
+
+#: Token budget for one verdict. Measured on a compute node 2026-11-20:
+#: at 120 one call in three ended ``finish_reason="length"`` with empty
+#: content, because on a session whose own model carries a reasoning
+#: channel the reasoning consumed all 120 tokens before a verdict was
+#: written. At 600 three of three answered in 1.3-1.7 s with completions of
+#: 98-169 tokens, so the budget is the fix and the headroom is real rather
+#: than guessed. An empty reply was read as "no verdict", which latched the
+#: gate into reporting the watcher as down -- see _CLASSIFIER_RETRY_TOKENS.
+_CLASSIFIER_MAX_TOKENS = 600
+
+#: One retry, at double the budget, for the one shape that is recoverable:
+#: truncated before a verdict. Not for an error and not for a refusal --
+#: those are answers. One retry only, because a verdict costs a request
+#: against the endpoint's daily count.
+_CLASSIFIER_RETRY_TOKENS = 1200
 
 
 def _classifier_timeout_s() -> float:
@@ -32872,8 +32934,40 @@ class OpenAIClient(_BaseClient):
         except Exception:
             return ""
 
+    def _classifier_once(
+        self, prompt: str, wire: str, budget: int,
+    ) -> tuple[str, bool]:
+        """One request. Returns (verdict text, truncated-before-a-verdict).
+
+        ``truncated`` is true only for the recoverable shape: no content and
+        the model stopped because it ran out of room. A refusal and an error
+        are answers and are not retried.
+        """
+        resp = self.client.with_options(
+            timeout=_classifier_timeout_s(), max_retries=0,
+        ).chat.completions.create(
+            model=wire or self.model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=budget, stream=False)
+        choice = resp.choices[0]
+        text = str(getattr(choice.message, "content", "") or "")
+        reason = str(getattr(choice, "finish_reason", "") or "")
+        return text, (not text.strip() and reason == "length")
+
     def _classifier_complete(self, prompt: str, model: str) -> str:
-        """One short, tool-less completion for the action classifier."""
+        """One short, tool-less completion for the action classifier.
+
+        Input: the classifier prompt and the configured model. Output: the
+        verdict text, or "" when the model produced none.
+
+        Semantics: a session on a backend other than KIT asks its OWN model,
+        and that model may carry a reasoning channel which spends the token
+        budget before any verdict is written. That case -- empty content with
+        ``finish_reason="length"`` -- is truncation, not an unreachable
+        model, so it is retried once at a larger budget instead of being
+        returned as the empty reply that latches the gate into reporting the
+        watcher as down. Any other empty reply is returned as it is.
+        """
         wire = str(model or "")
         if wire.startswith("kit.") and getattr(self, "_provider", "") != "kit":
             # The configured classifier model lives on the KIT proxy; a
@@ -32883,14 +32977,16 @@ class OpenAIClient(_BaseClient):
         t0 = time.monotonic()
         outcome = "error"
         try:
-            resp = self.client.with_options(
-                timeout=_classifier_timeout_s(), max_retries=0,
-            ).chat.completions.create(
-                model=wire or self.model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=120, stream=False)
-            outcome = "verdict"
-            return str(resp.choices[0].message.content or "")
+            text, truncated = self._classifier_once(
+                prompt, wire, _CLASSIFIER_MAX_TOKENS)
+            if truncated:
+                outcome = "truncated"
+                text, still = self._classifier_once(
+                    prompt, wire, _CLASSIFIER_RETRY_TOKENS)
+                outcome = "truncated_twice" if still else "verdict_after_retry"
+            else:
+                outcome = "verdict"
+            return text
         finally:
             # A request against the endpoint's quota like the turn's own:
             # written beside them, marked, so the count can be split by what

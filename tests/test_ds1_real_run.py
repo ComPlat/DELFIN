@@ -23,16 +23,8 @@ Theta = 285.4 deg.
 """
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parent.parent
 GEOMETRY = ROOT / ".gate" / "practice" / "znh2o2cl2.xyz"
-
-# The full chain ends at the real morfeus package. A machine that has the
-# practice geometry but not morfeus must see a skip that names the package,
-# not a bare ModuleNotFoundError out of the registry import.
-pytest.importorskip("morfeus",
-                    reason="morfeus (morfeus-ml) is not installed")
 
 
 def _run_workflow():
@@ -51,13 +43,38 @@ def _run_workflow():
 
 
 def _needs_geometry():
+    """Skip unless this machine can run the real chain, naming what is missing.
+
+    Two preconditions, and they are independent: the optional ``morfeus``
+    package, and the practice geometry
+    ``.gate/practice/znh2o2cl2.xyz``, which was never committed.
+
+    This was a module-level ``pytest.importorskip("morfeus")``. It fired at
+    collection, so the whole file came out as ONE skip naming the package,
+    and the geometry reason -- the one that applies to a machine which has
+    morfeus -- was never shown. Checking them in order here would only move
+    the masking: whichever is checked first hides the other.
+
+    So the skip names every precondition that is actually missing. Output:
+    nothing when the chain can run, else a skip whose reason lists each
+    missing one. ``morfeus`` is imported rather than merely looked for,
+    because the chain ends in it and a broken install must read as a skip
+    here, not as a ModuleNotFoundError out of the registry import.
+    """
     import pytest
+
+    missing = []
+    try:
+        import morfeus                                      # noqa: F401
+    except Exception as exc:
+        missing.append(f"morfeus (morfeus-ml) is not importable: {exc}")
     if not GEOMETRY.exists():
-        pytest.skip(
+        missing.append(
             "scratch geometry .gate/practice/znh2o2cl2.xyz absent in this "
-            "tree (never committed); see .gate/PR.md — value-pinning works "
-            "on any tree that has a tetrahedral Zn complex there"
-        )
+            "tree (never committed); see .gate/PR.md -- value-pinning works "
+            "on any tree that has a tetrahedral Zn complex there")
+    if missing:
+        pytest.skip("; ".join(missing))
 
 
 def test_real_end_to_end_steric_screening():

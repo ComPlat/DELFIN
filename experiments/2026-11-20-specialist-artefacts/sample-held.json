@@ -1,0 +1,478 @@
+{
+  "allocation": {
+    "chem": {
+      "nowhere": 5,
+      "test-only": 5
+    },
+    "infra": {
+      "nowhere": 5,
+      "test-only": 5
+    }
+  },
+  "allocation_rule": "balanced",
+  "drawn_at": "2026-11-20T21:47:00+00:00",
+  "drawn_counts": {
+    "chem": {
+      "nowhere": 5,
+      "test-only": 5
+    },
+    "infra": {
+      "nowhere": 5,
+      "test-only": 5
+    }
+  },
+  "n_tasks": 20,
+  "per_pool": 10,
+  "pool_counts": {
+    "chem": 90,
+    "infra": 66
+  },
+  "pool_counts_by_tier": {
+    "chem": {
+      "nowhere": 68,
+      "test-only": 22
+    },
+    "infra": {
+      "nowhere": 24,
+      "test-only": 42
+    }
+  },
+  "pools_file": "<session-scratch>/pools10.json",
+  "pools_file_sha256": "e58f97d70d0931df37794951b6e5518fac1dc2e40d2bb39b403c311776c7369b",
+  "pools_scanned_at": "2026-11-20T21:37:51+00:00",
+  "pools_tree": "<session-scratch>/ab",
+  "pools_tree_sha": "f767a18652d0bf80a0b7e7eab0f8af68e8e26cf4",
+  "pr_preflight": {
+    "prs_open": 7,
+    "prs_read": 7,
+    "ran": true,
+    "unreadable_prs": []
+  },
+  "refused_by_open_pr": {
+    "chem": {},
+    "infra": {
+      "_redirect_targets_safe": [
+        834
+      ]
+    }
+  },
+  "replaced": {
+    "at": "2026-11-20T21:46:51+00:00",
+    "sha256": "bf7fa54fa189e270d17db1646bde06b057060f2ccde6bee973a138a63b762793"
+  },
+  "replacements": [
+    {
+      "at": "2026-11-20T21:47:00+00:00",
+      "pool": "infra",
+      "pools_file_sha256": "e58f97d70d0931df37794951b6e5518fac1dc2e40d2bb39b403c311776c7369b",
+      "reason": "in-flight swarm work at the time of the draw",
+      "replaced": "push_if_configured",
+      "replaced_by": "watcher_status",
+      "rule": "the next row the same seed yields from this pool and tier, among those the draw did not take",
+      "tier": "nowhere"
+    },
+    {
+      "at": "2026-11-20T21:47:00+00:00",
+      "pool": "infra",
+      "pools_file_sha256": "e58f97d70d0931df37794951b6e5518fac1dc2e40d2bb39b403c311776c7369b",
+      "reason": "in-flight swarm work at the time of the draw",
+      "replaced": "remove_read_dir",
+      "replaced_by": "_step_finished",
+      "rule": "the next row the same seed yields from this pool and tier, among those the draw did not take",
+      "tier": "nowhere"
+    }
+  ],
+  "seed": 20261120,
+  "sort_key": "name,file",
+  "task_sentence": "connect this capability to the product, or delete it together with its tests -- or report that neither is right, with the evidence",
+  "tasks": [
+    {
+      "consuming_suites_checked": [
+        "tests/test_prescribed_isomer_enumerator.py"
+      ],
+      "consuming_suites_found": 1,
+      "file": "delfin/manta/_prescribed_isomer_enumerator.py",
+      "instrument_class": "four-check",
+      "line": 445,
+      "module": "delfin.manta._prescribed_isomer_enumerator",
+      "name": "_orbit_burnside_selftest",
+      "pool": "chem",
+      "task": "connect this capability to the product, or delete it together with its tests -- or report that neither is right, with the evidence",
+      "tier": "nowhere",
+      "under_ratchet_scope": false
+    },
+    {
+      "consuming_suites_checked": [
+        "tests/test_an_mlip_goat_with_pal_40_does_not_start_40_models.py",
+        "tests/test_goat_default_input_parity.py",
+        "tests/test_goat_mlip_control.py",
+        "tests/test_mlip_goat_providers.py",
+        "tests/test_xtb_goat_recalc.py"
+      ],
+      "consuming_suites_found": 5,
+      "file": "delfin/xtb_crest.py",
+      "instrument_class": "four-check",
+      "line": 56,
+      "module": "delfin.xtb_crest",
+      "name": "_orca_ok",
+      "pool": "chem",
+      "task": "connect this capability to the product, or delete it together with its tests -- or report that neither is right, with the evidence",
+      "tier": "nowhere",
+      "under_ratchet_scope": false
+    },
+    {
+      "consuming_suites_checked": [
+        "tests/test_a_drawn_pattern_comes_back_as_a_reaction_smarts.py",
+        "tests/test_chemdarwin_filters.py"
+      ],
+      "consuming_suites_found": 2,
+      "file": "delfin/dashboard/tab_chemdarwin.py",
+      "instrument_class": "four-check",
+      "line": 103,
+      "module": "delfin.dashboard.tab_chemdarwin",
+      "name": "aromatize_ligand_smiles",
+      "pool": "chem",
+      "task": "connect this capability to the product, or delete it together with its tests -- or report that neither is right, with the evidence",
+      "tier": "nowhere",
+      "under_ratchet_scope": false
+    },
+    {
+      "consuming_suites_checked": [
+        "tests/test_ds1_adversarial_wrappers.py",
+        "tests/test_ds1_limits_enforced.py",
+        "tests/test_ds1_multiwfn_adapters.py",
+        "tests/test_ds1_wrapper_validation.py"
+      ],
+      "consuming_suites_found": 4,
+      "file": "delfin/analysis_tools/multiwfn_wrapper.py",
+      "instrument_class": "four-check",
+      "line": 226,
+      "module": "delfin.analysis_tools.multiwfn_wrapper",
+      "name": "electrostatic_potential",
+      "pool": "chem",
+      "task": "connect this capability to the product, or delete it together with its tests -- or report that neither is right, with the evidence",
+      "tier": "nowhere",
+      "under_ratchet_scope": false
+    },
+    {
+      "consuming_suites_checked": [
+        "tests/test_ml_targets_derive.py"
+      ],
+      "consuming_suites_found": 1,
+      "file": "delfin/manta/ml_targets_derive.py",
+      "instrument_class": "four-check",
+      "line": 540,
+      "module": "delfin.manta.ml_targets_derive",
+      "name": "record_from_cod",
+      "pool": "chem",
+      "task": "connect this capability to the product, or delete it together with its tests -- or report that neither is right, with the evidence",
+      "tier": "nowhere",
+      "under_ratchet_scope": false
+    },
+    {
+      "consuming_suites_checked": [
+        "tests/test_ov1_adversarial_phase1.py",
+        "tests/test_ov1_adversarial_phase3.py",
+        "tests/test_ov1_keywords.py",
+        "tests/test_ov1_probe_fallback.py",
+        "tests/test_ov1_review_findings.py",
+        "tests/test_ts_goat_reactive_center.py"
+      ],
+      "consuming_suites_found": 6,
+      "file": "delfin/common/orca_input_checks.py",
+      "instrument_class": "four-check",
+      "line": 490,
+      "module": "delfin.common.orca_input_checks",
+      "name": "clear_probe_cache",
+      "pool": "chem",
+      "task": "connect this capability to the product, or delete it together with its tests -- or report that neither is right, with the evidence",
+      "tier": "test-only",
+      "under_ratchet_scope": false
+    },
+    {
+      "consuming_suites_checked": [
+        "tests/test_fukui_compute.py",
+        "tests/test_fukui_cube_subtract.py",
+        "tests/test_opi_equivalence_q06.py"
+      ],
+      "consuming_suites_found": 3,
+      "file": "delfin/fukui.py",
+      "instrument_class": "four-check",
+      "line": 326,
+      "module": "delfin.fukui",
+      "name": "is_fukui_dir",
+      "pool": "chem",
+      "task": "connect this capability to the product, or delete it together with its tests -- or report that neither is right, with the evidence",
+      "tier": "test-only",
+      "under_ratchet_scope": false
+    },
+    {
+      "consuming_suites_checked": [
+        "tests/test_fukui_compute.py",
+        "tests/test_fukui_cube_subtract.py",
+        "tests/test_opi_equivalence_q06.py"
+      ],
+      "consuming_suites_found": 3,
+      "file": "delfin/fukui.py",
+      "instrument_class": "four-check",
+      "line": 312,
+      "module": "delfin.fukui",
+      "name": "load_fukui_result",
+      "pool": "chem",
+      "task": "connect this capability to the product, or delete it together with its tests -- or report that neither is right, with the evidence",
+      "tier": "test-only",
+      "under_ratchet_scope": false
+    },
+    {
+      "consuming_suites_checked": [
+        "tests/test_a_chat_bubble_reads_in_both_themes.py",
+        "tests/test_a_checked_delfin_pipeline_runs_without_a_dialog.py",
+        "tests/test_a_choice_offer_is_a_question_with_a_flat_list.py",
+        "tests/test_a_delegates_report_is_shown_whole.py",
+        "tests/test_a_file_is_shown_once_in_a_turn.py",
+        "tests/test_a_file_you_asked_for_can_be_taken_out_of_the_chat.py",
+        "tests/test_a_finished_delegate_is_filed_not_deleted.py",
+        "tests/test_a_finished_job_wakes_the_agent.py",
+        "tests/test_a_finished_message_is_not_rebuilt_while_the_agent_writes.py",
+        "tests/test_a_finished_service_session_opens_in_the_full_chat.py",
+        "tests/test_a_finished_turn_folds_its_tool_steps.py",
+        "tests/test_a_free_model_was_charged_an_invented_rate.py"
+      ],
+      "consuming_suites_found": 162,
+      "file": "delfin/dashboard/tab_agent.py",
+      "instrument_class": "four-check",
+      "line": 3050,
+      "module": "delfin.dashboard.tab_agent",
+      "name": "slash_command_routes_to_builtin",
+      "pool": "chem",
+      "task": "connect this capability to the product, or delete it together with its tests -- or report that neither is right, with the evidence",
+      "tier": "test-only",
+      "under_ratchet_scope": false
+    },
+    {
+      "consuming_suites_checked": [
+        "tests/test_co2_coordinator_opi_normaliser.py",
+        "tests/test_opi_co2_coordinator_parity.py",
+        "tests/test_opi_co2_coordinator_probe.py",
+        "tests/test_opi_esd_parity.py"
+      ],
+      "consuming_suites_found": 4,
+      "file": "delfin/tools/co2_coordinator_opi.py",
+      "instrument_class": "four-check",
+      "line": 636,
+      "module": "delfin.tools.co2_coordinator_opi",
+      "name": "write_co2_scan_opi_input",
+      "pool": "chem",
+      "task": "connect this capability to the product, or delete it together with its tests -- or report that neither is right, with the evidence",
+      "tier": "test-only",
+      "under_ratchet_scope": false
+    },
+    {
+      "consuming_suites_checked": [
+        "tests/test_a_checked_out_repository_cannot_run_commands.py",
+        "tests/test_a_fixture_can_ship_hooks_nobody_trusted.py",
+        "tests/test_a_hook_that_ran_left_no_trace.py",
+        "tests/test_bare_really_skips_what_it_names.py",
+        "tests/test_hooks_and_tests_run_under_the_process_budget.py",
+        "tests/test_hooks_system.py",
+        "tests/test_locked_scope_cannot_widen_itself.py",
+        "tests/test_mcp_servers_and_hooks_get_the_scrubbed_environment.py",
+        "tests/test_one_bad_timeout_disabled_every_hook.py",
+        "tests/test_private_state_holds_on_every_filesystem_and_node.py",
+        "tests/test_the_agent_cannot_widen_its_own_limits.py"
+      ],
+      "consuming_suites_found": 11,
+      "file": "delfin/agent/hooks.py",
+      "instrument_class": "four-check+ratchet",
+      "line": 164,
+      "module": "delfin.agent.hooks",
+      "name": "_project_settings_paths",
+      "pool": "infra",
+      "task": "connect this capability to the product, or delete it together with its tests -- or report that neither is right, with the evidence",
+      "tier": "nowhere",
+      "under_ratchet_scope": true
+    },
+    {
+      "consuming_suites_checked": [
+        "tests/test_f1_adversarial_durable_decisions.py",
+        "tests/test_f1_crash_resume.py"
+      ],
+      "consuming_suites_found": 2,
+      "file": "delfin/agent/durable.py",
+      "instrument_class": "four-check+ratchet",
+      "line": 128,
+      "module": "delfin.agent.durable",
+      "name": "_step_finished",
+      "pool": "infra",
+      "task": "connect this capability to the product, or delete it together with its tests -- or report that neither is right, with the evidence",
+      "tier": "nowhere",
+      "under_ratchet_scope": true
+    },
+    {
+      "consuming_suites_checked": [
+        "tests/test_a_nudge_never_asks_for_a_write_the_limit_refuses.py",
+        "tests/test_memory_context_nudge.py",
+        "tests/test_memory_context_nudge_integration.py",
+        "tests/test_memory_nudge_tidy_hint.py"
+      ],
+      "consuming_suites_found": 4,
+      "file": "delfin/agent/memory_nudge.py",
+      "instrument_class": "four-check+ratchet",
+      "line": 147,
+      "module": "delfin.agent.memory_nudge",
+      "name": "estimated_tokens",
+      "pool": "infra",
+      "task": "connect this capability to the product, or delete it together with its tests -- or report that neither is right, with the evidence",
+      "tier": "nowhere",
+      "under_ratchet_scope": true
+    },
+    {
+      "consuming_suites_checked": [
+        "tests/test_a_harness_row_is_marked_where_it_is_written.py",
+        "tests/test_a_peer_verdict_is_not_the_users_approval.py",
+        "tests/test_a_protected_change_becomes_a_request.py",
+        "tests/test_a_resumed_session_shows_its_conversation.py",
+        "tests/test_a_typed_steer_is_never_dropped.py",
+        "tests/test_a_wake_up_keeps_the_evidence_of_its_request.py",
+        "tests/test_auto_mode_runs_inside_its_frame.py",
+        "tests/test_auto_mode_state_is_one_thread_at_a_time.py",
+        "tests/test_b1_adversarial_s25.py",
+        "tests/test_b1_task_presence.py",
+        "tests/test_job_monitor.py",
+        "tests/test_the_git_role_is_set_per_repository.py"
+      ],
+      "consuming_suites_found": 16,
+      "file": "delfin/agent/harness_rows.py",
+      "instrument_class": "four-check+ratchet",
+      "line": 74,
+      "module": "delfin.agent.harness_rows",
+      "name": "is_harness_text",
+      "pool": "infra",
+      "task": "connect this capability to the product, or delete it together with its tests -- or report that neither is right, with the evidence",
+      "tier": "nowhere",
+      "under_ratchet_scope": true
+    },
+    {
+      "consuming_suites_checked": [
+        "tests/test_bug_watcher.py",
+        "tests/test_a_bug_can_be_filed_from_the_terminal.py",
+        "tests/test_bug_triage_prints_no_credential.py",
+        "tests/test_bug_watcher_sends_only_with_consent.py",
+        "tests/test_the_terminal_is_the_lifeline.py"
+      ],
+      "consuming_suites_found": 5,
+      "file": "delfin/agent/bug_watcher.py",
+      "instrument_class": "four-check+ratchet",
+      "line": 650,
+      "module": "delfin.agent.bug_watcher",
+      "name": "watcher_status",
+      "pool": "infra",
+      "task": "connect this capability to the product, or delete it together with its tests -- or report that neither is right, with the evidence",
+      "tier": "nowhere",
+      "under_ratchet_scope": true
+    },
+    {
+      "consuming_suites_checked": [
+        "tests/test_kg3_adversarial_quality.py",
+        "tests/test_kg3_compaction_quality.py"
+      ],
+      "consuming_suites_found": 2,
+      "file": "delfin/agent/compaction_quality.py",
+      "instrument_class": "four-check+ratchet",
+      "line": 169,
+      "module": "delfin.agent.compaction_quality",
+      "name": "category_names",
+      "pool": "infra",
+      "task": "connect this capability to the product, or delete it together with its tests -- or report that neither is right, with the evidence",
+      "tier": "test-only",
+      "under_ratchet_scope": true
+    },
+    {
+      "consuming_suites_checked": [
+        "tests/test_a_contained_command_keeps_its_process_budget.py",
+        "tests/test_agent_process_budget.py",
+        "tests/test_every_breach_reaches_the_audit_log.py",
+        "tests/test_hooks_and_tests_run_under_the_process_budget.py",
+        "tests/test_process_budget_profiles.py"
+      ],
+      "consuming_suites_found": 5,
+      "file": "delfin/agent/process_budget.py",
+      "instrument_class": "four-check+ratchet",
+      "line": 269,
+      "module": "delfin.agent.process_budget",
+      "name": "count_descendants",
+      "pool": "infra",
+      "task": "connect this capability to the product, or delete it together with its tests -- or report that neither is right, with the evidence",
+      "tier": "test-only",
+      "under_ratchet_scope": true
+    },
+    {
+      "consuming_suites_checked": [
+        "tests/test_sw3_adversarial_eventfeed.py",
+        "tests/test_sw3_adversarial_eventfeed2.py",
+        "tests/test_sw3_adversarial_eventfeed3.py",
+        "tests/test_sw3_adversarial_grouping.py",
+        "tests/test_sw3_adversarial_leadwiring.py",
+        "tests/test_sw3_adversarial_toolerrors.py",
+        "tests/test_sw3_fix_event_dedup_and_tool_errors.py",
+        "tests/test_sw3_lead_core.py"
+      ],
+      "consuming_suites_found": 8,
+      "file": "delfin/agent/swarm/lead.py",
+      "instrument_class": "four-check+ratchet",
+      "line": 198,
+      "module": "delfin.agent.swarm.lead",
+      "name": "format_member_message",
+      "pool": "infra",
+      "task": "connect this capability to the product, or delete it together with its tests -- or report that neither is right, with the evidence",
+      "tier": "test-only",
+      "under_ratchet_scope": true
+    },
+    {
+      "consuming_suites_checked": [
+        "tests/test_cli_resume.py",
+        "tests/test_a_session_carries_an_optional_person_id.py",
+        "tests/test_dr1_resume.py",
+        "tests/test_one_look_says_which_sessions_are_open.py",
+        "tests/test_the_resume_table_says_whether_a_session_lives.py"
+      ],
+      "consuming_suites_found": 5,
+      "file": "delfin/agent/cli_resume.py",
+      "instrument_class": "four-check+ratchet",
+      "line": 304,
+      "module": "delfin.agent.cli_resume",
+      "name": "replay_step",
+      "pool": "infra",
+      "task": "connect this capability to the product, or delete it together with its tests -- or report that neither is right, with the evidence",
+      "tier": "test-only",
+      "under_ratchet_scope": true
+    },
+    {
+      "consuming_suites_checked": [
+        "tests/test_sw3_adversarial_eventfeed.py",
+        "tests/test_sw3_adversarial_eventfeed2.py",
+        "tests/test_sw3_adversarial_eventfeed3.py",
+        "tests/test_sw3_adversarial_grouping.py",
+        "tests/test_sw3_adversarial_leadwiring.py",
+        "tests/test_sw3_adversarial_toolerrors.py",
+        "tests/test_sw3_fix_event_dedup_and_tool_errors.py",
+        "tests/test_sw3_lead_core.py"
+      ],
+      "consuming_suites_found": 8,
+      "file": "delfin/agent/swarm/lead.py",
+      "instrument_class": "four-check+ratchet",
+      "line": 159,
+      "module": "delfin.agent.swarm.lead",
+      "name": "request_prcheck",
+      "pool": "infra",
+      "task": "connect this capability to the product, or delete it together with its tests -- or report that neither is right, with the evidence",
+      "tier": "test-only",
+      "under_ratchet_scope": true
+    }
+  ],
+  "tree_sha_at_draw": "7438a84febe4e84628a5f8b700d98a738c5e80a3",
+  "underpowered": {
+    "chem": false,
+    "infra": false
+  }
+}

@@ -45,6 +45,7 @@ from delfin.agent.subagents import (
     SUBAGENT_PRESETS,
     SubagentPreset,
     _derive_perms,
+    _known_preset_tool_names,
     _narrow_allowed_tools,
     _parse_preset_tools,
 )
@@ -302,12 +303,23 @@ def test_no_preset_prompt_still_enumerates_its_tools_in_prose(preset_name):
     wrong for a while, and nothing could tell.
     """
     prompt = SUBAGENT_PRESETS[preset_name].system_prompt.lower()
+    known = {t.lower() for t in _known_preset_tool_names()}
+    # The phrase alone is not the finding: what this test is about is prose
+    # that restates the TOOL surface, so the phrase has to stand near a tool
+    # name. Measured 2026-11-20: reactivity-department says "Do not edit an
+    # expert's verdict", a rule about handing a verdict on unchanged, and it
+    # was reported as restating a tool restriction. A matcher that scores a
+    # vocabulary instead of a behaviour teaches the reader to ignore it.
     for phrase in ("you may use", "you may not", "available tools:",
                    "do not edit", "do not use"):
-        assert phrase not in prompt, (
-            f"{preset_name}: '{phrase}' restates in prose what "
-            f"SubagentPreset.tools now enforces"
-        )
+        for sentence in prompt.replace("\n", " ").split("."):
+            if phrase not in sentence:
+                continue
+            named = sorted(t for t in known if len(t) > 5 and t in sentence)
+            assert not named, (
+                f"{preset_name}: '{phrase}' restates in prose what "
+                f"SubagentPreset.tools now enforces, naming {named}"
+            )
 
 
 @pytest.mark.parametrize("preset_name", sorted(SUBAGENT_PRESETS))
@@ -316,7 +328,20 @@ def test_every_name_in_a_preset_list_is_a_real_tool(preset_name):
     does it silently — the same failure ``unknown_tool_names`` exists to
     report for the CLI flags."""
     tools = SUBAGENT_PRESETS[preset_name].tools
-    assert unknown_tool_names(tools, _DOC_TOOLS_OPENAI) == []
+    # Judged against the catalogue the preset check itself uses, which
+    # derives the ops server's tools from the server module. The doc-tool
+    # list alone is a THIRD answer to "which names are real" and it does
+    # not know them: measured 2026-11-20, the server defines 102 tool_*
+    # functions and the doc list carries none of them, so the structure
+    # and geometry presets (metal-smiles-builder, xyz-editor) reported
+    # real tools -- geometry_build_smiles, geometry_read_xyz,
+    # geometry_add_hydrogens -- as misspelt. A false alarm here is worse
+    # than no check: it teaches the reader to ignore the file.
+    unknown = [t for t in (tools or ())
+               if t not in _known_preset_tool_names()
+               and unknown_tool_names([t], _DOC_TOOLS_OPENAI)]
+    assert unknown == [], (
+        f"{preset_name}: names no tool the product registers: {unknown}")
 
 
 # ---------------------------------------------------------------------------

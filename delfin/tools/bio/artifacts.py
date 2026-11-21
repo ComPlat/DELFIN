@@ -71,6 +71,9 @@ def validate_artifact(path: Path, kind: str) -> dict:
     elif kind == "assay_table":
         from delfin.tools.bio.assays import validate_assays
         details["measurements"] = len(validate_assays(read_json(path)))
+    elif kind == "ligand_parameters":
+        from delfin.tools.bio.ligand_parameters import validate_ligand_parameters
+        details.update(validate_ligand_parameters(path))
     elif kind == "simulation_system":
         from delfin.tools.bio.simulation import validate_system
         details.update(validate_system(path))

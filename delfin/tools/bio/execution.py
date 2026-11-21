@@ -21,6 +21,8 @@ class Binding:
 
 
 BINDINGS = {
+    "ligand_parameterize": Binding("bio_ligand_parameterize", {"ligand": "ligand_file"}, {"parameters": "ligand_parameters"}),
+    "parameterize_complex": Binding("bio_openmm_complex_parameterize", {"complex": "structure_file", "parameters": "ligand_parameters_file"}, {"system": "simulation_system"}),
     "mdanalysis": Binding("bio_mdanalysis", {"trajectory": "trajectory_file", "system": "system_file"}, {"report": "trajectory_report"}),
     "openmm": Binding("bio_openmm_run", {"system": "system_file"}, {"trajectory": "trajectory", "checkpoint": "checkpoint"}),
     "parameterize": Binding("bio_openmm_parameterize", {"complex": "structure_file"}, {"system": "simulation_system"}),

@@ -708,11 +708,12 @@ _STRICTNESS = {"allow": 0, "ask": 1, "refuse": 2}
 _SHAPE_SCAN_CHARS = 800
 
 
-def no_verdict_shape(answer) -> str:
+def no_verdict_shape(answer, finish_reason: str = "") -> str:
     """Which way a reply failed to carry a decision: ``"empty"``,
     ``"cut"`` or ``"unreadable"``.
 
-    Input: the model's reply (``None`` is treated as empty). Output: one of
+    Input: the model's reply (``None`` is treated as empty) and, when the
+    caller has it, the endpoint's own ``finish_reason``. Output: one of
     those three words, never empty. Semantics: describes the REPLY, not the
     action and not the outcome, so the operator can tell a budget cut or a
     stalled endpoint from a model that simply did not follow the format.
@@ -721,6 +722,18 @@ def no_verdict_shape(answer) -> str:
     (``"the model returned no clear verdict"``), which is what made 138 held
     and 16 down entries in one night's record unattributable: a provider 502,
     a cut reply and a garbled one all read the same.
+
+    ``finish_reason`` is read because the first version of this function
+    used LENGTH as a proxy for truncation: any reply under
+    ``_SHAPE_SCAN_CHARS`` with no decision line was reported as ``"cut"``.
+    A complete, short, off-format answer -- "Sure! This looks fine to me."
+    -- was therefore reported to the operator as a reply that stopped before
+    any decision, in the very function added to attribute these failures
+    accurately. The endpoint already says which it was: only
+    ``finish_reason == "length"`` is truncation. Where the caller does not
+    know it, the length heuristic still answers, because an unattributed
+    shape is what this function exists to prevent -- but it is a guess and
+    is the last resort rather than the rule.
     """
     text = answer if isinstance(answer, str) else ""
     if not text.strip():
@@ -729,8 +742,10 @@ def no_verdict_shape(answer) -> str:
     scanned = low[:_SHAPE_SCAN_CHARS]
     offset = scanned.find("decision:")
     if offset < 0:
-        # No decision line where the prompt asks for it. A reply that stopped
-        # without one -- the budget spent before the answer -- is a cut.
+        # No decision line where the prompt asks for it. The endpoint knows
+        # whether the reply stopped early; length does not.
+        if finish_reason:
+            return "cut" if finish_reason == "length" else "unreadable"
         return "cut" if len(low) < _SHAPE_SCAN_CHARS else "unreadable"
     # A decision line is present but its first word is not a verdict: either
     # the value was cut off ("DECISION: al") or the model wrote something

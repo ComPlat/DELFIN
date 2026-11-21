@@ -9,11 +9,14 @@ from delfin.tools.bio.artifacts import child_path, file_hash, read_json
 def validate_system(path):
     path = Path(path).resolve()
     bundle = read_json(path)
-    if not isinstance(bundle, dict) or bundle.get('schema_version') not in (1, 2) or bundle.get('engine') != 'openmm':
+    if not isinstance(bundle, dict) or bundle.get('schema_version') not in (1, 2, 3, 4) or bundle.get('engine') != 'openmm':
         raise ValueError('invalid simulation system schema or engine')
     files = bundle.get('files')
     required = {'structure', 'system', 'topology', 'positions', 'forcefield'}
-    periodic = bundle['schema_version'] == 2
+    periodic = bundle['schema_version'] in (2, 4)
+    ligand = bundle['schema_version'] in (3, 4)
+    if ligand:
+        required.add('ligand_parameters')
     if periodic:
         required |= {'source', 'solvent_forcefield'}
     if not isinstance(files, dict) or set(files) != required:
@@ -83,6 +86,34 @@ def validate_system(path):
     expected = bundle.get('expected_charge')
     if type(expected) is not int or not all(math.isfinite(q) for q in charges) or abs(sum(charges) - expected) > 1e-4:
         raise ValueError('simulation charge differs from explicit expected charge')
+    if ligand:
+        from delfin.tools.bio.ligand_parameters import complex_ligand_mapping
+        mapping, mol = complex_ligand_mapping(structure, paths['ligand_parameters'])
+        parameters = read_json(paths['ligand_parameters'])
+        values = read_json(child_path(paths['ligand_parameters'].parent, parameters['files']['charges']['path']))['values']
+        if any(not math.isclose(charges[index], values[original], abs_tol=1e-7) for index, original in mapping.items()):
+            raise ValueError('system ligand partial charges differ from supplied values')
+        ligand_xml = ET.parse(child_path(paths['ligand_parameters'].parent, parameters['files']['parameters']['path'])).getroot()
+        ligand_atoms = ligand_xml.findall('./Residues/Residue/Atom')
+        ligand_types = {a.get('name'): a for a in ligand_xml.findall('./AtomTypes/Type')}
+        ligand_nb = {a.get('class'): a for a in ligand_xml.findall('./NonbondedForce/Atom')}
+        actual_nb = nonbonded[0].findall('./Particles/Particle')
+        for index, original in mapping.items():
+            atom_type = ligand_atoms[original].get('type')
+            if not math.isclose(float(particles[index].get('mass')), float(ligand_types[atom_type].get('mass')), abs_tol=1e-7):
+                raise ValueError('system ligand mass differs from generated parameters')
+            for actual, wanted in (('sig', 'sigma'), ('eps', 'epsilon')):
+                if not math.isclose(float(actual_nb[index].get(actual, 'nan')), float(ligand_nb[atom_type].get(wanted)), abs_tol=1e-7):
+                    raise ValueError('system ligand Lennard-Jones parameters differ from parameter bundle')
+        actual = set()
+        for a, b in seen:
+            if (a in mapping) != (b in mapping):
+                raise ValueError('covalent ligand links require explicit boundary parameterization')
+            if a in mapping:
+                actual.add(tuple(sorted((mapping[a], mapping[b]))))
+        wanted = {tuple(sorted((b.GetBeginAtomIdx(), b.GetEndAtomIdx()))) for b in mol.GetBonds()}
+        if actual != wanted:
+            raise ValueError('system ligand bonds differ from authoritative SDF')
     if periodic:
         _validate_periodic(bundle, paths, system, nonbonded[0], source, coordinates, charges)
     elif bundle.get('environment') != 'vacuum' or bundle.get('nonbonded_method') != 'NoCutoff' or nonbonded[0].get('method') != '0':
@@ -107,7 +138,7 @@ def validate_system(path):
         raise ValueError('invalid force field XML') from exc
     if forcefield.tag != 'ForceField' or forcefield.find('Include') is not None:
         raise ValueError('force field must be a self-contained XML artifact')
-    return {'particles': count, 'bonds': len(bonds), 'charge_e': sum(charges), 'engine': 'openmm', 'periodic': periodic}
+    return {'particles': count, 'bonds': len(bonds), 'charge_e': sum(charges), 'engine': 'openmm', 'periodic': periodic, 'ligand': ligand}
 
 
 def _validate_periodic(bundle, paths, system, nonbonded, prepared, coordinates, charges):

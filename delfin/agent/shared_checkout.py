@@ -60,7 +60,7 @@ def shared_checkouts(env=None) -> list[Path]:
     try:
         import delfin
         code = Path(delfin.__file__).resolve().parent.parent
-        if (code / ".git").exists():
+        if safe_git.is_checkout(code):
             out.append(code)
     except Exception:
         pass

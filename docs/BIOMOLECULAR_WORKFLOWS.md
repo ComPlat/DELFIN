@@ -536,3 +536,19 @@ Tests mock the OpenMM boundary and reject source changes, charge/box/cutoff erro
 and invalid policies. No real solvation or PME calculation has been run here.
 References: [OpenMM Modeller](https://docs.openmm.org/latest/api-python/generated/openmm.app.modeller.Modeller.html)
 and [OpenMM 8.4 Modeller implementation](https://github.com/openmm/openmm/blob/8.4.0/wrappers/python/openmm/app/modeller.py).
+
+
+## Protein-ligand MD extension
+
+The `protein_ligand_md` template adds `ligand_parameterize` and
+`parameterize_complex` to the existing dynamics/analysis path. It requires a
+single explicit-H 3D SDF, atom-ordered supplied charges with provenance, a local
+SMIRNOFF OFFXML, and the matching assembled protein-LIG PDB. There is no implicit
+charge calculation or force-field download. Managed runtime recipe:
+`openmmforcefields` 0.15.0 with OpenFF Toolkit 0.17.0 and OpenMM 8.4.0.
+
+See [the complete input contract and cluster acceptance](BIOMOLECULAR_FOUNDATION/LIGAND_PARAMETERIZATION.md)
+for bundle schemas, mapping checks, plan-builder arguments and supported chemistry.
+The protein-only restrictions of `bio_openmm_parameterize` above still describe
+that original adapter; the new `bio_openmm_complex_parameterize` binding carries
+the additional typed ligand-parameter input. Actual engine acceptance remains pending.

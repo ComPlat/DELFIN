@@ -131,6 +131,12 @@ BACKENDS = tuple(
     _backend("assemble_complex", "conversion", {"receptor": "prepared_receptor", "poses": "pose_set"},
              {"complex": "complex_structure"}, ("explicit pose ID", "common coordinate frame", "atom mapping"),
              _GH + "ComPlat/DELFIN", "Assemble a selected pose and receptor without coordinate realignment"),
+    _backend("ligand_parameterize", "simulation", {"ligand": "ligand"}, {"parameters": "ligand_parameters"},
+             ("openmmforcefields/OpenFF/OpenMM versions", "explicit-H SDF", "mapped partial charges", "local SMIRNOFF OFFXML"),
+             "https://github.com/openmm/openmmforcefields", "Checked single-ligand parameters; supplied charges only, no implicit charge or conformer generation"),
+    _backend("parameterize_complex", "simulation", {"complex": "complex_structure", "parameters": "ligand_parameters"}, {"system": "simulation_system"},
+             ("OpenMM version", "ff14SB canonical protein", "one mapped LIG", "environment/constraints/charge policies"),
+             "https://docs.openmm.org/latest/userguide/", "Protein plus one noncovalent ligand, mapped SDF and per-atom charges; vacuum or TIP3P/PME"),
     _backend("parameterize", "simulation", {"complex": "complex_structure"}, {"system": "simulation_system"},
              ("OpenMM version", "canonical hydrogenated protein", "explicit ff14SB/environment/constraints/charge policies"),
              "https://docs.openmm.org/latest/userguide/", "Checked protein-only ff14SB system in vacuum or explicit TIP3P/ion orthorhombic PME solvent; ligand parameterization remains unsupported"),
@@ -295,9 +301,15 @@ def workflow_template(name: str) -> dict:
                 "inputs": {"ligands": {"type": "ligand_library"}, "assays": {"type": "assay_table"}},
                 "nodes": [{"id": "properties", "backend": "medchem_properties", "inputs": {"ligands": "inputs.ligands"}},
                           {"id": "join", "backend": "assay_join", "inputs": {"properties": "properties.properties", "assays": "inputs.assays"}}]}
-    if name == "md":
-        return {"schema_version": 1, "name": name, "inputs": {"complex": {"type": "complex_structure"}},
+    if name in {"md", "protein_ligand_md"}:
+        plan = {"schema_version": 1, "name": name, "inputs": {"complex": {"type": "complex_structure"}},
                 "nodes": [{"id": "parameters", "backend": "parameterize", "inputs": {"complex": "inputs.complex"}},
                           {"id": "simulate", "backend": "openmm", "inputs": {"system": "parameters.system"}},
                           {"id": "analyze", "backend": "mdanalysis", "inputs": {"system": "parameters.system", "trajectory": "simulate.trajectory"}}]}
+        if name == 'protein_ligand_md':
+            plan['inputs']['ligand'] = {'type': 'ligand'}
+            plan['nodes'][0]['backend'] = 'parameterize_complex'
+            plan['nodes'][0]['inputs']['parameters'] = 'ligand_parameters.parameters'
+            plan['nodes'].insert(0, {'id': 'ligand_parameters', 'backend': 'ligand_parameterize', 'inputs': {'ligand': 'inputs.ligand'}})
+        return plan
     raise ValueError(f"unknown biomolecular template: {name}")

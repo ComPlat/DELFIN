@@ -17,6 +17,11 @@ def copy_system(source, destination):
     bundle = read_json(source)
     destination.mkdir(parents=True, exist_ok=False)
     for name, entry in bundle['files'].items():
+        if name == 'ligand_parameters':
+            from delfin.tools.bio.ligand_parameters import copy_ligand_parameters
+            target = copy_ligand_parameters(child_path(source.parent, entry['path']), destination / 'ligand_parameters')
+            entry['path'] = str(target.relative_to(destination))
+            continue
         target = destination / (name + child_path(source.parent, entry['path']).suffix)
         shutil.copyfile(child_path(source.parent, entry['path']), target)
         entry['path'] = target.name

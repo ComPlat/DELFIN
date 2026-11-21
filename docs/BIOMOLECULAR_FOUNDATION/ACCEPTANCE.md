@@ -17,7 +17,7 @@ wissenschaftlichen Programme, Modell-Downloads oder Cluster-Jobs ausgeführt.
 
 | Priorität | Arbeit | Konkretes Abnahmekriterium |
 | --- | --- | --- |
-| 1 | Liganden-Parameterzuweisung | Maßgeblicher SDF-Graph, explizite Partialladungsmethode/-werte, lokale versionierte Kraftfelder, Atomzuordnung und Ladungsprüfung bis zum fertigen System |
+| 1 | Liganden-Parameterzuweisung extern abnehmen | Der implementierte SMIRNOFF-Pfad mit gelieferten Ladungen benötigt echte Referenzläufe; automatische Ladungserzeugung und weitere Kraftfelder bleiben Ausbau |
 | 1 | Installationsabdeckung | Ausführbare Adapter besitzen ein geprüftes Rezept oder dokumentierten externen Bereitstellungsvertrag; keine stillen Downloads |
 | 1 | Echte Kernpfade | Vorbereitung → Docking → Validierung → Viewer und Systemaufbau → Dynamik → Analyse auf dem Zielcluster, inklusive kontrollierter Fehler |
 | 1 | Visualisierungsabnahme | Browser/WebGL und Desktop-Exports mit richtigen Posen, Ketten, Einheiten, Konfidenzen und Dateien |
@@ -72,7 +72,7 @@ Die zuvor bekannten Fehler bei `orca_th_opi.output_file`, der Kategorie von
 behoben. Die zugehörige Vertrags-/Plattform-/ORCA-Suite besteht mit 98 bestandenen
 und sieben übersprungenen Tests.
 
-`main` ist bis `88cf9ed31a5b6042f4f8549eefa02bec59ce371e` integriert, ohne
+`main` ist bis `2e3e2e1d083879fb079aa1ed3591d7db03be23dd` integriert, ohne
 Merge-Konflikte. Der vollständige Snapshot einschließlich Binärdateien wurde
 über GitHub übertragen und anhand der Git-Objekthashes geprüft. Der frühere
 Übertragungsblocker ist damit aufgehoben. Die lokale Kopie hält diesen
