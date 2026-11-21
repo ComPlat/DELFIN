@@ -76,10 +76,6 @@ def _threshold_int(value, default, minimum):
     return int(f)
 
 
-def _now_minus(now, seconds):
-    return now - seconds
-
-
 def classify(record, now, settings):
     """One verdict for one session record.
 

@@ -27,7 +27,7 @@ sub-agent, and compares tokens, wall time, tool calls and correctness.
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
+
 from typing import Any
 
 from . import subagents as _sa
@@ -525,25 +525,6 @@ def _engine_factory_builder(default_task: Any) -> Any:
                 return run_pilot_subagent(_pilot_slot=_slot, **kw)
             perms.subagent_runner = _runner
         return engine
-    return build
-
-
-def _fake_engine_factory_builder(arm: str) -> Any:
-    """--dry-run: a factory that returns an engine-shaped fake whose
-    permissions carry the pilot wiring — the arms are exercised, no
-    model is called."""
-    def build(model, backend, provider, mode, task_class="",
-              permission_mode=""):
-        perms = SimpleNamespace(subagent_runner=None, mode=mode,
-                                workspace=None)
-        if arm == "explore":
-            slot = _PilotSlot()
-            def _fake_runner(_slot=slot, **kw):
-                return run_pilot_subagent(_pilot_slot=_slot, **kw)
-            perms.subagent_runner = _fake_runner
-        return SimpleNamespace(kit_permissions=perms, cost_usd=0.0,
-                               token_usage=None, messages=[],
-                               run_budget_usd=0.0, run_budget_s=0.0)
     return build
 
 

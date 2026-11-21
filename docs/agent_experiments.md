@@ -47,6 +47,10 @@ experiment that has not been pre-registered.  Measuring before you have stated
 what you expect and how you will judge it is exactly the moment self-bias
 enters, so the recorder is the gate and it raises instead of quietly recording.
 
+The reached entry point applies the same gate to a file: `compare-arms --prereg`
+runs the file's content through `pre_register` before it may count as a
+pre-registration, so a file that only predates the stamp is not one.
+
 The experiment also carries a *why-chain* — the reason steps from the mechanism
 to the observed outcome — and a pool size (`small` or `large`).  Pre-registration
 refuses a draft with no hypothesis, no why-chain, no switch, no expectation, no

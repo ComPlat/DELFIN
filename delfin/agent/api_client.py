@@ -6383,10 +6383,22 @@ def _gh_alias_or_extension(cmd: str, cwd) -> Optional[tuple]:
 #
 # The push gate before it (push grants, the git role) is unchanged.
 
+#: ``[ \t]`` and not ``\s``: ``\s`` includes a newline, so a line break
+#: separated tokens exactly like a space and a TWO-LINE command parsed as
+#: one push. Measured on 2026-11-21: ``git push origin topic\nmain`` was
+#: accepted for the uncaged route and ran as ``git push origin topic main``
+#: -- the second line became a refspec, so a branch nobody asked for was
+#: pushed, and that line was itself neither run nor refused. The permission
+#: gate upstream had judged the two-line text. No arbitrary command came
+#: through (``rm -rf /tmp/x`` is refused by the flag allowlist), but an
+#: unrequested publish did, and publishing is the irreversible class.
+#:
+#: ``_github_pr_plan`` already refuses "\n" and "\r" outright; this is the
+#: same refusal expressed in the token separator, where the cause is.
 _PLAIN_PUSH_RE = re.compile(
-    r"^\s*git\s+push((?:\s+[A-Za-z0-9._/:@^~-]+)*)"
-    r"(\s+2>&1)?"
-    r"(?:\s*\|\s*(tail|head)\s+(?:-n\s*)?-?(\d+))?\s*$")
+    r"^[ \t]*git[ \t]+push((?:[ \t]+[A-Za-z0-9._/:@^~-]+)*)"
+    r"([ \t]+2>&1)?"
+    r"(?:[ \t]*\|[ \t]*(tail|head)[ \t]+(?:-n[ \t]*)?-?(\d+))?[ \t]*$")
 _PLAIN_PUSH_FLAGS = frozenset({
     "-u", "--set-upstream", "-q", "--quiet", "-v", "--verbose",
     "--porcelain", "-n", "--dry-run", "--tags", "--follow-tags", "--atomic",
@@ -9045,6 +9057,74 @@ def _rule_answers(perms, site: str, name: str, target=None) -> Optional[str]:
     return rule.text
 
 
+def known_tool_names(
+    tools: Optional[list[dict[str, Any]]] = None
+) -> frozenset[str]:
+    """Every name that IS a tool of this product, as one derivation.
+
+    Input: optionally a catalogue to read instead of the advertised one
+    (the tests pass a small list). Output: the names, bare and -- for the
+    ops server -- also namespaced.
+
+    Why it exists: two judges answered "is this a real tool name" from two
+    different sets, and neither was a superset of the other, so they
+    disagreed in BOTH directions. Measured 2026-11-20: the nine swarm lead
+    names passed ``unknown_tool_names`` and were refused by the preset
+    validator as "not a known tool", while the ops server's real
+    ``geometry_build_smiles`` / ``geometry_read_xyz`` /
+    ``geometry_add_hydrogens`` were reported as MISSPELT by a judge reading
+    the doc catalogue alone -- the catalogue carries none of the server's
+    102 ``tool_*`` functions.
+
+    The union, each part with the reason it belongs:
+
+    * the advertised catalogue -- what the model is offered;
+    * ``_ALWAYS_ALLOWED_TOOLS`` -- reachable whatever the session allows;
+    * ``_SWARM_LEAD_TOOL_NAMES`` -- dispatched through the swarm service
+      surface rather than the catalogue;
+    * ``_WRITE_TOOL_NAMES`` and ``_DELFIN_ONLY_TOOL_NAMES`` -- real tools a
+      preset may list;
+    * the ops server's ``tool_*`` functions, derived from the module so one
+      it registers later stays known automatically. EVERY ``tool_*``, not
+      only ``tool_geometry_*``: measured, the server defines 102 and the
+      geometry prefix derives 19, so 83 real tools would stay unknown.
+
+    ``mcp__`` names from other servers are NOT here: those are discovered
+    inside a turn, so at startup there is nothing to check them against
+    and a guess would be a false alarm. Callers skip them instead.
+    """
+    # Read from the module that defines it rather than from this module's
+    # own binding: that binding is made further down the file, so a caller
+    # reached during import -- which is what a preset validator is -- gets
+    # a NameError from the module-level name and the right list from here.
+    if tools is None:
+        from .tool_catalog import _DOC_TOOLS_OPENAI as catalogue
+    else:
+        catalogue = tools
+    names: set[str] = set()
+    for t in catalogue:
+        n = str(t.get("name")
+                or (t.get("function") or {}).get("name") or "")
+        if n:
+            names.add(n)
+    names |= set(_ALWAYS_ALLOWED_TOOLS)
+    names |= set(_SWARM_LEAD_TOOL_NAMES)
+    names |= set(_WRITE_TOOL_NAMES)
+    names |= set(_DELFIN_ONLY_TOOL_NAMES)
+    try:
+        from delfin.ops_server import server as _ops_server
+        for _n in dir(_ops_server):
+            if _n.startswith("tool_"):
+                base = _n[len("tool_"):]
+                names.add(base)
+                names.add(f"mcp__delfin-ops__{base}")
+    except Exception:
+        # The server is optional; without it the ops names stay unknown,
+        # which is the same answer this function gave before it existed.
+        pass
+    return frozenset(names)
+
+
 def unknown_tool_names(
     names: Any, tools: Optional[list[dict[str, Any]]] = None
 ) -> list[str]:
@@ -9059,13 +9139,10 @@ def unknown_tool_names(
     the turn, so at startup there is nothing to check them against and a
     guess would be a false alarm.
     """
-    catalogue = _DOC_TOOLS_OPENAI if tools is None else tools
-    known = {t.get("function", {}).get("name", "") for t in catalogue}
-    known |= set(_ALWAYS_ALLOWED_TOOLS)
-    # The swarm lead tools are dispatched through the swarm service
-    # surface, not the catalogue; a preset listing one is correct, not
-    # a typo.
-    known |= set(_SWARM_LEAD_TOOL_NAMES)
+    # The one derivation, shared with the preset validator: this judge
+    # used to read the catalogue plus the always-allowed and swarm-lead
+    # names only, which called the ops server's real tools misspelt.
+    known = known_tool_names(tools)
     return sorted(
         n for n in _normalise_tool_names(names)
         if not n.startswith("mcp__") and n not in known
@@ -32667,16 +32744,46 @@ class OpenAIClient(_BaseClient):
         # an embedding layer): same semantics as the probe.
         return bool(getattr(self, "_stop_requested", False))
 
-    def _run_ceiling_reached(self, spent: float) -> str:
-        """The run ceiling (``run_budget_s`` / ``run_budget_usd``) the
-        engine says this turn has reached, or "". ``spent``: this turn's
-        estimated spend so far. A client without the probe, or a probe
-        that raises, reports none. Never raises."""
+    def _turn_token_cap(self) -> int:
+        """This turn's input-token ceiling, or 0 for none.
+
+        The twin of :meth:`_turn_cost_cap` and installed beside it. It
+        exists because the cost cap is unenforceable on most of the ids
+        the model picker ships: ``_estimate_cost`` has no rate for them
+        and returns 0.0, so ``_spent >= _cap`` is False on every round
+        however much context the turn carries. A token count comes back
+        from the provider with the answer.
+        """
+        probe = getattr(self, "turn_token_cap", None)
+        if probe is None:
+            return 0
+        try:
+            return max(0, int(probe() or 0))
+        except Exception:
+            return 0
+
+    def _run_ceiling_reached(self, spent: float, tokens: int = 0) -> str:
+        """The run ceiling (``run_budget_s`` / ``run_budget_usd`` /
+        ``run_budget_tokens``) the engine says this turn has reached, or
+        "". ``spent``: this turn's estimated spend so far. ``tokens``:
+        the tokens it has carried so far, which the engine's own counter
+        does not hold until the turn ends. A client without the probe, or
+        a probe that raises, reports none. Never raises.
+
+        ``tokens`` is passed positionally to a probe that accepts it and
+        omitted for one that does not, so an engine or test double built
+        against the one-argument signature keeps working.
+        """
         probe = getattr(self, "run_ceiling", None)
         if probe is None:
             return ""
         try:
-            return str(probe(float(spent or 0.0)) or "")
+            return str(probe(float(spent or 0.0), int(tokens or 0)) or "")
+        except TypeError:
+            try:
+                return str(probe(float(spent or 0.0)) or "")
+            except Exception:
+                return ""
         except Exception:
             return ""
 
@@ -33949,12 +34056,34 @@ class OpenAIClient(_BaseClient):
                         cost_usd=_spent, cached_tokens=_total_cached,
                         stop_reason="cost_cap")
                     return
-            # The RUN's ceilings (wall clock, spend), between rounds: a
-            # one-turn unattended run never reaches the gate the engine
-            # applies before a turn. The work so far is kept, and the end
-            # of the turn saves the session as for any other stop.
+            # The same ceiling in the dimension that is always measured.
+            # Checked here and not only on the terminal event for the
+            # reason above, and separately from the cost cap because the
+            # cost cap reads 0.00 for ever on an unpriced model: 1,696
+            # tool calls of one field session went past a $50 cap that
+            # was never above 0.
+            _tok_cap = self._turn_token_cap()
+            if _tok_cap > 0 and _total_in >= _tok_cap:
+                yield StreamEvent(type="notice", text=(
+                    f"\n🛑 This turn reached its input-token ceiling "
+                    f"({_total_in:,} of {_tok_cap:,} input tokens) and was "
+                    "stopped. The work done so far is kept — raise "
+                    "agent.token_hard_limit_in or send 'continue' to go "
+                    "on.\n"))
+                yield StreamEvent(
+                    type="message_delta",
+                    input_tokens=_total_in, output_tokens=_total_out,
+                    cost_usd=self._estimate_cost(_total_in, _total_out),
+                    cached_tokens=_total_cached,
+                    stop_reason="token_cap")
+                return
+            # The RUN's ceilings (wall clock, spend, tokens), between
+            # rounds: a one-turn unattended run never reaches the gate the
+            # engine applies before a turn. The work so far is kept, and
+            # the end of the turn saves the session as for any other stop.
             _ceiling = self._run_ceiling_reached(
-                self._estimate_cost(_total_in, _total_out))
+                self._estimate_cost(_total_in, _total_out),
+                _total_in + _total_out)
             if _ceiling:
                 _setting = f"agent.{_ceiling}"
                 yield StreamEvent(type="notice", text=(
@@ -34360,11 +34489,13 @@ class OpenAIClient(_BaseClient):
                                     stop_reason="stopped")
                                 return
                             _ceiling_hit = self._run_ceiling_reached(
-                                self._estimate_cost(_total_in, _total_out))
+                                self._estimate_cost(_total_in, _total_out),
+                                _total_in + _total_out)
                             if _ceiling_hit:
                                 yield StreamEvent(type="notice", text=(
-                                    "\n🛑 The run's wall-clock budget is "
-                                    "shorter than the quota reset: this "
+                                    f"\n🛑 The run's ceiling "
+                                    f"(agent.{_ceiling_hit}) is reached "
+                                    "before the quota resets: this "
                                     "turn stops here and the run starts "
                                     "no new work. Nothing was lost; the "
                                     "next run continues.\n"))

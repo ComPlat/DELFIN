@@ -257,3 +257,108 @@ def test_errored_run_skips_validation():
     assert "sub-agent stream raised" in res.error
     assert res.structured_output is None
     assert res.schema_error == ""
+
+
+# ---------------------------------------------------------------------------
+# The verdict handoff: the preset's own output_schema, no caller schema
+# ---------------------------------------------------------------------------
+
+# A conforming verdict for a read-only reviewer: it runs no tests, so an
+# honest answer reports 0/0/0 and ran=false. The caller passes NO
+# output_schema — the preset's own is the contract under test.
+_VERDICT_OK = {
+    "verdict": "comparable: same level of theory for both",
+    "evidence": ["a.inp:1 !B3LYP def2-TZVP"],
+    "files_written": [],
+    "open_questions": [],
+    "live_run": {
+        "ran": False,
+        "where_ran": "the two calc folders read",
+        "head_sha": "",
+        "test_counts": {"passed": 0, "failed": 0, "skipped": 0},
+    },
+}
+# The failure this exists to catch: a verdict with no live_run block. It
+# looks fine as prose, but the run it rests on is invisible — the caller
+# cannot tell whether a check actually happened.
+_VERDICT_MISSING_RUN = {"verdict": "comparable", "evidence": ["x"]}
+
+
+def _verdict_schema():
+    return SA.SUBAGENT_PRESETS["method-reviewer"].output_schema
+
+
+def test_the_verdict_presets_declare_a_schema_the_builtin_do_not():
+    """The shipped verdict-returners carry the contract; the free-form ones
+    do not, so their behaviour is untouched (never-worse)."""
+    for name in ("verifier", "method-reviewer", "chemistry-reviewer",
+                 "security-reviewer"):
+        schema = SA.SUBAGENT_PRESETS[name].output_schema
+        assert isinstance(schema, dict), f"{name} declares no output_schema"
+        assert "live_run" in schema.get("required", []), (
+            f"{name}'s schema does not make the run visible")
+        assert ("skipped"
+                in schema["properties"]["live_run"]["properties"]
+                   ["test_counts"]["required"]), (
+            f"{name}'s schema lets a verdict hide its skipped tests")
+    for name in ("explore", "plan", "code-reviewer", "general-purpose"):
+        assert SA.SUBAGENT_PRESETS[name].output_schema is None, (
+            f"{name} kept a schema it never had")
+
+
+def test_a_conforming_verdict_returns_structured_with_no_caller_schema():
+    """The live path: the caller names no schema, the preset's own is read
+    and the returned verdict is validated against it — no correction round
+    needed for a conforming one."""
+    client = _client_rounds(json.dumps(_VERDICT_OK))
+    res = SA.run_subagent(
+        subagent_type="method-reviewer",
+        description="compare two levels",
+        prompt="Are these two calculations at the same level of theory?",
+        parent_client=client,
+        parent_perms=None,
+        # NO output_schema — the preset's own is the contract under test.
+    )
+    assert res.error == ""
+    assert res.schema_error == ""
+    assert res.structured_output == _VERDICT_OK
+    assert client.stream_message.call_count == 1
+
+
+def test_a_verdict_without_a_live_run_gets_one_correction_round():
+    """The check that catches failure #1-4: a verdict that omits the run it
+    rests on does not pass silently — it is corrected once, and if the
+    delegate still omits it, the error is the one the caller reads."""
+    # Round one omits live_run; round two (the correction) supplies it.
+    client = _client_rounds(json.dumps(_VERDICT_MISSING_RUN),
+                            json.dumps(_VERDICT_OK))
+    res = SA.run_subagent(
+        subagent_type="method-reviewer",
+        description="compare two levels",
+        prompt="Are these two calculations at the same level of theory?",
+        parent_client=client,
+        parent_perms=None,
+    )
+    assert client.stream_message.call_count == 2
+    assert res.structured_output == _VERDICT_OK
+    # The correction carried the missing field to the delegate.
+    corr = client.stream_message.call_args_list[1].kwargs["messages"]
+    assert "live_run" in corr[-1]["content"]
+
+
+def test_a_persistently_missing_run_is_a_schema_error_not_a_pass():
+    """If the delegate never supplies the run, the verdict is NOT returned
+    as structured output: structured_output is None and the caller gets the
+    reason. That is the difference between a check that fires and prose."""
+    client = _client_rounds(json.dumps(_VERDICT_MISSING_RUN),
+                            json.dumps(_VERDICT_MISSING_RUN))
+    res = SA.run_subagent(
+        subagent_type="method-reviewer",
+        description="compare two levels",
+        prompt="Are these two calculations at the same level of theory?",
+        parent_client=client,
+        parent_perms=None,
+    )
+    assert res.structured_output is None
+    assert "live_run" in res.schema_error
+    assert res.final_text  # the text stays available
