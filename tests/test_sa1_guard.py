@@ -160,3 +160,52 @@ class TestNestingAndIsolation:
         ok, why = explore_pilot.check_delegate("explore", isolation="worktree")
         assert not ok
         assert "isolation" in why
+
+
+class TestEngineWiringUsesTheSlotVocabulary:
+    """The engine wiring the CLI builds (`_engine_factory_builder`) must go
+    through the module's own slot functions, not an inline slot object: a
+    runner that never reaps would leave the slot claimed after the first
+    delegate, and the second delegation of the same run would be refused
+    as busy. Driven through the wiring the harness installs, never by
+    calling `pilot_slot` directly."""
+
+    def _engine(self):
+        class _Perms:
+            subagent_runner = None
+
+        class _Engine:
+            kit_permissions = _Perms()
+
+        return _Engine(), _Perms
+
+    def test_the_wired_runner_reaps_the_slot_after_each_call(self, monkeypatch):
+        class _Perms:
+            subagent_runner = lambda self, **kw: kw  # placeholder binding
+
+        class _Engine:
+            def __init__(self):
+                self.kit_permissions = _Perms()
+
+        engine = _Engine()
+        builder = explore_pilot._engine_factory_builder(None)
+        monkeypatch.setattr(
+            "delfin.agent.benchmark_runner._default_engine_factory",
+            lambda *a, **kw: engine)
+        engine_out = builder("m", "b", "p", "solo", task_class="pilot")
+        assert engine_out is engine
+        # The wiring replaced the placeholder binding with the pilot runner.
+        runner = engine.kit_permissions.subagent_runner
+        assert runner is not _Perms.subagent_runner
+
+        ran = []
+        monkeypatch.setattr(explore_pilot, "_real_run_subagent",
+                            lambda **kw: ran.append(kw) or "RAN")
+
+        # The wired runner itself, called twice directly: the second call
+        # only reaches the real runner because the first reaped the slot.
+        assert runner(subagent_type="explore", description="d", prompt="p",
+                      model="", parent_client=None, parent_perms=None) == "RAN"
+        assert runner(subagent_type="explore", description="d", prompt="p",
+                      model="", parent_client=None, parent_perms=None) == "RAN"
+        assert len(ran) == 2

@@ -161,7 +161,7 @@ def run_pilot_subagent(*, subagent_type: str, description: str, prompt: str,
             subagent_type=subagent_type, description=description,
             final_text="", error=f"delegate failed: {exc}")
     finally:
-        slot.claimed = False
+        reap_slot(slot)
 
 
 def child_runner(parent_perms: Any, slot: Any, runner: Any = None) -> Any:
@@ -520,10 +520,18 @@ def _engine_factory_builder(default_task: Any) -> Any:
             raise RuntimeError(
                 "explore arm: engine has no subagent_runner binding; "
                 "the pilot setting cannot be installed on this backend")
-        with _PilotSlot() as slot:
-            def _runner(_slot=slot, **kw):
+        # pilot_slot(), not _PilotSlot() inline: the module's own slot
+        # vocabulary, so the reaper that belongs to it releases the slot
+        # around every call (the with-statement did the same before).
+        slot = pilot_slot()
+        slot.__enter__()
+
+        def _runner(_slot=slot, **kw):
+            try:
                 return run_pilot_subagent(_pilot_slot=_slot, **kw)
-            perms.subagent_runner = _runner
+            finally:
+                reap_slot(_slot)
+        perms.subagent_runner = _runner
         return engine
     return build
 

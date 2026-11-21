@@ -54,12 +54,10 @@ test-only	map_to_host	delfin/agent/shared_tmp.py:207
 test-only	observations_are_complete	delfin/agent/verify_guard.py:1679
 test-only	open_dialogs	delfin/agent/knowledge_share.py:399
 test-only	pdf_xfa_data	delfin/agent/office.py:3514
-test-only	pilot_slot	delfin/agent/explore_pilot.py:79
 test-only	prompt_block	delfin/agent/user_model.py:655
 test-only	quality_report	delfin/agent/compaction_quality.py:75
 test-only	query_job_states	delfin/agent/job_monitor.py:369
 test-only	read_last_n	delfin/agent/audit_log.py:695
-test-only	reap_slot	delfin/agent/explore_pilot.py:93
 test-only	recall_levels	delfin/agent/memory_distill.py:495
 test-only	replay_step	delfin/agent/cli_resume.py:304
 test-only	request_prcheck	delfin/agent/swarm/lead.py:159
