@@ -108,11 +108,28 @@ def _guarded_names(func, try_block):
         return set()
     # Restrict to what flows through THIS try: the call must sit inside it
     # (or the try must sit inside the function's own guarded path).
+    try_end = max((n.lineno for n in ast.walk(try_block)
+                   if hasattr(n, "lineno")), default=try_block.lineno)
     call_inside = any(
         isinstance(child, ast.Call) and (_call_names(child) & REDACTOR_NAMES)
         for child in ast.walk(try_block))
+    call_after = any(
+        isinstance(child, ast.Call) and (_call_names(child) & REDACTOR_NAMES)
+        and child.lineno > try_end
+        for child in ast.walk(func))
     if not call_inside:
-        return set()
+        # Only the explicit-return branch is sound here. The swallow branch
+        # stays off: without a scrub inside the try we cannot tell a safe
+        # re-assignment from an escaping raw value without dataflow.
+        if not call_after:
+            return set()
+        returns_guarded = any(
+            isinstance(ret, ast.Return)
+            and (_names_in(ret.value) & scrub)
+            for handler in try_block.handlers
+            for ret in ast.walk(handler))
+        if not returns_guarded:
+            return set()
     aliases = set()
     for child in ast.walk(func):
         if isinstance(child, ast.Assign) and isinstance(
@@ -258,6 +275,14 @@ def test_the_guard_scans_the_service_subpackage_files():
      "        return other(text)\n"
      "    except Exception:\n"
      "        return text\n", False),
+    # does not fire: the redactor runs BEFORE the try, so the handler
+    # returns an already-scrubbed value (probe12 false positive, s6)
+    ("def f(text):\n"
+     "    out = scrub_secrets(text)\n"
+     "    try:\n"
+     "        record(out)\n"
+     "    except Exception:\n"
+     "        return out\n", False),
     # does not fire: swallow only misses a DETECTION -- the guarded value
     # is compared, never returned (swarm_memory / skill_safety shape)
     ("def f(text):\n"
