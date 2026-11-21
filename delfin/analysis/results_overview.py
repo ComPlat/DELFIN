@@ -166,16 +166,72 @@ def parse_rss_dat(calc_dir: str) -> List[tuple]:
     return points
 
 
+_SMILES_METALS = {
+    "Li", "Na", "K", "Rb", "Cs", "Be", "Mg", "Ca", "Sr", "Ba",
+    "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",
+    "Y", "Zr", "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd",
+    "La", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",
+    "Al", "Ga", "In", "Sn", "Pb", "Bi", "Ce", "Sm", "Eu", "Gd",
+}
+
+
+def _smiles_from_3d(calc_dir: str):
+    """Derive a kekulized SMILES from initial.xyz (metal-stripped).
+
+    Fallback for older calcs whose DELFIN_Data.json carries no
+    input.smiles (46 of 115 do).  The heavy+H graph minus metals is
+    built as an RDKit molecule with the XYZ coordinates as conformer,
+    then rdDetermineBonds assigns connectivity and orders; a short
+    charge sweep finds the fragment charge that admits a valid
+    ordering (proven on 106-138_106: charge -2 yields the fully
+    kekulized complex).  None if RDKit is absent or no ordering is
+    valid for any charge in the sweep.
+    """
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import rdDetermineBonds
+    except ImportError:
+        return None
+    atoms = _parse_xyz(calc_dir)
+    if not atoms:
+        return None
+    sym = [a[0] for a in atoms]
+    keep = [i for i, s in enumerate(sym) if s not in _SMILES_METALS]
+    if not keep:
+        return None
+    rw = Chem.RWMol()
+    for i in keep:
+        rw.AddAtom(Chem.Atom(sym[i]))
+    mol = rw.GetMol()
+    conf = Chem.Conformer(len(keep))
+    for n, i in enumerate(keep):
+        conf.SetAtomPosition(n, (float(atoms[i][1]), float(atoms[i][2]),
+                                 float(atoms[i][3])))
+    mol.AddConformer(conf)
+    for charge in (0, -1, 1, -2, 2):
+        try:
+            trial = Chem.RWMol(mol)
+            rdDetermineBonds.DetermineConnectivity(trial)
+            rdDetermineBonds.DetermineBondOrders(trial, charge=charge)
+            return Chem.MolToSmiles(trial, kekuleSmiles=True)
+        except Exception:  # noqa: BLE001  (charge mismatch, valence)
+            continue
+    return None
+
+
 def get_smiles(calc_dir: str):
-    """SMILES from DELFIN_Data.json ``input.smiles`` (None if absent)."""
+    """SMILES for a calc: DELFIN_Data.json ``input.smiles`` first, then
+    derived from the 3D structure (None only if neither works)."""
     path = os.path.join(calc_dir, DELFIN_DATA_NAME)
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             data = _json.load(fh)
     except (OSError, _json.JSONDecodeError):
-        return None
-    value = (data.get("input") or {}).get("smiles")
-    return str(value) if value else None
+        data = None
+    value = (data or {}).get("input", {}).get("smiles")
+    if value:
+        return str(value)
+    return _smiles_from_3d(calc_dir)
 
 
 def smiles_svg_bytes(smiles: str, size: int = 260):
