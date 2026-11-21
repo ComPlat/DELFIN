@@ -33,7 +33,6 @@ test-only	_load_md_presets	delfin/agent/subagents.py:1606
 test-only	_locator_value	delfin/agent/cited_retrieval.py:218
 test-only	_release_mine	delfin/agent/scratch.py:75
 test-only	_scoped_test_cmd_for_edits	delfin/agent/api_client.py:13237
-test-only	_source_state	delfin/agent/session_index.py:322
 test-only	build_fixtures	delfin/agent/pack/benchmark/setup/w17_data_fixtures.py:22
 test-only	bwrap_substitution	delfin/agent/shared_tmp.py:248
 test-only	category_names	delfin/agent/compaction_quality.py:169
