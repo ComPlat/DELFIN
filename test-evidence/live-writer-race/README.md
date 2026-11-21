@@ -28,8 +28,15 @@ copy, not an installed one:
 
 ```
 before: /tmp/delfin-wt-1cba2275/delfin/agent/audit_log.py
-after : /home/qmchem_max/delfin-swarm/night5/n5i/delfin/agent/audit_log.py
+after : <the agent's own checkout>/delfin/agent/audit_log.py
 ```
+
+The second path is written as a placeholder: an absolute path here
+encodes a home directory and the site's group-account name, which no
+tracked file carries (tests/test_no_personal_data_is_committed.py
+refused this file for exactly that). What the measurement needs is
+that the two paths DIFFER -- the import came from the worktree, not
+from the installed copy -- and that survives the redaction.
 
 The probe is run as `PYTHONPATH=. python3 scratch/probe.py` **from the
 worktree root**. That is not a detail: run as a bare script from inside a
