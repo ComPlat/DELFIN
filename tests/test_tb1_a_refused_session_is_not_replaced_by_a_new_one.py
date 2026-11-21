@@ -130,6 +130,22 @@ def holder(store, tmp_path):
         if proc.poll() is None:
             proc.kill()
             proc.wait(10)
+        # Wait until the child pid is DEAD before the next test starts: the
+        # operator's node run (green run of pair v3) showed a later test's
+        # holder child refused with SessionLockedError naming a LIVE pid --
+        # pid reuse on a busy node can make a just-killed child's pid look
+        # alive to acquire_session_lock's os.kill(pid, 0) check. Wait for
+        # the pid to be gone, then remove this test's own lock file so the
+        # next test starts from an unlocked store.
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            if not ss._pid_alive(proc.pid):
+                break
+            time.sleep(0.1)
+        assert not ss._pid_alive(proc.pid), (
+            f"the holder pid {proc.pid} is still alive 15 s after teardown; "
+            "the next test's holder child would hit SessionLockedError")
+        (store / f"{SID}.lock").unlink(missing_ok=True)
 
 
 def _open_tab(tmp_path, monkeypatch):
