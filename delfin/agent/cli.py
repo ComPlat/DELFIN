@@ -6523,7 +6523,7 @@ def build_parser() -> argparse.ArgumentParser:
             agent_cfg = {}
 
         interval = max(60, int(getattr(args, "interval", 0) or 0))
-        state = {"seen": {}}
+        state = {"seen": {}, "cycles_seen": set()}
         stop_seen = {}
         stop = _sa.last_stop()
         while True:
@@ -6538,6 +6538,24 @@ def build_parser() -> argparse.ArgumentParser:
                                           stop_all_seen=stop_seen)
                 for name, text in events:
                     print(f"attention: {text}", flush=True)
+            # The wait side of ops health (B4 target 1+2): who waits on
+            # whom across sessions — printed in both modes — and, in the
+            # --wait loop, ONE event per NEW mutual-wait cycle, deduped in
+            # state["cycles_seen"]. Without this the registry's waits were
+            # invisible to ops health and two sessions waiting on each
+            # other paged nobody. Best-effort: a registry failure must not
+            # break the verdict loop.
+            try:
+                for row in _sh.waits_summary():
+                    print(f"waits: {row['session']} — {row['waits']}",
+                          flush=True)
+                if getattr(args, "wait", False):
+                    from . import mutual_wait as _mw
+                    for _sid, _text in _sh.watch_cycle_events(
+                            _mw.find(_sh.wait_edges()), state, emit=True):
+                        print(f"attention: {_text}", flush=True)
+            except Exception:
+                pass
             rows = []
             for rec in records:
                 verdict = _sh.classify(rec, _t.time(), agent_cfg)

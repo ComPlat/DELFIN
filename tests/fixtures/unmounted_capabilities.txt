@@ -77,7 +77,5 @@ test-only	step_resume_note	delfin/agent/cli_resume.py:291
 test-only	sweep_stale	delfin/agent/shared_tmp.py:353
 test-only	test_honesty_feedback	delfin/agent/verify_guard.py:3569
 test-only	touch_heartbeat	delfin/agent/session_store.py:1689
-test-only	waits_summary	delfin/agent/session_health.py:192
-test-only	watch_cycle_events	delfin/agent/session_health.py:218
 test-only	workflow_is	delfin/agent/pack/benchmark/accept/w20_common.py:15
 test-only	write_supervisor_heartbeat	delfin/agent/service/durable_host.py:96
