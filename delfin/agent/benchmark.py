@@ -1223,21 +1223,6 @@ def _basename(path: str) -> str:
     return path.replace("\\", "/").rsplit("/", 1)[-1]
 
 
-def _edited_paths(calls: list[dict]) -> list[str]:
-    """Extract edited-file basenames from MUTATE calls' inputs."""
-    out: list[str] = []
-    for c in calls:
-        if c["name"] not in _MUTATE_TOOLS:
-            continue
-        m = re.search(r'"(?:file_path|path|notebook_path)"\s*:\s*"([^"]+)"',
-                      c["input"])
-        if m:
-            base = _basename(m.group(1))
-            if base and base not in out:
-                out.append(base)
-    return out
-
-
 def _classify_calls(tool_calls: list[dict]) -> list[dict]:
     """Annotate each ordered tool call with behaviour ``kinds``.
 
@@ -1276,14 +1261,6 @@ def _first_idx(calls: list[dict], kind: str) -> int | None:
         if kind in c["kinds"]:
             return c["idx"]
     return None
-
-
-def _last_idx(calls: list[dict], kind: str) -> int | None:
-    found: int | None = None
-    for c in calls:
-        if kind in c["kinds"]:
-            found = c["idx"]
-    return found
 
 
 def _behavior_planned(calls: list[dict]) -> bool:
