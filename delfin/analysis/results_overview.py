@@ -1076,7 +1076,14 @@ def _render_skeleton(sym, rotated, bonds, size,
             on_double = any(
                 idx in (a, b) and tuple(sorted((a, b))) in _dbl_here
                 for a, b in bonds)
-            if not on_double:
+            # The OH/HO label requires a REAL proton on the O.  A
+            # deprotonated terminal O (carboxylate O-, nitro O, phenolate
+            # drawn as terminal) has no H; forcing "OH" onto it invented
+            # hydrogens (user report classes E/F: "HO-N=O" on nitro,
+            # "HO-CH" in the oxalyl region).
+            _has_h = any(idx in (a, b) and sym[b if a == idx else a] == "H"
+                         for a, b in bonds)
+            if not on_double and _has_h:
                 # Direction along the O-C bond, not global x: the
                 # partner sits at the other end of the O's only bond.
                 # The label reads away from the partner: when the C
