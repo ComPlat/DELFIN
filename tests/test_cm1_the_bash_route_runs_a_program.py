@@ -21,6 +21,7 @@ what is measured here.
 """
 import json
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import sys
@@ -28,6 +29,7 @@ import tempfile
 
 from delfin.agent import api_client
 from delfin.agent import code_mode
+from conftest import child_env
 
 #: The import root the program subprocess gets, so the child imports THIS
 #: tree's delfin rather than whatever is installed.
@@ -113,7 +115,12 @@ def test_a_real_program_reaches_a_tool_through_the_product_route():
             "import json, tools_api as api\n"
             "print('RESULT', json.dumps(api.list_docs()))\n")
 
-        env = dict(os.environ)
+        # conftest.child_env, not the local _child_env in this file:
+        # that one wraps api_client._code_mode_child_env and says
+        # nothing about HOME. These children run
+        # `python -m delfin.agent.code_mode`, so each resolves its own
+        # ~/.delfin sinks at import time against whatever HOME says.
+        env = dict(os.environ, **child_env(Path(workspace)))
         env.update(_child_env(workspace, executor))
         env["PYTHONPATH"] = os.pathsep.join([workspace, TREE])
         run = subprocess.run(
@@ -149,7 +156,12 @@ def test_a_write_tool_is_refused_over_the_product_route():
             "except RuntimeError as exc:\n"
             "    print('REFUSED', exc)\n")
 
-        env = dict(os.environ)
+        # conftest.child_env, not the local _child_env in this file:
+        # that one wraps api_client._code_mode_child_env and says
+        # nothing about HOME. These children run
+        # `python -m delfin.agent.code_mode`, so each resolves its own
+        # ~/.delfin sinks at import time against whatever HOME says.
+        env = dict(os.environ, **child_env(Path(workspace)))
         env.update(_child_env(workspace, executor))
         env["PYTHONPATH"] = os.pathsep.join([workspace, TREE])
         run = subprocess.run(
@@ -191,16 +203,30 @@ def test_the_program_inherits_the_cage_and_ceiling_from_the_bash_tool():
             return real(cmd, run_cwd, perms_, mode, extra_write,
                         caged_unasked)
 
+        # The PRODUCT must make this call. The first version of this test
+        # installed the spy and then called _bash_isolation_argv ITSELF, so
+        # `assert seen` was satisfied by the test's own call and the bash
+        # tool was never driven. After run_program, ProgramTimeout and
+        # test_cm1_adversarial_limits.py were deleted, this was the only
+        # coverage left for the cage and the ceiling on a runner command.
+        engine = api_client._DocToolExecutor.__new__(
+            api_client._DocToolExecutor)
+        engine._permissions = perms
         api_client._bash_isolation_argv = _spy
         try:
-            argv = api_client._bash_isolation_argv(
-                "python3 -m delfin.agent.code_mode run prog.py", workspace,
+            out = engine._execute_bash(
+                {"command": "python3 -m delfin.agent.code_mode run prog.py",
+                 "timeout": 5},
                 perms)
         finally:
             api_client._bash_isolation_argv = real
-        assert seen, "the cage argv must be built for a runner command"
-        assert isinstance(argv, list) and argv
-        # The ceiling the tool applies to every command, program or not.
+        assert out, "the bash tool returned nothing for a runner command"
+        assert seen, (
+            "the bash tool built no cage argv for a runner command; the "
+            "cage is decided in _bash_isolation_argv and nothing else")
+        assert any("code_mode" in str(c) for c in seen), seen
+        # The ceiling the tool applies to every command, program or not --
+        # read off the permissions the tool was given, not off a default.
         assert perms.bash_timeout_s == 120
         assert perms.bash_max_timeout_s > perms.bash_timeout_s
     finally:
