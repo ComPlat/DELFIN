@@ -12,7 +12,7 @@ so it inherited the variables that session exports to every child:
 
 ```
 $ python3 -c "import os; print({k:v for k,v in os.environ.items() if k.startswith('DELFIN')})"
-{'DELFIN_CAGE_HIDE': '/home/qmchem_max/.delfin',
+{'DELFIN_CAGE_HIDE': '/home/localuser/.delfin',   # the operator's home, written as a stand-in
  'DELFIN_ENDPOINT_PER_MODEL_LIMIT': '1',
  'DELFIN_NO_BROWSER': '1',
  'DELFIN_SWARM_RUN': 'night5',
