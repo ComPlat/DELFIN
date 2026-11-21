@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+from pathlib import Path
 
 from dataclasses import dataclass, field
 
@@ -52,6 +53,11 @@ class PrePRReport:
     changed_files: list[str] = field(default_factory=list)
     selected_tests: list[str] = field(default_factory=list)
     blockers: list[Blocker] = field(default_factory=list)
+    #: Things worth reading that do NOT decide the verdict. A blocker that
+    #: blocks nothing is a contradiction, and a report-only finding placed
+    #: among the blockers would turn READY into BLOCKED and stop work the
+    #: author is entitled to do.
+    notes: list[str] = field(default_factory=list)
 
     def __str__(self) -> str:
         lines = [self.verdict]
@@ -61,6 +67,7 @@ class PrePRReport:
         if self.selected_tests:
             lines.append(f"tests to run ({len(self.selected_tests)}):")
             lines.extend(f"  {t}" for t in self.selected_tests)
+        lines.extend(self.notes)
         return "\n".join(lines)
 
 
@@ -98,6 +105,59 @@ def changed_files(worktree: str, base: str) -> list[str]:
     point = _base_commit(worktree, base)
     names = _git(worktree, "diff", "--name-only", f"{point}..HEAD")
     return [n for n in names.splitlines() if n]
+
+
+_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+
+def change_records(worktree: str, base: str,
+                   changed: list[str] | None = None) -> list[tuple]:
+    """``(path, new_start, new_end, source)`` per HUNK of each changed file.
+
+    Input: the worktree and the base the PR will be built on. Output: the
+    record shape ``test_honesty.check`` takes, with ``source`` read from
+    the worktree (the NEW text) and the line range taken from
+    ``git diff -U0``'s hunk header.
+
+    One record per HUNK and not per file: the only scanner that reads the
+    range asks whether NEW code sits inside a bare ``except``, and a
+    file-wide range would answer that for lines the change never touched.
+    The scanners that read the whole source then see the same file once
+    per hunk, so the caller de-duplicates the findings.
+
+    Read-only, and quiet: a file that cannot be read contributes a
+    path-only record, which the text scanners skip by design.
+    """
+    rel_paths = list(changed if changed is not None
+                     else changed_files(worktree, base))
+    out: list[tuple] = []
+    for rel in rel_paths:
+        try:
+            source = (Path(worktree) / rel).read_text(encoding="utf-8",
+                                                      errors="replace")
+        except OSError:
+            out.append((rel, 0, 0, None))
+            continue
+        try:
+            diff = _git(worktree, "diff", "-U0",
+                        f"{_base_commit(worktree, base)}..HEAD", "--", rel)
+        except Exception:
+            out.append((rel, 1, source.count("\n") + 1, source))
+            continue
+        hunks = 0
+        for line in diff.splitlines():
+            m = _HUNK_RE.match(line)
+            if not m:
+                continue
+            start = int(m.group(1))
+            length = int(m.group(2) or 1)
+            if length == 0:          # a pure deletion has no new lines
+                continue
+            out.append((rel, start, start + length - 1, source))
+            hunks += 1
+        if not hunks:
+            out.append((rel, 0, 0, None))
+    return out
 
 
 def select_tests(changed: list[str], worktree: str = ".") -> list[str]:
@@ -333,6 +393,32 @@ def run(worktree: str, base: str = "origin/main",
         report.blockers.append(
             Blocker("private-string",
                     f"credential-shaped string in the diff: {kind}"))
+    # Do the change's TESTS claim more than they measure? The scanner and
+    # its report text were built from wave 17's measurements and reached by
+    # nothing in the product: verify_guard.scan_for_dishonest_tests was the
+    # only caller of test_honesty.check, and only tests called IT, so a
+    # 320-line AST scanner sat behind a wrapper that made the reachability
+    # baseline count the module as referenced. This is the moment it was
+    # written for -- the report that answers "is this ready" -- and it is a
+    # NOTE: its own text says it blocks nothing, so it must not turn READY
+    # into BLOCKED.
+    try:
+        from delfin.agent import verify_guard as _vg
+
+        findings = _vg.scan_for_dishonest_tests(
+            change_records(worktree, base, changed))
+        seen: set = set()
+        unique = []
+        for f in findings:
+            key = (f.path, f.line, f.reason)
+            if key not in seen:
+                seen.add(key)
+                unique.append(f)
+        note = _vg.test_honesty_feedback(unique)
+        if note:
+            report.notes.append(note)
+    except Exception:
+        pass
     for partner in partners:
         probe = safe_git.run(
             ["merge-base", "--is-ancestor", partner, "HEAD"],
