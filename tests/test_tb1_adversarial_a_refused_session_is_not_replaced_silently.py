@@ -504,6 +504,19 @@ def test_wait_opens_the_held_conversation_once_the_holder_ends(env):
         try:
             _open_held_conversation(tab, env)
             assert "held by a live session" in _chat_text(state)
+            # The refusal must OFFER both choices, and this is the only place
+            # the offer exists: the restore below replaces the chat history.
+            # Asserting it after the restore (where this assertion used to
+            # sit) demanded that a CORRECT patch also explain itself in the
+            # chat after opening the conversation -- a mechanism the outcome
+            # does not require. Measured on a node: the chat there was empty
+            # after a partial restore, so a correct open failed on wording.
+            _offer = _chat_text(state).lower()
+            assert "start a new session from it" in _offer, (
+                "the refusal must offer the first choice in the chat")
+            assert "wait" in _offer, (
+                "the refusal must offer the 'Wait' choice in the chat; it "
+                f"said: {_chat_text(state)[-300:]!r}")
             # The person decides to WAIT -- the choice the refusal offers.
             # Without taking it there is nothing to wait in, and a test that
             # skipped the choice would measure an intent the person never
@@ -549,8 +562,16 @@ def test_wait_opens_the_held_conversation_once_the_holder_ends(env):
             assert _sessions_holding(env, typed) == [], (
                 "waiting must not send the typed text anywhere: it was "
                 "written into a session")
-            assert "wait" in _chat_text(state).lower(), (
-                "the refusal never offered the wait choice it is expected to")
+            # The open happened on its own; the person must be able to see
+            # WHY. This is the outcome, not a wording: after the restore
+            # replaced the history, something must explain the tab opening
+            # itself. (The v3 patch does this with one line after the
+            # restore. A patch that opened silently would leave the person
+            # wondering what changed -- the surprise this package removes.)
+            _after = _chat_text(state).lower()
+            assert ("holder" in _after or "waiting" in _after), (
+                "the tab opened the held conversation by itself and the chat "
+                f"does not say why; it says: {_after[-300:]!r}")
         finally:
             tab["refs"]["shutdown"](save=False)
     finally:
