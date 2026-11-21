@@ -1,0 +1,3326 @@
+{
+  "callables_scanned": {
+    "chem": 5087,
+    "infra": 4870
+  },
+  "candidates_with_a_twin": {
+    "chem": [],
+    "infra": []
+  },
+  "chemistry_rule": {
+    "chemistry_files_under_delfin": 328,
+    "chemistry_files_under_delfin_agent": 25,
+    "external_terms": [
+      "orca",
+      "xtb",
+      "crest",
+      "turbomole",
+      "gaussian",
+      "molpro",
+      "psi4",
+      "nwchem",
+      "gamess",
+      "cp2k",
+      "vasp",
+      "gromacs",
+      "openmm",
+      "goat",
+      "smiles",
+      "smarts",
+      "inchi",
+      "b3lyp",
+      "pbe0",
+      "wb97",
+      "tpss",
+      "cam_b3lyp",
+      "def2",
+      "cc_pvdz",
+      "ccsd",
+      "mp2",
+      "nevpt2",
+      "casscf",
+      "caspt2",
+      "dlpno",
+      "gfn2",
+      "gfn_ff",
+      "tddft",
+      "dft",
+      "nbo",
+      "nics",
+      "cpcm",
+      "smd",
+      "cosmo",
+      "xyz",
+      "mol2",
+      "sdf",
+      "cif",
+      "pdb",
+      "gbw",
+      "hess",
+      "molden",
+      "homo",
+      "lumo"
+    ],
+    "files_by_signal": {
+      "chemistry": 328,
+      "s1": 135,
+      "s2": 203,
+      "s3": 218,
+      "s3_only": 58,
+      "scanned": 1273
+    },
+    "granularity": "file",
+    "identifier_only_terms": [
+      "ir",
+      "uv",
+      "xrd",
+      "vcd",
+      "ecd"
+    ],
+    "libraries": [
+      "rdkit",
+      "ase",
+      "opi",
+      "openbabel",
+      "pybel",
+      "pyscf",
+      "cclib",
+      "pymatgen",
+      "spglib",
+      "openmm",
+      "MDAnalysis",
+      "xtb",
+      "morfeus",
+      "geometric",
+      "py3Dmol",
+      "nglview",
+      "dscribe",
+      "mace",
+      "nequip"
+    ],
+    "observable_terms": [
+      "fukui",
+      "raman",
+      "nmr",
+      "zpe",
+      "hessian",
+      "irc",
+      "isc",
+      "tadf",
+      "pka",
+      "conformer",
+      "tautomer",
+      "enantiomer",
+      "rotamer",
+      "multiplicity",
+      "solvation",
+      "shielding",
+      "shieldings",
+      "polarizability",
+      "hyperpolarizability"
+    ],
+    "py_files_under_delfin": 1273,
+    "s2_min_hits": 25,
+    "s2_min_per_1k": 2.0,
+    "s3_min_hits": 8,
+    "s3_min_share": 0.01
+  },
+  "counts": {
+    "chem": 90,
+    "infra": 66
+  },
+  "counts_by_package": {
+    "chem": {
+      "delfin": 25,
+      "delfin/agent": 2,
+      "delfin/analysis_tools": 3,
+      "delfin/class_modules": 2,
+      "delfin/co2": 1,
+      "delfin/common": 2,
+      "delfin/dashboard": 15,
+      "delfin/doc_server": 1,
+      "delfin/manta": 25,
+      "delfin/ml_train": 1,
+      "delfin/mlp_tools": 1,
+      "delfin/reporting": 5,
+      "delfin/tools": 2,
+      "delfin/tools/adapters": 1,
+      "delfin/workflows/engine": 4
+    },
+    "infra": {
+      "delfin/agent": 59,
+      "delfin/agent/service": 1,
+      "delfin/agent/swarm": 6
+    }
+  },
+  "counts_by_tier": {
+    "chem": {
+      "nowhere": 68,
+      "test-only": 22
+    },
+    "infra": {
+      "nowhere": 24,
+      "test-only": 42
+    }
+  },
+  "declined_verdict": {
+    "candidates": {
+      "chem": {
+        "_max_heavy_bond_order": [
+          "polyhedra.py:560 (+326 from the definition): # bond-order radii + _pyykko_radius/_max_heavy_bond_order are retained above"
+        ],
+        "close_open_tabs": [
+          "tab_agent.py:8179 (-4 from the definition): #: files). ``close_open_tabs`` is how a test harness ends them."
+        ]
+      },
+      "infra": {
+        "_disabled_keyring_factory": [
+          "credentials.py:364 (+4 from the definition): #: Replaced by the test suite with ``_disabled_keyring_factory``."
+        ],
+        "sweep_stale": [
+          "shared_tmp.py:263 (-90 from the definition): # Sessions older than this are swept by sweep_stale even if they never"
+        ]
+      }
+    },
+    "decided_by": "a person; the signal below is evidence, not proof",
+    "means": "the code records a decision to leave this capability unconnected, so both offered actions are wrong",
+    "name": "declined",
+    "signal": "a comment in the defining file naming the capability"
+  },
+  "exclusion_evidence": {
+    "documented_entry_point": {
+      "_bypass_failure_asks": [
+        "docs/SECURITY_MODEL.md"
+      ],
+      "check_goat_e2e": [
+        "docs/MLIP_GOAT_GPU.md"
+      ],
+      "describe_mlp_backends": [
+        "docs/mlp.md"
+      ],
+      "distill_for_shipping": [
+        "docs/agent_memory.md"
+      ],
+      "reap_slot": [
+        "docs/explore_pilot.md"
+      ],
+      "recall_levels": [
+        "docs/agent_memory.md"
+      ],
+      "write_supervisor_heartbeat": [
+        "docs/DURABLE_SESSIONS.md"
+      ]
+    },
+    "security_core": {
+      "_claim_sentence": [
+        "delfin/agent/verify_guard.py: a sandbox, approval, gate or honesty guard of DELFIN"
+      ],
+      "_diff_line_counts": [
+        "delfin/agent/audit_log.py: a sandbox, approval, gate or honesty guard of DELFIN"
+      ],
+      "_suggest_bash_pattern": [
+        "delfin/agent/kit_confirm.py: a sandbox, approval, gate or honesty guard of DELFIN"
+      ],
+      "build_fixtures": [
+        "delfin/agent/pack/benchmark/setup/w17_data_fixtures.py: benchmark tasks and acceptance scripts"
+      ],
+      "expected_digest": [
+        "delfin/agent/principles_guard.py: a sandbox, approval, gate or honesty guard of DELFIN"
+      ],
+      "observations_are_complete": [
+        "delfin/agent/verify_guard.py: a sandbox, approval, gate or honesty guard of DELFIN"
+      ],
+      "read_last_n": [
+        "delfin/agent/audit_log.py: a sandbox, approval, gate or honesty guard of DELFIN"
+      ],
+      "resources_within": [
+        "delfin/agent/pack/benchmark/accept/w20_common.py: benchmark tasks and acceptance scripts"
+      ],
+      "scan_for_dishonest_tests": [
+        "delfin/agent/verify_guard.py: a sandbox, approval, gate or honesty guard of DELFIN"
+      ],
+      "set_caveat_language": [
+        "delfin/agent/verify_guard.py: a sandbox, approval, gate or honesty guard of DELFIN"
+      ],
+      "test_honesty_feedback": [
+        "delfin/agent/verify_guard.py: a sandbox, approval, gate or honesty guard of DELFIN"
+      ],
+      "workflow_is": [
+        "delfin/agent/pack/benchmark/accept/w20_common.py: benchmark tasks and acceptance scripts"
+      ]
+    },
+    "suite_punishes_the_fix": {
+      "bwrap_substitution": [
+        "test_shared_tmp_wiring.py::test_isolation_argv_binds_the_session_dir_as_tmp"
+      ],
+      "map_to_host": [
+        "test_shared_tmp_wiring.py::test_read_file_maps_cage_tmp_through_the_real_handler"
+      ]
+    },
+    "suites_cannot_run_here": {
+      "esd_inputs_equivalent": [
+        "tests/test_opi_esd_parity.py: opi",
+        "tests/test_opi_esd_probe.py: opi"
+      ],
+      "normalise_esd_inp": [
+        "tests/test_opi_esd_parity.py: opi",
+        "tests/test_opi_esd_probe.py: opi"
+      ]
+    }
+  },
+  "exclusions_removed": {
+    "chem:documented_entry_point": 2,
+    "chem:security_core": 5,
+    "chem:suites_cannot_run_here": 2,
+    "documented_entry_point": 7,
+    "infra:documented_entry_point": 5,
+    "infra:security_core": 7,
+    "infra:suite_punishes_the_fix": 2,
+    "security_core": 12,
+    "suite_punishes_the_fix": 2,
+    "suites_cannot_run_here": 2
+  },
+  "exclusions_removed_names": {
+    "defined_in_test": [],
+    "documented_entry_point": [
+      "infra:_bypass_failure_asks",
+      "infra:distill_for_shipping",
+      "infra:reap_slot",
+      "infra:recall_levels",
+      "infra:write_supervisor_heartbeat",
+      "chem:check_goat_e2e",
+      "chem:describe_mlp_backends"
+    ],
+    "module_absent": [],
+    "security_core": [
+      "infra:_diff_line_counts",
+      "infra:_suggest_bash_pattern",
+      "infra:build_fixtures",
+      "infra:expected_digest",
+      "infra:read_last_n",
+      "infra:resources_within",
+      "infra:workflow_is",
+      "chem:_claim_sentence",
+      "chem:observations_are_complete",
+      "chem:scan_for_dishonest_tests",
+      "chem:set_caveat_language",
+      "chem:test_honesty_feedback"
+    ],
+    "short_name": [],
+    "suite_punishes_the_fix": [
+      "infra:bwrap_substitution",
+      "infra:map_to_host"
+    ],
+    "suites_cannot_run_here": [
+      "chem:esd_inputs_equivalent",
+      "chem:normalise_esd_inp"
+    ]
+  },
+  "generated_for": "<session-scratch>/ab",
+  "instrument_classes": {
+    "chem": {
+      "four-check": 73,
+      "four-check+ratchet": 2,
+      "three-check": 15
+    },
+    "infra": {
+      "four-check+ratchet": 66
+    }
+  },
+  "main_ref": "origin/main",
+  "main_ref_readable": true,
+  "pools": {
+    "chem": [
+      {
+        "consuming_suites": [
+          "tests/test_a_chat_bubble_reads_in_both_themes.py",
+          "tests/test_a_checked_delfin_pipeline_runs_without_a_dialog.py",
+          "tests/test_a_choice_offer_is_a_question_with_a_flat_list.py",
+          "tests/test_a_delegates_report_is_shown_whole.py",
+          "tests/test_a_file_is_shown_once_in_a_turn.py",
+          "tests/test_a_file_you_asked_for_can_be_taken_out_of_the_chat.py",
+          "tests/test_a_finished_delegate_is_filed_not_deleted.py",
+          "tests/test_a_finished_job_wakes_the_agent.py",
+          "tests/test_a_finished_message_is_not_rebuilt_while_the_agent_writes.py",
+          "tests/test_a_finished_service_session_opens_in_the_full_chat.py",
+          "tests/test_a_finished_turn_folds_its_tool_steps.py",
+          "tests/test_a_free_model_was_charged_an_invented_rate.py"
+        ],
+        "consuming_suites_found": 162,
+        "file": "delfin/dashboard/tab_agent.py",
+        "instrument_class": "four-check",
+        "line": 7031,
+        "module": "delfin.dashboard.tab_agent",
+        "name": "_build_full_transcript_handoff",
+        "package": "delfin/dashboard",
+        "tier": "test-only",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_big_file_does_not_stall_the_browser.py",
+          "tests/test_a_branch_held_elsewhere_is_run_detached.py",
+          "tests/test_a_branch_is_tested_in_a_preview_not_by_switching_the_checkout.py",
+          "tests/test_a_bug_report_leaves_only_with_consent.py",
+          "tests/test_a_calculation_that_ran_for_days_comes_back.py",
+          "tests/test_a_chat_bubble_reads_in_both_themes.py",
+          "tests/test_a_checked_delfin_pipeline_runs_without_a_dialog.py",
+          "tests/test_a_choice_offer_is_a_question_with_a_flat_list.py",
+          "tests/test_a_clicked_file_offers_its_own_actions.py",
+          "tests/test_a_closed_gap_is_answered_with_fermi_smearing.py",
+          "tests/test_a_closed_window_is_not_a_dropped_connection.py",
+          "tests/test_a_construction_batch_from_the_dashboard_is_the_cli_run.py"
+        ],
+        "consuming_suites_found": 489,
+        "file": "delfin/dashboard/__init__.py",
+        "instrument_class": "four-check",
+        "line": 1612,
+        "module": "delfin.dashboard.__init__",
+        "name": "_build_orca_version_widget",
+        "package": "delfin/dashboard",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_big_file_does_not_stall_the_browser.py",
+          "tests/test_a_branch_held_elsewhere_is_run_detached.py",
+          "tests/test_a_branch_is_tested_in_a_preview_not_by_switching_the_checkout.py",
+          "tests/test_a_bug_report_leaves_only_with_consent.py",
+          "tests/test_a_calculation_that_ran_for_days_comes_back.py",
+          "tests/test_a_chat_bubble_reads_in_both_themes.py",
+          "tests/test_a_checked_delfin_pipeline_runs_without_a_dialog.py",
+          "tests/test_a_choice_offer_is_a_question_with_a_flat_list.py",
+          "tests/test_a_clicked_file_offers_its_own_actions.py",
+          "tests/test_a_closed_gap_is_answered_with_fermi_smearing.py",
+          "tests/test_a_closed_window_is_not_a_dropped_connection.py",
+          "tests/test_a_construction_batch_from_the_dashboard_is_the_cli_run.py"
+        ],
+        "consuming_suites_found": 489,
+        "file": "delfin/dashboard/__init__.py",
+        "instrument_class": "four-check",
+        "line": 1574,
+        "module": "delfin.dashboard.__init__",
+        "name": "_compute_branch_options",
+        "package": "delfin/dashboard",
+        "tier": "test-only",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [],
+        "consuming_suites_found": 0,
+        "file": "delfin/manta/_coord_angle_corrector.py",
+        "instrument_class": "three-check",
+        "line": 482,
+        "module": "delfin.manta._coord_angle_corrector",
+        "name": "_compute_clash_state",
+        "package": "delfin/manta",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [],
+        "consuming_suites_found": 0,
+        "file": "delfin/manta/_post_optimizer.py",
+        "instrument_class": "three-check",
+        "line": 431,
+        "module": "delfin.manta._post_optimizer",
+        "name": "_decompose_into_fragments",
+        "package": "delfin/manta",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_chat_bubble_reads_in_both_themes.py",
+          "tests/test_a_checked_delfin_pipeline_runs_without_a_dialog.py",
+          "tests/test_a_choice_offer_is_a_question_with_a_flat_list.py",
+          "tests/test_a_delegates_report_is_shown_whole.py",
+          "tests/test_a_file_is_shown_once_in_a_turn.py",
+          "tests/test_a_file_you_asked_for_can_be_taken_out_of_the_chat.py",
+          "tests/test_a_finished_delegate_is_filed_not_deleted.py",
+          "tests/test_a_finished_job_wakes_the_agent.py",
+          "tests/test_a_finished_message_is_not_rebuilt_while_the_agent_writes.py",
+          "tests/test_a_finished_service_session_opens_in_the_full_chat.py",
+          "tests/test_a_finished_turn_folds_its_tool_steps.py",
+          "tests/test_a_free_model_was_charged_an_invented_rate.py"
+        ],
+        "consuming_suites_found": 162,
+        "file": "delfin/dashboard/tab_agent.py",
+        "instrument_class": "four-check",
+        "line": 7756,
+        "module": "delfin.dashboard.tab_agent",
+        "name": "_delegate_open",
+        "package": "delfin/dashboard",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [],
+        "consuming_suites_found": 0,
+        "file": "delfin/reporting/esp_report.py",
+        "instrument_class": "three-check",
+        "line": 285,
+        "module": "delfin.reporting.esp_report",
+        "name": "_esp_vlim_from_cube",
+        "package": "delfin/reporting",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_fukui_cli.py"
+        ],
+        "consuming_suites_found": 1,
+        "file": "delfin/cli_fukui.py",
+        "instrument_class": "four-check",
+        "line": 320,
+        "module": "delfin.cli_fukui",
+        "name": "_extract_optimized_xyz",
+        "package": "delfin",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_goat_mlip_control.py",
+          "tests/test_imag_takes_a_saddle_to_a_minimum.py"
+        ],
+        "consuming_suites_found": 2,
+        "file": "delfin/reporting/delfin_docx_report.py",
+        "instrument_class": "four-check",
+        "line": 360,
+        "module": "delfin.reporting.delfin_docx_report",
+        "name": "_format_energy_block",
+        "package": "delfin/reporting",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_big_file_does_not_stall_the_browser.py",
+          "tests/test_a_branch_held_elsewhere_is_run_detached.py",
+          "tests/test_a_branch_is_tested_in_a_preview_not_by_switching_the_checkout.py",
+          "tests/test_a_bug_report_leaves_only_with_consent.py",
+          "tests/test_a_calculation_that_ran_for_days_comes_back.py",
+          "tests/test_a_chat_bubble_reads_in_both_themes.py",
+          "tests/test_a_checked_delfin_pipeline_runs_without_a_dialog.py",
+          "tests/test_a_choice_offer_is_a_question_with_a_flat_list.py",
+          "tests/test_a_clicked_file_offers_its_own_actions.py",
+          "tests/test_a_closed_gap_is_answered_with_fermi_smearing.py",
+          "tests/test_a_closed_window_is_not_a_dropped_connection.py",
+          "tests/test_a_construction_batch_from_the_dashboard_is_the_cli_run.py"
+        ],
+        "consuming_suites_found": 489,
+        "file": "delfin/dashboard/__init__.py",
+        "instrument_class": "four-check",
+        "line": 1557,
+        "module": "delfin.dashboard.__init__",
+        "name": "_get_current_git_branch",
+        "package": "delfin/dashboard",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_no_duplicate_public_api.py",
+          "tests/test_opi_co2_coordinator_parity.py",
+          "tests/test_relativistic_basis_assignment.py"
+        ],
+        "consuming_suites_found": 3,
+        "file": "delfin/co2/CO2_Coordinator6.py",
+        "instrument_class": "four-check",
+        "line": 806,
+        "module": "delfin.co2.CO2_Coordinator6",
+        "name": "_is_orca_calculation_complete",
+        "package": "delfin/co2",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [],
+        "consuming_suites_found": 0,
+        "file": "delfin/cli.py",
+        "instrument_class": "three-check",
+        "line": 912,
+        "module": "delfin.cli",
+        "name": "_is_workspace_artifact",
+        "package": "delfin",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_killed_orca_job_resumes_where_it_stopped.py",
+          "tests/test_a_moread_guess_never_takes_the_jobs_own_name.py",
+          "tests/test_a_new_input_is_not_stamped_onto_an_old_output.py",
+          "tests/test_a_normal_ending_is_not_always_a_result.py",
+          "tests/test_a_retry_input_is_one_orca_can_read.py",
+          "tests/test_a_scan_says_what_it_left.py",
+          "tests/test_a_stage_keeps_what_its_first_configuration_computed.py",
+          "tests/test_an_mpi_start_without_sockets_is_explained.py",
+          "tests/test_an_unwritable_scratch_base_is_passed_over.py",
+          "tests/test_cli_recalc.py",
+          "tests/test_control_overrides_reach_the_jobs_they_name.py",
+          "tests/test_final_geometry_orca_read_switch.py"
+        ],
+        "consuming_suites_found": 32,
+        "file": "delfin/orca.py",
+        "instrument_class": "four-check",
+        "line": 532,
+        "module": "delfin.orca",
+        "name": "_iter_orca_candidates",
+        "package": "delfin",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_wb3_adversarial_scaffold.py",
+          "tests/test_workflow_descriptors.py"
+        ],
+        "consuming_suites_found": 2,
+        "file": "delfin/tools/scaffold.py",
+        "instrument_class": "four-check",
+        "line": 68,
+        "module": "delfin.tools.scaffold",
+        "name": "_kind_name",
+        "package": "delfin/tools",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_big_file_does_not_stall_the_browser.py",
+          "tests/test_a_branch_held_elsewhere_is_run_detached.py",
+          "tests/test_a_branch_is_tested_in_a_preview_not_by_switching_the_checkout.py",
+          "tests/test_a_bug_report_leaves_only_with_consent.py",
+          "tests/test_a_calculation_that_ran_for_days_comes_back.py",
+          "tests/test_a_chat_bubble_reads_in_both_themes.py",
+          "tests/test_a_checked_delfin_pipeline_runs_without_a_dialog.py",
+          "tests/test_a_choice_offer_is_a_question_with_a_flat_list.py",
+          "tests/test_a_clicked_file_offers_its_own_actions.py",
+          "tests/test_a_closed_gap_is_answered_with_fermi_smearing.py",
+          "tests/test_a_closed_window_is_not_a_dropped_connection.py",
+          "tests/test_a_construction_batch_from_the_dashboard_is_the_cli_run.py"
+        ],
+        "consuming_suites_found": 489,
+        "file": "delfin/dashboard/__init__.py",
+        "instrument_class": "four-check",
+        "line": 1566,
+        "module": "delfin.dashboard.__init__",
+        "name": "_list_local_git_branches",
+        "package": "delfin/dashboard",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_atom_mapping.py",
+          "tests/test_equatorial_square_kappa4.py",
+          "tests/test_fffree_metalloid_donor.py",
+          "tests/test_highcn_coverage.py",
+          "tests/test_lone_pair_space.py",
+          "tests/test_ml_targets_bv.py"
+        ],
+        "consuming_suites_found": 6,
+        "declined_signal": [
+          "polyhedra.py:560 (+326 from the definition): # bond-order radii + _pyykko_radius/_max_heavy_bond_order are retained above"
+        ],
+        "file": "delfin/manta/polyhedra.py",
+        "instrument_class": "four-check",
+        "line": 234,
+        "module": "delfin.manta.polyhedra",
+        "name": "_max_heavy_bond_order",
+        "package": "delfin/manta",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [],
+        "consuming_suites_found": 0,
+        "file": "delfin/manta/_isolated_reseat.py",
+        "instrument_class": "three-check",
+        "line": 96,
+        "module": "delfin.manta._isolated_reseat",
+        "name": "_nonmetal_fragments",
+        "package": "delfin/manta",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_energies_orca_read_switch.py",
+          "tests/test_energies_orca_read_text_mode.py",
+          "tests/test_esd_orca_read_switch.py",
+          "tests/test_final_geometry_orca_read_switch.py",
+          "tests/test_freq_orca_read_switch.py",
+          "tests/test_mlip_data.py",
+          "tests/test_occupier_s2_orca_read.py",
+          "tests/test_opi_orca_read.py",
+          "tests/test_opi_orca_relspin.py",
+          "tests/test_opi_orca_th.py",
+          "tests/test_opi_orca_th_review_findings.py",
+          "tests/test_orca_read_bounded_memory.py"
+        ],
+        "consuming_suites_found": 18,
+        "file": "delfin/orca_read.py",
+        "instrument_class": "four-check",
+        "line": 294,
+        "module": "delfin.orca_read",
+        "name": "_opi_final_single_point_energy",
+        "package": "delfin",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_prescribed_isomer_enumerator.py"
+        ],
+        "consuming_suites_found": 1,
+        "file": "delfin/manta/_prescribed_isomer_enumerator.py",
+        "instrument_class": "four-check",
+        "line": 445,
+        "module": "delfin.manta._prescribed_isomer_enumerator",
+        "name": "_orbit_burnside_selftest",
+        "package": "delfin/manta",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_an_mlip_goat_with_pal_40_does_not_start_40_models.py",
+          "tests/test_goat_default_input_parity.py",
+          "tests/test_goat_mlip_control.py",
+          "tests/test_mlip_goat_providers.py",
+          "tests/test_xtb_goat_recalc.py"
+        ],
+        "consuming_suites_found": 5,
+        "file": "delfin/xtb_crest.py",
+        "instrument_class": "four-check",
+        "line": 56,
+        "module": "delfin.xtb_crest",
+        "name": "_orca_ok",
+        "package": "delfin",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [],
+        "consuming_suites_found": 0,
+        "file": "delfin/reporting/esp_report.py",
+        "instrument_class": "three-check",
+        "line": 198,
+        "module": "delfin.reporting.esp_report",
+        "name": "_orca_plot_generate_density_cube",
+        "package": "delfin/reporting",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_chat_bubble_reads_in_both_themes.py",
+          "tests/test_a_checked_delfin_pipeline_runs_without_a_dialog.py",
+          "tests/test_a_choice_offer_is_a_question_with_a_flat_list.py",
+          "tests/test_a_delegates_report_is_shown_whole.py",
+          "tests/test_a_file_is_shown_once_in_a_turn.py",
+          "tests/test_a_file_you_asked_for_can_be_taken_out_of_the_chat.py",
+          "tests/test_a_finished_delegate_is_filed_not_deleted.py",
+          "tests/test_a_finished_job_wakes_the_agent.py",
+          "tests/test_a_finished_message_is_not_rebuilt_while_the_agent_writes.py",
+          "tests/test_a_finished_service_session_opens_in_the_full_chat.py",
+          "tests/test_a_finished_turn_folds_its_tool_steps.py",
+          "tests/test_a_free_model_was_charged_an_invented_rate.py"
+        ],
+        "consuming_suites_found": 162,
+        "file": "delfin/dashboard/tab_agent.py",
+        "instrument_class": "four-check",
+        "line": 4695,
+        "module": "delfin.dashboard.tab_agent",
+        "name": "_render_slash_palette_html",
+        "package": "delfin/dashboard",
+        "tier": "test-only",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [],
+        "consuming_suites_found": 0,
+        "file": "delfin/reporting/esp_report.py",
+        "instrument_class": "three-check",
+        "line": 270,
+        "module": "delfin.reporting.esp_report",
+        "name": "_robust_symmetric_vlim",
+        "package": "delfin/reporting",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_input_processing.py",
+          "tests/test_a_killed_build_does_not_leave_workers_behind.py",
+          "tests/test_drawing_a_structure.py",
+          "tests/test_outside_input_parsers_hold_on_any_text.py",
+          "tests/test_smiles_converter_regressions.py",
+          "tests/test_the_builder_has_the_editor_too.py",
+          "tests/test_two_systems_side_by_side.py"
+        ],
+        "consuming_suites_found": 7,
+        "file": "delfin/dashboard/input_processing.py",
+        "instrument_class": "four-check",
+        "line": 112,
+        "module": "delfin.dashboard.input_processing",
+        "name": "_run_isomers_subprocess",
+        "package": "delfin/dashboard",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_fukui_cli.py"
+        ],
+        "consuming_suites_found": 1,
+        "file": "delfin/cli_fukui.py",
+        "instrument_class": "four-check",
+        "line": 333,
+        "module": "delfin.cli_fukui",
+        "name": "_run_orca_plot_density",
+        "package": "delfin",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_the_campaign_evaluates_candidates_through_delfin.py",
+          "tests/test_the_campaign_is_a_registered_workflow.py",
+          "tests/test_the_campaign_loop_runs_without_a_model.py",
+          "tests/test_the_campaign_wires_into_the_scheduler.py",
+          "tests/test_the_slurm_demo_report_compares_strategies.py"
+        ],
+        "consuming_suites_found": 5,
+        "file": "delfin/agent/campaign.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 233,
+        "module": "delfin.agent.campaign",
+        "name": "_seed_indices",
+        "package": "delfin/agent",
+        "tier": "nowhere",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_fukui_cli.py"
+        ],
+        "consuming_suites_found": 1,
+        "file": "delfin/cli_fukui.py",
+        "instrument_class": "four-check",
+        "line": 85,
+        "module": "delfin.cli_fukui",
+        "name": "_smiles_to_xyz_text",
+        "package": "delfin",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_tc1_adversarial_fragments.py"
+        ],
+        "consuming_suites_found": 1,
+        "file": "delfin/analysis_tools/conformer_fragment_recognition.py",
+        "instrument_class": "four-check",
+        "line": 86,
+        "module": "delfin.analysis_tools.conformer_fragment_recognition",
+        "name": "_sp2_like_geometry",
+        "package": "delfin/analysis_tools",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_energies_orca_read_switch.py",
+          "tests/test_energies_orca_read_text_mode.py",
+          "tests/test_esd_orca_read_switch.py",
+          "tests/test_final_geometry_orca_read_switch.py",
+          "tests/test_freq_orca_read_switch.py",
+          "tests/test_mlip_data.py",
+          "tests/test_occupier_s2_orca_read.py",
+          "tests/test_opi_orca_read.py",
+          "tests/test_opi_orca_relspin.py",
+          "tests/test_opi_orca_th.py",
+          "tests/test_opi_orca_th_review_findings.py",
+          "tests/test_orca_read_bounded_memory.py"
+        ],
+        "consuming_suites_found": 18,
+        "file": "delfin/orca_read.py",
+        "instrument_class": "four-check",
+        "line": 505,
+        "module": "delfin.orca_read",
+        "name": "_text_inner_energy",
+        "package": "delfin",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_the_campaign_evaluates_candidates_through_delfin.py",
+          "tests/test_the_campaign_is_a_registered_workflow.py",
+          "tests/test_the_campaign_loop_runs_without_a_model.py",
+          "tests/test_the_campaign_wires_into_the_scheduler.py",
+          "tests/test_the_slurm_demo_report_compares_strategies.py"
+        ],
+        "consuming_suites_found": 5,
+        "file": "delfin/agent/campaign.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 326,
+        "module": "delfin.agent.campaign",
+        "name": "_xtb_binary_env",
+        "package": "delfin/agent",
+        "tier": "nowhere",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_calculation_that_ran_for_days_comes_back.py",
+          "tests/test_a_network_can_be_read_before_it_is_drawn.py",
+          "tests/test_a_reaction_network_is_a_document.py",
+          "tests/test_a_route_has_a_profile_you_can_take_away.py"
+        ],
+        "consuming_suites_found": 4,
+        "file": "delfin/dashboard/reaction_graph.py",
+        "instrument_class": "four-check",
+        "line": 515,
+        "module": "delfin.dashboard.reaction_graph",
+        "name": "add_pending",
+        "package": "delfin/dashboard",
+        "tier": "test-only",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_drawn_pattern_comes_back_as_a_reaction_smarts.py",
+          "tests/test_chemdarwin_filters.py"
+        ],
+        "consuming_suites_found": 2,
+        "file": "delfin/dashboard/tab_chemdarwin.py",
+        "instrument_class": "four-check",
+        "line": 103,
+        "module": "delfin.dashboard.tab_chemdarwin",
+        "name": "aromatize_ligand_smiles",
+        "package": "delfin/dashboard",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_donor_bend.py",
+          "tests/test_eta_ring_hydrogens.py",
+          "tests/test_fffree_diatomic_orient.py",
+          "tests/test_fffree_hapto_recall.py",
+          "tests/test_ligand_rigid_seating.py",
+          "tests/test_ring_bounds_embed.py"
+        ],
+        "consuming_suites_found": 6,
+        "file": "delfin/manta/assemble_complex.py",
+        "instrument_class": "four-check",
+        "line": 1023,
+        "module": "delfin.manta.assemble_complex",
+        "name": "assemble_heteroleptic",
+        "package": "delfin/manta",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [],
+        "consuming_suites_found": 0,
+        "file": "delfin/manta/_multiarm_coplanar.py",
+        "instrument_class": "three-check",
+        "line": 241,
+        "module": "delfin.manta._multiarm_coplanar",
+        "name": "best_conformer",
+        "package": "delfin/manta",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_control_edit_reaches_what_it_changes.py",
+          "tests/test_a_fob_input_is_written_in_its_own_stage.py",
+          "tests/test_a_retry_input_is_one_orca_can_read.py",
+          "tests/test_co2_coordination_workflow.py",
+          "tests/test_oc1_adversarial_contamination_trigger.py",
+          "tests/test_oc1_adversarial_gibbs_extraction.py",
+          "tests/test_oc1_adversarial_selection.py",
+          "tests/test_oc1_find_g_last_gibbs.py",
+          "tests/test_occupier_cwd_guard.py",
+          "tests/test_occupier_s2_orca_read.py",
+          "tests/test_opi_occupier_parity.py"
+        ],
+        "consuming_suites_found": 11,
+        "file": "delfin/workflows/engine/occupier.py",
+        "instrument_class": "four-check",
+        "line": 2131,
+        "module": "delfin.workflows.engine.occupier",
+        "name": "build_combined_occupier_and_postprocessing_jobs",
+        "package": "delfin/workflows/engine",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_pka_cycle_never_guesses_and_never_reinvents.py",
+          "tests/test_a_pka_cycle_runs_orca_through_delfins_pipeline.py",
+          "tests/test_opi_orca_solv_free.py"
+        ],
+        "consuming_suites_found": 3,
+        "file": "delfin/pka.py",
+        "instrument_class": "four-check",
+        "line": 256,
+        "module": "delfin.pka",
+        "name": "build_single_point_input",
+        "package": "delfin",
+        "tier": "test-only",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_ml_targets_derive.py"
+        ],
+        "consuming_suites_found": 1,
+        "file": "delfin/manta/ml_targets_derive.py",
+        "instrument_class": "four-check",
+        "line": 652,
+        "module": "delfin.manta.ml_targets_derive",
+        "name": "build_table",
+        "package": "delfin/manta",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [],
+        "consuming_suites_found": 0,
+        "file": "delfin/class_modules/smiles_name_lookup.py",
+        "instrument_class": "three-check",
+        "line": 71,
+        "module": "delfin.class_modules.smiles_name_lookup",
+        "name": "cache_size",
+        "package": "delfin/class_modules",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_ml_targets_derive.py"
+        ],
+        "consuming_suites_found": 1,
+        "file": "delfin/manta/ml_targets_derive.py",
+        "instrument_class": "four-check",
+        "line": 474,
+        "module": "delfin.manta.ml_targets_derive",
+        "name": "cif_formula_sum",
+        "package": "delfin/manta",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_ov1_adversarial_phase1.py",
+          "tests/test_ov1_adversarial_phase3.py",
+          "tests/test_ov1_keywords.py",
+          "tests/test_ov1_probe_fallback.py",
+          "tests/test_ov1_review_findings.py",
+          "tests/test_ts_goat_reactive_center.py"
+        ],
+        "consuming_suites_found": 6,
+        "file": "delfin/common/orca_input_checks.py",
+        "instrument_class": "four-check",
+        "line": 490,
+        "module": "delfin.common.orca_input_checks",
+        "name": "clear_probe_cache",
+        "package": "delfin/common",
+        "tier": "test-only",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_chat_bubble_reads_in_both_themes.py",
+          "tests/test_a_checked_delfin_pipeline_runs_without_a_dialog.py",
+          "tests/test_a_choice_offer_is_a_question_with_a_flat_list.py",
+          "tests/test_a_delegates_report_is_shown_whole.py",
+          "tests/test_a_file_is_shown_once_in_a_turn.py",
+          "tests/test_a_file_you_asked_for_can_be_taken_out_of_the_chat.py",
+          "tests/test_a_finished_delegate_is_filed_not_deleted.py",
+          "tests/test_a_finished_job_wakes_the_agent.py",
+          "tests/test_a_finished_message_is_not_rebuilt_while_the_agent_writes.py",
+          "tests/test_a_finished_service_session_opens_in_the_full_chat.py",
+          "tests/test_a_finished_turn_folds_its_tool_steps.py",
+          "tests/test_a_free_model_was_charged_an_invented_rate.py"
+        ],
+        "consuming_suites_found": 162,
+        "declined_signal": [
+          "tab_agent.py:8179 (-4 from the definition): #: files). ``close_open_tabs`` is how a test harness ends them."
+        ],
+        "file": "delfin/dashboard/tab_agent.py",
+        "instrument_class": "four-check",
+        "line": 8183,
+        "module": "delfin.dashboard.tab_agent",
+        "name": "close_open_tabs",
+        "package": "delfin/dashboard",
+        "tier": "test-only",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_fffree_conformer_complete.py"
+        ],
+        "consuming_suites_found": 1,
+        "file": "delfin/manta/conformer_complete.py",
+        "instrument_class": "four-check",
+        "line": 921,
+        "module": "delfin.manta.conformer_complete",
+        "name": "complete_frame",
+        "package": "delfin/manta",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_opi_ts_goat_constraints.py",
+          "tests/test_tf1_adversarial_endpoint_mapping.py",
+          "tests/test_the_ts_goat_option_reads_only_the_head.py",
+          "tests/test_ts_goat_dialog_regression.py",
+          "tests/test_ts_goat_reactive_center.py"
+        ],
+        "consuming_suites_found": 5,
+        "file": "delfin/ts_goat.py",
+        "instrument_class": "four-check",
+        "line": 515,
+        "module": "delfin.ts_goat",
+        "name": "connectivity_changes",
+        "package": "delfin",
+        "tier": "test-only",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_all_features_contracts.py",
+          "tests/test_an_isomer_is_the_molecule_that_was_asked_for.py",
+          "tests/test_architector_and_molsimplify_are_constructors.py",
+          "tests/test_burnside_enumerator.py",
+          "tests/test_chelate_rank_class_aware.py",
+          "tests/test_class_conditional_flags.py",
+          "tests/test_classify_and_router.py",
+          "tests/test_clean_gate.py",
+          "tests/test_cn5_enum_complete.py",
+          "tests/test_cn5_geom_classifier.py",
+          "tests/test_embed_determinism.py",
+          "tests/test_etkdg_class_seeds.py"
+        ],
+        "consuming_suites_found": 45,
+        "file": "delfin/smiles_converter.py",
+        "instrument_class": "four-check",
+        "line": 4726,
+        "module": "delfin.smiles_converter",
+        "name": "convert_input_if_smiles",
+        "package": "delfin",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [],
+        "consuming_suites_found": 0,
+        "file": "delfin/manta/_h_vsepr_realism.py",
+        "instrument_class": "three-check",
+        "line": 1440,
+        "module": "delfin.manta._h_vsepr_realism",
+        "name": "correct_results_alkyl_donor_axis",
+        "package": "delfin/manta",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [],
+        "consuming_suites_found": 0,
+        "file": "delfin/reporting/esp_report.py",
+        "instrument_class": "three-check",
+        "line": 445,
+        "module": "delfin.reporting.esp_report",
+        "name": "create_esp_isosurface_png",
+        "package": "delfin/reporting",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_pka_cycle_never_guesses_and_never_reinvents.py",
+          "tests/test_a_pka_cycle_runs_orca_through_delfins_pipeline.py",
+          "tests/test_opi_orca_solv_free.py"
+        ],
+        "consuming_suites_found": 3,
+        "file": "delfin/pka.py",
+        "instrument_class": "four-check",
+        "line": 137,
+        "module": "delfin.pka",
+        "name": "deprotonation_free_energy",
+        "package": "delfin",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_ds1_adversarial_wrappers.py",
+          "tests/test_ds1_limits_enforced.py",
+          "tests/test_ds1_multiwfn_adapters.py",
+          "tests/test_ds1_wrapper_validation.py"
+        ],
+        "consuming_suites_found": 4,
+        "file": "delfin/analysis_tools/multiwfn_wrapper.py",
+        "instrument_class": "four-check",
+        "line": 226,
+        "module": "delfin.analysis_tools.multiwfn_wrapper",
+        "name": "electrostatic_potential",
+        "package": "delfin/analysis_tools",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [],
+        "consuming_suites_found": 0,
+        "file": "delfin/manta/_ensemble_dispatch.py",
+        "instrument_class": "three-check",
+        "line": 584,
+        "module": "delfin.manta._ensemble_dispatch",
+        "name": "ensemble_summary",
+        "package": "delfin/manta",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_an_esd_rate_says_when_it_is_not_one.py",
+          "tests/test_es1_esd_grade_synthetic.py",
+          "tests/test_es1_est_reference_criterion.py",
+          "tests/test_es1_isc_reference_product_check.py",
+          "tests/test_es1_practice_run_fixture.py"
+        ],
+        "consuming_suites_found": 5,
+        "file": "delfin/common/esd_numerics.py",
+        "instrument_class": "four-check",
+        "line": 231,
+        "module": "delfin.common.esd_numerics",
+        "name": "est_reference_comparison",
+        "package": "delfin/common",
+        "tier": "test-only",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [],
+        "consuming_suites_found": 0,
+        "file": "delfin/afp_plot.py",
+        "instrument_class": "three-check",
+        "line": 42,
+        "module": "delfin.afp_plot",
+        "name": "find_first_allowed_singlet",
+        "package": "delfin",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_mlip_data.py",
+          "tests/test_mlip_finetune.py"
+        ],
+        "consuming_suites_found": 2,
+        "file": "delfin/ml_train/mlip_data.py",
+        "instrument_class": "four-check",
+        "line": 363,
+        "module": "delfin.ml_train.mlip_data",
+        "name": "frames_to_extxyz",
+        "package": "delfin/ml_train",
+        "tier": "test-only",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_donor_bend.py",
+          "tests/test_eta_ring_hydrogens.py",
+          "tests/test_fffree_diatomic_orient.py",
+          "tests/test_fffree_hapto_recall.py",
+          "tests/test_ligand_rigid_seating.py",
+          "tests/test_ring_bounds_embed.py"
+        ],
+        "consuming_suites_found": 6,
+        "file": "delfin/manta/assemble_complex.py",
+        "instrument_class": "four-check",
+        "line": 1046,
+        "module": "delfin.manta.assemble_complex",
+        "name": "generate_complex_conformers",
+        "package": "delfin/manta",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_variational_refiner.py"
+        ],
+        "consuming_suites_found": 1,
+        "file": "delfin/manta/_fragment_archetypes.py",
+        "instrument_class": "four-check",
+        "line": 325,
+        "module": "delfin.manta._fragment_archetypes",
+        "name": "get_archetype_point_group",
+        "package": "delfin/manta",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_variational_refiner.py"
+        ],
+        "consuming_suites_found": 1,
+        "file": "delfin/manta/_fragment_archetypes.py",
+        "instrument_class": "four-check",
+        "line": 331,
+        "module": "delfin.manta._fragment_archetypes",
+        "name": "get_archetype_smarts",
+        "package": "delfin/manta",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_qm_runtime.py",
+          "tests/test_all_features_contracts.py",
+          "tests/test_cb0a_grading.py",
+          "tests/test_doctor.py",
+          "tests/test_ensemble_nmr.py",
+          "tests/test_opi_orca_chain.py",
+          "tests/test_opi_orca_dlpno.py",
+          "tests/test_opi_orca_goat.py",
+          "tests/test_opi_orca_opt.py",
+          "tests/test_opi_orca_sp_dft.py",
+          "tests/test_runtime_setup.py",
+          "tests/test_rxembed_molassembler_metallogen_are_constructors.py"
+        ],
+        "consuming_suites_found": 17,
+        "file": "delfin/qm_runtime.py",
+        "instrument_class": "four-check",
+        "line": 251,
+        "module": "delfin.qm_runtime",
+        "name": "get_csp_tools_bin_dir",
+        "package": "delfin",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_completed_run_is_not_a_successful_one.py",
+          "tests/test_an_empty_index_does_not_answer_like_an_empty_result.py",
+          "tests/test_an_energy_carries_its_method.py",
+          "tests/test_an_exit_code_marker_is_read_by_its_content.py",
+          "tests/test_opi_equivalence_q05.py",
+          "tests/test_the_calc_index_reads_the_control_template_keys.py",
+          "tests/test_the_indexer_reads_the_keys_control_uses.py"
+        ],
+        "consuming_suites_found": 7,
+        "file": "delfin/doc_server/calc_indexer.py",
+        "instrument_class": "four-check",
+        "line": 964,
+        "module": "delfin.doc_server.calc_indexer",
+        "name": "get_default_calc_index_path",
+        "package": "delfin/doc_server",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_qm_runtime.py",
+          "tests/test_all_features_contracts.py",
+          "tests/test_cb0a_grading.py",
+          "tests/test_doctor.py",
+          "tests/test_ensemble_nmr.py",
+          "tests/test_opi_orca_chain.py",
+          "tests/test_opi_orca_dlpno.py",
+          "tests/test_opi_orca_goat.py",
+          "tests/test_opi_orca_opt.py",
+          "tests/test_opi_orca_sp_dft.py",
+          "tests/test_runtime_setup.py",
+          "tests/test_rxembed_molassembler_metallogen_are_constructors.py"
+        ],
+        "consuming_suites_found": 17,
+        "file": "delfin/qm_runtime.py",
+        "instrument_class": "four-check",
+        "line": 263,
+        "module": "delfin.qm_runtime",
+        "name": "get_mlp_tools_bin_dir",
+        "package": "delfin",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_fukui_compute.py",
+          "tests/test_fukui_cube_subtract.py",
+          "tests/test_opi_equivalence_q06.py"
+        ],
+        "consuming_suites_found": 3,
+        "file": "delfin/fukui.py",
+        "instrument_class": "four-check",
+        "line": 326,
+        "module": "delfin.fukui",
+        "name": "is_fukui_dir",
+        "package": "delfin",
+        "tier": "test-only",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_retry_input_is_one_orca_can_read.py",
+          "tests/test_classic_inline_recording.py",
+          "tests/test_functional_contracts.py",
+          "tests/test_opi_co2_coordinator_parity.py",
+          "tests/test_opi_esd_parity.py",
+          "tests/test_opi_imag_parity.py",
+          "tests/test_opi_occupier_parity.py",
+          "tests/test_the_campaign_wires_into_the_scheduler.py",
+          "tests/test_the_scheduler_finishes_something_before_the_walltime.py"
+        ],
+        "consuming_suites_found": 9,
+        "file": "delfin/workflows/engine/classic.py",
+        "instrument_class": "four-check",
+        "line": 1858,
+        "module": "delfin.workflows.engine.classic",
+        "name": "jobs_have_parallel_potential",
+        "package": "delfin/workflows/engine",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_ml_targets_derive.py"
+        ],
+        "consuming_suites_found": 1,
+        "file": "delfin/manta/ml_targets_derive.py",
+        "instrument_class": "four-check",
+        "line": 848,
+        "module": "delfin.manta.ml_targets_derive",
+        "name": "jt_rows",
+        "package": "delfin/manta",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_ml_targets_derive.py"
+        ],
+        "consuming_suites_found": 1,
+        "file": "delfin/manta/ml_targets_derive.py",
+        "instrument_class": "four-check",
+        "line": 889,
+        "module": "delfin.manta.ml_targets_derive",
+        "name": "jt_rows_sp5",
+        "package": "delfin/manta",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_ml_targets_derive.py"
+        ],
+        "consuming_suites_found": 1,
+        "file": "delfin/manta/ml_targets_derive.py",
+        "instrument_class": "four-check",
+        "line": 716,
+        "module": "delfin.manta.ml_targets_derive",
+        "name": "label_spins",
+        "package": "delfin/manta",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_ml_targets_derive.py"
+        ],
+        "consuming_suites_found": 1,
+        "file": "delfin/manta/ml_targets_derive.py",
+        "instrument_class": "four-check",
+        "line": 80,
+        "module": "delfin.manta.ml_targets_derive",
+        "name": "load_exclusions",
+        "package": "delfin/manta",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_fukui_compute.py",
+          "tests/test_fukui_cube_subtract.py",
+          "tests/test_opi_equivalence_q06.py"
+        ],
+        "consuming_suites_found": 3,
+        "file": "delfin/fukui.py",
+        "instrument_class": "four-check",
+        "line": 312,
+        "module": "delfin.fukui",
+        "name": "load_fukui_result",
+        "package": "delfin",
+        "tier": "test-only",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_control_edit_reaches_what_it_changes.py",
+          "tests/test_a_fob_input_is_written_in_its_own_stage.py",
+          "tests/test_a_retry_input_is_one_orca_can_read.py",
+          "tests/test_co2_coordination_workflow.py",
+          "tests/test_oc1_adversarial_contamination_trigger.py",
+          "tests/test_oc1_adversarial_gibbs_extraction.py",
+          "tests/test_oc1_adversarial_selection.py",
+          "tests/test_oc1_find_g_last_gibbs.py",
+          "tests/test_occupier_cwd_guard.py",
+          "tests/test_occupier_s2_orca_read.py",
+          "tests/test_opi_occupier_parity.py"
+        ],
+        "consuming_suites_found": 11,
+        "file": "delfin/workflows/engine/occupier.py",
+        "instrument_class": "four-check",
+        "line": 1395,
+        "module": "delfin.workflows.engine.occupier",
+        "name": "log_orca_job_plan",
+        "package": "delfin/workflows/engine",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_asking_what_a_structure_is.py",
+          "tests/test_one_press_reaches_a_transition_state.py",
+          "tests/test_submit_editor.py",
+          "tests/test_the_band_is_the_arbiter.py",
+          "tests/test_the_budget_prices_a_relaxed_path.py",
+          "tests/test_the_climb_can_be_helped.py",
+          "tests/test_the_orca_half_names_the_liquid_orcas_way.py",
+          "tests/test_the_resolver_answers_once_per_process.py",
+          "tests/test_the_saddle_is_a_button.py",
+          "tests/test_the_saddle_reaches_g_xtb.py"
+        ],
+        "consuming_suites_found": 10,
+        "file": "delfin/dashboard/saddle.py",
+        "instrument_class": "four-check",
+        "line": 1037,
+        "module": "delfin.dashboard.saddle",
+        "name": "neb_seconds_for",
+        "package": "delfin/dashboard",
+        "tier": "test-only",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_oxo_resonance.py"
+        ],
+        "consuming_suites_found": 1,
+        "file": "delfin/manta/_oxo_resonance.py",
+        "instrument_class": "four-check",
+        "line": 33,
+        "module": "delfin.manta._oxo_resonance",
+        "name": "oxo_resonance_enabled",
+        "package": "delfin/manta",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_one_installer_for_every_site.py",
+          "tests/test_sv1_adversarial_validation.py",
+          "tests/test_sv1_workflow.py"
+        ],
+        "consuming_suites_found": 3,
+        "file": "delfin/analysis_tools/packmol_wrapper.py",
+        "instrument_class": "four-check",
+        "line": 136,
+        "module": "delfin.analysis_tools.packmol_wrapper",
+        "name": "pack_molecules",
+        "package": "delfin/analysis_tools",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_stage_keeps_what_its_first_configuration_computed.py",
+          "tests/test_occupier_override_to_co2.py"
+        ],
+        "consuming_suites_found": 2,
+        "file": "delfin/copy_helpers.py",
+        "instrument_class": "four-check",
+        "line": 327,
+        "module": "delfin.copy_helpers",
+        "name": "prepare_occ_folder",
+        "package": "delfin",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_stage_keeps_what_its_first_configuration_computed.py"
+        ],
+        "consuming_suites_found": 1,
+        "file": "delfin/thread_safe_helpers.py",
+        "instrument_class": "four-check",
+        "line": 224,
+        "module": "delfin.thread_safe_helpers",
+        "name": "prepare_occ_folder_2_threadsafe",
+        "package": "delfin",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_calculation_that_ran_for_days_comes_back.py",
+          "tests/test_a_network_can_be_read_before_it_is_drawn.py",
+          "tests/test_a_reaction_network_is_a_document.py",
+          "tests/test_a_route_has_a_profile_you_can_take_away.py"
+        ],
+        "consuming_suites_found": 4,
+        "file": "delfin/dashboard/reaction_graph.py",
+        "instrument_class": "four-check",
+        "line": 629,
+        "module": "delfin.dashboard.reaction_graph",
+        "name": "reaction_energy",
+        "package": "delfin/dashboard",
+        "tier": "test-only",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_ml_targets_derive.py"
+        ],
+        "consuming_suites_found": 1,
+        "file": "delfin/manta/ml_targets_derive.py",
+        "instrument_class": "four-check",
+        "line": 99,
+        "module": "delfin.manta.ml_targets_derive",
+        "name": "read_first_xyz_frame",
+        "package": "delfin/manta",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_ml_targets_derive.py"
+        ],
+        "consuming_suites_found": 1,
+        "file": "delfin/manta/ml_targets_derive.py",
+        "instrument_class": "four-check",
+        "line": 540,
+        "module": "delfin.manta.ml_targets_derive",
+        "name": "record_from_cod",
+        "package": "delfin/manta",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_ml_targets_derive.py"
+        ],
+        "consuming_suites_found": 1,
+        "file": "delfin/manta/ml_targets_derive.py",
+        "instrument_class": "four-check",
+        "line": 239,
+        "module": "delfin.manta.ml_targets_derive",
+        "name": "record_from_smiles_crystal",
+        "package": "delfin/manta",
+        "tier": "test-only",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a4_adversarial_e2e.py",
+          "tests/test_a4_adversarial_jobfailures.py",
+          "tests/test_a4_e2e_energy.py",
+          "tests/test_a4_e2e_jobfailures.py",
+          "tests/test_a4_e2e_status.py",
+          "tests/test_an_mlip_goat_job_goes_to_a_gpu.py",
+          "tests/test_an_mlip_goat_with_pal_40_does_not_start_40_models.py",
+          "tests/test_extopt_c6_hardening.py",
+          "tests/test_extopt_goat_submission.py",
+          "tests/test_extopt_gpu_submission.py",
+          "tests/test_extopt_script_has_no_orca_block.py",
+          "tests/test_m1_mlp_registry.py"
+        ],
+        "consuming_suites_found": 33,
+        "file": "delfin/mlp_tools/__init__.py",
+        "instrument_class": "four-check",
+        "line": 246,
+        "module": "delfin.mlp_tools.__init__",
+        "name": "require_any_mlp",
+        "package": "delfin/mlp_tools",
+        "tier": "test-only",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [],
+        "consuming_suites_found": 0,
+        "file": "delfin/class_modules/smiles_name_lookup.py",
+        "instrument_class": "three-check",
+        "line": 79,
+        "module": "delfin.class_modules.smiles_name_lookup",
+        "name": "reset_cache",
+        "package": "delfin/class_modules",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_classify_and_router.py"
+        ],
+        "consuming_suites_found": 1,
+        "file": "delfin/ensemble_router.py",
+        "instrument_class": "four-check",
+        "line": 142,
+        "module": "delfin.ensemble_router",
+        "name": "routing_summary",
+        "package": "delfin",
+        "tier": "test-only",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_runtime_setup.py",
+          "tests/test_all_features_contracts.py",
+          "tests/test_micromamba_is_fetched_as_one_pinned_release.py",
+          "tests/test_one_installer_for_every_site.py",
+          "tests/test_pm_methods.py",
+          "tests/test_the_resolver_answers_once_per_process.py",
+          "tests/test_tools_that_answer.py"
+        ],
+        "consuming_suites_found": 7,
+        "file": "delfin/runtime_setup.py",
+        "instrument_class": "four-check",
+        "line": 1376,
+        "module": "delfin.runtime_setup",
+        "name": "run_ai_tools_installer",
+        "package": "delfin",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_pka_cycle_never_guesses_and_never_reinvents.py",
+          "tests/test_a_pka_cycle_runs_orca_through_delfins_pipeline.py",
+          "tests/test_opi_orca_solv_free.py"
+        ],
+        "consuming_suites_found": 3,
+        "file": "delfin/pka.py",
+        "instrument_class": "four-check",
+        "line": 401,
+        "module": "delfin.pka",
+        "name": "run_cycle",
+        "package": "delfin",
+        "tier": "test-only",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_killed_orca_job_resumes_where_it_stopped.py",
+          "tests/test_a_moread_guess_never_takes_the_jobs_own_name.py",
+          "tests/test_a_new_input_is_not_stamped_onto_an_old_output.py",
+          "tests/test_a_normal_ending_is_not_always_a_result.py",
+          "tests/test_a_retry_input_is_one_orca_can_read.py",
+          "tests/test_a_scan_says_what_it_left.py",
+          "tests/test_a_stage_keeps_what_its_first_configuration_computed.py",
+          "tests/test_an_mpi_start_without_sockets_is_explained.py",
+          "tests/test_an_unwritable_scratch_base_is_passed_over.py",
+          "tests/test_cli_recalc.py",
+          "tests/test_control_overrides_reach_the_jobs_they_name.py",
+          "tests/test_final_geometry_orca_read_switch.py"
+        ],
+        "consuming_suites_found": 32,
+        "file": "delfin/orca.py",
+        "instrument_class": "four-check",
+        "line": 1992,
+        "module": "delfin.orca",
+        "name": "run_orca_plot",
+        "package": "delfin",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_control_edit_reaches_what_it_changes.py",
+          "tests/test_a_fob_input_is_written_in_its_own_stage.py",
+          "tests/test_a_retry_input_is_one_orca_can_read.py",
+          "tests/test_co2_coordination_workflow.py",
+          "tests/test_oc1_adversarial_contamination_trigger.py",
+          "tests/test_oc1_adversarial_gibbs_extraction.py",
+          "tests/test_oc1_adversarial_selection.py",
+          "tests/test_oc1_find_g_last_gibbs.py",
+          "tests/test_occupier_cwd_guard.py",
+          "tests/test_occupier_s2_orca_read.py",
+          "tests/test_opi_occupier_parity.py"
+        ],
+        "consuming_suites_found": 11,
+        "file": "delfin/workflows/engine/occupier.py",
+        "instrument_class": "four-check",
+        "line": 1512,
+        "module": "delfin.workflows.engine.occupier",
+        "name": "should_use_parallel_occupier",
+        "package": "delfin/workflows/engine",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_chat_bubble_reads_in_both_themes.py",
+          "tests/test_a_checked_delfin_pipeline_runs_without_a_dialog.py",
+          "tests/test_a_choice_offer_is_a_question_with_a_flat_list.py",
+          "tests/test_a_delegates_report_is_shown_whole.py",
+          "tests/test_a_file_is_shown_once_in_a_turn.py",
+          "tests/test_a_file_you_asked_for_can_be_taken_out_of_the_chat.py",
+          "tests/test_a_finished_delegate_is_filed_not_deleted.py",
+          "tests/test_a_finished_job_wakes_the_agent.py",
+          "tests/test_a_finished_message_is_not_rebuilt_while_the_agent_writes.py",
+          "tests/test_a_finished_service_session_opens_in_the_full_chat.py",
+          "tests/test_a_finished_turn_folds_its_tool_steps.py",
+          "tests/test_a_free_model_was_charged_an_invented_rate.py"
+        ],
+        "consuming_suites_found": 162,
+        "file": "delfin/dashboard/tab_agent.py",
+        "instrument_class": "four-check",
+        "line": 3050,
+        "module": "delfin.dashboard.tab_agent",
+        "name": "slash_command_routes_to_builtin",
+        "package": "delfin/dashboard",
+        "tier": "test-only",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_ml_targets_derive.py"
+        ],
+        "consuming_suites_found": 1,
+        "file": "delfin/manta/ml_targets_derive.py",
+        "instrument_class": "four-check",
+        "line": 775,
+        "module": "delfin.manta.ml_targets_derive",
+        "name": "spin_rows",
+        "package": "delfin/manta",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_disposed_viewer_lets_go.py",
+          "tests/test_a_pull_in_the_browser_reaches_the_kernel.py",
+          "tests/test_a_right_hand_turns_a_bond.py",
+          "tests/test_a_scan_shows_the_path_it_walked.py",
+          "tests/test_a_structure_is_shown_in_the_chat.py",
+          "tests/test_a_tap_picks_in_the_hand_you_are_already_in.py",
+          "tests/test_adjusting_hydrogens.py",
+          "tests/test_atom_numbers_are_shared.py",
+          "tests/test_dashboard_html_escapes_external_text.py",
+          "tests/test_every_py3dmol_import_is_script_safe.py",
+          "tests/test_fukui_viewer.py",
+          "tests/test_fullscreen_carries_the_whole_panel.py"
+        ],
+        "consuming_suites_found": 31,
+        "file": "delfin/dashboard/molecule_viewer.py",
+        "instrument_class": "four-check",
+        "line": 7306,
+        "module": "delfin.dashboard.molecule_viewer",
+        "name": "ts_goat_viewer_step_js",
+        "package": "delfin/dashboard",
+        "tier": "test-only",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [],
+        "consuming_suites_found": 0,
+        "file": "delfin/config.py",
+        "instrument_class": "three-check",
+        "line": 887,
+        "module": "delfin.config",
+        "name": "validate_control_file",
+        "package": "delfin",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_opi_orca_relspin.py"
+        ],
+        "consuming_suites_found": 1,
+        "file": "delfin/tools/adapters/orca_relspin_opi.py",
+        "instrument_class": "four-check",
+        "line": 220,
+        "module": "delfin.tools.adapters.orca_relspin_opi",
+        "name": "validate_relspin",
+        "package": "delfin/tools/adapters",
+        "tier": "test-only",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_co2_coordinator_opi_normaliser.py",
+          "tests/test_opi_co2_coordinator_parity.py",
+          "tests/test_opi_co2_coordinator_probe.py",
+          "tests/test_opi_esd_parity.py"
+        ],
+        "consuming_suites_found": 4,
+        "file": "delfin/tools/co2_coordinator_opi.py",
+        "instrument_class": "four-check",
+        "line": 636,
+        "module": "delfin.tools.co2_coordinator_opi",
+        "name": "write_co2_scan_opi_input",
+        "package": "delfin/tools",
+        "tier": "test-only",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_ml_targets_derive.py"
+        ],
+        "consuming_suites_found": 1,
+        "file": "delfin/manta/ml_targets_derive.py",
+        "instrument_class": "four-check",
+        "line": 680,
+        "module": "delfin.manta.ml_targets_derive",
+        "name": "write_target_table",
+        "package": "delfin/manta",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_damaged_xyz_io_cache_is_kept_not_replaced.py",
+          "tests/test_ct1_reach_tests.py",
+          "tests/test_outside_input_parsers_hold_on_any_text.py",
+          "tests/test_relativistic_basis_assignment.py",
+          "tests/test_the_basis_does_not_move_between_redox_states.py",
+          "tests/test_the_calc_index_reads_the_control_template_keys.py"
+        ],
+        "consuming_suites_found": 6,
+        "file": "delfin/xyz_io.py",
+        "instrument_class": "four-check",
+        "line": 167,
+        "module": "delfin.xyz_io",
+        "name": "write_to_file",
+        "package": "delfin",
+        "tier": "nowhere",
+        "under_ratchet_scope": false
+      }
+    ],
+    "infra": [
+      {
+        "consuming_suites": [
+          "tests/test_a2_adversarial_containment.py",
+          "tests/test_a2_adversarial_fixes.py",
+          "tests/test_a2_adversarial_shapes.py",
+          "tests/test_a2_adversarial_targets.py",
+          "tests/test_a2_classify.py",
+          "tests/test_a2w_adversarial_f1_f2.py",
+          "tests/test_a2w_adversarial_hook.py",
+          "tests/test_a2w_adversarial_targets.py",
+          "tests/test_a2w_hook.py"
+        ],
+        "consuming_suites_found": 9,
+        "file": "delfin/agent/workspace_selfservice.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 82,
+        "module": "delfin.agent.workspace_selfservice",
+        "name": "_all_targets_inside",
+        "package": "delfin/agent",
+        "tier": "nowhere",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a2w_adversarial_hook.py",
+          "tests/test_a2w_hook.py",
+          "tests/test_a_background_command_does_not_hide_its_result.py",
+          "tests/test_a_background_command_does_not_inherit_the_key.py",
+          "tests/test_a_background_job_outlives_the_call_that_started_it.py",
+          "tests/test_a_batch_waits_for_its_install_without_holding_the_turn.py",
+          "tests/test_a_blocked_interpreter_names_the_allowed_way.py",
+          "tests/test_a_blocked_task_can_say_it_is_blocked.py",
+          "tests/test_a_branch_held_elsewhere_is_run_detached.py",
+          "tests/test_a_budget_gate_cannot_stop_a_cost_it_never_measured.py",
+          "tests/test_a_bypass_change_nothing_can_restore_goes_to_the_trash.py",
+          "tests/test_a_bypass_shell_change_of_any_size_is_undoable.py"
+        ],
+        "consuming_suites_found": 711,
+        "file": "delfin/agent/api_client.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 11805,
+        "module": "delfin.agent.api_client",
+        "name": "_default_kit_permissions",
+        "package": "delfin/agent",
+        "tier": "nowhere",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_credentials.py",
+          "tests/test_a_bug_can_be_filed_from_the_terminal.py",
+          "tests/test_a_damaged_credential_store_is_not_overwritten.py",
+          "tests/test_a_file_nobody_can_reach_is_not_exposed.py",
+          "tests/test_a_key_in_a_readable_shell_file_is_named_even_when_nothing_exports_it.py",
+          "tests/test_a_line_that_only_reads_a_key_is_left_alone.py",
+          "tests/test_a_provider_is_mounted_everywhere_or_nowhere.py",
+          "tests/test_a_session_without_a_key_says_where_the_field_is.py",
+          "tests/test_an_exported_key_is_put_away_not_reported.py",
+          "tests/test_ci_parity.py",
+          "tests/test_credentials_person_scope.py",
+          "tests/test_credentials_use_the_os_keyring.py"
+        ],
+        "consuming_suites_found": 17,
+        "declined_signal": [
+          "credentials.py:364 (+4 from the definition): #: Replaced by the test suite with ``_disabled_keyring_factory``."
+        ],
+        "file": "delfin/agent/credentials.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 360,
+        "module": "delfin.agent.credentials",
+        "name": "_disabled_keyring_factory",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_benchmark.py",
+          "tests/test_a_clear_order_is_measured_as_acted_on.py",
+          "tests/test_a_coarse_measure_is_a_separation.py",
+          "tests/test_a_difference_needs_a_confidence_statement.py",
+          "tests/test_a_figure_is_judged_as_a_number.py",
+          "tests/test_a_finished_benchmark_keeps_its_results.py",
+          "tests/test_a_fix_claim_task_scores_the_verdict.py",
+          "tests/test_a_forbidden_backtick_signal_can_fire.py",
+          "tests/test_a_german_prohibition_is_filed_as_one.py",
+          "tests/test_a_held_branch_task_scores_what_it_should.py",
+          "tests/test_a_learning_measurement_keeps_state_between_its_two_arms.py",
+          "tests/test_a_learning_verdict_needs_a_difference_beyond_the_spread.py"
+        ],
+        "consuming_suites_found": 118,
+        "file": "delfin/agent/benchmark.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 1226,
+        "module": "delfin.agent.benchmark",
+        "name": "_edited_paths",
+        "package": "delfin/agent",
+        "tier": "nowhere",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_sa1_adversarial_guard.py",
+          "tests/test_sa1_adversarial_harness.py",
+          "tests/test_sa1_guard.py",
+          "tests/test_sa1_harness.py",
+          "tests/test_sp1_adversarial_adapter.py",
+          "tests/test_sp1_adversarial_citations.py",
+          "tests/test_sp1_cli_entry.py",
+          "tests/test_sp1_pilot_tasks.py",
+          "tests/test_sp1_review_findings.py",
+          "tests/test_sp1_runner_adapter.py"
+        ],
+        "consuming_suites_found": 10,
+        "file": "delfin/agent/explore_pilot.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 531,
+        "module": "delfin.agent.explore_pilot",
+        "name": "_fake_engine_factory_builder",
+        "package": "delfin/agent",
+        "tier": "nowhere",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_sc1_adversarial_claims.py",
+          "tests/test_sc1_adversarial_round2.py",
+          "tests/test_sc1_claims.py",
+          "tests/test_sc1_workflow.py",
+          "tests/test_vr1_result_claims.py"
+        ],
+        "consuming_suites_found": 5,
+        "file": "delfin/agent/result_claims.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 136,
+        "module": "delfin.agent.result_claims",
+        "name": "_has_solvent",
+        "package": "delfin/agent",
+        "tier": "nowhere",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_in_turn_compaction.py",
+          "tests/test_a_compaction_behind_a_working_state_block_is_an_explained_save.py",
+          "tests/test_c4_task_state_carries_through_compaction.py",
+          "tests/test_in_turn_compaction_folds_its_summaries.py",
+          "tests/test_kg3_adversarial_compaction.py",
+          "tests/test_kg3_adversarial_hostile_text.py",
+          "tests/test_u11_whole_request_is_counted_once.py",
+          "tests/test_zz_u11_one_summary_per_turn.py"
+        ],
+        "consuming_suites_found": 8,
+        "file": "delfin/agent/in_turn_compaction.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 115,
+        "module": "delfin.agent.in_turn_compaction",
+        "name": "_is_goal",
+        "package": "delfin/agent",
+        "tier": "nowhere",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_benchmark.py",
+          "tests/test_a_clear_order_is_measured_as_acted_on.py",
+          "tests/test_a_coarse_measure_is_a_separation.py",
+          "tests/test_a_difference_needs_a_confidence_statement.py",
+          "tests/test_a_figure_is_judged_as_a_number.py",
+          "tests/test_a_finished_benchmark_keeps_its_results.py",
+          "tests/test_a_fix_claim_task_scores_the_verdict.py",
+          "tests/test_a_forbidden_backtick_signal_can_fire.py",
+          "tests/test_a_german_prohibition_is_filed_as_one.py",
+          "tests/test_a_held_branch_task_scores_what_it_should.py",
+          "tests/test_a_learning_measurement_keeps_state_between_its_two_arms.py",
+          "tests/test_a_learning_verdict_needs_a_difference_beyond_the_spread.py"
+        ],
+        "consuming_suites_found": 118,
+        "file": "delfin/agent/benchmark.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 1281,
+        "module": "delfin.agent.benchmark",
+        "name": "_last_idx",
+        "package": "delfin/agent",
+        "tier": "nowhere",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_subagents.py",
+          "tests/test_a_background_report_comes_back_whole.py",
+          "tests/test_a_bare_done_is_corroborated_by_any_single_tool_call.py",
+          "tests/test_a_check_that_checked_nothing_does_not_say_checked.py",
+          "tests/test_a_completion_notice_is_not_destroyed_before_it_arrives.py",
+          "tests/test_a_damaged_running_entry_is_kept_not_overwritten.py",
+          "tests/test_a_dead_subagent_does_not_show_as_running.py",
+          "tests/test_a_definition_does_not_override_the_users_switch.py",
+          "tests/test_a_delegate_cannot_claim_work_it_did_not_do.py",
+          "tests/test_a_delegate_does_not_empty_its_parents_undo_window.py",
+          "tests/test_a_delegate_does_not_write_into_the_parents_evidence_ledger.py",
+          "tests/test_a_delegates_repo_wide_grep_grounds_the_parent.py"
+        ],
+        "consuming_suites_found": 86,
+        "file": "delfin/agent/subagents.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 1606,
+        "module": "delfin.agent.subagents",
+        "name": "_load_md_presets",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_ls1_adversarial_cite_locator.py",
+          "tests/test_ls1_adversarial_phase2_real_shape.py",
+          "tests/test_ls1_answer_claims.py",
+          "tests/test_ls1_cite_locator.py"
+        ],
+        "consuming_suites_found": 4,
+        "file": "delfin/agent/cited_retrieval.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 218,
+        "module": "delfin.agent.cited_retrieval",
+        "name": "_locator_value",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_b4_adversarial_health.py",
+          "tests/test_b4_health_wiring.py",
+          "tests/test_swarm_watch_lists_every_running_session.py",
+          "tests/test_ux2_adversarial_classify.py",
+          "tests/test_ux2_adversarial_events.py",
+          "tests/test_ux2_events.py",
+          "tests/test_ux2_ops_health_never_approves.py",
+          "tests/test_ux2_session_health.py"
+        ],
+        "consuming_suites_found": 8,
+        "file": "delfin/agent/session_health.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 79,
+        "module": "delfin.agent.session_health",
+        "name": "_now_minus",
+        "package": "delfin/agent",
+        "tier": "nowhere",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_mcp_client.py",
+          "tests/test_a_background_job_outlives_the_call_that_started_it.py",
+          "tests/test_a_checked_out_repository_cannot_run_commands.py",
+          "tests/test_a_dead_mcp_server_can_be_reported.py",
+          "tests/test_a_derived_containment_without_bwrap.py",
+          "tests/test_a_file_that_says_nothing_withholds_nothing.py",
+          "tests/test_a_file_the_model_has_is_not_sent_twice.py",
+          "tests/test_a_folder_cannot_start_a_process.py",
+          "tests/test_a_go_ahead_is_acted_on.py",
+          "tests/test_a_harness_row_is_marked_where_it_is_written.py",
+          "tests/test_a_headless_run_reports_a_state_a_program_can_read.py",
+          "tests/test_a_long_block_is_not_retried_sooner.py"
+        ],
+        "consuming_suites_found": 74,
+        "file": "delfin/agent/mcp_client.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 144,
+        "module": "delfin.agent.mcp_client",
+        "name": "_project_config_path",
+        "package": "delfin/agent",
+        "tier": "nowhere",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_checked_out_repository_cannot_run_commands.py",
+          "tests/test_a_fixture_can_ship_hooks_nobody_trusted.py",
+          "tests/test_a_hook_that_ran_left_no_trace.py",
+          "tests/test_bare_really_skips_what_it_names.py",
+          "tests/test_hooks_and_tests_run_under_the_process_budget.py",
+          "tests/test_hooks_system.py",
+          "tests/test_locked_scope_cannot_widen_itself.py",
+          "tests/test_mcp_servers_and_hooks_get_the_scrubbed_environment.py",
+          "tests/test_one_bad_timeout_disabled_every_hook.py",
+          "tests/test_private_state_holds_on_every_filesystem_and_node.py",
+          "tests/test_the_agent_cannot_widen_its_own_limits.py"
+        ],
+        "consuming_suites_found": 11,
+        "file": "delfin/agent/hooks.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 164,
+        "module": "delfin.agent.hooks",
+        "name": "_project_settings_paths",
+        "package": "delfin/agent",
+        "tier": "nowhere",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_refusal_memory.py",
+          "tests/test_a_skill_proposal_cannot_carry_an_unsafe_rule.py",
+          "tests/test_a_skill_safety_blocks_the_real_proposal_path.py",
+          "tests/test_a_skill_safety_respects_earlier_refusals.py",
+          "tests/test_the_real_resume_path_carries_the_refusals.py",
+          "tests/test_v22_adversarial_spelling.py",
+          "tests/test_v22_same_change.py",
+          "tests/test_v22w_cd.py",
+          "tests/test_v22w_lift.py",
+          "tests/test_v22w_quoted_space.py",
+          "tests/test_what_a_continued_session_forgets.py"
+        ],
+        "consuming_suites_found": 11,
+        "file": "delfin/agent/refusal_memory.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 161,
+        "module": "delfin.agent.refusal_memory",
+        "name": "_redirect_targets_safe",
+        "package": "delfin/agent",
+        "tier": "nowhere",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_benchmark_does_not_write_into_the_users_memory.py",
+          "tests/test_scratch_does_not_outlive_the_session.py"
+        ],
+        "consuming_suites_found": 2,
+        "file": "delfin/agent/scratch.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 75,
+        "module": "delfin.agent.scratch",
+        "name": "_release_mine",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a2w_adversarial_hook.py",
+          "tests/test_a2w_hook.py",
+          "tests/test_a_background_command_does_not_hide_its_result.py",
+          "tests/test_a_background_command_does_not_inherit_the_key.py",
+          "tests/test_a_background_job_outlives_the_call_that_started_it.py",
+          "tests/test_a_batch_waits_for_its_install_without_holding_the_turn.py",
+          "tests/test_a_blocked_interpreter_names_the_allowed_way.py",
+          "tests/test_a_blocked_task_can_say_it_is_blocked.py",
+          "tests/test_a_branch_held_elsewhere_is_run_detached.py",
+          "tests/test_a_budget_gate_cannot_stop_a_cost_it_never_measured.py",
+          "tests/test_a_bypass_change_nothing_can_restore_goes_to_the_trash.py",
+          "tests/test_a_bypass_shell_change_of_any_size_is_undoable.py"
+        ],
+        "consuming_suites_found": 711,
+        "file": "delfin/agent/api_client.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 13203,
+        "module": "delfin.agent.api_client",
+        "name": "_scoped_test_cmd_for_edits",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_session_index_makes_sessions_searchable.py",
+          "tests/test_l3_1_symlink_and_fifo_skipped.py",
+          "tests/test_l3_2_huge_file_bounded.py",
+          "tests/test_l3_3_injection_and_user_scope.py",
+          "tests/test_l3_4_oversized_archive_keeps_its_newest_records.py",
+          "tests/test_l3_adversarial_index_hardening.py",
+          "tests/test_l3_adversarial_session_index.py",
+          "tests/test_session_end_indexes_the_session.py",
+          "tests/test_session_end_reindex.py",
+          "tests/test_session_index_backfill.py",
+          "tests/test_session_search_end_to_end.py",
+          "tests/test_session_search_in_plan_mode.py"
+        ],
+        "consuming_suites_found": 14,
+        "file": "delfin/agent/session_index.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 322,
+        "module": "delfin.agent.session_index",
+        "name": "_source_state",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_f1_adversarial_durable_decisions.py",
+          "tests/test_f1_crash_resume.py"
+        ],
+        "consuming_suites_found": 2,
+        "file": "delfin/agent/durable.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 128,
+        "module": "delfin.agent.durable",
+        "name": "_step_finished",
+        "package": "delfin/agent",
+        "tier": "nowhere",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_kg3_adversarial_quality.py",
+          "tests/test_kg3_compaction_quality.py"
+        ],
+        "consuming_suites_found": 2,
+        "file": "delfin/agent/compaction_quality.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 169,
+        "module": "delfin.agent.compaction_quality",
+        "name": "category_names",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_kg3_adversarial_prompt_head.py",
+          "tests/test_kg3_adversarial_recorded_head.py",
+          "tests/test_kg3_never_raise.py",
+          "tests/test_kg3_prompt_head.py",
+          "tests/test_kg3_recorded_measurement.py"
+        ],
+        "consuming_suites_found": 5,
+        "file": "delfin/agent/prompt_head.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 95,
+        "module": "delfin.agent.prompt_head",
+        "name": "check_ordering",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_protected_change_becomes_a_request.py",
+          "tests/test_loop_and_auto_are_commands_on_every_surface.py"
+        ],
+        "consuming_suites_found": 2,
+        "file": "delfin/agent/loop_commands.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 298,
+        "module": "delfin.agent.loop_commands",
+        "name": "controller_hint",
+        "package": "delfin/agent",
+        "tier": "nowhere",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_contained_command_keeps_its_process_budget.py",
+          "tests/test_agent_process_budget.py",
+          "tests/test_every_breach_reaches_the_audit_log.py",
+          "tests/test_hooks_and_tests_run_under_the_process_budget.py",
+          "tests/test_process_budget_profiles.py"
+        ],
+        "consuming_suites_found": 5,
+        "file": "delfin/agent/process_budget.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 269,
+        "module": "delfin.agent.process_budget",
+        "name": "count_descendants",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_f1_adversarial_durable_decisions.py",
+          "tests/test_f1_crash_resume.py"
+        ],
+        "consuming_suites_found": 2,
+        "file": "delfin/agent/durable.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 142,
+        "module": "delfin.agent.durable",
+        "name": "decide_recovery",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_shared_tmp.py",
+          "tests/test_shared_tmp_cleanup.py",
+          "tests/test_shared_tmp_create.py",
+          "tests/test_shared_tmp_location.py",
+          "tests/test_shared_tmp_wiring.py"
+        ],
+        "consuming_suites_found": 5,
+        "file": "delfin/agent/shared_tmp.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 307,
+        "module": "delfin.agent.shared_tmp",
+        "name": "enforce_quota",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_nudge_never_asks_for_a_write_the_limit_refuses.py",
+          "tests/test_memory_context_nudge.py",
+          "tests/test_memory_context_nudge_integration.py",
+          "tests/test_memory_nudge_tidy_hint.py"
+        ],
+        "consuming_suites_found": 4,
+        "file": "delfin/agent/memory_nudge.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 147,
+        "module": "delfin.agent.memory_nudge",
+        "name": "estimated_tokens",
+        "package": "delfin/agent",
+        "tier": "nowhere",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_verify_recipe.py",
+          "tests/test_the_fast_suite_is_split_without_losing_a_test.py",
+          "tests/test_verify_recipe_behavior.py",
+          "tests/test_verify_recipe_keeps_test_commands_from_ci.py"
+        ],
+        "consuming_suites_found": 4,
+        "file": "delfin/agent/verify_recipe.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 327,
+        "module": "delfin.agent.verify_recipe",
+        "name": "for_files",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_mcp_client.py",
+          "tests/test_a_background_job_outlives_the_call_that_started_it.py",
+          "tests/test_a_checked_out_repository_cannot_run_commands.py",
+          "tests/test_a_dead_mcp_server_can_be_reported.py",
+          "tests/test_a_derived_containment_without_bwrap.py",
+          "tests/test_a_file_that_says_nothing_withholds_nothing.py",
+          "tests/test_a_file_the_model_has_is_not_sent_twice.py",
+          "tests/test_a_folder_cannot_start_a_process.py",
+          "tests/test_a_go_ahead_is_acted_on.py",
+          "tests/test_a_harness_row_is_marked_where_it_is_written.py",
+          "tests/test_a_headless_run_reports_a_state_a_program_can_read.py",
+          "tests/test_a_long_block_is_not_retried_sooner.py"
+        ],
+        "consuming_suites_found": 74,
+        "file": "delfin/agent/mcp_client.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 429,
+        "module": "delfin.agent.mcp_client",
+        "name": "forget_pin_decisions",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_sw3_adversarial_eventfeed.py",
+          "tests/test_sw3_adversarial_eventfeed2.py",
+          "tests/test_sw3_adversarial_eventfeed3.py",
+          "tests/test_sw3_adversarial_grouping.py",
+          "tests/test_sw3_adversarial_leadwiring.py",
+          "tests/test_sw3_adversarial_toolerrors.py",
+          "tests/test_sw3_fix_event_dedup_and_tool_errors.py",
+          "tests/test_sw3_lead_core.py"
+        ],
+        "consuming_suites_found": 8,
+        "file": "delfin/agent/swarm/lead.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 198,
+        "module": "delfin.agent.swarm.lead",
+        "name": "format_member_message",
+        "package": "delfin/agent/swarm",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_commit_names_the_agent_and_its_model.py",
+          "tests/test_a_failure_needs_a_control.py",
+          "tests/test_a_fix_is_proved_against_the_unfixed_state.py",
+          "tests/test_a_fixture_can_carry_a_memory_from_an_earlier_session.py",
+          "tests/test_a_hook_that_never_fires_says_so.py",
+          "tests/test_a_memory_cannot_carry_an_instruction.py",
+          "tests/test_a_prompt_head_that_does_not_move.py",
+          "tests/test_a_prompt_module_triggers_on_what_a_user_writes.py",
+          "tests/test_a_proposed_prompt_is_marked_not_guessed.py",
+          "tests/test_a_recalled_memory_says_who_wrote_it_and_when.py",
+          "tests/test_a_recalled_note_does_not_carry_todays_date.py",
+          "tests/test_a_repository_skill_needs_trust.py"
+        ],
+        "consuming_suites_found": 79,
+        "file": "delfin/agent/prompt_loader.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 2873,
+        "module": "delfin.agent.prompt_loader",
+        "name": "format_prompt_size_report",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_session_report.py",
+          "tests/test_a_report_reads_the_record_it_already_has.py",
+          "tests/test_a_session_report_is_kept_to_its_own_user.py",
+          "tests/test_cli_report_round.py",
+          "tests/test_every_entry_path_ends_a_session_the_same_way.py",
+          "tests/test_friction_adversarial_s2.py",
+          "tests/test_friction_metrics.py",
+          "tests/test_session_report_render.py"
+        ],
+        "consuming_suites_found": 8,
+        "file": "delfin/agent/session_report.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 849,
+        "module": "delfin.agent.session_report",
+        "name": "friction_summary",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_cm1_adversarial_entry.py",
+          "tests/test_cm1_adversarial_gate.py",
+          "tests/test_cm1_adversarial_lifecycle.py",
+          "tests/test_cm1_adversarial_limits.py",
+          "tests/test_cm1_adversarial_thread.py",
+          "tests/test_cm1_lifecycle_pins.py",
+          "tests/test_cm1_public_entry_parity.py",
+          "tests/test_cm1_read_only_gate.py",
+          "tests/test_cm1_rule_evaluator.py",
+          "tests/test_cm1_runner_detection.py",
+          "tests/test_cm1_serve_context.py",
+          "tests/test_cm1_server_side_gate.py"
+        ],
+        "consuming_suites_found": 12,
+        "file": "delfin/agent/code_mode.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 292,
+        "module": "delfin.agent.code_mode",
+        "name": "generate_stub",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_draft_email.py",
+          "tests/test_swp_adversarial_policy.py",
+          "tests/test_swp_policy.py",
+          "tests/test_swp_policy_adversarial.py",
+          "tests/test_swp_settings_merge.py"
+        ],
+        "consuming_suites_found": 5,
+        "file": "delfin/agent/swarm/policy.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 183,
+        "module": "delfin.agent.swarm.policy",
+        "name": "home_owner",
+        "package": "delfin/agent/swarm",
+        "tier": "nowhere",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_kg3_adversarial_prompt_head.py",
+          "tests/test_kg3_adversarial_recorded_head.py",
+          "tests/test_kg3_never_raise.py",
+          "tests/test_kg3_prompt_head.py",
+          "tests/test_kg3_recorded_measurement.py"
+        ],
+        "consuming_suites_found": 5,
+        "file": "delfin/agent/prompt_head.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 144,
+        "module": "delfin.agent.prompt_head",
+        "name": "hostile_reach",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_harness_row_is_marked_where_it_is_written.py",
+          "tests/test_a_peer_verdict_is_not_the_users_approval.py",
+          "tests/test_a_protected_change_becomes_a_request.py",
+          "tests/test_a_resumed_session_shows_its_conversation.py",
+          "tests/test_a_typed_steer_is_never_dropped.py",
+          "tests/test_a_wake_up_keeps_the_evidence_of_its_request.py",
+          "tests/test_auto_mode_runs_inside_its_frame.py",
+          "tests/test_auto_mode_state_is_one_thread_at_a_time.py",
+          "tests/test_b1_adversarial_s25.py",
+          "tests/test_b1_task_presence.py",
+          "tests/test_job_monitor.py",
+          "tests/test_the_git_role_is_set_per_repository.py"
+        ],
+        "consuming_suites_found": 16,
+        "file": "delfin/agent/harness_rows.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 74,
+        "module": "delfin.agent.harness_rows",
+        "name": "is_harness_text",
+        "package": "delfin/agent",
+        "tier": "nowhere",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_r2_adversarial_readonly_pipeline.py",
+          "tests/test_r2_readonly_pipeline.py",
+          "tests/test_r2_readonly_pipeline_operator_probe.py"
+        ],
+        "consuming_suites_found": 3,
+        "file": "delfin/agent/readonly_pipeline.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 371,
+        "module": "delfin.agent.readonly_pipeline",
+        "name": "is_safe",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_fetch_connects_to_the_address_it_checked.py",
+          "tests/test_a_page_script_does_not_become_prose.py",
+          "tests/test_a_redirect_gets_the_same_egress_decision.py",
+          "tests/test_a_refused_search_is_not_asked_again.py",
+          "tests/test_a_search_can_use_a_real_engine.py",
+          "tests/test_a_search_has_a_second_backend.py",
+          "tests/test_a_search_that_was_reset_is_tried_again.py",
+          "tests/test_a_url_carrying_encoded_data_is_refused_unattended.py",
+          "tests/test_agent_software_build_e2e.py",
+          "tests/test_credentials_use_the_os_keyring.py",
+          "tests/test_every_admission_path_decides_a_call_the_same_way.py",
+          "tests/test_grounding_and_budget.py"
+        ],
+        "consuming_suites_found": 27,
+        "file": "delfin/agent/web_tools.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 698,
+        "module": "delfin.agent.web_tools",
+        "name": "keyed_engines_configured",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_benchmark_reads_nobodys_history.py",
+          "tests/test_a_headless_run_reports_a_state_a_program_can_read.py",
+          "tests/test_a_refused_key_is_not_a_failed_task.py",
+          "tests/test_a_session_does_not_rewrite_the_shipped_profiles.py",
+          "tests/test_a_turn_whose_own_check_is_red_is_not_done.py",
+          "tests/test_agent_provider_profile.py",
+          "tests/test_every_entry_path_sends_the_project_rules.py",
+          "tests/test_every_entry_path_takes_one_turn_budget.py",
+          "tests/test_g1_degenerate_loop_fires_in_a_run.py",
+          "tests/test_one_answer_to_which_language.py",
+          "tests/test_the_route_is_not_rewritten_invisibly.py"
+        ],
+        "consuming_suites_found": 11,
+        "file": "delfin/agent/provider_profile.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 381,
+        "module": "delfin.agent.provider_profile",
+        "name": "load_shared_profile",
+        "package": "delfin/agent",
+        "tier": "nowhere",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_knowledge_share.py",
+          "tests/test_an_agent_shell_cannot_open_a_share.py",
+          "tests/test_knowledge_admin_policy.py",
+          "tests/test_knowledge_agent_surface.py",
+          "tests/test_knowledge_commands.py",
+          "tests/test_knowledge_curation.py"
+        ],
+        "consuming_suites_found": 6,
+        "file": "delfin/agent/knowledge_share.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 399,
+        "module": "delfin.agent.knowledge_share",
+        "name": "open_dialogs",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_bad_money_column_gets_louder_not_quieter.py",
+          "tests/test_a_column_total_left_rows_out_without_saying_so.py",
+          "tests/test_a_correct_total_was_flagged_by_another_turns_ledger.py",
+          "tests/test_a_form_is_filled_with_the_answer_that_was_given.py",
+          "tests/test_a_german_figure_and_its_hedge_are_seen_the_same_way.py",
+          "tests/test_a_maximum_over_a_window_is_not_a_maximum.py",
+          "tests/test_a_near_miss_filename_says_what_is_there.py",
+          "tests/test_a_reader_that_skips_the_letterhead_and_a_writer_that_never_looks.py",
+          "tests/test_a_reconciliation_says_what_it_compared.py",
+          "tests/test_a_tool_reaches_the_function_behind_it.py",
+          "tests/test_a_total_can_name_its_period.py",
+          "tests/test_a_total_nobody_computed_reads_like_a_computed_one.py"
+        ],
+        "consuming_suites_found": 33,
+        "file": "delfin/agent/office.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 3514,
+        "module": "delfin.agent.office",
+        "name": "pdf_xfa_data",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_sa1_adversarial_guard.py",
+          "tests/test_sa1_adversarial_harness.py",
+          "tests/test_sa1_guard.py",
+          "tests/test_sa1_harness.py",
+          "tests/test_sp1_adversarial_adapter.py",
+          "tests/test_sp1_adversarial_citations.py",
+          "tests/test_sp1_cli_entry.py",
+          "tests/test_sp1_pilot_tasks.py",
+          "tests/test_sp1_review_findings.py",
+          "tests/test_sp1_runner_adapter.py"
+        ],
+        "consuming_suites_found": 10,
+        "file": "delfin/agent/explore_pilot.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 79,
+        "module": "delfin.agent.explore_pilot",
+        "name": "pilot_slot",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_damaged_user_model_is_not_wiped.py",
+          "tests/test_a_harness_row_is_marked_where_it_is_written.py",
+          "tests/test_l4_adversarial_permission_guard.py",
+          "tests/test_l4_adversarial_permission_mixed_particle.py",
+          "tests/test_l4_adversarial_permissions.py",
+          "tests/test_l4_adversarial_post_modal_you.py",
+          "tests/test_l4_adversarial_second_person_grant.py",
+          "tests/test_l4_user_model.py",
+          "tests/test_l4_user_model_panel.py",
+          "tests/test_zz_l4_the_user_model_is_a_description.py"
+        ],
+        "consuming_suites_found": 10,
+        "file": "delfin/agent/user_model.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 655,
+        "module": "delfin.agent.user_model",
+        "name": "prompt_block",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_bug_can_be_filed_from_the_terminal.py",
+          "tests/test_a_bug_report_leaves_only_with_consent.py"
+        ],
+        "consuming_suites_found": 2,
+        "file": "delfin/agent/bug_filing.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 370,
+        "module": "delfin.agent.bug_filing",
+        "name": "push_if_configured",
+        "package": "delfin/agent",
+        "tier": "nowhere",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_kg3_adversarial_quality.py",
+          "tests/test_kg3_compaction_quality.py"
+        ],
+        "consuming_suites_found": 2,
+        "file": "delfin/agent/compaction_quality.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 75,
+        "module": "delfin.agent.compaction_quality",
+        "name": "quality_report",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_job_monitor.py",
+          "tests/test_a_batch_that_waits_for_its_install_is_a_row_of_jobs.py",
+          "tests/test_a_batch_waits_for_its_install_without_holding_the_turn.py",
+          "tests/test_a_cluster_job_comes_back_to_the_session_that_sent_it.py",
+          "tests/test_a_contributor_goes_through_a_pull_request.py",
+          "tests/test_a_finished_job_wakes_the_agent.py",
+          "tests/test_a_followed_job_is_not_nudged.py",
+          "tests/test_a_git_configuration_file_is_git_configuration.py",
+          "tests/test_a_git_setting_that_runs_a_program_is_asked.py",
+          "tests/test_a_one_shot_run_waits_for_its_background_job.py",
+          "tests/test_a_repository_error_reaches_the_model_with_its_safe_fix.py",
+          "tests/test_a_session_lists_only_its_own_subagents.py"
+        ],
+        "consuming_suites_found": 43,
+        "file": "delfin/agent/job_monitor.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 369,
+        "module": "delfin.agent.job_monitor",
+        "name": "query_job_states",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_kit_settings.py",
+          "tests/test_a_benchmark_reads_nobodys_history.py",
+          "tests/test_a_repository_cannot_widen_the_session.py",
+          "tests/test_a_rule_that_allows_everything_is_not_a_rule.py",
+          "tests/test_a_window_session_starts_in_the_persisted_posture.py",
+          "tests/test_agent_software_build_e2e.py",
+          "tests/test_allow_for_good_covers_what_was_asked.py",
+          "tests/test_bypass_runs_only_in_a_cage.py",
+          "tests/test_capabilities_and_gate_explain.py",
+          "tests/test_editblock_and_bundle.py",
+          "tests/test_every_admission_path_decides_a_call_the_same_way.py",
+          "tests/test_managed_rules_are_permission_rules.py"
+        ],
+        "consuming_suites_found": 27,
+        "file": "delfin/agent/kit_settings.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 378,
+        "module": "delfin.agent.kit_settings",
+        "name": "remove_pattern",
+        "package": "delfin/agent",
+        "tier": "nowhere",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_kit_settings.py",
+          "tests/test_a_benchmark_reads_nobodys_history.py",
+          "tests/test_a_repository_cannot_widen_the_session.py",
+          "tests/test_a_rule_that_allows_everything_is_not_a_rule.py",
+          "tests/test_a_window_session_starts_in_the_persisted_posture.py",
+          "tests/test_agent_software_build_e2e.py",
+          "tests/test_allow_for_good_covers_what_was_asked.py",
+          "tests/test_bypass_runs_only_in_a_cage.py",
+          "tests/test_capabilities_and_gate_explain.py",
+          "tests/test_editblock_and_bundle.py",
+          "tests/test_every_admission_path_decides_a_call_the_same_way.py",
+          "tests/test_managed_rules_are_permission_rules.py"
+        ],
+        "consuming_suites_found": 27,
+        "file": "delfin/agent/kit_settings.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 342,
+        "module": "delfin.agent.kit_settings",
+        "name": "remove_read_dir",
+        "package": "delfin/agent",
+        "tier": "nowhere",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_cli_resume.py",
+          "tests/test_a_session_carries_an_optional_person_id.py",
+          "tests/test_dr1_resume.py",
+          "tests/test_one_look_says_which_sessions_are_open.py",
+          "tests/test_the_resume_table_says_whether_a_session_lives.py"
+        ],
+        "consuming_suites_found": 5,
+        "file": "delfin/agent/cli_resume.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 304,
+        "module": "delfin.agent.cli_resume",
+        "name": "replay_step",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_sw3_adversarial_eventfeed.py",
+          "tests/test_sw3_adversarial_eventfeed2.py",
+          "tests/test_sw3_adversarial_eventfeed3.py",
+          "tests/test_sw3_adversarial_grouping.py",
+          "tests/test_sw3_adversarial_leadwiring.py",
+          "tests/test_sw3_adversarial_toolerrors.py",
+          "tests/test_sw3_fix_event_dedup_and_tool_errors.py",
+          "tests/test_sw3_lead_core.py"
+        ],
+        "consuming_suites_found": 8,
+        "file": "delfin/agent/swarm/lead.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 159,
+        "module": "delfin.agent.swarm.lead",
+        "name": "request_prcheck",
+        "package": "delfin/agent/swarm",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_sw3_adversarial_eventfeed.py",
+          "tests/test_sw3_adversarial_eventfeed2.py",
+          "tests/test_sw3_adversarial_eventfeed3.py",
+          "tests/test_sw3_adversarial_grouping.py",
+          "tests/test_sw3_adversarial_leadwiring.py",
+          "tests/test_sw3_adversarial_toolerrors.py",
+          "tests/test_sw3_fix_event_dedup_and_tool_errors.py",
+          "tests/test_sw3_lead_core.py"
+        ],
+        "consuming_suites_found": 8,
+        "file": "delfin/agent/swarm/lead.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 110,
+        "module": "delfin.agent.swarm.lead",
+        "name": "request_swarm_pause",
+        "package": "delfin/agent/swarm",
+        "tier": "nowhere",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_sw3_adversarial_eventfeed.py",
+          "tests/test_sw3_adversarial_eventfeed2.py",
+          "tests/test_sw3_adversarial_eventfeed3.py",
+          "tests/test_sw3_adversarial_grouping.py",
+          "tests/test_sw3_adversarial_leadwiring.py",
+          "tests/test_sw3_adversarial_toolerrors.py",
+          "tests/test_sw3_fix_event_dedup_and_tool_errors.py",
+          "tests/test_sw3_lead_core.py"
+        ],
+        "consuming_suites_found": 8,
+        "file": "delfin/agent/swarm/lead.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 137,
+        "module": "delfin.agent.swarm.lead",
+        "name": "request_triage_answer",
+        "package": "delfin/agent/swarm",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_bad_money_column_gets_louder_not_quieter.py",
+          "tests/test_a_column_total_left_rows_out_without_saying_so.py",
+          "tests/test_a_correct_total_was_flagged_by_another_turns_ledger.py",
+          "tests/test_a_form_is_filled_with_the_answer_that_was_given.py",
+          "tests/test_a_german_figure_and_its_hedge_are_seen_the_same_way.py",
+          "tests/test_a_maximum_over_a_window_is_not_a_maximum.py",
+          "tests/test_a_near_miss_filename_says_what_is_there.py",
+          "tests/test_a_reader_that_skips_the_letterhead_and_a_writer_that_never_looks.py",
+          "tests/test_a_reconciliation_says_what_it_compared.py",
+          "tests/test_a_tool_reaches_the_function_behind_it.py",
+          "tests/test_a_total_can_name_its_period.py",
+          "tests/test_a_total_nobody_computed_reads_like_a_computed_one.py"
+        ],
+        "consuming_suites_found": 33,
+        "file": "delfin/agent/office.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 6098,
+        "module": "delfin.agent.office",
+        "name": "reset_figure_ledger",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_lsp1_diagnostics.py",
+          "tests/test_lsp1_wiring.py",
+          "tests/test_the_edit_diagnostics_read_what_ruff_reports.py"
+        ],
+        "consuming_suites_found": 3,
+        "file": "delfin/agent/diagnostics.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 222,
+        "module": "delfin.agent.diagnostics",
+        "name": "reset_unavailability_note",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_skill_use_ledger_is_kept_apart_and_paired.py",
+          "tests/test_l1_adversarial_skill_usage.py",
+          "tests/test_l1_adversarial_skill_usage_concurrency.py",
+          "tests/test_l1_panel.py",
+          "tests/test_l1_skill_usage.py",
+          "tests/test_zz_l1_a_use_is_counted_once_with_what_came_of_it.py"
+        ],
+        "consuming_suites_found": 6,
+        "file": "delfin/agent/skill_usage.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 247,
+        "module": "delfin.agent.skill_usage",
+        "name": "resolve_pending",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a2w_adversarial_hook.py",
+          "tests/test_a2w_hook.py",
+          "tests/test_a_background_command_does_not_hide_its_result.py",
+          "tests/test_a_background_command_does_not_inherit_the_key.py",
+          "tests/test_a_background_job_outlives_the_call_that_started_it.py",
+          "tests/test_a_batch_waits_for_its_install_without_holding_the_turn.py",
+          "tests/test_a_blocked_interpreter_names_the_allowed_way.py",
+          "tests/test_a_blocked_task_can_say_it_is_blocked.py",
+          "tests/test_a_branch_held_elsewhere_is_run_detached.py",
+          "tests/test_a_budget_gate_cannot_stop_a_cost_it_never_measured.py",
+          "tests/test_a_bypass_change_nothing_can_restore_goes_to_the_trash.py",
+          "tests/test_a_bypass_shell_change_of_any_size_is_undoable.py"
+        ],
+        "consuming_suites_found": 711,
+        "file": "delfin/agent/api_client.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 12073,
+        "module": "delfin.agent.api_client",
+        "name": "role_tool_surface_report",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_cm1_adversarial_entry.py",
+          "tests/test_cm1_adversarial_gate.py",
+          "tests/test_cm1_adversarial_lifecycle.py",
+          "tests/test_cm1_adversarial_limits.py",
+          "tests/test_cm1_adversarial_thread.py",
+          "tests/test_cm1_lifecycle_pins.py",
+          "tests/test_cm1_public_entry_parity.py",
+          "tests/test_cm1_read_only_gate.py",
+          "tests/test_cm1_rule_evaluator.py",
+          "tests/test_cm1_runner_detection.py",
+          "tests/test_cm1_serve_context.py",
+          "tests/test_cm1_server_side_gate.py"
+        ],
+        "consuming_suites_found": 12,
+        "file": "delfin/agent/code_mode.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 108,
+        "module": "delfin.agent.code_mode",
+        "name": "serve_request",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a2w_adversarial_hook.py",
+          "tests/test_a2w_hook.py",
+          "tests/test_a_background_command_does_not_hide_its_result.py",
+          "tests/test_a_background_command_does_not_inherit_the_key.py",
+          "tests/test_a_background_job_outlives_the_call_that_started_it.py",
+          "tests/test_a_batch_waits_for_its_install_without_holding_the_turn.py",
+          "tests/test_a_blocked_interpreter_names_the_allowed_way.py",
+          "tests/test_a_blocked_task_can_say_it_is_blocked.py",
+          "tests/test_a_branch_held_elsewhere_is_run_detached.py",
+          "tests/test_a_budget_gate_cannot_stop_a_cost_it_never_measured.py",
+          "tests/test_a_bypass_change_nothing_can_restore_goes_to_the_trash.py",
+          "tests/test_a_bypass_shell_change_of_any_size_is_undoable.py"
+        ],
+        "consuming_suites_found": 711,
+        "file": "delfin/agent/api_client.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 9727,
+        "module": "delfin.agent.api_client",
+        "name": "set_commit_trailer_model",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_profiles_free_the_caged_bypass_for_scheduled_runs.py"
+        ],
+        "consuming_suites_found": 1,
+        "file": "delfin/agent/workspace_profiles.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 220,
+        "module": "delfin.agent.workspace_profiles",
+        "name": "set_for_workspace_words",
+        "package": "delfin/agent",
+        "tier": "nowhere",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_kg3_adversarial_prompt_head.py",
+          "tests/test_kg3_adversarial_recorded_head.py",
+          "tests/test_kg3_never_raise.py",
+          "tests/test_kg3_prompt_head.py",
+          "tests/test_kg3_recorded_measurement.py"
+        ],
+        "consuming_suites_found": 5,
+        "file": "delfin/agent/prompt_head.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 44,
+        "module": "delfin.agent.prompt_head",
+        "name": "stable_prefix_len",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_sw3_adversarial_eventfeed.py",
+          "tests/test_sw3_adversarial_eventfeed2.py",
+          "tests/test_sw3_adversarial_eventfeed3.py",
+          "tests/test_sw3_adversarial_grouping.py",
+          "tests/test_sw3_adversarial_leadwiring.py",
+          "tests/test_sw3_adversarial_toolerrors.py",
+          "tests/test_sw3_fix_event_dedup_and_tool_errors.py",
+          "tests/test_sw3_lead_core.py"
+        ],
+        "consuming_suites_found": 8,
+        "file": "delfin/agent/swarm/lead.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 49,
+        "module": "delfin.agent.swarm.lead",
+        "name": "status_validate",
+        "package": "delfin/agent/swarm",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_cli_resume.py",
+          "tests/test_a_session_carries_an_optional_person_id.py",
+          "tests/test_dr1_resume.py",
+          "tests/test_one_look_says_which_sessions_are_open.py",
+          "tests/test_the_resume_table_says_whether_a_session_lives.py"
+        ],
+        "consuming_suites_found": 5,
+        "file": "delfin/agent/cli_resume.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 291,
+        "module": "delfin.agent.cli_resume",
+        "name": "step_resume_note",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_shared_tmp.py",
+          "tests/test_shared_tmp_cleanup.py",
+          "tests/test_shared_tmp_create.py",
+          "tests/test_shared_tmp_location.py",
+          "tests/test_shared_tmp_wiring.py"
+        ],
+        "consuming_suites_found": 5,
+        "declined_signal": [
+          "shared_tmp.py:263 (-90 from the definition): # Sessions older than this are swept by sweep_stale even if they never"
+        ],
+        "file": "delfin/agent/shared_tmp.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 353,
+        "module": "delfin.agent.shared_tmp",
+        "name": "sweep_stale",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_cluster_is_added_in_the_window_and_only_proposed_by_an_agent.py",
+          "tests/test_a_cluster_login_item_is_never_answered_with_text.py",
+          "tests/test_the_agent_service_lists_what_needs_you.py"
+        ],
+        "consuming_suites_found": 3,
+        "file": "delfin/agent/service/attention_feed.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 333,
+        "module": "delfin.agent.service.attention_feed",
+        "name": "this_host",
+        "package": "delfin/agent/service",
+        "tier": "nowhere",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_a_bug_can_be_filed_from_the_terminal.py",
+          "tests/test_a_compaction_before_a_fresh_start_saves_and_stops.py",
+          "tests/test_a_compaction_behind_a_working_state_block_is_an_explained_save.py",
+          "tests/test_a_crash_checkpoint_does_not_replay_a_credential.py",
+          "tests/test_a_crash_recovery_names_the_open_step.py",
+          "tests/test_a_failed_checkpoint_write_is_said_once.py",
+          "tests/test_a_fresh_start_is_an_explained_shorter_save.py",
+          "tests/test_a_held_session_is_not_loaded_in_silence.py",
+          "tests/test_a_killed_session_keeps_its_finished_turns.py",
+          "tests/test_a_lock_claim_is_atomic.py",
+          "tests/test_a_lost_crash_recovery_note_is_named.py",
+          "tests/test_a_partial_restore_does_not_report_success.py"
+        ],
+        "consuming_suites_found": 99,
+        "file": "delfin/agent/session_store.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 1689,
+        "module": "delfin.agent.session_store",
+        "name": "touch_heartbeat",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_b4_adversarial_health.py",
+          "tests/test_b4_health_wiring.py",
+          "tests/test_swarm_watch_lists_every_running_session.py",
+          "tests/test_ux2_adversarial_classify.py",
+          "tests/test_ux2_adversarial_events.py",
+          "tests/test_ux2_events.py",
+          "tests/test_ux2_ops_health_never_approves.py",
+          "tests/test_ux2_session_health.py"
+        ],
+        "consuming_suites_found": 8,
+        "file": "delfin/agent/session_health.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 192,
+        "module": "delfin.agent.session_health",
+        "name": "waits_summary",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_b4_adversarial_health.py",
+          "tests/test_b4_health_wiring.py",
+          "tests/test_swarm_watch_lists_every_running_session.py",
+          "tests/test_ux2_adversarial_classify.py",
+          "tests/test_ux2_adversarial_events.py",
+          "tests/test_ux2_events.py",
+          "tests/test_ux2_ops_health_never_approves.py",
+          "tests/test_ux2_session_health.py"
+        ],
+        "consuming_suites_found": 8,
+        "file": "delfin/agent/session_health.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 218,
+        "module": "delfin.agent.session_health",
+        "name": "watch_cycle_events",
+        "package": "delfin/agent",
+        "tier": "test-only",
+        "under_ratchet_scope": true
+      },
+      {
+        "consuming_suites": [
+          "tests/test_bug_watcher.py",
+          "tests/test_a_bug_can_be_filed_from_the_terminal.py",
+          "tests/test_bug_triage_prints_no_credential.py",
+          "tests/test_bug_watcher_sends_only_with_consent.py",
+          "tests/test_the_terminal_is_the_lifeline.py"
+        ],
+        "consuming_suites_found": 5,
+        "file": "delfin/agent/bug_watcher.py",
+        "instrument_class": "four-check+ratchet",
+        "line": 650,
+        "module": "delfin.agent.bug_watcher",
+        "name": "watcher_status",
+        "package": "delfin/agent",
+        "tier": "nowhere",
+        "under_ratchet_scope": true
+      }
+    ]
+  },
+  "published_reference_dirs": [
+    "docs",
+    "website",
+    "examples",
+    "literature"
+  ],
+  "ratchet_rule": {
+    "decided_by": "the defining file's location, which is the root the ratchet's own scan uses",
+    "fixture": "tests/fixtures/unmounted_capabilities.txt",
+    "fixture_present_in_this_tree": false,
+    "note": "the fixture and its test live on another branch, so scope is verified here and the listing of a single name in it is not",
+    "scope": "delfin/agent/"
+  },
+  "scanned_at": "2026-11-20T21:37:51+00:00",
+  "security_core_rule": {
+    "answered_from": "<session-scratch>/ab/delfin/agent/auto_guard.py",
+    "available": true,
+    "function": "delfin.agent.auto_guard.protected_reason"
+  },
+  "suite_gate_rule": {
+    "interpreter": "~/micromamba/envs/delfin-ci/bin/python",
+    "reads": "a module-level pytest.importorskip in every consuming suite, where the module cannot be imported by that interpreter"
+  },
+  "suite_limit": 12,
+  "task_sentence": "connect this capability to the product, or delete it together with its tests -- or report that neither is right, with the evidence",
+  "tree_sha": "f767a18652d0bf80a0b7e7eab0f8af68e8e26cf4",
+  "underpowered": {
+    "chem": false,
+    "infra": false
+  }
+}

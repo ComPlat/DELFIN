@@ -919,3 +919,40 @@ def test_the_sample_records_the_seed_the_date_and_the_tree():
     assert sample["drawn_at"].startswith("20")
     assert sample["pool_counts"] == {"infra": 40, "chem": 40}
     assert "pools_tree_sha" in sample
+
+
+def test_a_redacted_pools_path_refuses_the_draw(tmp_path):
+    """A committed artefact is a record, not an input to a new draw.
+
+    The artefacts under ``experiments/`` carry ``<session-scratch>/...``
+    where the producing run had an absolute path: a public file holds no
+    home directory. The draw reads that path to compare the tree's HEAD
+    against the sha the scan ran on, so on a redacted document the check
+    cannot run. Refused, rather than recorded as ``tree_sha_at_draw:
+    null``, which reads like a measurement and is the absence of one.
+    """
+    doc = _fake_pools(40, 40)
+    doc["generated_for"] = "<session-scratch>/ab"
+    pools = tmp_path / "pools.json"
+    pools.write_text(json.dumps(doc))
+    out = tmp_path / "sample.json"
+    args = ["--pools", str(pools), "--out", str(out), "--seed", "5",
+            "--per-pool", "10"]
+    assert draw_mod.main(args) == 2
+    assert not out.exists(), "a refused draw writes nothing"
+
+    # Control: the same document with a resolvable path draws, so the
+    # refusal is attached to the redaction and not to the fixture.
+    doc["generated_for"] = str(tmp_path)
+    pools.write_text(json.dumps(doc))
+    assert draw_mod.main(args) == 0
+    assert json.loads(out.read_text())["seed"] == 5
+
+
+def test_a_home_path_counts_as_redacted_too():
+    """Both rewrites the guard forces: the scratch prefix and the home."""
+    assert draw_mod.is_redacted("<session-scratch>/ab")
+    assert draw_mod.is_redacted("~/micromamba/envs/delfin-ci")
+    assert not draw_mod.is_redacted("/srv/checkout")
+    assert not draw_mod.is_redacted(None)
+    assert not draw_mod.is_redacted("")
