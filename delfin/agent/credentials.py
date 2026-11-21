@@ -67,8 +67,37 @@ from pathlib import Path
 
 _DEFAULT_PATH = Path.home() / ".delfin" / "credentials.json"
 
-# Names the agent stack knows how to consume.  Used by ``list_credentials``
-# to surface env-var-sourced keys even when nothing is on disk.
+# Names the agent stack knows how to consume. This list has TWO consumers
+# and the second one is a security boundary:
+#
+#   1. ``list_credentials``, to surface env-var-sourced keys even when
+#      nothing is on disk -- what the list was written for;
+#   2. ``web_tools._known_secret_values``, which is the exact-value source
+#      for ``output_guard.scrub_secrets`` (every tool result before it
+#      enters the transcript) and for ``outbound_secret_reason`` (a URL or
+#      a search query before it leaves the machine).
+#
+# A credential in the ``~/.delfin`` store is covered whatever its name,
+# because ``held_secret_values`` enumerates the store. A credential supplied
+# through the ENVIRONMENT is covered only if its name is listed here --
+# ``_known_secret_values`` reads ``os.environ`` for these names and no
+# others. Measured 2026-11-21 before this change: with the value in the
+# environment, KIT_TOOLBOX_API_KEY, ANTHROPIC_API_KEY and GH_TOKEN were
+# scrubbed from a tool result and refused egress, while
+# BRAVE_SEARCH_API_KEY, GOOGLE_CSE_API_KEY, SEMANTIC_SCHOLAR_API_KEY and
+# OPENALEX_API_KEY were neither -- all four read by the product through
+# ``web_tools._credential`` / ``scholarly_sources._credential``, and all
+# four documented as "env var or ~/.delfin credential file", i.e. offered
+# as equivalent routes while only one of them was protected.
+#
+# So the rule, and ``test_every_credential_name_the_product_reads.py``
+# holds it: a name the product reads as a credential belongs here. The test
+# derives the names from the call sites, so a provider added tomorrow fails
+# a test instead of leaking quietly.
+#
+# Not listed, deliberately: GOOGLE_CSE_CX, which is a search-engine
+# identifier rather than a secret. Scrubbing it would redact an ordinary
+# id out of tool results for no gain.
 _WELL_KNOWN_KEYS: tuple[str, ...] = (
     "KIT_TOOLBOX_API_KEY",
     "OPENAI_API_KEY",
@@ -77,6 +106,12 @@ _WELL_KNOWN_KEYS: tuple[str, ...] = (
     # A GitHub token opens the repository this agent pushes to.
     "GITHUB_TOKEN",
     "GH_TOKEN",
+    # Search and literature providers, read through the modules' own
+    # ``_credential`` helper.
+    "BRAVE_SEARCH_API_KEY",
+    "GOOGLE_CSE_API_KEY",
+    "SEMANTIC_SCHOLAR_API_KEY",
+    "OPENALEX_API_KEY",
 )
 
 
