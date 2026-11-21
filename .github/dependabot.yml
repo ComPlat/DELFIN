@@ -109,10 +109,16 @@ updates:
 
   - package-ecosystem: pip
     directory: "/"
-    # env/ holds the record of the exact environment the published MANTA
-    # constructions were built in (env/reference-environment.lock). It is not a
-    # dependency specification; Dependabot detected it by content even after a
-    # rename (#39, #40, #42), so the directory is excluded outright.
+    # env/ holds two files about the published MANTA constructions: the
+    # record of the interpreter they were built on
+    # (reference-environment-interpreter.txt, never installed with, never
+    # raised) and the constraints file that pins their dependency closure
+    # (reference-environment.lock). Neither is a dependency specification;
+    # Dependabot detected them by content even after a rename (#39, #40,
+    # #42), so the directory is excluded outright. The constraints file is
+    # kept clean a different way -- .github/workflows/audit.yml runs
+    # pip-audit over its pins -- because moving one of them is a statement
+    # about the data and not something to accept from a bot.
     exclude-paths:
       - "env/**"
     schedule:
@@ -164,7 +170,10 @@ updates:
       - dependency-name: "mendeleev"
 
     # env/reference-environment.lock is deliberately NOT named requirements*.txt:
-    # it records the exact environment the published MANTA constructions were
-    # built in (byte-reproducibility), not a dependency specification. Moving
+    # it pins the dependency closure the published MANTA constructions were
+    # built with (byte-reproducibility), not a dependency specification. Moving
     # any version in it would silently detach it from the data it describes;
     # updating it means rebuilding and re-verifying, a decision for a person.
+    # A pin that becomes vulnerable is found by the dependency audit, which
+    # reads this file, and answered there -- raised when it cannot change a
+    # structure, recorded in audit-ignore.txt with the reason when it can.

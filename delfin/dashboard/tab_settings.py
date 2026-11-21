@@ -443,7 +443,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     jobmon_provider_input = widgets.Dropdown(
         options=[('Agent default', ''), ('KIT Toolbox', 'kit'),
                  ('Anthropic', 'claude'), ('OpenAI', 'openai'),
-                 ('Ollama', 'ollama')],
+                 ('Helmholtz Blablador', 'blablador'), ('Ollama', 'ollama')],
         value='', description='Provider',
         layout=widgets.Layout(width='240px', height='28px'),
     )
@@ -4730,9 +4730,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         value=(
             '<span style="color:#757575;font-size:12px;">'
             '<b>CLI backend</b> uses your Anthropic subscription via OAuth (no API key needed).<br>'
-            '<b>API backend</b> requires the <code>ANTHROPIC_API_KEY</code> environment variable '
-            '(set it in your shell before launching the dashboard). '
-            'Keys are never stored on disk.'
+            '<b>API backend</b> requires <code>ANTHROPIC_API_KEY</code>. '
+            'Set it under <b>Diagnosis &amp; API key</b> in this tab, or '
+            'export it before launching the dashboard.'
             '</span>'
         ),
     )
@@ -5094,7 +5094,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     # again. Nothing ever echoes it, and the status line below is built from
     # credentials.list_credentials(), which masks every value.
     key_name = widgets.Dropdown(
-        options=['KIT_TOOLBOX_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY'],
+        options=['KIT_TOOLBOX_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY',
+                 'BLABLADOR_API_KEY'],
         value='KIT_TOOLBOX_API_KEY',
         layout=widgets.Layout(width='230px'))
     key_value = widgets.Password(

@@ -17,6 +17,7 @@ from .state_paths import state_root
 from typing import Any
 
 from . import proc_identity
+from . import state_file as _state_file
 
 
 # ---------------------------------------------------------------------------
@@ -1409,9 +1410,15 @@ def save_session(
 
     # Auto-title from first user message
     if not title and chat_messages:
+        from delfin.agent.repl_commands import looks_like_command
         for msg in chat_messages:
             if msg.get("role") == "user":
                 text = msg.get("content", "")
+                if looks_like_command(text):
+                    # A builtin command as the first line (/sync, /status,
+                    # /mode plan, ...) is not the session's name; the next
+                    # real user prompt names it instead.
+                    continue
                 title = text[:80].replace("\n", " ").strip()
                 if len(text) > 80:
                     title += "..."
@@ -1486,23 +1493,46 @@ def save_session(
         "compaction_summaries": compaction_summaries or {},
     }
 
-    # Set created_at only on first save
+    # Set created_at only on first save. The read that feeds it is a WRITER
+    # read: its result lands straight back on this same file, so a torn
+    # record must not be read as 'empty' and written over. ``read_json_for_write``
+    # keeps a damaged file aside and names it; the new session is still stored,
+    # and the loss is reported rather than silent.
     filepath = d / f"{session_id}.json"
-    if filepath.exists():
-        try:
-            existing = json.loads(filepath.read_text())
-            data["created_at"] = existing.get("created_at", data["updated_at"])
-            # The "already announced" mark of a pending plan survives a
-            # save of the same plan, and only that.
-            mark = existing.get("pending_plan_noticed")
-            if mark and mark == _plan_mark(data.get("pending_plan_body")):
-                data["pending_plan_noticed"] = mark
-        except (json.JSONDecodeError, OSError):
-            data["created_at"] = data["updated_at"]
+    existing, moved = _state_file.read_json_for_write(filepath, default=None)
+    if isinstance(existing, dict):
+        data["created_at"] = existing.get("created_at", data["updated_at"])
+        # The "already announced" mark of a pending plan survives a
+        # save of the same plan, and only that.
+        mark = existing.get("pending_plan_noticed")
+        if mark and mark == _plan_mark(data.get("pending_plan_body")):
+            data["pending_plan_noticed"] = mark
     else:
         data["created_at"] = data["updated_at"]
 
     _atomic_write_text(filepath, json.dumps(data, ensure_ascii=False, indent=1))
+    if moved is not None:
+        import logging
+        # Deliberately names NO file. Both names carry the session id, and
+        # a session id resumes a session -- CodeQL traces it from a source
+        # it classifies as a secret and reports this as clear-text logging
+        # of sensitive data (py/clear-text-logging-sensitive-data, two high
+        # alerts on the pull request that introduced this line). A log is
+        # read by more people, and kept longer, than the directory it talks
+        # about.
+        #
+        # The DIRECTORY is named instead, which holds no id and is what a
+        # reader of a log can act on: the kept file is in there, beside the
+        # record, under its own name. (An earlier version of this line
+        # pointed at the Settings diagnosis instead. That was wrong: the
+        # doctor's scan for *.unreadable-* files is not recursive and this
+        # directory is a level below the state root, so it would have
+        # promised a listing that does not happen.)
+        logging.getLogger(__name__).warning(
+            "a session record in %s could not be read; it was moved aside "
+            "there under a dated name and a fresh session was stored. "
+            "Whatever that record still held is in the file kept aside",
+            _SESSIONS_DIR)
     return filepath
 
 

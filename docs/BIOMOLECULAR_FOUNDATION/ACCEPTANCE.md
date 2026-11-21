@@ -67,17 +67,28 @@ Am 20. November wurden die 46 gezielten System-/Periodik-/Dynamik-/Analysetests
 erneut erfolgreich ausgeführt. Das sind Schnittstellentests ohne echte OpenMM-
 oder MDAnalysis-Engineausführung.
 
-Nach Ergänzung des PoseBusters-Installers und der Importprüfung für explizite
-Interpreter ergibt die breitere Bio-/QM-Runtime-/CLI-/Tool-Vertragssuite 322 bestandene Tests
-und drei bereits vorher reproduzierte Fehler: fehlende Pflichtparameterprüfung
-für `orca_th_opi.output_file`, fehlende Vertragskategorie bei `orca_qmmm_opi`
-und ein abgeschnittener Producer-Hinweis im Plattformtest. Diese Fehler werden
-nicht als neue Periodik-Regressionen oder als bestandene Prüfungen ausgewiesen.
+Die zuvor bekannten Fehler bei `orca_th_opi.output_file`, der Kategorie von
+`orca_qmmm_opi` und abgeschnittenen Producer-Hinweisen sind im Review-Stand
+behoben. Die zugehörige Vertrags-/Plattform-/ORCA-Suite besteht mit 98 bestandenen
+und sieben übersprungenen Tests.
 
-Der zuletzt integrierte `main`-Stand ist
-`03a02d048f674a972d6c2e2551908eb5ece24b6c`. Der am 20. November abgefragte aktuelle
-Stand `4e936b999de8cb6b60dcfc1a2b85c8b74171f3d8` ist noch nicht integriert:
-direkter Git-Zugriff scheitert in der Entwicklungsumgebung an der DNS-Auflösung,
-und die verfügbare GitHub-Dateianbindung kann ein benötigtes Binärartefakt nicht
-übertragen. Vor externer Abnahme und vor einem Merge muss dieser Abgleich samt
-Konfliktprüfung und passenden Tests nachgeholt werden. PR #746 bleibt Draft.
+`main` ist bis `88cf9ed31a5b6042f4f8549eefa02bec59ce371e` integriert, ohne
+Merge-Konflikte. Der vollständige Snapshot einschließlich Binärdateien wurde
+über GitHub übertragen und anhand der Git-Objekthashes geprüft. Der frühere
+Übertragungsblocker ist damit aufgehoben. Die lokale Kopie hält diesen
+Main-Commit als flache Historiengrenze; der veröffentlichte Merge referenziert
+den echten Main-Commit als zweiten Elterncommit.
+
+Die aktuelle Review-Abnahme und ihre Umgebungsgrenzen stehen in [REVIEW.md](REVIEW.md).
+PR #746 bleibt bis zur erfolgreichen CI-/Review-/Cluster-Abnahme Draft.
+
+Der echte Vina-I/O-Smoke gehört jetzt ausdrücklich zur manuellen Cluster-Abnahme:
+
+```sh
+python -m examples.biomolecular_foundation.vina_smoke --output /shared/new-vina-smoke
+```
+
+Er verlangt ein bereits installiertes Vina und einen neuen Ausgabeordner. Er
+läuft nicht durch gewöhnliche pytest-Sammlung und wurde hier nicht gestartet.
+Die regulären Tests verwenden kontrollierte Engine-Grenzen; ein zufällig auf
+dem Testrechner vorhandenes Vina führt zu keiner echten Rechnung.

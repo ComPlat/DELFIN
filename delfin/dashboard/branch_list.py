@@ -36,6 +36,7 @@ branches of every contributor), and storing the pins in the repository
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -341,7 +342,27 @@ def _prefs_path() -> Path:
     return Path.home() / ".delfin" / "branch_list.json"
 
 
-def _load_all() -> dict:
+def _load_all(*, for_write: bool = False) -> dict:
+    """The store, or ``{}`` where it is absent or -- only for a display --
+    unreadable. A caller that writes the store back must ask for
+    ``for_write=True``: a damaged file is then moved aside (a copy the
+    person can look at) instead of being overwritten with an empty
+    answer.
+
+    The quarantine file lands beside the store, under the state root, so
+    the Settings tab's diagnosis lists it (``doctor._check_state_files``);
+    the warning below is the second record of the same event.
+    """
+    from delfin.agent import state_file
+    if for_write:
+        data, moved = state_file.read_json_for_write(_prefs_path(),
+                                                     default={})
+        if moved:
+            logging.getLogger(__name__).warning(
+                "%s could not be read and was moved to %s; the pinned and "
+                "hidden branch lists start empty, and what they held is in "
+                "the file kept aside", _prefs_path().name, moved.name)
+        return data if isinstance(data, dict) else {}
     try:
         data = json.loads(_prefs_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -362,7 +383,7 @@ def load_prefs(repo) -> dict:
 
 
 def _update(repo, *, add: tuple = (), remove: tuple = ()) -> dict:
-    data = _load_all()
+    data = _load_all(for_write=True)   # a damaged store is moved aside, not lost
     repos = data.setdefault("repos", {})
     row = repos.setdefault(repo_key(repo), {"pinned": [], "hidden": []})
     for kind, ref in remove:

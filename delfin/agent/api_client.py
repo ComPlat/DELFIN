@@ -4875,6 +4875,37 @@ def _is_run_hidden(resolved: Path) -> bool:
         return True
 
 
+def _denied_path_refusal(path: Any) -> str:
+    """The whole refusal for a deny-listed ``path``, named by its kind.
+
+    The deny list holds two different kinds of path, and one message for
+    both sends the caller looking for the wrong thing. A refusal that
+    reads "secret" over a file that plainly holds no secret is retried
+    in another spelling instead of accepted: measured 8 retries of
+    ``.git/info/exclude`` in one agent run, against a rule working
+    exactly as intended.
+
+    A real secret keeps the original wording, which is accurate for it
+    and which several suites assert. Only git's own state, where
+    "secret" was the wrong word, gets its own sentence.
+    """
+    text = str(path or "").replace("\\", "/")
+    if "/.git/" in f"/{text}" or text.endswith("/.git") or text == ".git":
+        return (
+            f"bash command references git's own state ({path!r}), which is "
+            "not a secret: it is blocked because writing it changes what git "
+            "does next. A hook runs on the next git command, and an ignore "
+            "rule (.git/info/exclude) hides files from `git status`, so work "
+            "can leave review unseen. Use a tracked .gitignore, or say what "
+            "you need and let the reviewer decide."
+        )
+    return (
+        f"bash command references a secret-deny path ({path!r}). "
+        "Reading or touching .ssh/.env/*.key/credentials via the "
+        "shell is blocked — the read deny-list applies to bash too."
+    )
+
+
 def _is_secret_path(perms: Any, path: Path) -> bool:
     """Whether ``path`` matches the secret deny list, tested the way
     ``_check_read_access`` tests it: relative to the readable root it lies
@@ -13182,10 +13213,54 @@ def _scoped_test_cmd_for_edits(edited_paths: list, scope) -> str:
     return "python -m pytest -x -q " + " ".join(shlex.quote(f) for f in files)
 
 
-def _run_test_command(command: str, workspace, timeout: float) -> tuple[str, bool]:
-    """Run a verification command. Returns (problem_summary, timed_out)."""
+def _auto_verify_confinement(perms) -> str:
+    """What holds auto-verify's command on this host: the kind, or "".
+
+    Auto-verify runs pytest in the workspace, and pytest executes the
+    workspace's own ``conftest.py`` before it collects anything. The
+    workspace therefore decides what code runs, and nobody is asked:
+    auto-verify is not a tool call, so no gate and no dialog sees it. A
+    ``conftest.py`` gets there two ways that need nothing exotic -- an
+    instruction smuggled into fetched text asks for one (a file write is
+    not asked about under ``acceptEdits``), or a cloned repository brings
+    one along, and ``/trust`` covers hooks, settings and MCP servers but
+    not pytest's configuration.
+
+    Input: the session's permissions. Output: ``_bash_isolation_decision``'s
+    kind where it confines filesystem writes ("bwrap", "landlock",
+    "seatbelt"), else "". Never raises: a decision that cannot be read
+    counts as unconfined, which is the cautious direction.
+    """
+    if perms is None:
+        return ""
     try:
-        r = subprocess.run(command, shell=True, cwd=str(workspace),
+        kind, _mode = _bash_isolation_decision(perms)
+    except Exception:
+        return ""
+    return kind if kind in ("bwrap", "landlock", "seatbelt") else ""
+
+
+def _run_test_command(command: str, workspace, timeout: float,
+                      perms=None) -> tuple[str, bool]:
+    """Run a verification command. Returns (problem_summary, timed_out).
+
+    The command runs in the cage the explicit ``run_tests`` tool uses
+    (``_test_run_argv`` -> ``_bash_isolation_argv``): the session's roots
+    are writable, ``/`` is read-only, ``/tmp`` is fresh and the credential
+    paths under ``$HOME`` are masked. It used to be a plain
+    ``subprocess.run(..., shell=True)``; measured against that, a
+    ``conftest.py`` in the workspace wrote a file outside the workspace
+    and the write landed.
+
+    Without a confinement the command is not run at all -- the caller
+    (``_run_auto_verify``) decides that once and says so in its status, so
+    an unverified turn reads as unverified instead of as clean.
+    """
+    if not _auto_verify_confinement(perms):
+        return "", False
+    try:
+        argv = _bash_isolation_argv(command, str(workspace), perms)
+        r = subprocess.run(argv, cwd=str(workspace),
                            capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return "", True
@@ -13247,7 +13322,8 @@ def _scoped_test_dir(edited_paths: list, workspace) -> Optional[Path]:
 
 
 def _run_auto_verify(edited_paths: list, mode: str, command: str,
-                     workspace, status: Optional[dict] = None) -> str:
+                     workspace, status: Optional[dict] = None,
+                     perms=None) -> str:
     """Verify code the agent just edited. Returns a short problem summary when
     something is wrong (→ force a fix round), or "" when clean. Never raises —
     verification failing closed would be worse than not verifying.
@@ -13262,17 +13338,35 @@ def _run_auto_verify(edited_paths: list, mode: str, command: str,
     that forces a fix round.
 
     ``status`` (optional dict) is filled with how verification actually ran:
-    ``skipped``/``reason``/``command``/``scoped``/``timed_out`` — so the
-    caller can SAY when a turn went unverified instead of returning ""
+    ``skipped``/``reason``/``command``/``scoped``/``timed_out``/``cage`` — so
+    the caller can SAY when a turn went unverified instead of returning ""
     (which reads as "verified clean") in silence.
+
+    ``perms`` carries the cage every run of workspace code goes into
+    (``_run_test_command``). Without one -- no permission bundle, or a host
+    where nothing confines filesystem writes -- the syntax check still
+    runs, because ``py_compile`` does not import the file and so runs no
+    workspace code, and the test run is skipped with its reason. That is
+    the one degradation here: a host that can cage nothing keeps verifying
+    what can be verified safely instead of either going silent or running
+    the workspace's ``conftest.py`` unconfined.
     """
     st = status if isinstance(status, dict) else {}
     try:
         if mode == "off":
             return ""
+        cage = _auto_verify_confinement(perms)
+        st["cage"] = cage or "none"
+        no_cage = ("no filesystem isolation available for the test run "
+                   "(the workspace's own conftest.py would run outside a "
+                   "cage); syntax check only")
+        if not cage and mode == "command":
+            st["skipped"] = True
+            st["reason"] = no_cage
+            return ""
         if mode == "command" and command:
             st["command"] = command
-            prob, timed_out = _run_test_command(command, workspace, 180)
+            prob, timed_out = _run_test_command(command, workspace, 180, perms)
             if timed_out:
                 st["skipped"] = True
                 st["timed_out"] = True
@@ -13291,6 +13385,12 @@ def _run_auto_verify(edited_paths: list, mode: str, command: str,
             if not edited_paths:
                 st["command"] = "file check (artifact_check)"
                 return ""
+            if not cage:
+                # The syntax check above is the whole verification here: it
+                # compiles, it does not import, so no workspace code ran.
+                st["skipped"] = True
+                st["reason"] = no_cage
+                return ""
             # smart: syntax clean → the tests that cover the edit; the whole
             # suite only when no test does (bounded + adaptive).
             ws_key = str(workspace)
@@ -13308,7 +13408,7 @@ def _run_auto_verify(edited_paths: list, mode: str, command: str,
                 st["command"] = cmd
                 st["scoped"] = True
                 prob, timed_out = _run_test_command(
-                    cmd, scope, _RELATED_TEST_TIMEOUT_S)
+                    cmd, scope, _RELATED_TEST_TIMEOUT_S, perms)
                 if timed_out:
                     st["skipped"] = True
                     st["timed_out"] = True
@@ -13330,7 +13430,7 @@ def _run_auto_verify(edited_paths: list, mode: str, command: str,
                 st["reason"] = "no test suite detected (syntax check only)"
                 return ""
             st["command"] = cmd
-            prob, timed_out = _run_test_command(cmd, scope, 60)
+            prob, timed_out = _run_test_command(cmd, scope, 60, perms)
             if timed_out:
                 # Full suite too slow: never re-run it per turn.
                 _SLOW_TEST_WS.add(ws_key)
@@ -21972,11 +22072,7 @@ class _DocToolExecutor:
             denied_path = self._bash_denied_path(cmd, perms)
             if denied_path is not None:
                 _record_security_event("secret_path", "bash", str(denied_path))
-                return (
-                    f"bash command references a secret-deny path ({denied_path!r}). "
-                    "Reading or touching .ssh/.env/*.key/credentials via the "
-                    "shell is blocked — the read deny-list applies to bash too."
-                )
+                return _denied_path_refusal(denied_path)
             _unknown_scripts: list = []
             payload_hit = self._scan_bash_script_payloads(
                 cmd, args, perms, unknown=_unknown_scripts)
@@ -31420,6 +31516,125 @@ def _is_stream_unsupported_error(exc: Exception) -> bool:
 _STREAM_RETRY_MAX = int(os.environ.get("DELFIN_STREAM_RETRY_MAX", "7") or 7)
 
 
+#: The furthest a server's own Retry-After may park a round. Longer than
+#: this and the header is not a hint any more: a turn that sleeps for half
+#: an hour on a header nobody checked is indistinguishable from a hang, and
+#: a shared service answering with an hour is more likely misconfigured
+#: than serious. Beyond the cap the ladder decides instead.
+_RETRY_AFTER_MAX_S = 300.0
+
+#: Below this a Retry-After is treated as "immediately, but not instantly":
+#: honouring a literal 0 would retry inside the same millisecond.
+_RETRY_AFTER_MIN_S = 1.0
+
+
+def _retry_after_stated_seconds(exc: Any, *, now: float | None = None
+                                ) -> Optional[float]:
+    """What the server asked for, in seconds, with no ceiling applied.
+
+    Input: the exception a failed request raised. Output: the wait the
+    SERVER asked for, floored at _RETRY_AFTER_MIN_S but NOT capped, or
+    None when there is no usable header.
+
+    The two callers want different things from the same number, and the
+    difference matters: :func:`_retry_after_seconds` wants a wait it is
+    willing to sleep, while :func:`_retry_after_outlasts_patience` wants
+    to know that the stated wait is longer than that. Parsing it once
+    keeps the two from disagreeing about what the header said.
+
+    Why read it at all: the backoff ladder is a guess made here, while
+    Retry-After is the one number the service actually knows. On a shared
+    research endpoint (Blablador, KIT) guessing long wastes the user's
+    turn and guessing short adds load to something already struggling.
+
+    Both forms RFC 9110 allows are accepted: delta-seconds, and an
+    HTTP-date, which is resolved against *now*. A date in the past yields
+    the floor rather than a negative wait.
+
+    Never raises and never trusts: an exception that carries no response,
+    no headers, or a header that is not a number or a date, answers None,
+    and the caller falls back to the ladder. A quota 429 is NOT handled
+    here -- that one carries its own reset (``_quota_429_reset``) and
+    parks the run until it, which is a different and longer decision.
+    """
+    try:
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers is None:
+            return None
+        raw = headers.get("retry-after") or headers.get("Retry-After")
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    seconds: Optional[float] = None
+    try:
+        seconds = float(text)
+    except ValueError:
+        try:
+            from email.utils import parsedate_to_datetime
+            when = parsedate_to_datetime(text)
+        except Exception:
+            return None
+        if when is None:
+            return None
+        try:
+            import datetime as _dt
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=_dt.timezone.utc)
+            seconds = when.timestamp() - (now if now is not None
+                                          else time.time())
+        except Exception:
+            return None
+    if seconds is None or seconds != seconds:          # NaN
+        return None
+    return max(_RETRY_AFTER_MIN_S, float(seconds))
+
+
+def _retry_after_seconds(exc: Any, *, now: float | None = None
+                         ) -> Optional[float]:
+    """A Retry-After this client is willing to sleep, or None.
+
+    None means "no usable number, let the ladder decide" -- including a
+    stated wait beyond _RETRY_AFTER_MAX_S, because a turn that sleeps for
+    half an hour is indistinguishable from a hang. A caller that retries
+    on None must first ask :func:`_retry_after_outlasts_patience`,
+    since retrying SOONER than the server asked is the one response that
+    makes a rate limit worse.
+    """
+    seconds = _retry_after_stated_seconds(exc, now=now)
+    if seconds is None or seconds > _RETRY_AFTER_MAX_S:
+        return None
+    return seconds
+
+
+def _retry_after_outlasts_patience(exc: Any, *, now: float | None = None
+                                   ) -> Optional[float]:
+    """The stated wait when it is longer than we will sleep, else None.
+
+    Such a wait must end the attempt rather than shorten it. Blablador's
+    documented behaviour is the case that makes this concrete: exceeding
+    a per-minute limit blocks that model for 60 s, and EVERY further
+    violation doubles the block, to a maximum of 3600 s. The ladder's
+    longest step is 240 s, so a 20-minute block would be retried into
+    four times, each retry a fresh violation -- turning a 20-minute block
+    into an hour. The ladder is built for a proxy hiccup, where retrying
+    is free; against a counter that punishes retries it is the wrong
+    instrument.
+
+    Returns the number so the caller can name it: a person told "the
+    service asked for 18 minutes" can decide, while an unexplained
+    failure after four silent retries tells them nothing.
+    """
+    seconds = _retry_after_stated_seconds(exc, now=now)
+    if seconds is not None and seconds > _RETRY_AFTER_MAX_S:
+        return seconds
+    return None
+
+
 def _transient_retry_delay(attempt: int) -> float:
     """Seconds to wait before transient-retry ``attempt`` (1-based).
 
@@ -31634,6 +31849,35 @@ _INFRA_EXHAUSTION_MARKERS: tuple[str, ...] = (
 )
 
 
+#: The two spellings of the reasoning channel seen on OpenAI-compatible
+#: endpoints. ``reasoning_content`` is what Ollama (qwen3, gpt-oss) and
+#: vLLM (r1) send. ``reasoning`` is what the Helmholtz Blablador gateway
+#: sends -- measured 2026-11-19 against alias-fast (GPT-OSS-120b): 24 of
+#: 28 stream chunks carried `reasoning` and exactly one carried
+#: `content`, so a reader that knows only the first spelling sees nothing
+#: at all in 24 of them and drops the model's thinking on the floor.
+#:
+#: Order matters only for a backend that sent both, which none does; the
+#: first non-empty one is taken.
+_REASONING_FIELDS: tuple[str, ...] = ("reasoning_content", "reasoning")
+
+
+def _reasoning_delta(delta) -> str:
+    """The thinking text in a stream delta, whichever field carries it.
+
+    Returns "" when the delta has none, so the caller can treat the
+    answer as a plain truthiness test. Never raises: a delta is whatever
+    the SDK handed back, including None.
+    """
+    if delta is None:
+        return ""
+    for name in _REASONING_FIELDS:
+        value = getattr(delta, name, None)
+        if value:
+            return str(value)
+    return ""
+
+
 def _is_transient_api_error(exc: Exception) -> bool:
     """Whether an API/streaming error is a transient hiccup worth retrying
     (timeout, dropped connection, rate-limit, 5xx) rather than a deterministic
@@ -31742,17 +31986,46 @@ def _kit_fallback_model(current: str, provider: str, base_url: str = "",
     (A->B->A until the switch budget ran out). Only ``kit.*`` models in
     ``_KIT_PREFERENCE`` are ever returned -- never the paid ``azure.*``,
     ``google.*``, ``alias.*`` or ``standard-*`` routes, and no embedding,
-    reranker, speech or image models."""
-    if str(provider or "").lower() != "kit":
-        return ""
+    reranker, speech or image models.
+
+    Beyond KIT: any provider with a ranked roster in
+    ``model_capabilities.MODEL_PREFERENCE_BY_PROVIDER`` is served the same
+    way. That map holds only providers which bill no USD, and the reason
+    is not symmetry -- switching the model of a PAID provider would spend
+    the person's money on a model they did not choose, which is a
+    decision and not a repair. So ``openai`` and ``claude`` still answer
+    "", as a test pins.
+
+    Added for Blablador on 2026-11-19: its models are served from a
+    shared research cluster whose nodes are drained and restarted, and
+    before this an unavailable model there ended the turn instead of
+    switching -- a gap that showed only on a provider other than the one
+    the function was written for.
+    """
+    prov = str(provider or "").lower()
     try:
         from . import model_capabilities as _mc
-        served = _mc.kit_models_served(base_url, api_key, fetch=True)
+        ranked_all = _mc.MODEL_PREFERENCE_BY_PROVIDER.get(prov)
+        if not ranked_all:
+            return ""
         skip = set(already_left or ()) | {current}
-        ranked = [m for m in _mc._KIT_PREFERENCE if m not in skip]
+        ranked = [m for m in ranked_all if m not in skip]
+        if not ranked:
+            return ""
+        # What the endpoint actually lists wins over the ranking: a model
+        # that is ranked but not served is the situation being recovered
+        # from. KIT keeps its own cached reader; every other
+        # OpenAI-compatible roster is read from /v1/models.
+        if prov == "kit":
+            served = _mc.kit_models_served(base_url, api_key, fetch=True)
+        else:
+            entries = _mc._fetch_openai_models(base_url, api_key)
+            served = {str(e.get("id") or "") for e in entries or ()} or None
         if served:
             return next((m for m in ranked if m in served), "")
-        return ranked[0] if ranked else ""
+        # The listing could not be read. The ranking is still better than
+        # ending the turn, and the model being left is excluded from it.
+        return ranked[0]
     except Exception:
         return ""
 
@@ -33785,13 +34058,35 @@ class OpenAIClient(_BaseClient):
                 try:
                     from .endpoint_gate import (for_client as _gslot_for,
                                                 SlotWaitTimeout
-                                                as _SlotWaitTimeout)
+                                                as _SlotWaitTimeout,
+                                                SlotWaitCancelled
+                                                as _SlotWaitCancelled)
                     _gslot.gate = _gslot_for(self._base_url, self.model)
                 except Exception:
                     _gslot.gate = None
                     _SlotWaitTimeout = None
+                    _SlotWaitCancelled = None
                 if _gslot.gate is not None:
-                    _gslot.gate.acquire()
+                    # Stop ends the wait for a slot too: a request still
+                    # queued for the endpoint is not one the person waits
+                    # out after pressing Stop (2026-11-16).
+                    try:
+                        _gslot.gate.acquire(should_stop=lambda: bool(
+                            self._stop_was_requested()
+                            or getattr(self, "_stop_requested", False)))
+                    except Exception as _gate_exc:
+                        if _SlotWaitCancelled is None or not isinstance(
+                                _gate_exc, _SlotWaitCancelled):
+                            raise
+                        yield StreamEvent(
+                            type="message_delta",
+                            input_tokens=_total_in,
+                            output_tokens=_total_out,
+                            cost_usd=self._estimate_cost(
+                                _total_in, _total_out),
+                            cached_tokens=_total_cached,
+                            stop_reason="stopped")
+                        return
                 if _gslot.gate is not None and _gslot.gate.wait_notice:
                     yield StreamEvent(type="notice", text=(
                         f"⚠️ {_gslot.gate.wait_notice}\n"))
@@ -33850,16 +34145,17 @@ class OpenAIClient(_BaseClient):
                         delta = choice.delta
                         # The first token of any kind ends the prefill.
                         if _round_ttft is None and delta is not None and (
-                                getattr(delta, "reasoning_content", None)
+                                _reasoning_delta(delta)
                                 or delta.content or delta.tool_calls):
                             _round_ttft = time.monotonic()
 
                         # Reasoning channel: some backends (Ollama for qwen3/
                         # gpt-oss, vLLM for r1) stream the model's thinking in a
-                        # separate ``reasoning_content`` field, NOT in content.
-                        # Surface it as thinking (visible-but-separate) instead
-                        # of losing it; it never pollutes the answer text.
-                        _rc = getattr(delta, "reasoning_content", None) if delta else None
+                        # separate field, NOT in content. Surface it as thinking
+                        # (visible-but-separate) instead of losing it; it never
+                        # pollutes the answer text. The field has two spellings
+                        # in the wild -- see _reasoning_delta.
+                        _rc = _reasoning_delta(delta)
                         if _rc:
                             # Forwarded and not remembered. It used to be
                             # remembered, to keep the empty-round retry
@@ -34016,15 +34312,37 @@ class OpenAIClient(_BaseClient):
                     # is discarded so nothing duplicates into the context.
                     # Killing the generator here instead would discard EVERY
                     # completed round's progress mid-turn.
+                    # A wait the server stated and we will not sit out ends
+                    # the attempt instead of shortening it. Retrying sooner
+                    # than asked is a fresh violation, and on an endpoint
+                    # whose block doubles per violation that converts a
+                    # wait into a longer one. See
+                    # _retry_after_outlasts_patience.
+                    _stated_wait = _retry_after_outlasts_patience(_stream_exc)
+                    if _stated_wait is not None:
+                        yield StreamEvent(type="notice", text=(
+                            f"The service asked to be left alone for "
+                            f"{_stated_wait / 60:.0f} min "
+                            f"({_stated_wait:.0f} s) and this round is not "
+                            f"retried: asking again sooner counts as another "
+                            f"violation and lengthens the block. Pick another "
+                            f"model, or come back after that."))
                     if (_is_transient_api_error(_stream_exc)
-                            and _stream_attempt < _STREAM_RETRY_MAX):
+                            and _stream_attempt < _STREAM_RETRY_MAX
+                            and _stated_wait is None):
                         _had_partial = bool(_text_chunks or _tool_calls)
                         _text_chunks = []
                         _tool_calls = {}
                         _round_in = 0
                         finish_reason = None
                         _stream_attempt += 1
-                        _delay = _transient_retry_delay(_stream_attempt)
+                        # The server's own Retry-After outranks the ladder:
+                        # the ladder is a guess made here, the header is the
+                        # one number the service knows. Absent, unusable or
+                        # absurdly long, the ladder decides as before.
+                        _delay = _retry_after_seconds(_stream_exc)
+                        if _delay is None:
+                            _delay = _transient_retry_delay(_stream_attempt)
                         yield StreamEvent(type="notice", text=_retry_notice(
                             type(_stream_exc).__name__,
                             time.monotonic() - _round_t0, _had_partial,
@@ -35506,7 +35824,7 @@ class OpenAIClient(_BaseClient):
                 _problems = _run_auto_verify(
                     list(_edited_py), _av_mode, _av_cmd,
                     getattr(self._permissions, "workspace", "."),
-                    status=_av_status)
+                    status=_av_status, perms=self._permissions)
                 _last_verify_problem = _problems
                 # Evidence ledger: auto-verify runs AND skips are recorded —
                 # a skipped verification must never read as a green one.
@@ -36524,6 +36842,24 @@ def create_client(
             key_env_var="KIT_TOOLBOX_API_KEY",
             permissions=kit_perms,
             provider="kit",
+            effort=effort,
+        )
+    if provider == "blablador":
+        # Helmholtz Blablador (Forschungszentrum Jülich). OpenAI-compatible,
+        # so it is the same client and the same sandbox as the other chat
+        # APIs -- a second implementation would be a second place for the
+        # tool gate to be forgotten. Only the endpoint and the key differ.
+        from .credentials import load_credential as _load_cred_bla
+        from .model_capabilities import _BLABLADOR_BASE_URL as _bla_base_url
+        bla_key = api_key or _load_cred_bla("BLABLADOR_API_KEY")
+        return OpenAIClient(
+            api_key=bla_key, model=model,
+            base_url=_bla_base_url,
+            key_env_var="BLABLADOR_API_KEY",
+            permissions=_kit_sandbox(
+                cwd, permission_mode, kit_confirm_callback, extra_dirs,
+                read_only_dirs, confirm_write_dirs),
+            provider="blablador",
             effort=effort,
         )
     if provider == "openai":

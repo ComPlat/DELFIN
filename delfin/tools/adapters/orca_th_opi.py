@@ -269,6 +269,10 @@ class OrcaThOpiAdapter(StepAdapter):
     ]
     requires_python = ("opi",)
 
+    def validate_params(self, **kwargs: Any) -> None:
+        if not kwargs.get("output_file"):
+            raise ValueError("output_file is required (the frequency .out to read)")
+
     # ------------------------------------------------------------------ #
     # execution
     # ------------------------------------------------------------------ #

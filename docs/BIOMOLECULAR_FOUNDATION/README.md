@@ -10,6 +10,8 @@ der Ort für diese Arbeits- und Abnahmespezifikation.
 
 ## Dokumente und maßgebliche Implementierung
 
+- [Review-Stand](REVIEW.md): abgegrenzter PR-Umfang, behobene Blocker und noch
+  erforderliche Abnahme vor einem Merge.
 - [Installation und Laufzeit](INSTALLATION.md): vorhandene Rezepte, Cluster-Erkennung,
   Provisionierung, Reparatur und Grenzen.
 - [Werkzeuge und Visualisierung](TOOLS_AND_VISUALIZATION.md): ausführbare Teilbereiche,

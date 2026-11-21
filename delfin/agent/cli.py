@@ -2468,6 +2468,18 @@ def _start_interactive_session(args: argparse.Namespace, report,
     from .run_limits import apply_unattended
     start_notes += tuple(apply_unattended(
         engine, unattended=bool(getattr(args, "unattended", False))))
+    # The endpoint gate's slot reservation (endpoint_gate) needs to know
+    # whether this process serves a person: an attended session -- every
+    # path through here that is not --unattended -- is interactive, so
+    # its requests reserve the gate's lowest slot and never queue behind
+    # headless runs (a swarm member, a scheduled run). Keyed on the same
+    # argument as apply_unattended, not on can_ask, for the same reason.
+    # The marker is a process flag the engine sets (endpoint_gate.
+    # set_process_interactive); it is NOT an env var, so it is not
+    # inherited by the session's children (delegates, background jobs).
+    if not bool(getattr(args, "unattended", False)):
+        from delfin.agent.endpoint_gate import set_process_interactive
+        set_process_interactive(True)
     return InteractiveStart(engine, why, isolation_note, start_notes)
 
 
@@ -4940,7 +4952,7 @@ def _add_boundary_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--supervised", action="store_true",
                    help="As chat --supervised")
     p.add_argument("--provider", default="",
-                   help="kit, openai or ollama (default: the configured "
+                   help="kit, blablador, openai or ollama (default: the configured "
                         "provider)")
 
 
@@ -5285,7 +5297,7 @@ def _add_agent_flags(p: argparse.ArgumentParser, *,
     p.add_argument("--backend", default="", choices=["", "api", "cli"],
                    help="api (direct Anthropic) or cli (subprocess)")
     p.add_argument("--provider", default="",
-                   help="claude / openai / kit / ollama (not given: the "
+                   help="claude / openai / kit / blablador / ollama (not given: the "
                         "configured one for chat, else the one the model "
                         "id names)")
     p.add_argument("--model", default="",
@@ -5560,7 +5572,7 @@ def build_parser() -> argparse.ArgumentParser:
                            help="Model name (e.g. kit.deepseek-v4-flash, opus)")
     bench_run.add_argument("--backend", default="", choices=["", "api", "cli"])
     bench_run.add_argument("--provider", default="",
-                           help="claude / openai / kit")
+                           help="claude / openai / kit / blablador")
     # Repeatable AND comma-separated. It used to be a plain single-value
     # option, so `--task a --task b` silently kept only the last one:
     # asking for six tasks ran one, and the run announced "on 1 tasks"

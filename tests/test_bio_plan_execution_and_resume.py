@@ -110,3 +110,28 @@ def test_only_execution_can_provision_and_bad_settings_never_do(plan, tmp_path, 
     plan['nodes'][1]['settings'] = {'unknown_flag': True}
     assert execute_plan(plan, tmp_path / 'invalid')['status'] == 'blocked'
     assert calls == []
+
+
+def test_posebusters_dag_provisions_only_in_execution_phase(monkeypatch):
+    import delfin.tools.adapters.bio_posebusters as module
+    fixture = Path(__file__).resolve().parents[1] / 'examples' / 'biomolecular_foundation'
+    plan = {'schema_version': 1,
+            'inputs': {name: {'type': kind, 'path': str(fixture / file)} for name, kind, file in (
+                ('poses', 'pose_set', 'poses.sdf'), ('reference', 'ligand', 'reference.sdf'),
+                ('receptor', 'prepared_receptor', 'receptor.pdb'))},
+            'nodes': [{'id': 'check', 'backend': 'posebusters',
+                       'inputs': {key: 'inputs.' + key for key in ('poses', 'reference', 'receptor')},
+                       'settings': {'expected_version': '0.5.1'}}]}
+    attempts = []
+    def probe(*args, **kwargs):
+        attempts.append(kwargs.get('allow_install', False))
+        if not attempts[-1]:
+            raise ImportError('PoseBusters not installed')
+        return {'version': '0.5.1', 'python': '/managed/bin/python'}
+    monkeypatch.setattr(module, 'probe_distribution', probe)
+    assert not preflight_plan(plan)['execution_ready']
+    assert preflight_plan(plan, provision=True)['execution_ready']
+    assert attempts == [False, True]
+    plan['nodes'][0]['settings']['unsupported_option'] = True
+    assert not preflight_plan(plan, provision=True)['execution_ready']
+    assert attempts == [False, True]

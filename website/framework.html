@@ -9,6 +9,12 @@
   <meta property="og:title" content="Inside the agent framework — DELFIN">
   <meta property="og:description" content="Architecture, memory, self-validation and evidence-driven improvement. A source-linked guide to the DELFIN agent.">
   <meta property="og:type" content="website">
+  <meta property="og:url" content="https://complat.github.io/DELFIN/framework.html">
+  <meta property="og:image" content="https://complat.github.io/DELFIN/assets/og-framework.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Inside the agent framework — engineering notes on the DELFIN agent.">
+  <meta name="twitter:card" content="summary_large_image">
   <link rel="icon" href="assets/delfin.png" type="image/png">
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="framework.css">
@@ -184,7 +190,7 @@
             <li><h3>Hand over the evidence for a human decision</h3><p>The experiment lifecycle proceeds from verdict to human review, recorded approval and landing. The paired comparator’s strongest result is “needs human check”, not permission to land. Broader code changes still follow their own repository review and verification process.</p></li>
           </ol>
           </div></details>
-          <div class="framework-example"><p class="eyebrow">ILLUSTRATIVE CANDIDATE / NOT A MEASURED RESULT</p><h3>A clearer instruction for reading an ORCA output</h3><p><b>Hypothesis:</b> a guidance change makes an agent inspect convergence before reporting an energy. Compare baseline and candidate on the same task instances and model, verify that the new guidance is reached, and inspect both scientific warnings and unrelated task families. If the candidate only changes wording, or a regression appears elsewhere, that matters to the verdict.</p><p>This page describes mechanisms and an example hypothesis. It does not claim a benchmark gain from this website change.</p></div>
+          <div class="framework-example"><p class="eyebrow">AN EXAMPLE, NOT A RESULT</p><h3>How a proposed improvement is judged</h3><p>Someone proposes a better instruction: before reporting a calculated energy, the agent should check that the calculation actually converged. Plausible — but plausible is not measured. Four questions decide it, and they are the same four for any proposed change.</p><p><b>Did the behaviour change, or only the wording?</b> An instruction that reads better and leaves the agent doing exactly what it did before is not an improvement.</p><p><b>Did the agent ever see it?</b> Text that never reaches the model in the prompt that was actually built cannot have caused anything.</p><p><b>Is it better at the same work?</b> The old and the new version run the same tasks with the same model. Change the tasks as well and the comparison measures the tasks.</p><p><b>What did it cost elsewhere?</b> A change that fixes one thing and breaks another is a trade, and the trade has to be named.</p></div>
           <details class="framework-detail"><summary>Long sessions need their own evaluation</summary><div><p>The long-horizon benchmark defines tasks with planted facts, early decisions, refusals, restarts and goal-focus requirements. Metrics examine late recall, constraints still honoured, repeated work, drift, compactions, cost and time. Replay mode exercises the record and metric pipeline deterministically; operator-run live sessions evaluate actual model behaviour.</p><p>A replay passing is not a measured live-model gain. Reports need the task, model, method and source revision to make comparisons interpretable.</p></div></details>
           <p class="framework-source">Measurement contracts: <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/docs/agent_experiments.md">experiment discipline</a>, <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/delfin/agent/paired_compare.py">paired comparisons</a>, <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/docs/benchmark_nightly.md">nightly holdout and budgets</a> and <a href="https://github.com/ComPlat/DELFIN/blob/de880cbb9eda4085ff5d6665c6818cbba4c7d75b/docs/LONG_HORIZON_BENCH.md">long-horizon evaluation</a>.</p>
         </section>

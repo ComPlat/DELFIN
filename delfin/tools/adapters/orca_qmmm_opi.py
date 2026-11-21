@@ -440,6 +440,8 @@ class OrcaQmmmOpiAdapter(StepAdapter):
     """OPI-backed additive QM/MM single-point step (``orca_qmmm_opi``)."""
 
     name = "orca_qmmm_opi"
+    category = "dft"
+    description = "ORCA QM/MM single point with an explicit QM region and force-field file"
 
     def __init__(self) -> None:
         pass

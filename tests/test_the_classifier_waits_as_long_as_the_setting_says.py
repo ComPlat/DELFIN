@@ -60,6 +60,34 @@ class Dialog:
         return True
 
 
+@pytest.fixture(autouse=True)
+def _no_foreign_latencies(monkeypatch):
+    """An empty endpoint-latency window for every test in this file.
+
+    Without a ``timeout_s`` setting the wait comes from
+    ``_adaptive_classifier_wait``, which reads ``_ENDPOINT_TTFT_S`` -- a
+    deque at module level, filled by every request this PROCESS makes.
+    Under three samples it answers ``_CLASSIFIER_TIMEOUT_S``, which these
+    tests patch to 0.2 s; from three it computes 1.5 x the 75th
+    percentile and clamps that to _CLASSIFIER_TIMEOUT_BOUNDS_S, whose
+    floor is 5 s.
+
+    So a test here that expects a 0.4 s verdict to be too late passes on
+    its own and fails once any earlier test in the same process has
+    recorded three latencies: the wait becomes at least 5 s, the verdict
+    arrives inside it, and the dialog this file asserts never appears.
+    Measured 2026-11-19: empty -> 0.2 s, three samples of 12/15/20 s ->
+    30.0 s. Seen on CI as `assert 0 == 1` in shard 4 of 4 on a branch
+    that does not touch the classifier.
+
+    A fresh deque per test, so what this file measures is its own.
+    """
+    import collections
+    import delfin.agent.api_client as _ac
+    monkeypatch.setattr(_ac, "_ENDPOINT_TTFT_S",
+                        collections.deque(maxlen=20), raising=False)
+
+
 @pytest.fixture
 def settings(tmp_path, monkeypatch):
     """A settings file of its own; write(value) sets timeout_s."""
@@ -111,13 +139,15 @@ def _second_opinion(tmp_path, monkeypatch, runner, dialog):
 
 def test_a_slow_verdict_within_the_setting_asks_nobody(
         tmp_path, monkeypatch, settings):
-    # Scaled down: default 0.2 s, setting 0.2 s * 5 (the lower bound is
-    # lifted for the test so it stays fast), runner 0.4 s.
+    # Scaled down: default 0.2 s, setting 5 s (the lower bound is lifted for
+    # the test), runner 1.5 s -- a verdict well past the default and well
+    # inside the setting. The margins used to be 2x on both sides, and a
+    # loaded CI runner crossed one of them.
     monkeypatch.setattr(A, "_CLASSIFIER_TIMEOUT_S", 0.2)
     monkeypatch.setattr(A, "_CLASSIFIER_TIMEOUT_BOUNDS_S", (0.1, 120.0))
-    settings(1.0)
+    settings(5.0)
     dialog = Dialog()
-    runner = Runner(ALLOW, delay=0.4)
+    runner = Runner(ALLOW, delay=1.5)
     out = _second_opinion(tmp_path, monkeypatch, runner, dialog)
     assert out is None
     assert dialog.shown == []
@@ -129,7 +159,10 @@ def test_the_same_verdict_without_the_setting_times_out_and_asks(
     monkeypatch.setattr(A, "_CLASSIFIER_TIMEOUT_S", 0.2)
     settings(None)
     dialog = Dialog()
-    runner = Runner(ALLOW, delay=0.4)
+    # 15x the timeout, so the test measures the timeout and not the
+    # scheduler: with 0.4 s a loaded runner accepted the verdict instead.
+    # The call returns at the timeout, so the larger delay costs nothing.
+    runner = Runner(ALLOW, delay=3.0)
     _second_opinion(tmp_path, monkeypatch, runner, dialog)
     assert len(dialog.shown) == 1
     assert "watcher" in dialog.shown[0][1].lower()

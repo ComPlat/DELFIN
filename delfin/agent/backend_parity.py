@@ -288,6 +288,7 @@ _BACKEND_ALIASES: dict[str, str] = {
     # provider yields the CLI client.
     "kit": BACKEND_OPENAI,
     "ollama": BACKEND_OPENAI,
+    "blablador": BACKEND_OPENAI,
     "claude": BACKEND_CLI,
 }
 
@@ -304,7 +305,7 @@ def canonical_backend(backend: str = "", provider: str = "") -> str:
     """
     b = str(backend or "").strip().lower()
     p = str(provider or "").strip().lower()
-    if p in ("kit", "ollama"):
+    if p in ("kit", "ollama", "blablador"):
         return BACKEND_OPENAI
     if p == "openai":
         return BACKEND_CODEX_CLI if b == "cli" else BACKEND_OPENAI

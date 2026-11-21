@@ -965,6 +965,12 @@ class FieldSpec:
     #: CONTROL.txt prints this and then runs on the default, so a question can
     #: be asked without leaving the file and without stopping the run.
     help: str = ""
+    #: What values the key accepts, in one line.  Enum keys say the exact
+    #: tokens their coercer validates ("one of: ..."); free-text keys say what
+    #: shape is expected.  Shown in the Help tab's "Allowed values" column and
+    #: in ``KEY=?`` output.  Empty means "no simpler statement than the help
+    #: text" -- do not leave it empty for a key that has a fixed value set.
+    allowed: str = ""
 
 
 def _as_int(value: Any) -> int:
@@ -1012,6 +1018,15 @@ def _as_float(value: Any) -> float:
     if value is None or value == "":
         raise ValueError("must be a float")
     return float(value)
+
+
+def _as_float_or_empty(value: Any) -> str:
+    """A float, or '' when empty (kept as '' so 'unset' survives the round
+    trip and code can apply its own per-job-type default)."""
+    if value is None or str(value).strip() == "":
+        return ""
+    float(value)
+    return str(value).strip()
 
 
 def _as_non_negative_float(value: Any) -> float:
@@ -2215,9 +2230,11 @@ def _as_manta_keep(value: Any) -> str:
     return str(number)
 
 
-def _as_optional_positive_int(value: Any) -> str:
-    """A positive integer, or empty meaning "let the builder decide"."""
-    text = str(value or "").strip()
+def _as_optional_positive_int(value: Any) -> Any:
+    """A positive int (returned as int), or '' meaning "let the builder
+    decide".  Callers do arithmetic on these (PAL * maxcore), so the value
+    must survive as a number, not a str."""
+    text = str(value if value is not None else "").strip()
     if not text:
         return ""
     try:
@@ -2226,7 +2243,7 @@ def _as_optional_positive_int(value: Any) -> str:
         raise ValueError("must be a positive integer or empty") from None
     if number < 1:
         raise ValueError("must be a positive integer or empty")
-    return str(number)
+    return number
 
 
 def _as_smiles_converter(value: Any) -> str:
@@ -2249,27 +2266,48 @@ def _is_placeholder_literal(value: Any, literal: str) -> bool:
 
 
 CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
-    FieldSpec("NAME", _as_str, default=""),
-    FieldSpec("SMILES", _as_str, default=""),
-    FieldSpec("charge", _as_charge, required=True),
-    FieldSpec("multiplicity_global_opt", _as_int, allow_none=True),
-    FieldSpec("PAL", _as_int, default=6),
-    FieldSpec("smiles_converter", _as_smiles_converter, default=""),
+    FieldSpec("NAME", _as_str, default="",
+             help="Project name, used in file names and reports. Optional."),
+    FieldSpec("SMILES", _as_str, default="",
+             help="Optional SMILES string, an alternative to input.txt. DELFIN builds 3D coordinates from it with the converter named in smiles_converter."),
+    FieldSpec("charge", _as_charge, required=True,
+             help="System charge, required: an integer like -2, 0, or +3. In OCCUPIER workflows it is the redox state the walk starts from."),
+    FieldSpec("multiplicity_global_opt", _as_int, allow_none=True,
+             help="Override the multiplicity used for the pre-optimisation / global-optimisation stage."),
+    FieldSpec("PAL", _as_int, default=6,
+             help="Total CPU cores for ORCA across the whole run. One pool hands them out: a job that can use more gets more when nothing else is waiting. pal_jobs caps how many jobs run at once."),
+    FieldSpec("maxcore", _as_optional_positive_int, default=4500,
+             help="Memory per core in MB that each ORCA process gets.  Total memory is roughly PAL x maxcore, and the SLURM --mem line is derived from it.  Defaults follow the job type when empty: the manual table says 4500; Fukui-style CLI runs fall back to 3000, ESD input generation to 6000.  Keep below the node's per-core share so PAL x maxcore fits in the allocation.",
+             allowed="positive integer, MB per core (e.g. 1000-6000; must satisfy PAL x maxcore <= node memory)"),
+    FieldSpec("smiles_converter", _as_smiles_converter, default="",
+             help="How a SMILES input becomes 3D coordinates: QUICK (one embedding, fast), NORMAL (multi-seed embedding with force-field refinement), MANTA (isomer-conformer ensemble of a metal complex), or the external builders ARCHITECTOR, MOLSIMPLIFY, MACE. Required for a SMILES run.",
+             allowed="one of: QUICK, NORMAL, MANTA, ARCHITECTOR, MOLSIMPLIFY, MACE (empty = no SMILES input)"),
     # Legacy GUPPY keys.  Kept so an archived CONTROL file still validates --
     # 62 of the 126 archived GUPPY runs were configured through GUPPY=yes -- and
     # each is read as a fallback by its MANTA successor below.
-    FieldSpec("GUPPY", _as_yes_no, default="no"),
-    FieldSpec("GUPPY_RUNS", _as_positive_int, default=20),
-    FieldSpec("GUPPY_GOAT", _as_guppy_goat_topk, default=0),
-    FieldSpec("GUPPY_PARALLEL_JOBS", _as_positive_int, default=4),
-    FieldSpec("GUPPY_SEED", _as_int, default=31),
-    FieldSpec("GUPPY_START_STRATEGY", _as_guppy_start_strategy, default="isomers"),
-    FieldSpec("GUPPY_MAX_ISOMERS", _as_positive_int, default=100),
-    FieldSpec("GUPPY_RMSD_CUTOFF", _as_non_negative_float, default=0.3),
-    FieldSpec("GUPPY_ENERGY_WINDOW_KCAL", _as_non_negative_float, default=25.0),
+    FieldSpec("GUPPY", _as_yes_no, default="no",
+             help="Legacy spelling: GUPPY=yes means smiles_converter=MANTA. Every MANTA_* key falls back to its GUPPY_* predecessor when the successor is unset.",
+             allowed="yes or no"),
+    FieldSpec("GUPPY_RUNS", _as_positive_int, default=20,
+             help="Legacy GUPPY key, read as a fallback by MANTA_SEEDS."),
+    FieldSpec("GUPPY_GOAT", _as_guppy_goat_topk, default=0,
+             help="Legacy GUPPY key, read as a fallback by MANTA_REFINE_TOPK (the refinement top-k, not a number of runs)."),
+    FieldSpec("GUPPY_PARALLEL_JOBS", _as_positive_int, default=4,
+             help="Legacy GUPPY key, read as a fallback by MANTA_PARALLEL_JOBS."),
+    FieldSpec("GUPPY_SEED", _as_int, default=31,
+             help="Legacy GUPPY key, read as a fallback by MANTA_SEEDS."),
+    FieldSpec("GUPPY_START_STRATEGY", _as_guppy_start_strategy, default="isomers",
+             help="Legacy GUPPY key, read as a fallback by MANTA_START_STRATEGY."),
+    FieldSpec("GUPPY_MAX_ISOMERS", _as_positive_int, default=100,
+             help="Legacy GUPPY key, read as a fallback by MANTA_MAX_ISOMERS."),
+    FieldSpec("GUPPY_RMSD_CUTOFF", _as_non_negative_float, default=0.3,
+             help="Legacy GUPPY key, read as a fallback by MANTA_RMSD_CUTOFF."),
+    FieldSpec("GUPPY_ENERGY_WINDOW_KCAL", _as_non_negative_float, default=25.0,
+             help="Legacy GUPPY key, read as a fallback by MANTA_ENERGY_WINDOW."),
     # MANTA: the builder.
     FieldSpec("MANTA_QUALITY", _as_manta_quality, default="extreme",
-             help="How hard the builder searches: fast (12 seeds), normal (20), max (40), extreme (60). Seeds are independent placement attempts per coordination geometry; more of them find isomers the smaller counts miss, at close to linear cost. extreme is what the delfin-manta command line uses by default."),
+             help="How hard the builder searches: fast (12 seeds), normal (20), max (40), extreme (60). Seeds are independent placement attempts per coordination geometry; more of them find isomers the smaller counts miss, at close to linear cost. extreme is what the delfin-manta command line uses by default.",
+             allowed="one of: fast, normal, max, extreme (seed counts 12/20/40/60; default extreme)"),
     FieldSpec("MANTA_SEEDS", _as_optional_positive_int, default="",
              help="Override the seed count from MANTA_QUALITY with an explicit number. Empty means the profile decides."),
     FieldSpec("MANTA_NUM_CONFS", _as_optional_positive_int, default="",
@@ -2279,7 +2317,8 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("MANTA_MAX_ISOMERS", _as_int, default=0,
              help="Cap on the isomers built. This shrinks the search, not just the answer: the pre-UFF candidate budget is MANTA_MAX_ISOMERS x cap_mult, so a small number means fewer candidates were ever considered. 0 means no cap: every isomer the builder realises is kept."),
     FieldSpec("MANTA_BINDING_MODES", _as_yes_no, default="yes",
-             help="Enumerate the ways a ligand can bind (which donor atoms face the metal), not only where the ligands sit."),
+             help="Enumerate the ways a ligand can bind (which donor atoms face the metal), not only where the ligands sit.",
+             allowed="yes or no"),
     FieldSpec("MANTA_HAPTO", _as_manta_hapto, default="auto",
              help="Hapticity handling for pi-bound ligands: auto, on, or off."),
     FieldSpec("MANTA_UFF", _as_yes_no, default="yes",
@@ -2348,88 +2387,208 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
              help="How many frames are worked on at once. auto follows PAL at about 4 cores per frame -- 8 jobs on PAL=32, 112 on PAL=450 -- which is where an xtb optimisation of a 40-100 atom complex stops scaling. Bounded at run time by the number of frames that exist. Total memory is PAL x maxcore however the split falls, so a wider split does not ask for more RAM. The pre-screen ignores this and uses the whole node, because its single points are one core each."),
     FieldSpec("MANTA_TIME_BUDGET", _as_non_negative_float, default=1800.0,
              help="Wall-clock budget in seconds for building one complex. It is enforced: the construction runs in an isolated subprocess and that subprocess is killed, together with the UFF workers it spawned. A cut build returns nothing at all, not a smaller answer, so this is a real decision -- measured over 2000 systems, 1800 s cut 9.6 percent of 51-80 atom complexes and 39.6 percent of those above 80 atoms, which is the band holding porphyrins, terpyridines and cyclams. 3600 costs 2.5 and 15.6 percent; nothing in that sample exceeded 7200. Set 0 for no limit, which is right for a full ensemble on a heavy macrocycle: that is a long deterministic construction, not a hang."),
-    FieldSpec("number_explicit_solv_molecules", _as_int, default=0),
-    FieldSpec("method", _as_method, required=True),
-    FieldSpec("frequency_calculation", _as_yes_no, default="no"),
-    FieldSpec("frequency_calculation_OCCUPIER", _as_yes_no, default="no"),
-    FieldSpec("OCCUPIER_compare", _as_occupier_compare, default="FSPE"),
-    FieldSpec("xTB_method", _as_xtb_method, default="XTB2"),
+    FieldSpec("number_explicit_solv_molecules", _as_int, default=0,
+             help="Number of explicit solvent molecules the xTB solvator (XTB_SOLVATOR=yes) adds."),
+    FieldSpec("method", _as_method, required=True,
+             help="The redox workflow method: classic (plain SPE/OPT/FREQ chain), manually (chain defined by your oxidation_steps/reduction_steps), or OCCUPIER (automatic occupancy search across redox states)."),
+    FieldSpec("frequency_calculation", _as_yes_no, default="no",
+             help="Run a frequency calculation after every optimisation (thermochemistry, Gibbs energies, and the check for imaginary modes)."),
+    FieldSpec("frequency_calculation_OCCUPIER", _as_yes_no, default="no",
+             help="Legacy spelling of the OCCUPIER comparison energy: yes maps to OCCUPIER_compare=G, no to FSPE. Prefer the new key."),
+    FieldSpec("OCCUPIER_compare", _as_occupier_compare, default="FSPE",
+             help="Which energy OCCUPIER ranks its candidate configurations by: FSPE (electronic energy) or G (Gibbs free energy, which asks for a frequency run per candidate and is added automatically). Configurations within a few kJ/mol can order differently between the two."),
+    FieldSpec("xTB_method", _as_xtb_method, default="XTB2",
+             help="The xTB Hamiltonian used for pre-optimisation and other xTB work: XTB0, XTB1, XTB2 (GFN2, the usual), or XTBFF."),
     # The global-optimiser trio. XTB_OPT (written XTB_preOPT in the CONTROL
     # file) and the two program switches used to pass through untouched, so a
     # value of True or 1 read as "off" at every call site that compares to the
     # string "yes"; _as_yes_no normalises those instead of rejecting them.
-    FieldSpec("global_optimizer", _as_global_optimizer, default=""),
-    FieldSpec("XTB_OPT", _as_yes_no, default="no"),
-    FieldSpec("XTB_GOAT", _as_yes_no, default="no"),
-    FieldSpec("CREST", _as_yes_no, default="no"),
-    # GOAT method choice (opt-in; absent = GOAT with the xTB_method, the
-    # input unchanged). Not in the shipped template, like mlp_preopt.
-    FieldSpec("global_opt_method", _as_global_opt_method, default="",
-              help="Method GOAT optimises with: empty = the xTB_method "
-                   "(default), or mlip:uma | mlip:mace | mlip:orb | "
-                   "mlip:aimnet2 -- an orca-mlips machine-learned potential "
-                   "through ORCA's ExtOpt, run inside the workflow's job (the "
-                   "node needs the GPU for device=cuda). A screen: the "
-                   "ensemble's MLIP energies are not final numbers. CREST "
-                   "stays xTB-only. Weights: UMA gated (own HF login), MACE "
-                   "non-commercial (Academic Software License)."),
-    FieldSpec("global_opt_mlip_model", _as_global_opt_mlip_model, default="",
-              help="Model name passed to the orca-mlips plugin as --model; "
-                   "empty = the plugin's default."),
-    FieldSpec("global_opt_mlip_device", _as_global_opt_mlip_device, default="cuda",
-              help="cuda (default) or cpu. cuda without a visible GPU stops "
-                   "the GOAT step; there is no silent CPU fallback."),
-    FieldSpec("global_opt_mlip_provider", _as_global_opt_mlip_provider, default="auto",
-              help="auto (default): orca-external-tools when installed with the "
-                   "backend (one model server for the job), else orca-mlips; "
-                   "oet or orca-mlips forces one."),
-    FieldSpec("goat_max_workers", _as_goat_max_workers, default=None, allow_none=True,
-              help="GOAT workers of an MLIP GOAT (a multiple of 4). Empty: "
-                   "DELFIN's measured default -- orca-mlips capped at 8 (one "
-                   "model per worker), orca-external-tools W workers on one "
-                   "server with W model processes (%pal nprocs W)."),
-    FieldSpec("mlip_fast_client", _as_mlip_fast_client, default=None, allow_none=True,
-              help="orca-external-tools client of an MLIP GOAT: auto (DELFIN's "
-                   "measured default), yes (the same request sent with curl, no "
-                   "Python start-up per call) or no (the documented oet_client)."),
-    FieldSpec("refuse_noncommercial_weights", _as_yes_no, default="no",
-              help="yes refuses an MLIP whose weights are non-commercially "
-                   "licensed (global_opt_method=mlip:mace)."),
-    FieldSpec("implicit_solvation_model", _as_implicit_solvation_model, default=""),
-    FieldSpec("solvent", _as_solvent, default=""),
-    FieldSpec("functional", _as_functional, default="PBE0"),
-    FieldSpec("ri_jkx", _as_ri_jkx, default="RIJCOSX"),
-    FieldSpec("aux_jk", _as_aux_jk, default="def2/J"),
-    FieldSpec("aux_jk_rel", _as_aux_jk_rel, default="SARC/J"),
-    FieldSpec("main_basisset", _as_basis_set_required, default="def2-SVP"),
-    FieldSpec("main_basisset_rel", _as_basis_set_optional, default=""),
-    FieldSpec("metal_basisset", _as_basis_set_optional, default=""),
-    FieldSpec("metal_basisset_rel", _as_basis_set_optional, default=""),
-    FieldSpec("initial_guess", _as_initial_guess, default="PModel"),
-    FieldSpec("relativity", _as_relativity, default="none"),
-    FieldSpec("geom_opt", _as_geom_opt, default="OPT"),
-    FieldSpec("geom_opt_OCCUPIER", _as_geom_opt, default="OPT"),
-    FieldSpec("freq_type", _as_freq_type, default="FREQ"),
-    FieldSpec("orca_parallel_strategy", _as_parallel_strategy, default="auto"),
+    FieldSpec("global_optimizer", _as_global_optimizer, default="",
+             help="Global conformer search on the input structure: GOAT or CREST. Replaces the older yes/no pair XTB_GOAT / CREST; none (or empty) means no global search.",
+             allowed="one of: GOAT, CREST, none (empty / no / off / 0 = no global search)"),
+    FieldSpec("XTB_OPT", _as_yes_no, default="no",
+             help="Run an xTB geometry optimisation before DFT. Written XTB_preOPT in the CONTROL file; the older spelling is still accepted."),
+    FieldSpec("XTB_GOAT", _as_yes_no, default="no",
+             help="Legacy yes/no switch; the modern spelling is global_optimizer=GOAT."),
+    FieldSpec("CREST", _as_yes_no, default="no",
+             help="Legacy yes/no switch; the modern spelling is global_optimizer=CREST."),
+    FieldSpec("implicit_solvation_model", _as_implicit_solvation_model, default="",
+             help="Implicit solvation model for the DFT jobs: CPCM (also spelled C-PCM) or SMD."),
+    FieldSpec("solvent", _as_solvent, default="",
+             help="Solvent name, e.g. acetonitrile, dmf, dcm, thf, dmso, acetone. Empty falls back to gas phase."),
+    FieldSpec("functional", _as_functional, default="PBE0",
+             help="Exchange-correlation functional, e.g. PBE0, B3LYP, TPSSh, wB97X-D3."),
+    FieldSpec("ri_jkx", _as_ri_jkx, default="RIJCOSX",
+             help="RI approximation for the Coulomb/exchange terms: RIJCOSX (default, fast) or NORI."),
+    FieldSpec("aux_jk", _as_aux_jk, default="def2/J",
+             help="Auxiliary basis set for the RI/RIJCOSX treatment (non-relativistic part)."),
+    FieldSpec("aux_jk_rel", _as_aux_jk_rel, default="SARC/J",
+             help="Auxiliary basis set for the relativistic treatment (used with ZORA/X2C/DKH)."),
+    FieldSpec("main_basisset", _as_basis_set_required, default="def2-SVP",
+             help="Main basis set for every atom the metal basis does not cover, e.g. def2-SVP, def2-TZVP."),
+    FieldSpec("main_basisset_rel", _as_basis_set_optional, default="",
+             help="Main basis set used instead when a relativistic method is active, e.g. ZORA-def2-SVP. Empty follows main_basisset."),
+    FieldSpec("metal_basisset", _as_basis_set_optional, default="",
+             help="Basis set for metal atoms, overriding main_basisset for them, e.g. def2-TZVP."),
+    FieldSpec("metal_basisset_rel", _as_basis_set_optional, default="",
+             help="Metal basis set used instead when a relativistic method is active, e.g. SARC-ZORA-TZVP."),
+    FieldSpec("initial_guess", _as_initial_guess, default="PModel",
+             help="SCF initial guess, e.g. PModel (default), Hcore, or a reader."),
+    FieldSpec("relativity", _as_relativity, default="none",
+             help="Relativistic method for heavy elements: ZORA, X2C, DKH (DKH2), or none. Switches the basis to the _rel variants."),
+    FieldSpec("geom_opt", _as_geom_opt, default="OPT",
+             help="ORCA geometry-optimisation keyword, e.g. OPT, OPTTS, LOPT; extra ORCA flags may follow."),
+    FieldSpec("geom_opt_OCCUPIER", _as_geom_opt, default="OPT",
+             help="Geometry-optimisation keyword inside the OCCUPIER stages, same form as geom_opt."),
+    FieldSpec("freq_type", _as_freq_type, default="FREQ",
+             help="ORCA frequency-calculation keyword, e.g. FREQ or FREQ(Hess=Restart)."),
+    FieldSpec("orca_parallel_strategy", _as_parallel_strategy, default="auto",
+             help="How ORCA is started on the node: auto (MPI, ORCA's own choice), threads (OpenMP only), or serial (one core)."),
     FieldSpec("IMAG_scope", _as_imag_scope, default="all",
              help="Which structures IMAG takes off a saddle: all (initial structure and every redox step) or initial (the initial structure only). Excited states of the ESD module are always treated when IMAG=yes."),
     FieldSpec("IMAG_sp_energy_window", _as_imag_sp_energy_window, default=1e-5,
              help="How far (Hartree) a displaced single point must lie below a single point at the saddle to be taken: a noise floor. Which imaginary modes are worth removing at all is allow_imaginary_freq's question. The old template value 1e-3 is read as 1e-5."),
-    FieldSpec("IMAG_option", _as_imag_option, default=2),
+    FieldSpec("IMAG_option", _as_imag_option, default=2,
+             help="How OCCUPIER schedules its IMAG jobs: 1 (loose) or 2 (default, the OCCUPIER stage waits for the IMAG refinement it relies on).",
+             allowed="1 or 2 (1 = displacement only, 2 = full round schedule; default 2)"),
     FieldSpec("IMAG_max_rounds", _as_positive_int, default=2,
              help="Most IMAG rounds per structure. One round: single points on both sides of the imaginary mode, then one re-optimisation with frequencies from the lower side -- a frequency calculation each. A structure still at a saddle afterwards is reported, and an ESD rate that would need it is not computed."),
     FieldSpec("allow_imaginary_freq", _as_imag_noise_floor, default=_IMAG_NOISE_FLOOR,
              help="Imaginary frequencies smaller in magnitude than this (cm-1, written negative, e.g. -50) are numerical noise: IMAG leaves them and ESD rates are computed. Larger ones make a saddle: IMAG takes the structure off it, and an ESD rate that needs it is not computed. The old template value 0 is read as -50; to treat every imaginary mode, write e.g. -0.1."),
-    FieldSpec("calc_potential_method", _as_calc_potential_method, default=2),
-    FieldSpec("deltaSCF_SOSCFHESSUP", _as_soscfhessup, default="LSR1"),
-    FieldSpec("OCCUPIER_method", _as_occupier_method, default="auto"),
-    FieldSpec("OWN_progressive_from", _as_yes_no, default="no"),
-    FieldSpec("OWN_TREE_PURE_WINDOW", _as_int, default=None, allow_none=True),
-    FieldSpec("approximate_spin_projection_APMethod", _as_ap_method, default=2),
-    FieldSpec("co2_coordination", _as_on_off, default="off"),
-    FieldSpec("co2_species_delta", _as_int, default=0),
-    FieldSpec("ESD_modus", _as_esd_modus, default="tddft"),
-    FieldSpec("ESD_T1_opt", _as_esd_t1_opt, default="uks"),
+    FieldSpec("calc_potential_method", _as_calc_potential_method, default=2,
+             help="How the redox potentials are derived from the Gibbs energies: 1 (averages over multi-electron steps), 2 (step-wise, 1e steps; the default), or 3 (mean of 1 and 2). Several may be listed, separated by spaces or commas.",
+             allowed="1, 2 or 3, several separated by spaces/commas"),
+    FieldSpec("calc_initial", _as_yes_no, default="yes",
+             help="Whether the workflow also runs the neutral state (the charge as given) before the redox steps. Set no only when that calculation exists already -- the potentials need its Gibbs energy. Stability-constant runs force this back on.",
+             allowed="yes or no"),
+    # _as_list, not _as_str: the parser already turns "1,2" into
+    # ["1", "2"], and the OCCUPIER job-builders iterate that list to
+    # create red_step_1, red_step_2. Coercing it to a string handed
+    # them the literal "['1', '2']" and the steps were silently lost.
+    FieldSpec("oxidation_steps", _as_list, default="",
+             help="Redox steps to compute, as charge deltas from the neutral state: e.g. 1,2 oxidises by +1 then +2 electrons; a leading minus sign reduces. Empty means every step the workflow derives from method and the multiplicity keys.",
+             allowed="comma- or semicolon-separated integers, e.g. 1,2 or -1 (empty = all steps)"),
+    FieldSpec("reduction_steps", _as_list, default="",
+             help="Reduction steps to compute, same format as oxidation_steps: e.g. -1,-2 removes one and then two electrons. Empty means every reduction step the workflow derives.",
+             allowed="comma- or semicolon-separated integers, e.g. -1,-2 (empty = all steps)"),
+    FieldSpec("E_ref", _as_str, default="",
+             help="Reference-electrode potential in volts, subtracted from the computed redox potentials (e.g. a measured value against the electrode used). Empty leaves the potentials against vacuum.",
+             allowed="number in volts, or empty (vacuum reference)"),
+    FieldSpec("deltaSCF_SOSCFHESSUP", _as_soscfhessup, default="LSR1",
+             help="Hessian update for the SOSCF optimiser in deltaSCF excited-state jobs: LSR1 (default), LBFGS, LPOWELL, or LBOFILL."),
+    FieldSpec("OCCUPIER_method", _as_occupier_method, default="auto",
+             help="How OCCUPIER builds its candidate configurations: auto (generate from the previous winner per redox step) or manually (you provide the structures)."),
+    FieldSpec("multiplicity_0", _as_int, default=None, allow_none=True,
+             help="MANUALLY mode: multiplicity of the neutral state. Empty lets the spin from the input structure stand. Also the ox/red families below follow the same naming (multiplicity_ox1 .. ox3, multiplicity_red1 .. red3).",
+             allowed="integer 1, 2, 3, ... (1 = singlet, 2 = doublet, ...)"),
+    FieldSpec("BrokenSym_0", _as_str, default="",
+             help="MANUALLY mode: broken-symmetry orbital pairing for the neutral state, e.g. 1,1 means occupy alpha orbital 1 and beta orbital 1 in exchange. Empty = plain multiplicity calculation without BS.",
+             allowed="comma-separated orbital indices like 1,1 or 2,1 (empty = no BS)"),
+    FieldSpec("multiplicity_ox1", _as_int, default=None, allow_none=True,
+             help="MANUALLY mode: multiplicity of the +1 redox state; further oxidation steps follow as multiplicity_ox2, multiplicity_ox3.",
+             allowed="integer (empty = derive)"),
+    FieldSpec("BrokenSym_ox1", _as_str, default="",
+             help="MANUALLY mode: broken-symmetry pairing of the +1 state, same format as BrokenSym_0; further steps ox2, ox3.",
+             allowed="comma-separated orbital indices (empty = no BS)"),
+    FieldSpec("multiplicity_ox2", _as_int, default=None, allow_none=True,
+             help="MANUALLY mode: multiplicity of the +2 redox state.",
+             allowed="integer (empty = derive)"),
+    FieldSpec("BrokenSym_ox2", _as_str, default="",
+             help="MANUALLY mode: broken-symmetry pairing of the +2 state.",
+             allowed="comma-separated orbital indices (empty = no BS)"),
+    FieldSpec("multiplicity_ox3", _as_int, default=None, allow_none=True,
+             help="MANUALLY mode: multiplicity of the +3 redox state.",
+             allowed="integer (empty = derive)"),
+    FieldSpec("BrokenSym_ox3", _as_str, default="",
+             help="MANUALLY mode: broken-symmetry pairing of the +3 state.",
+             allowed="comma-separated orbital indices (empty = no BS)"),
+    FieldSpec("multiplicity_red1", _as_int, default=None, allow_none=True,
+             help="MANUALLY mode: multiplicity of the -1 redox state; further reduction steps as multiplicity_red2, multiplicity_red3.",
+             allowed="integer (empty = derive)"),
+    FieldSpec("BrokenSym_red1", _as_str, default="",
+             help="MANUALLY mode: broken-symmetry pairing of the -1 state, same format as BrokenSym_0; further steps red2, red3.",
+             allowed="comma-separated orbital indices (empty = no BS)"),
+    FieldSpec("multiplicity_red2", _as_int, default=None, allow_none=True,
+             help="MANUALLY mode: multiplicity of the -2 redox state.",
+             allowed="integer (empty = derive)"),
+    FieldSpec("BrokenSym_red2", _as_str, default="",
+             help="MANUALLY mode: broken-symmetry pairing of the -2 state.",
+             allowed="comma-separated orbital indices (empty = no BS)"),
+    FieldSpec("multiplicity_red3", _as_int, default=None, allow_none=True,
+             help="MANUALLY mode: multiplicity of the -3 redox state.",
+             allowed="integer (empty = derive)"),
+    FieldSpec("BrokenSym_red3", _as_str, default="",
+             help="MANUALLY mode: broken-symmetry pairing of the -3 state.",
+             allowed="comma-separated orbital indices (empty = no BS)"),
+    FieldSpec("fob_equal_weights", _as_yes_no, default="no",
+             help="OCCUPIER FoB extraction: weight the frontier-orbital contributions equally across all configurations instead of by multiplicity-derived weights.",
+             allowed="yes or no"),
+    FieldSpec("occupier_selection", _as_str, default="tolerance",
+             help="How OCCUPIER decides whether two configurations count as different: rounding (occupations are rounded to occupier_precision digits), tolerance (occupations within occupier_epsilon are equal), or truncation (occupations are cut to occupier_precision digits). A pipe-separated suffix overrides occupier_precision, e.g. tolerance|4.",
+             allowed="rounding | tolerance | truncation, optional |precision suffix"),
+    FieldSpec("occupier_precision", _as_int, default=3,
+             help="Number of digits used by the rounding/truncation selection methods; clamped to 0-10. Also the fallback for occupier_epsilon when that is not positive.",
+             allowed="integer 0-10"),
+    FieldSpec("occupier_epsilon", _as_float_or_empty, default=5e-4,
+             help="Tolerance band of the tolerance selection method: two occupations closer than this count as equal. Non-positive values fall back to 10^-occupier_precision.",
+             allowed="positive number, or empty (uses occupier_precision)"),
+    FieldSpec("clean_override_window_h", _as_float_or_empty, default=0.002,
+             help="OCCUPIER clean pass: a user-specified configuration is preferred over the winner when the energy gap is within this window (in Hartree).",
+             allowed="number in Hartree"),
+    FieldSpec("clean_quality_improvement", _as_float_or_empty, default=0.05,
+             help="OCCUPIER clean pass: how much lower the candidate's occupation deviation must be (fraction) for the candidate to replace the winner.",
+             allowed="fraction 0-1"),
+    FieldSpec("clean_quality_good", _as_float_or_empty, default=0.05,
+             help="OCCUPIER clean pass: a configuration whose occupation deviation is below this fraction counts as good and is kept as-is.",
+             allowed="fraction 0-1"),
+    FieldSpec("maxiter_occupier", _as_int, default=125,
+             help="SCF iteration limit inside the OCCUPIER stage jobs (%scf maxiter). An empty value previously wrote a broken ORCA input; it now falls back to the default.",
+             allowed="positive integer"),
+    FieldSpec("pass_wavefunction", _as_yes_no, default="no",
+             help="OCCUPIER: hand the converged wavefunction of each stage on to the next (moinp/moinp-like restart) instead of starting every job from scratch.",
+             allowed="yes or no"),
+    FieldSpec("even_seq", _as_str, default="",
+             help="OCCUPIER sequence profile for even-electron systems: a JSON list of mappings, each {\"index\": n, \"m\": multiplicity, \"BS\": \"a,b\" or \"\", \"from\": index} -- the configuration ladder OCCUPIER walks for even electron counts. Shipped template shows the standard 7-step ladder.",
+             allowed="JSON list of mappings {index, m, BS, from}"),
+    FieldSpec("odd_seq", _as_str, default="",
+             help="OCCUPIER sequence profile for odd-electron systems: same format as even_seq.",
+             allowed="JSON list of mappings {index, m, BS, from}"),
+    FieldSpec("OWN_progressive_from", _as_yes_no, default="no",
+             help="OCCUPIER auto mode: build the candidate tree progressively from the previous winner (yes) instead of the full enumeration per redox step (no)."),
+    FieldSpec("OWN_TREE_PURE_WINDOW", _as_int, default=None, allow_none=True,
+             help="OCCUPIER auto mode: width of the pure-spin-state window around the previous winner's m value when generating candidates."),
+    FieldSpec("approximate_spin_projection_APMethod", _as_ap_method, default=2,
+             help="Spin-projection method for the broken-symmetry (BS) energies (ORCA APMethod): e.g. 1 (Noodleman) or 2 (Yamaguchi/Ruiz-style)."),
+    FieldSpec("co2_coordination", _as_on_off, default="off",
+             help="Turn on the CO2 coordination workflow: candidates for how CO2 coordinates to the substrate are built and ranked across the redox states."),
+    FieldSpec("co2_species_delta", _as_int, default=0,
+             help="Which redox state the CO2 workflow works from, as a delta to the input charge: 0 (initial), +1 (ox_step_1), -2 (red_step_2), ..."),
+    # CO2 placement (chain_setup.py CO2_PLACE defaults; consumed by
+    # CO2_Coordinator6.place_co2_general).  The plain key is read from the
+    # stage CONTROL; the co2_ prefix in the main CONTROL takes precedence.
+    FieldSpec("place_axis", _as_str, default="z",
+             help="Axis the CO2 is attached along, from the metal centre: z, x, y, -z, -x or -y. A positive axis optimises the approach direction over the full sphere around that axis (default). A NEGATIVE axis (e.g. -z) means: approach from the sterically hindered hemisphere -- both half-shells are optimised and the unfavourable side is used, which is what you want when the free side is blocked and the reaction should reach the shielded face.",
+             allowed="one of: z, x, y, -z, -x, -y (empty = z)"),
+    FieldSpec("mode", _as_str, default="side-on",
+             help="CO2 coordination geometry relative to the metal-substrate bond: side-on or end-on.",
+             allowed="one of: side-on, end-on (empty = side-on)"),
+    FieldSpec("perp_axis", _as_str, default="y",
+             help="Second axis of the placement frame: the perpendicular axis the CO2's plane is built against. Same value set as place_axis.",
+             allowed="one of: z, x, y, -z, -x, -y (empty = y)"),
+    FieldSpec("place_optimize", _as_on_off, default="true",
+             help="Optimise the CO2 approach direction (orientation scan over place_samples directions) instead of placing at a fixed geometry."),
+    FieldSpec("place_samples", _as_positive_int, default=800,
+             help="How many candidate directions the orientation scan tests before ranking. Fewer is faster and coarser."),
+    FieldSpec("place_clearance_scale", _as_float, default=1.0,
+             help="Scale factor on the clearance check that keeps CO2 from overlapping existing atoms during placement; >1 is stricter, <1 laxer."),
+    FieldSpec("no_place_co2", _as_on_off, default="false",
+             help="Skip the automatic CO2 placement entirely (the structure must then already contain a coordinated CO2)."),
+    FieldSpec("ESD_modus", _as_esd_modus, default="tddft",
+             help="Method of the excited-state dynamics module (ESD_modul=yes): TDDFT, deltaSCF, or hybrid1.",
+             allowed="one of: TDDFT, deltaSCF, hybrid1"),
+    FieldSpec("ESD_T1_opt", _as_esd_t1_opt, default="uks",
+             help="How the T1 state is optimised in the ESD module: uks (broken-symmetry DFT) or tddft.",
+             allowed="one of: uks, tddft"),
     # TD-DFT: every %tddft block DELFIN writes reads these through
     # delfin.common.tddft_settings.  ESD_nroots, ESD_maxdim, ESD_SOC and
     # TDDFT_TDDFT_maxiter are aliases of the names below (delfin.config).
@@ -2447,36 +2606,112 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
              help="Spin-orbit coupling (DoSOC) in the state and check jobs. The ISC and phosphorescence jobs switch it on themselves; they cannot work without it."),
     FieldSpec("TDDFT_additions", coerce_tddft_additions, default="",
              help="Any other ORCA %tddft keywords, written verbatim into every TD-DFT job, separated by ';'. Example: DoNTO true; NTOThresh 1e-4; ETol 1e-7. Keywords with a key of their own (nroots, maxdim, maxiter, tda, followiroot, dosoc) or set per job (iroot, irootmult, triplets, sroot, troot, trootssl, nacme, etf) are refused."),
-    FieldSpec("properties_of_interest", _as_properties_of_interest, default=""),
-    FieldSpec("reorganisation_energy", _as_reorganisation_energy, default=""),
-    FieldSpec("ICs", _as_ics, default=""),
-    FieldSpec("ISCs", _as_iscs, default=""),
-    FieldSpec("emission_rates", _as_emission_rates, default=""),
-    FieldSpec("states", _as_states, default=""),
+    FieldSpec("properties_of_interest", _as_properties_of_interest, default="",
+             help="Which redox properties the potential module reports: IP, EA, or both (comma-separated). Empty: none beyond the potentials themselves."),
+    FieldSpec("reorganisation_energy", _as_reorganisation_energy, default="",
+             help="Which reorganisation energies the potential module reports: lambda_p, lambda_m, or both (aliases lamda_p/lamda_m accepted)."),
+    FieldSpec("ICs", _as_ics, default="",
+             help="Internal-conversion rates to compute, as transitions: e.g. S1>S0, S2>S1, T2>T1. ORCA's ESD(IC) ends in the reference state, so singlets go Sn>S0 and triplets Tn>T1; a transition ORCA cannot compute is skipped with its reason, not an error."),
+    FieldSpec("ISCs", _as_iscs, default="",
+             help="Intersystem-crossing rates to compute, as spin-changing transitions: e.g. S1>T1, T1>S1."),
+    FieldSpec("emission_rates", _as_emission_rates, default="",
+             help="Which emission rates to compute: f (fluorescence), p (phosphorescence), or f,p.",
+             allowed="one or both of: f (fluorescence), p (phosphorescence), space or comma separated"),
+    FieldSpec("states", _as_states, default="",
+             help="Electronic states the ESD module computes, e.g. S1,T1,S2,T2 (S1-S6, T1-T6). A listed S0 is dropped: S0 is always computed."),
     # xTB Hyperpolarizability
-    FieldSpec("hyperpol_xTB", _as_yes_no, default="no"),
-    FieldSpec("hyperpol_xTB_xyz", _as_str, default="start.txt"),
-    FieldSpec("hyperpol_xTB_preopt", _as_preopt_mode, default="none"),
-    FieldSpec("hyperpol_xTB_engine", _as_response_engine, default="std2"),
-    FieldSpec("hyperpol_xTB_bfw", _as_yes_no, default="no"),
-    FieldSpec("hyperpol_xTB_wavelengths", _as_str, default="1064"),
-    FieldSpec("hyperpol_xTB_energy_window", _as_non_negative_float, default=15.0),
+    FieldSpec("hyperpol_xTB", _as_yes_no, default="no",
+             help="Enable the xTB hyperpolarizability workflow (first hyperpolarizability beta with the sTD2/sTDA xTB response engine)."),
+    FieldSpec("hyperpol_xTB_xyz", _as_str, default="start.txt",
+             help="Input geometry for the hyperpolarizability workflow. Default start.txt, DELFIN's working geometry."),
+    FieldSpec("hyperpol_xTB_preopt", _as_preopt_mode, default="none",
+             help="Pre-optimisation before the response calculation: none (default), xtb, crest, or goat."),
+    FieldSpec("hyperpol_xTB_engine", _as_response_engine, default="std2",
+             help="xTB response engine: std2 (sTD2, default) or stda (sTDA).",
+             allowed="one of: std2, stda (default std2)"),
+    FieldSpec("hyperpol_xTB_bfw", _as_yes_no, default="no",
+             help="Bandwidth-filtered weights (-BFW) for the xTB response calculation."),
+    FieldSpec("hyperpol_xTB_wavelengths", _as_str, default="1064",
+             help="Wavelengths in nm for the frequency-dependent hyperpolarizability, comma-separated (1064,532); none or static for the static tensor only."),
+    FieldSpec("hyperpol_xTB_energy_window", _as_non_negative_float, default=15.0,
+             help="Energy window (eV) for the excited states the response engine includes."),
     # xTB TADF Screening
-    FieldSpec("tadf_xTB", _as_yes_no, default="no"),
-    FieldSpec("tadf_xTB_xyz", _as_str, default="start.txt"),
-    FieldSpec("tadf_xTB_preopt", _as_preopt_mode, default="none"),
-    FieldSpec("tadf_xTB_excited_method", _as_response_engine, default="stda"),
-    FieldSpec("tadf_xTB_bfw", _as_yes_no, default="no"),
-    FieldSpec("tadf_xTB_energy_window", _as_non_negative_float, default=10.0),
-    FieldSpec("tadf_xTB_run_t1_opt", _as_yes_no, default="yes"),
+    FieldSpec("tadf_xTB", _as_yes_no, default="no",
+             help="Enable the xTB TADF screening workflow: singlet/triplet excited states with xTB response methods, ranked for thermally activated delayed fluorescence."),
+    FieldSpec("tadf_xTB_xyz", _as_str, default="start.txt",
+             help="Input geometry for the TADF screening. Default start.txt, DELFIN's working geometry."),
+    FieldSpec("tadf_xTB_preopt", _as_preopt_mode, default="none",
+             help="Pre-optimisation before the TADF screening: none (default), xtb, crest, or goat."),
+    FieldSpec("tadf_xTB_excited_method", _as_response_engine, default="stda",
+             help="Excited-state method of the TADF screening: stda (default) or std2."),
+    FieldSpec("tadf_xTB_bfw", _as_yes_no, default="no",
+             help="Bandwidth-filtered weights (-BFW) for the xTB response calculation."),
+    FieldSpec("tadf_xTB_energy_window", _as_non_negative_float, default=10.0,
+             help="Energy window (eV) for the excited states the TADF screening includes."),
+    FieldSpec("tadf_xTB_run_t1_opt", _as_yes_no, default="yes",
+             help="Optimise the T1 state before the screening (yes, default) or screen on the input geometry (no)."),
     # Stability Constant
-    FieldSpec("stability_constant", _as_yes_no, default="no"),
-    FieldSpec("stability_constant_mode", _as_stability_constant_mode, default="auto"),
-    FieldSpec("stability_reaction", _as_str, default=""),
-    FieldSpec("n_explicit_solvent", _as_positive_int, default=6),
-    FieldSpec("logK_exp", _as_str, default=""),
-    FieldSpec("thdy_smiles_converter", _as_smiles_converter, default="NORMAL"),
-    FieldSpec("thdy_preopt", _as_preopt_mode, default="xtb"),
+    FieldSpec("stability_constant", _as_yes_no, default="no",
+             help="Enable the thermodynamics workflow: a Born-Haber cycle computes the stability constant log K of the complex formation."),
+    FieldSpec("stability_constant_mode", _as_stability_constant_mode, default="auto",
+             help="How the reaction is defined: auto (derived from the complex SMILES) or reaction (the explicit stability_reaction line)."),
+    FieldSpec("stability_reaction", _as_str, default="",
+             help="Explicit formation reaction for reaction mode, as SMILES with stoichiometry: a*{SMILES}+b*{SMILES}...>>>c*{SMILES}+d*{SMILES}..."),
+    FieldSpec("n_explicit_solvent", _as_positive_int, default=6,
+             help="Number of explicit solvent molecules in the thermodynamic cycle."),
+    FieldSpec("logK_exp", _as_str, default="",
+             help="Experimental log K, for comparison against the computed value in the report."),
+    FieldSpec("thdy_smiles_converter", _as_smiles_converter, default="NORMAL",
+             help="Converter that builds the structures of the thermodynamics workflow: QUICK, NORMAL, MANTA, ARCHITECTOR, MOLSIMPLIFY or MACE."),
+    FieldSpec("thdy_preopt", _as_preopt_mode, default="xtb",
+             help="Pre-optimisation for the thermodynamics structures: none, xtb (default), crest, or goat."),
+
+    # Restored 2026-11-19: these eight reached main on 2026-11-03
+    # (dea0bcca0) and were lost when this table was rebuilt to add
+    # the redox/OCCUPIER keys. Everything that reads the schema --
+    # control_key_notes.json, the MLIP/GOAT providers, the help
+    # lookup -- went looking for them. The allowed= lines are new:
+    # each is read off the key's own coercion function.
+    # GOAT method choice (opt-in; absent = GOAT with the xTB_method, the
+    # input unchanged). Not in the shipped template, like mlp_preopt.
+    FieldSpec("global_opt_method", _as_global_opt_method, default="",
+              help="Method GOAT optimises with: empty = the xTB_method "
+                   "(default), or mlip:uma | mlip:mace | mlip:orb | "
+                   "mlip:aimnet2 -- an orca-mlips machine-learned potential "
+                   "through ORCA's ExtOpt, run inside the workflow's job (the "
+                   "node needs the GPU for device=cuda). A screen: the "
+                   "ensemble's MLIP energies are not final numbers. CREST "
+                   "stays xTB-only. Weights: UMA gated (own HF login), MACE "
+                   "non-commercial (Academic Software License).",
+              allowed="empty, or xtb/none/off for GOAT with the xTB method, or mlip:BACKEND with BACKEND one of aimnet2, mace, orb, uma"),
+    FieldSpec("global_opt_mlip_provider", _as_global_opt_mlip_provider, default="auto",
+              help="auto (default): orca-external-tools when installed with the "
+                   "backend (one model server for the job), else orca-mlips; "
+                   "oet or orca-mlips forces one.",
+              allowed="auto (default), orca-external-tools (or oet), or orca-mlips"),
+    FieldSpec("global_opt_mlip_model", _as_global_opt_mlip_model, default="",
+              help="Model name passed to the orca-mlips plugin as --model; "
+                   "empty = the plugin's default.",
+              allowed="one token of letters, digits, '_', '.', '+' and '-', at most 80 characters, e.g. uma-s-1p1 (empty = the plugin's own default)"),
+    FieldSpec("global_opt_mlip_device", _as_global_opt_mlip_device, default="cuda",
+              help="cuda (default) or cpu. cuda without a visible GPU stops "
+                   "the GOAT step; there is no silent CPU fallback.",
+              allowed="cuda (default) or cpu"),
+    FieldSpec("refuse_noncommercial_weights", _as_yes_no, default="no",
+              help="yes refuses an MLIP whose weights are non-commercially "
+                   "licensed (global_opt_method=mlip:mace).",
+              allowed="yes or no (also true/false, on/off, 1/0)"),
+    FieldSpec("goat_max_workers", _as_goat_max_workers, default=None, allow_none=True,
+              help="GOAT workers of an MLIP GOAT (a multiple of 4). Empty: "
+                   "DELFIN's measured default -- orca-mlips capped at 8 (one "
+                   "model per worker), orca-external-tools W workers on one "
+                   "server with W model processes (%pal nprocs W).",
+              allowed="a positive multiple of 4, since ORCA runs one worker per GOAT temperature; empty = DELFIN's measured default"),
+    FieldSpec("mlip_fast_client", _as_mlip_fast_client, default=None, allow_none=True,
+              help="orca-external-tools client of an MLIP GOAT: auto (DELFIN's "
+                   "measured default), yes (the same request sent with curl, no "
+                   "Python start-up per call) or no (the documented oet_client).",
+              allowed="auto (default), yes or no (also true/false, on/off, 1/0)"),
     # MLP pre-optimisation (wave19 m4): opt-in. The default keeps the
     # shipped behaviour -- the ORCA steps run on the geometry as built.
     FieldSpec("mlp_preopt", _as_mlp_preopt, default="none",
@@ -2484,7 +2719,8 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
                    "the ORCA steps: none (default) or ani2x, aimnet2, "
                    "mace_off, chgnet, m3gnet. A screening step only: the "
                    "geometry is a starting guess, every final energy comes "
-                   "from DFT."),
+                   "from DFT.",
+              allowed="none (default), ani2x, aimnet2, mace_off, chgnet or m3gnet (also no/false/off/0 = none)"),
 )
 
 

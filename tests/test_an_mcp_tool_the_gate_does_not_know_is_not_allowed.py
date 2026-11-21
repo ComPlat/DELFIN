@@ -219,6 +219,8 @@ def test_a_dry_run_flag_is_not_a_decision(tmp_path):
 READ_ONLY_CALLS = [
     ("mcp__delfin-tools__list_capabilities", {}),
     ("mcp__delfin-tools__get_guide", {}),
+    ("mcp__delfin-tools__bio_backends", {}),
+    ("mcp__delfin-tools__bio_plan", {"template": "docking"}),
     ("mcp__delfin-tools__describe_capability", {"name": "orca_opt"}),
     ("mcp__delfin-tools__compatible_successors", {"name": "orca_freq"}),
     ("mcp__delfin-ops__parse_orca_output", {"folder": "calc/x"}),
@@ -277,6 +279,8 @@ _EXPECTED_READ_ONLY = {
     # delfin-tools
     "get_manifest", "get_guide", "resolve_spec", "scientific_lint",
     "list_capabilities", "describe_capability", "catalog",
+    # Pure catalog/typed-plan handlers: no probes, files or execution.
+    "bio_backends", "bio_plan",
     "compatible_successors", "new_capability_template", "list_keys",
     "describe_key", "list_applications", "describe_application",
     "validate_application", "validate_spec", "run_diagnostics",

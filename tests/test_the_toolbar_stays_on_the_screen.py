@@ -332,7 +332,9 @@ def test_no_control_in_the_toolbar_can_end_up_off_the_row():
     """
     pytest.importorskip('ipywidgets')
     playwright = pytest.importorskip(
-        'playwright.sync_api', reason='needs a browser to lay the toolbar out')
+        'playwright.sync_api',
+        reason='needs the playwright package and its Chromium browser '
+               'to lay the toolbar out')
     stylesheet = _widget_stylesheet()
 
     from delfin.dashboard.molecule_viewer import (

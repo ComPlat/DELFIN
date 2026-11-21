@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from delfin.tools.bio import environments as envs
+from conftest import child_env
 
 
 @pytest.fixture(autouse=True)
@@ -114,11 +115,10 @@ def test_existing_managed_binary_is_reusable_after_install_attempt(monkeypatch):
 
 def test_installer_timeout_stops_children_holding_output_pipe(tmp_path):
     from delfin import installer
-    import os
     import time
     start = time.monotonic()
     command = [sys.executable, '-c', 'import subprocess,sys,time; subprocess.Popen([sys.executable,"-c","import time;time.sleep(30)"]);time.sleep(30)']
-    ok, lines = installer._run(command, cwd=tmp_path, env=os.environ.copy(), on_line=None, timeout=0.2)
+    ok, lines = installer._run(command, cwd=tmp_path, env=child_env(tmp_path), on_line=None, timeout=0.2)
     assert not ok and time.monotonic() - start < 5
     assert any('stopped after' in line for line in lines)
 

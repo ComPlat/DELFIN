@@ -159,3 +159,77 @@ at. The rules for every such tool:
 Current tools: `tools/export_csd_crystals.py` (exports single-complex crystal coordinates for
 `tools/derive_ml_targets.py`, which derives the bond-valence metal-donor table and is licence-free
 itself).
+
+## Stronger copyleft than this repository: the AGPL process boundary
+
+DELFIN is **LGPL-3.0** and this repository is public and usable
+commercially. The Chemotion ELN work touches two **AGPL-3.0** projects:
+
+- `chemotion_api` (`github.com/Chemotion/chemotionapi`), the Python
+  client for the ELN's REST/Grape API;
+- `ChemAssistent` (`github.com/StarmanMartin/ChemAssistent`), a
+  colleague's assistant built on it.
+
+AGPL-3.0 is stronger copyleft than LGPL-3.0. Linking either into
+DELFIN would make the combined work AGPL — which this repository
+cannot become by importing a dependency, and which would also reach
+everyone who uses DELFIN **over a network**. It is a licence
+incompatibility for distribution, not a preference.
+
+**The rule.** `delfin/` never imports `chemotion_api`, and
+`pyproject.toml` never declares it in `dependencies` or in any extra.
+The ELN is reached through a **separate process** that DELFIN talks to
+over a local boundary (subprocess or loopback IPC). That process is its
+own work under AGPL-3.0, with its own source offered as the AGPL
+requires; DELFIN ships a client for the boundary, not the library.
+Enforced by `tests/test_the_agpl_boundary_holds.py`.
+
+**Prior art, not source.** Ideas learned from reading `ChemAssistent`
+(confirm-before-act, graded autonomy, the credential living outside the
+model's reach, failing closed on anything unrecognised) are design
+decisions and may be used freely. Its **code** may not be copied,
+adapted or paraphrased into this repository under any arrangement,
+including one meant not to be noticed: the obligation follows the work,
+not the resemblance. Where its solution is the right one, the honest
+routes are to depend on it across the process boundary, to contribute
+upstream, or to ask the author.
+
+**If this is ever revisited**, the decision is the user's and the entry
+here changes first. Three options were weighed on 2026-11-19: accept
+AGPL for DELFIN (refused — it is LGPL and public); the separate process
+(chosen); a thin independent HTTP layer against the ELN's routes
+(cheapest on licence, most expensive on safety, since the client's own
+guards against whole-record overwrites and restricted elements would
+have to be rebuilt).
+
+
+## Test-suite dependencies: optional, permissively licensed
+
+Three ordinary installable packages gate parts of the test suite. None is
+one of the heavy optional builders (MACE, molSimplify, Molassembler,
+architector, rxembed, metallogen); each is small, permissively licensed and
+declared as an **optional extra**, so a machine without it runs the rest of
+the suite and the gated tests skip by naming that package. The licence of
+each is recorded here so that the compatibility with this repository's
+LGPL-3.0 is a cited decision, not an assumption (the family-4 rule for
+optional third-party dependencies, applied to the test stack):
+
+- `hypothesis` — **MIT**. Property-based tests of the outside-input parsers
+  (`tests/test_outside_input_parsers_hold_on_any_text.py`). Declared
+  pinned in the `dev` extra (`hypothesis==6.168.5`); the exact pin is
+  deliberate, because a new release changes the inputs a derandomized run
+  generates.
+- `morfeus` — **MIT**. The steric-descriptor package, imported as `morfeus`
+  and shipped on PyPI as `morfeus-ml`. Gates the steric wrapper and adapter
+  tests. Declared in the `analysis` extra.
+- `playwright` — **Apache-2.0**. The headless-browser driver for the page
+  and viewer layout tests, and for the turn-end page check
+  (`delfin/agent/artifact_check.py`). Declared in the `browser` extra
+  (`playwright>=1.40,<2`); the browser itself is a one-time
+  `playwright install chromium`, separate from the package.
+
+MIT and Apache-2.0 are both permissive and compatible with the
+repository's LGPL-3.0, so depending on any of them does not move the
+combined work's licence. A test that needs one skips by naming that
+package; the skip is legitimate on a machine that does not have it, and the
+test must not silently depend on anything else.

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from delfin.tools import run_step
-from test_bio_openmm_dynamics import system, inputs, settings, mock_dynamics
+from test_bio_openmm_dynamics import system as system, inputs as inputs, settings, mock_dynamics
 
 
 @pytest.fixture

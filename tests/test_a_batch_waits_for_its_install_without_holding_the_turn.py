@@ -69,12 +69,35 @@ echo 4242
 _FAKE_INSTALLER = """\
 #!/bin/bash
 env | grep -E '^(MAKE_JOBS|MAKEFLAGS|CMAKE_BUILD_PARALLEL_LEVEL|UV_CONCURRENT_BUILDS|OMP_NUM_THREADS|OPENBLAS_NUM_THREADS|MKL_NUM_THREADS)=' | sort > "$FAKE_STATE/install.env"
-nice > "$FAKE_STATE/install.nice"
+# The redirection creates the file; the content arrives when the command in
+# the subshell ends. The pause is what a loaded machine does to this gap by
+# itself -- here it is always there, so a wait on exists() alone fails every
+# run instead of one in twenty.
+( sleep 0.3; nice ) > "$FAKE_STATE/install.nice"
 while [ ! -f "$FAKE_STATE/install.go" ]; do sleep 0.1; done
 exit "$(cat "$FAKE_STATE/install.go")"
 """
 
 WORKFLOW = {"input.txt": "[Fe(H2O)6]2+\n", "CONTROL.txt": "PAL=4\nmaxcore=1000\n"}
+
+
+def _wait_written(path: Path, timeout_s: float = 30.0) -> None:
+    """Wait until ``path`` holds text, not merely until it exists.
+
+    ``nice > install.nice`` in the stand-in installer creates the file by
+    redirection and writes into it afterwards, so a wait on ``exists()``
+    returns while the file is still empty. Measured on a CI runner under
+    load: ``assert '' == '19'``, twice on unrelated branches. Existence is
+    the neighbouring question; readiness here is content.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            if path.read_text().strip():
+                return
+        except OSError:
+            pass
+        time.sleep(0.05)
 
 
 class World:
@@ -227,9 +250,7 @@ def test_the_install_keeps_to_the_login_nodes_share(world):
     from delfin.hpc_guard import LOGIN_CORE_BUDGET
     assert install.INSTALL_CORES == max(1, int(LOGIN_CORE_BUDGET) - 1)
     world.submit_while_not_installed()
-    deadline = time.monotonic() + 30
-    while not (world.state / "install.nice").exists() and time.monotonic() < deadline:
-        time.sleep(0.1)
+    _wait_written(world.state / "install.nice")
     n = install.INSTALL_CORES
     assert (world.state / "install.env").read_text().split() == sorted([
         f"CMAKE_BUILD_PARALLEL_LEVEL={n}", f"MAKEFLAGS=-j{n}", f"MAKE_JOBS={n}",
@@ -316,9 +337,7 @@ def test_a_failed_install_submits_nothing_and_says_why(world):
 
 def test_an_install_hpc_guard_stopped_is_said_not_waited_for(world):
     world.submit_while_not_installed()
-    deadline = time.monotonic() + 30
-    while not (world.state / "install.nice").exists() and time.monotonic() < deadline:
-        time.sleep(0.1)
+    _wait_written(world.state / "install.nice")
     os.killpg(world.installer_pid(), signal.SIGSTOP)  # what hpc_guard does, to one of them
     conn = connection.connect("kcist")
     assert install.state(conn, SHA) == "stopped"
@@ -332,9 +351,7 @@ def test_the_next_submit_starts_a_stopped_install_again(world):
     """Before: a stopped install was never removed and every later submit
     of that commit failed on it -- there was no way back."""
     world.submit_while_not_installed()
-    deadline = time.monotonic() + 30
-    while not (world.state / "install.nice").exists() and time.monotonic() < deadline:
-        time.sleep(0.1)
+    _wait_written(world.state / "install.nice")
     stopped_pid = world.installer_pid()
     os.killpg(stopped_pid, signal.SIGSTOP)
     conn = connection.connect("kcist")
@@ -343,9 +360,7 @@ def test_the_next_submit_starts_a_stopped_install_again(world):
     (world.state / "install.nice").unlink()
     got = world.submit_while_not_installed()           # approved again by the person
     assert got.get("queued", "").startswith("kcist:batch-"), got
-    deadline = time.monotonic() + 30
-    while not (world.state / "install.nice").exists() and time.monotonic() < deadline:
-        time.sleep(0.1)
+    _wait_written(world.state / "install.nice")
     assert install.state(conn, SHA) == "running"
     assert world.installer_pid() != stopped_pid
     with pytest.raises(ProcessLookupError):

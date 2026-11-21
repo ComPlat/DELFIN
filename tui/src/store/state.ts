@@ -25,6 +25,9 @@ export interface Asked {
   readDir?: string
   /** A shell request's command (masked), for key c to change. */
   command?: string
+  /** A question the session only guessed from its answer's text (a
+   *  dashboard-hosted session): it does not hold the turn. */
+  detected?: boolean
 }
 
 export interface TurnLive {
@@ -138,6 +141,9 @@ export interface SessionState {
   wait: string
   /** The session's task list, as it sent it last. */
   tasks: TaskRow[]
+  /** What the session offers to send next (session.info/updated
+   *  `suggestions`): the empty prompt shows the first, Tab takes it. */
+  suggestions: string[]
   /** Why shift+tab steps over bypassPermissions ("" when it may stop
    *  there); null until the session has said it -- a service that never
    *  says is treated as stepping over it. */
@@ -215,7 +221,7 @@ export function newSession(id: string, info: Record<string, unknown> = {}): Sess
     id, title: "", workspace: "", provider: "", model: "", mode: "", approval: "",
     effort: "", state: "starting", pending: [], usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
     turn: null, tail: "", tailKey: "", held: [], thinking: "", lastSeq: 0, summary: null, ended: null, wait: "",
-    tasks: [], bypassBlocked: null, bypassConfirmed: false, auto: "", background: [],
+    tasks: [], suggestions: [], bypassBlocked: null, bypassConfirmed: false, auto: "", background: [],
   }
   applyInfo(s, info)
   return s
@@ -252,6 +258,9 @@ export function applyInfo(s: SessionState, info: Record<string, unknown>): void 
   if ("approval" in info) s.approval = str(info.approval)
   if ("effort" in info) s.effort = str(info.effort)
   if ("tasks" in info && info.tasks != null) s.tasks = taskRows(info.tasks)
+  if ("suggestions" in info && Array.isArray(info.suggestions)) {
+    s.suggestions = (info.suggestions as unknown[]).map((t) => oneLine(String(t ?? ""))).filter((t) => t)
+  }
   if ("bypassBlocked" in info && info.bypassBlocked != null) s.bypassBlocked = str(info.bypassBlocked)
   if ("bypassConfirmed" in info && info.bypassConfirmed != null) s.bypassConfirmed = Boolean(info.bypassConfirmed)
   if ("auto" in info) s.auto = oneLine(str(info.auto))

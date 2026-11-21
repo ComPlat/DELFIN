@@ -656,3 +656,50 @@ def test_disk_cache_version_mismatch_is_discarded(monkeypatch, tmp_path):
     mc._CACHE.clear()
     mc._load_disk_cache()
     assert key not in mc._CACHE
+
+
+# ---------------------------------------------------------------------------
+# A router states the window as max_input_tokens, not max_model_len
+# ---------------------------------------------------------------------------
+
+# A plain OpenAI-compatible endpoint, NOT _KIT_BASE: that url routes through
+# the KIT Toolbox reader, which answers from its own cache and so cannot say
+# whether this entry's window was read at all.
+_ROUTER_BASE = "https://router.example.org/v1"
+
+
+def test_live_window_from_max_input_tokens(monkeypatch):
+    """A router in front of several backends publishes ``max_input_tokens``.
+
+    Input: a ``/v1/models`` entry carrying only that key, for a 1M window.
+    Output: the window is read live. Without the key the resolver falls
+    through to the 32,768 heuristic, which costs a long run its whole
+    context while every turn still answers normally.
+    """
+    entry = {"id": "router-model-a", "object": "model",
+             "max_input_tokens": 1_048_576, "max_output_tokens": 1_048_576}
+    monkeypatch.setattr(mc, "_fetch_openai_models", lambda base, api_key="": [entry])
+    caps = mc.resolve("blablador", "router-model-a", _ROUTER_BASE)
+    assert caps.context_window == 1_048_576
+    assert caps.source == "live"
+
+
+def test_an_explicit_window_key_outranks_max_input_tokens(monkeypatch):
+    """Where a server states both, ``max_model_len`` is its own number and
+    ``max_input_tokens`` may be a route-level cap: the explicit key wins."""
+    entry = {"id": "router-model-b", "object": "model",
+             "max_model_len": 262_144, "max_input_tokens": 1_048_576}
+    monkeypatch.setattr(mc, "_fetch_openai_models", lambda base, api_key="": [entry])
+    caps = mc.resolve("blablador", "router-model-b", _ROUTER_BASE)
+    assert caps.context_window == 262_144
+
+
+def test_the_output_limit_is_not_a_context_window(monkeypatch):
+    """``max_output_tokens`` bounds the answer, not the context. An entry
+    carrying only that key states nothing about the window, and reading it
+    as one would hand a small-window model a 131k context."""
+    entry = {"id": "router-model-c", "object": "model",
+             "max_output_tokens": 131_072}
+    monkeypatch.setattr(mc, "_fetch_openai_models", lambda base, api_key="": [entry])
+    caps = mc.resolve("blablador", "router-model-c", _ROUTER_BASE)
+    assert caps.context_window != 131_072

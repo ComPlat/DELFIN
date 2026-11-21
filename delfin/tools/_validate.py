@@ -236,7 +236,9 @@ def _check_real_step(
         for tag in missing_inputs:
             producers = _producers_of(tag)
             if producers:
-                shown = ", ".join(producers[:6]) + ("…" if len(producers) > 6 else "")
+                # Keep valid choices discoverable as the registry grows. A
+                # fixed alphabetical prefix hides entire engine families.
+                shown = ", ".join(producers)
                 hints.append(f"{tag} (add an upstream step producing it: {shown})")
             else:
                 hints.append(tag)

@@ -1165,10 +1165,30 @@ def _check_state_files(ctx: dict) -> list[dict]:
 
     kept = []
     for parent in {root, Path.home(), *(q.parent for q, _w in named)}:
-        try:
-            kept.extend(sorted(parent.glob("*.unreadable-*")))
-        except OSError:
-            continue
+        # One level down as well. The stores named above sit directly in
+        # the state root, but the ones that are not named live a level
+        # below it -- session records in agent_sessions/, the service's
+        # own files in agent_service/ -- and a file quarantined there was
+        # in no report at all. Measured 2026-11-19: a writer in the
+        # session store was asked to point a person at this check and
+        # could not, because the check does not look where that writer
+        # puts the file.
+        #
+        # Deliberately not a full walk: the state root also holds
+        # workspaces and caches, and reading all of them is a different
+        # cost and a different question. Every store this project keeps
+        # is at most one level down.
+        for pattern in ("*.unreadable-*", "*/*.unreadable-*"):
+            try:
+                kept.extend(sorted(parent.glob(pattern)))
+            except OSError:
+                continue
+    # One path can be found twice -- the parent set holds both the state
+    # root and the home directory, so a file in the root matches the root's
+    # "*.unreadable-*" and the home's "*/*.unreadable-*". The listing below
+    # always deduplicated; the COUNT did not, and would have reported six
+    # damaged files where there are three.
+    kept = sorted(set(kept))
     if kept:
         rows.append(_row(
             "state files", WARN,

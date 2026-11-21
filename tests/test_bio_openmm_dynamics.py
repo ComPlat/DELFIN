@@ -6,7 +6,7 @@ import pytest
 from delfin.tools import run_step
 from delfin.tools.bio.artifacts import read_json, validate_artifact
 from delfin.tools.bio.dynamics import frame_steps
-from test_bio_simulation_system import inputs, install_mock
+from test_bio_simulation_system import inputs as inputs, install_mock
 
 
 @pytest.fixture

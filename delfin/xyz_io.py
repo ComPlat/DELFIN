@@ -109,13 +109,19 @@ def _persist_qmmm_signature(signature: Tuple[str, ...], qmmm_range: Tuple[int, i
         cache_file = target / _QMMM_CACHE_BASENAME
         try:
             with _QMMM_CACHE_LOCK:
-                try:
-                    with cache_file.open("r", encoding="utf-8") as fh:
-                        data = json.load(fh)
-                except FileNotFoundError:
-                    data = {}
-                except Exception:
-                    data = {}
+                # The writer's read: a damaged cache is kept (quarantine)
+                # and this target skipped -- rebuilding the file from a
+                # lenient read's {} would drop every signature it held.
+                # This sits in the mid-calculation geometry path and must
+                # never propagate, so it refuses and says so in the log;
+                # the doctor's state-file check lists the quarantine.
+                from delfin.agent import state_file as _sf
+                data, moved = _sf.read_json_for_write(cache_file, default={})
+                if moved is not None:
+                    logging.warning(
+                        "QMMM cache %s could not be read; kept at %s, "
+                        "not updating it this pass", cache_file, moved)
+                    continue
                 data[key] = payload
                 with cache_file.open("w", encoding="utf-8") as fh:
                     json.dump(data, fh)
@@ -403,13 +409,19 @@ def _persist_first_sphere(key: str, indices: Set[int], source_path: Optional[Pat
     payload = sorted(int(i) for i in indices)
     try:
         with _QMMM_CACHE_LOCK:
-            try:
-                with cache_file.open("r", encoding="utf-8") as fh:
-                    data = json.load(fh)
-            except FileNotFoundError:
-                data = {}
-            except Exception:  # noqa: BLE001
-                data = {}
+            # The writer's read: a damaged cache is kept (quarantine) and
+            # this write refused -- rebuilding the file from a lenient
+            # read's {} would drop every molecule's sphere it held. This
+            # sits in the mid-calculation geometry path and must never
+            # propagate, so it refuses and says so in the log; the
+            # doctor's state-file check lists the quarantine.
+            from delfin.agent import state_file as _sf
+            data, moved = _sf.read_json_for_write(cache_file, default={})
+            if moved is not None:
+                logging.warning(
+                    "first-sphere cache %s could not be read; kept at %s, "
+                    "not updating it this pass", cache_file, moved)
+                return
             data[key] = payload
             with cache_file.open("w", encoding="utf-8") as fh:
                 json.dump(data, fh)

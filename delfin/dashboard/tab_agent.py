@@ -273,6 +273,73 @@ def _shell_run_for_chat(run: dict, directory) -> dict:
     return out
 
 
+def shell_escape_engine(current, build):
+    """The engine a `!cmd` runs through: the session's, else a new one.
+
+    Input: the engine the session already holds (None before the first
+    message on this surface) and the callable that builds one. Output: an
+    engine, or None when none could be had.
+
+    The gate `!` runs through is reached as ``engine.run_gated_bash``, so
+    without an engine the escape is answered "not available on this
+    backend" -- a sentence about the backend for a session that had simply
+    not started. The terminal never had this: it constructs the session
+    before its input loop reads a line.
+
+    Module level, with the builder passed in, because the caller is a
+    closure inside ``create_tab`` built around live widgets: the branch
+    could only be checked by reading the source for a string, and it was.
+    """
+    if current is not None:
+        return current
+    try:
+        return build()
+    except Exception:
+        return None
+
+
+def shell_escape_entry(engine, command: str, fallback_dir) -> dict:
+    """One `!cmd`, run and rendered as the chat entry for its result.
+
+    Input: the engine carrying the gate, the command after the `!`, and
+    the directory to save over-long output in when the engine names none.
+    Output: a chat message dict with ``role``, ``content`` (plain text for
+    what reads content: search, export, a mode handoff), ``role_label``
+    and ``shell`` (the fields the chat renders).
+
+    Everything here is what used to sit inside the sending closure, where
+    no test could reach it without a browser. The gate itself is
+    ``repl.shell_escape_result``, shared with the terminal; this adds only
+    the saving of long output and the plain-text rendering.
+    """
+    from delfin.agent.repl import shell_escape_result
+
+    run = shell_escape_result(engine, command)
+    directory = None
+    try:
+        perms = getattr(engine, "kit_permissions", None)
+        directory = getattr(perms, "agent_workspace_dir", None)
+    except Exception:
+        directory = None
+    try:
+        run = _shell_run_for_chat(run, Path(directory or fallback_dir)
+                                  / "shell_output")
+    except Exception:
+        run = _shell_run_for_chat(run, Path.cwd() / "shell_output")
+
+    plain = [f"! {command}"]
+    if run.get("refused"):
+        plain.append(f"  refused: {run['refused']}")
+    if run.get("error"):
+        plain.append(f"  [error] {run['error']}")
+    body = "\n".join(s for s in (run.get("stdout"), run.get("stderr")) if s)
+    plain += ["  " + ln for ln in body.splitlines()[:200]]
+    if run.get("exit_code") not in (0, None):
+        plain.append(f"  (exit {run['exit_code']})")
+    return {"role": "system", "content": "\n".join(plain),
+            "role_label": "", "shell": run}
+
+
 def input_placeholder(steps, default: str, proposed=None) -> str:
     """The line waiting in the message box: an offer, a task, or the hint.
 
@@ -940,6 +1007,50 @@ def _finalize_plan_decision(
         result["approved"] = False
         result["new_mode"] = "default"
     return messages
+
+
+#: The key each provider cannot start without. A provider absent from this
+#: map needs none (the CLI backend signs in through its own OAuth).
+PROVIDER_KEY_NAMES: dict[str, str] = {
+    "kit": "KIT_TOOLBOX_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "api": "ANTHROPIC_API_KEY",
+    "blablador": "BLABLADOR_API_KEY",
+}
+
+
+def missing_key_notice(provider: str, lookup) -> str:
+    """The first message of a session that cannot start, or "".
+
+    Input: the chosen provider and the key lookup to ask (normally
+    ``_provider_key``). Output: what to put in the chat, or "" when a key
+    is there or the provider needs none.
+
+    What a person met instead was a symptom: a 401 from the model endpoint,
+    or the model list quietly falling back to nine hard-coded entries. Both
+    are true and neither says "you have not entered a key yet", let alone
+    where to enter one -- the older hint sent them to type
+    ``os.environ[...]`` into a notebook cell, which puts a credential in
+    the notebook and in the kernel's history.
+
+    Numbered, and in the first message of the session, because the person
+    reading it has just arrived and is not going to go looking.
+    """
+    name = PROVIDER_KEY_NAMES.get(str(provider or ""))
+    if not name:
+        return ""
+    try:
+        if lookup(name):
+            return ""
+    except Exception:
+        return ""
+    return (
+        "No API key yet, so the agent cannot start.\n"
+        "   1. Open the Settings tab.\n"
+        "   2. Open the section Diagnosis & API key.\n"
+        f"   3. Pick {name}, paste your key, press Store key.\n"
+        "   4. Come back here and press New Cycle.\n"
+        "Nothing has to be installed and nothing has to be restarted.")
 
 
 def _provider_key(name: str) -> str:
@@ -8223,6 +8334,8 @@ def create_tab(ctx):
         _available_providers.append(("OpenAI", "openai"))
     if _provider_key("KIT_TOOLBOX_API_KEY"):
         _available_providers.append(("KIT Toolbox", "kit"))
+    if _provider_key("BLABLADOR_API_KEY"):
+        _available_providers.append(("Helmholtz Blablador", "blablador"))
     # Detect a local OpenAI-compatible server (Ollama / vLLM / LM Studio /
     # llama.cpp). We probe the host's /api/tags (Ollama-native) and fall
     # back to /v1/models (everyone else). A 200 means at least one model
@@ -8494,6 +8607,21 @@ def create_tab(ctx):
                 )
                 with urllib.request.urlopen(req, timeout=8) as resp:
                     data = _json.loads(resp.read())
+            elif provider == "blablador":
+                # Same shape as KIT: a bearer token on /models. The ids are
+                # server-side aliases that move, so nothing is shipped.
+                key = _provider_key("BLABLADOR_API_KEY")
+                if not key:
+                    return None
+                from delfin.agent.model_capabilities import (
+                    _BLABLADOR_BASE_URL as _bla_base)
+                url = _bla_base + "/models"
+                import urllib.request
+                req = urllib.request.Request(
+                    url, headers={"Authorization": f"Bearer {key}"}
+                )
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    data = _json.loads(resp.read())
             elif provider == "openai":
                 key = _provider_key("OPENAI_API_KEY")
                 if not key:
@@ -8672,10 +8800,8 @@ def create_tab(ctx):
                 "KIT_TOOLBOX_API_KEY", ""
             ):
                 hint = (
-                    " → KIT_TOOLBOX_API_KEY is not set in the dashboard "
-                    "process. Set it before startup or via "
-                    "`os.environ['KIT_TOOLBOX_API_KEY']='…'` in a "
-                    "notebook cell and press ↻ again."
+                    " → no KIT key yet. Settings tab → Diagnosis & API "
+                    "key → paste it → Store key. Then press ↻ here."
                 )
             elif provider == "openai" and not os.environ.get(
                 "OPENAI_API_KEY", ""
@@ -12704,6 +12830,15 @@ def create_tab(ctx):
                 effort=str(effort_dropdown.value or ""),
                 kit_confirm_callback=_kit_callback,
             )
+            # This kernel serves the person at the page: its requests take
+            # the endpoint gate's reserved slot, so they never queue behind
+            # headless runs on the same key (the service and TUI paths set
+            # this in cli._start_interactive_session).
+            try:
+                from delfin.agent.endpoint_gate import set_process_interactive
+                set_process_interactive(True)
+            except Exception:
+                pass
 
             # Configure calc search directories for OpenAI function calling
             try:
@@ -20821,6 +20956,13 @@ def create_tab(ctx):
         - open: Focus input area with hint
         """
         state["_pending_question"] = question_info
+        # The question is bound to the session whose turn detected it: the
+        # tab's state dict is shared by every session the tab shows, and
+        # without the binding the messenger publishes the OLD session's
+        # question for the NEW one too — the misroute this prevents.
+        state["_pending_question_sid"] = str(
+            getattr(state.get("engine"), "session_id", "")
+            or state.get("active_session_id") or "")
         qtype = question_info["type"]
         _n_opts = len(question_info.get("options") or [])
         _set_wait_chip(
@@ -21222,7 +21364,14 @@ def create_tab(ctx):
         if _shell_text.startswith(_SHELL_PREFIX) and len(_shell_text) > 1:
             _cmd = _shell_text[len(_SHELL_PREFIX):].strip()
             input_textarea.value = ""
-            _eng = state.get("engine")
+            # The gate lives on the engine, and on this surface the engine
+            # is built by the first message (`_ensure_engine`, called below
+            # for an ordinary one). Reading state["engine"] here meant a `!`
+            # typed before any message had been sent found None and was
+            # answered "! is not available on this backend", which names the
+            # wrong cause: the backend carried the gate, the session had
+            # simply not started. Measured on the agent tab 2026-11-19.
+            _eng = shell_escape_engine(state.get("engine"), _ensure_engine)
 
             # The offer was the previous answer's, as for any message; left
             # standing, the command just sent would wait to be sent again.
@@ -21239,33 +21388,15 @@ def create_tab(ctx):
             _live_system_message(f"! {_cmd}\n  running …", _key)
 
             def _run_escape():
-                from delfin.agent.repl import shell_escape_result as _escape
-                run = _escape(_eng, _cmd)
                 try:
-                    _kp = getattr(_eng, "kit_permissions", None)
-                    _dir = (getattr(_kp, "agent_workspace_dir", None)
-                            or Path(_agent_workspace_path()) / "agent_workspace")
-                    run = _shell_run_for_chat(run, Path(_dir) / "shell_output")
+                    _fallback = Path(_agent_workspace_path()) / "agent_workspace"
                 except Exception:
-                    run = _shell_run_for_chat(run, Path.cwd() / "shell_output")
-                # Plain text for what reads content (search, export, a
-                # mode handoff); the chat renders the fields.
-                plain = [f"! {_cmd}"]
-                if run.get("refused"):
-                    plain.append(f"  refused: {run['refused']}")
-                if run.get("error"):
-                    plain.append(f"  [error] {run['error']}")
-                body = "\n".join(s for s in (run.get("stdout"),
-                                             run.get("stderr")) if s)
-                plain += ["  " + ln for ln in body.splitlines()[:200]]
-                if run.get("exit_code") not in (0, None):
-                    plain.append(f"  (exit {run['exit_code']})")
+                    _fallback = Path.cwd()
+                entry = shell_escape_entry(_eng, _cmd, _fallback)
                 msgs = state["chat_messages"]
                 live = state.setdefault("_live_messages", {})
                 index = _live_message_slot(msgs, live, _key)
                 live.pop(_key, None)
-                entry = {"role": "system", "content": "\n".join(plain),
-                         "role_label": "", "shell": run}
                 if index is None:
                     msgs.append(entry)
                 else:
@@ -25427,7 +25558,17 @@ def create_tab(ctx):
     # Note: claude has no /models endpoint — its list is intentionally
     # hard-coded (CLI manages the actual model selection), so we don't
     # call that a "failure".
-    _LIVE_FETCH_PROVIDERS = {"kit", "openai"}
+    # Before anything about models: the agent does not run at all without a
+    # key, and what a person saw instead was a 401 from the endpoint or a
+    # models list quietly falling back. Both describe a symptom.
+    try:
+        _notice = missing_key_notice(provider_dropdown.value, _provider_key)
+        if _notice:
+            _append_system_message(_notice)
+    except Exception:
+        pass
+
+    _LIVE_FETCH_PROVIDERS = {"kit", "openai", "blablador"}
     try:
         _mst = state.get("_models_init_status") or {}
         _mp = _mst.get("provider", "")
@@ -25447,10 +25588,8 @@ def create_tab(ctx):
                     else "OPENAI_API_KEY"
                 )
                 _hint = (
-                    f" — {_key_name} is not set in the dashboard "
-                    f"process. Set it before startup or via a notebook "
-                    f"cell (`import os; "
-                    f"os.environ['{_key_name}']='…'`) and press ↻."
+                    " — no key yet. Settings tab → Diagnosis & API key "
+                    "→ paste it → Store key. Then press ↻ here."
                 )
             else:
                 _hint = (
