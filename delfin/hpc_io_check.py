@@ -1684,17 +1684,28 @@ def _gate_sbatch_segment(segment: str, env: dict,
         # only when NO file is named.
         if stdin_file:
             return "refuse", _STDIN_REFUSAL, False
-        # Informational flags are not submits at all -- but ONLY on
-        # sbatch's own arguments, never inside a quoted word. The segment
-        # still carries the here-string's quotes, so `sbatch <<< "sbatch
-        # --version"` arrives as the single token `sbatch --version` and a
-        # naive search reads it as an informational flag of THIS command
-        # (found by probe, round 14: the clean here-string was allowed
-        # after ruling (a) had made it a refusal).
+        # Informational flags are not submits at all -- but ONLY when
+        # nothing else names a real script. s2's F-R16: this used to return
+        # allow on ANY informational token BEFORE the script was examined,
+        # so `sbatch walk.sh --version` never had its script read
+        # (measured: allow, while `sbatch walk.sh` refused). POSIX getopt
+        # stops at the first non-option, so the named file IS the script
+        # and the flag is that script's first argument.
+        #
+        # No sbatch binary exists on this node, so "what sbatch really does
+        # with `--version` after a script" is NOT measured here; the
+        # fail-closed reading is the QS's decision and is recorded as such
+        # in tests/test_io2_script_named_before_options.py. A flag with NO
+        # script named still allows -- `sbatch --version` is the ordinary
+        # way a person checks the tool, and that case is pinned.
+        #
+        # The `<<`-prefixed filter stays even though the here-string case
+        # that motivated it is caught by the empty-positional rule below
+        # (measured: `sbatch <<< "sbatch --version"` yields the single
+        # token `sbatch`, so there is no informational token to find).
         tokens_info = [t for t in tokens[1:] if not t.startswith("<")]
-        if any(t in ("--help", "--usage", "--version", "--show-valid")
-               for t in tokens_info):
-            return "allow", "", True
+        info_flag = any(t in ("--help", "--usage", "--version",
+                              "--show-valid") for t in tokens_info)
         # The script is the last token that is not an option or an
         # option's value. A token starting with '-' is an option; a
         # leading '--' token with '=' carries its value attached. An
@@ -1708,10 +1719,26 @@ def _gate_sbatch_segment(segment: str, env: dict,
                 continue  # attached option VALUE, not a positional
             stripped.append(t)
         positional = [t for t in stripped if not t.startswith("-")]
+        # An option's VALUE is a non-option token too (`-J probe` puts
+        # `probe` here), so taking the LAST positional made an option's
+        # value the script whenever an option followed the real one:
+        # `sbatch walk.sh -J probe` read `probe`, got OSError and was
+        # allowed -- the walking script was never inspected (measured,
+        # IO2 round 19). The deciding fact is the file system, the same
+        # rule :646-660 already uses: a positional that NAMES AN EXISTING
+        # FILE is the script, and the FIRST such word wins because POSIX
+        # getopt stops at the first non-option. When no positional names a
+        # file, the last one is kept -- that is the genuine missing-name
+        # case (rounds 6-9), which sbatch refuses by itself.
+        existing_pos = [t for t in positional
+                        if _gate_names_existing_file(t, cd_dir)]
+        if info_flag and not existing_pos:
+            return "allow", "", True
         if not positional:
             # Nothing was named and no channel was present: sbatch would
             # read its script from stdin, and there is nothing to inspect.
             return "refuse", _STDIN_REFUSAL, False
+        script_word = existing_pos[0] if existing_pos else positional[-1]
         # s8's ruling (round 18): an UNQUOTED glob metacharacter in the
         # script word means bash picks the file by pattern expansion
         # BEFORE sbatch runs. The gate cannot name the file that will run,
@@ -1722,7 +1749,7 @@ def _gate_sbatch_segment(segment: str, env: dict,
         # The quoting decision comes from _shell_words_with_quoting, NOT
         # from `last`, because shlex has already stripped the quotes.
         for raw_word, cleaned_word, has_glob in _shell_words_with_quoting(target):
-            if has_glob and cleaned_word == positional[-1]:
+            if has_glob and cleaned_word == script_word:
                 return ("refuse",
                         _GLOB_REFUSAL.format(word=raw_word), False)
         # A here-document attached to a submit that names NO file is the
@@ -1738,8 +1765,10 @@ def _gate_sbatch_segment(segment: str, env: dict,
         # `sbatch  'echo hi'` and would otherwise be read as a named
         # script called `echo hi`. A legitimate quoted script still names
         # a file -- `sbatch "my dir/run.sh"` (reviewer round 6) -- so the
-        # test is existence, not quoting.
-        last = positional[-1]
+        # test is existence, not quoting. The quotes only survive on the
+        # `ValueError` fallback at :1568-1571 (`str.split` keeps them),
+        # which is why this check could not be reused for the glob rule.
+        last = script_word
         if last[:1] in ("'", '"') and not _gate_names_existing_file(
                 last.strip("'\""), cd_dir):
             return "refuse", _STDIN_REFUSAL, False
