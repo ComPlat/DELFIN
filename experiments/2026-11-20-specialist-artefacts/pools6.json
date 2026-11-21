@@ -184,7 +184,7 @@
     "module_absent": [],
     "short_name": []
   },
-  "generated_for": "/tmp/claude-1001/-home-qmchem-max-DELFIN-AGENT-DELFIN-2-DELFIN/ae827ab8-7b73-4dad-a097-6504f7495d0a/scratchpad/ab",
+  "generated_for": "<session-scratch>/ab",
   "main_ref": "origin/main",
   "main_ref_readable": true,
   "pools": {

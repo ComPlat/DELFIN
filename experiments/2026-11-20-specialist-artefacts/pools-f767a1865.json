@@ -316,7 +316,7 @@
       "chem:normalise_esd_inp"
     ]
   },
-  "generated_for": "/tmp/claude-1001/-home-qmchem-max-DELFIN-AGENT-DELFIN-2-DELFIN/ae827ab8-7b73-4dad-a097-6504f7495d0a/scratchpad/ab",
+  "generated_for": "<session-scratch>/ab",
   "instrument_classes": {
     "chem": {
       "four-check": 73,
@@ -3308,12 +3308,12 @@
   },
   "scanned_at": "2026-11-20T21:37:51+00:00",
   "security_core_rule": {
-    "answered_from": "/tmp/claude-1001/-home-qmchem-max-DELFIN-AGENT-DELFIN-2-DELFIN/ae827ab8-7b73-4dad-a097-6504f7495d0a/scratchpad/ab/delfin/agent/auto_guard.py",
+    "answered_from": "<session-scratch>/ab/delfin/agent/auto_guard.py",
     "available": true,
     "function": "delfin.agent.auto_guard.protected_reason"
   },
   "suite_gate_rule": {
-    "interpreter": "/home/qmchem_max/micromamba/envs/delfin-ci/bin/python",
+    "interpreter": "~/micromamba/envs/delfin-ci/bin/python",
     "reads": "a module-level pytest.importorskip in every consuming suite, where the module cannot be imported by that interpreter"
   },
   "suite_limit": 12,

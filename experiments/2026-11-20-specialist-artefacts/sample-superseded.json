@@ -37,10 +37,10 @@
       "test-only": 53
     }
   },
-  "pools_file": "/tmp/claude-1001/-home-qmchem-max-DELFIN-AGENT-DELFIN-2-DELFIN/ae827ab8-7b73-4dad-a097-6504f7495d0a/scratchpad/pools6.json",
+  "pools_file": "<session-scratch>/pools6.json",
   "pools_file_sha256": "e8a484b8f29872371a1f90b451c7e67f94e7f4deecd20e991af7ea1dc0a742d8",
   "pools_scanned_at": "2026-11-20T18:54:24+00:00",
-  "pools_tree": "/tmp/claude-1001/-home-qmchem-max-DELFIN-AGENT-DELFIN-2-DELFIN/ae827ab8-7b73-4dad-a097-6504f7495d0a/scratchpad/ab",
+  "pools_tree": "<session-scratch>/ab",
   "pools_tree_sha": "0eb187ff9f6afa76eb390d53549b8f01493f96be",
   "replaced": {
     "at": "2026-11-20T18:55:00+00:00",
