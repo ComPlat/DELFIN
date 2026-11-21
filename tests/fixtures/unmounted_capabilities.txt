@@ -78,4 +78,3 @@ test-only	touch_heartbeat	delfin/agent/session_store.py:1689
 test-only	waits_summary	delfin/agent/session_health.py:192
 test-only	watch_cycle_events	delfin/agent/session_health.py:218
 test-only	workflow_is	delfin/agent/pack/benchmark/accept/w20_common.py:15
-test-only	write_supervisor_heartbeat	delfin/agent/service/durable_host.py:96

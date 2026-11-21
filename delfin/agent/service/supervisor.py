@@ -1065,6 +1065,7 @@ class Supervisor:
         attention = self.spawn(self._watch_attention())
         self._watch_now = asyncio.Event()
         cluster_jobs = self.spawn(self._watch_cluster_jobs())
+        heartbeat = self.spawn(self._watch_heartbeat())
         timed = self.spawn(self.schedules.run())
         try:
             await self.stopping.wait()
@@ -1073,6 +1074,7 @@ class Supervisor:
             idle.cancel()
             attention.cancel()
             cluster_jobs.cancel()
+            heartbeat.cancel()
             timed.cancel()
             self.server.close()
             # Said before anything closes: a window leaves (or, for a
@@ -2180,6 +2182,30 @@ class Supervisor:
         # An agent item's workspace comes from this service's own sessions,
         # never from the window's params.
         return await asyncio.to_thread(clusters_feed.job_detail, params, self._summaries())
+
+    async def _watch_heartbeat(self) -> None:
+        """Keep the durable supervisor heartbeat fresh.
+
+        ``delfin-agent durable status`` (durable_host.cmd_durable) reports
+        the supervisor as alive only while this record is within
+        durable_host.FRESH_WINDOW_S of now -- so the record must be
+        rewritten more often than that. Interval: a fraction of the
+        window, never above it, so a slow tick cannot let the status go
+        stale between writes. Never raises out of the loop: a heartbeat
+        that cannot be written (read-only state tree, redirected store)
+        must not take the service down -- status then reports "not
+        fresh", which is the truthful answer.
+        """
+        from . import durable_host
+        every = min(30.0, durable_host.FRESH_WINDOW_S / 3.0)
+        while True:
+            try:
+                durable_host.write_supervisor_heartbeat(
+                    [s.id for s in self.sessions.values() if s.id],
+                    pid=os.getpid())
+            except Exception:
+                pass
+            await asyncio.sleep(every)
 
     async def _watch_cluster_jobs(self) -> None:
         """The jobs DELFIN submitted to its clusters, followed every

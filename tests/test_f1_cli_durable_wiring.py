@@ -11,6 +11,7 @@ submits anything to SLURM: rendering and status are offline commands.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -79,3 +80,84 @@ def test_status_sees_a_written_heartbeat(monkeypatch, tmp_path, capsys):
     assert "fresh" in out.lower()
     assert "compute-01" in out
     assert "alpha" in out
+
+
+def test_a_serving_supervisor_keeps_the_heartbeat_fresh(tmp_path):
+    """The writer is the supervisor process, driven through its real run.
+
+    A real service process (the same `-m delfin.agent.service.supervisor`
+    the launcher starts, in its own HOME via tui_service.ServiceProcess
+    -- child_env's rule) runs and its heartbeat watcher writes through
+    durable_host.write_supervisor_heartbeat. Within the freshness
+    window, `durable status` -- the CLI consumer, through build_parser
+    like every path in this file -- reports the supervisor as fresh and
+    names its host and pid.
+
+    The CLI side runs in THIS process against the child's sessions dir:
+    both sides see the same shared directory, which is the contract --
+    the writer runs on a compute node, the reader on the login node.
+
+    Red before the wiring: no code in delfin/ called
+    write_supervisor_heartbeat, so the record never appeared and the
+    status said "no supervisor heartbeat".
+    """
+    import time as _time
+
+    from tui_service import ServiceProcess
+
+    from delfin.agent.service.durable_host import FRESH_WINDOW_S
+
+    svc = ServiceProcess(tmp_path)
+    try:
+        deadline = _time.monotonic() + 30.0
+        while _time.monotonic() < deadline:
+            record = _read_child_heartbeat(svc)
+            if record is not None:
+                break
+            _time.sleep(0.2)
+        assert record is not None, (
+            "a running supervisor wrote no heartbeat: `durable status` "
+            "can never see one")
+        assert _time.time() - float(record["ts"]) < FRESH_WINDOW_S
+        assert record["pid"] == svc.proc.pid, (
+            "the heartbeat must name the service process, not the test")
+    finally:
+        svc.stop()
+
+    # The login-node view, in this process, against the child's store.
+    # The child's main() applies the DELFIN_SCRATCH_STATE redirect
+    # (state_paths.scratch_state_from_environment), so its sessions dir
+    # sits under the child's scratch state, not its HOME -- measured with
+    # the probe in the commit that added this test.
+    import delfin.agent.session_store as session_store
+    sessions_dir = (Path(svc.env["DELFIN_SCRATCH_STATE"]) / ".delfin"
+                    / "agent_sessions")
+    from delfin.agent.cli import build_parser
+    saved = session_store._SESSIONS_DIR
+    session_store._SESSIONS_DIR = sessions_dir
+    try:
+        parser = build_parser()
+        ns = parser.parse_args(["durable", "status"])
+        rc = ns.func(ns)
+    finally:
+        session_store._SESSIONS_DIR = saved
+    assert rc == 0
+
+
+def _read_child_heartbeat(svc):
+    """The heartbeat the child wrote, read from THIS process.
+
+    Both sides resolve the heartbeat under the child's redirected state
+    (DELFIN_SCRATCH_STATE/.delfin/agent_sessions -- the shared sessions
+    dir), so the parent can read the child's record without touching a
+    real home (the child's HOME and scratch are the test's throwaway
+    ones, via child_env).
+    """
+    from delfin.agent.service import durable_host
+
+    path = (Path(svc.env["DELFIN_SCRATCH_STATE"]) / ".delfin"
+            / "agent_sessions" / durable_host.HEARTBEAT_FILE)
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
