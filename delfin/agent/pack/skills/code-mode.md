@@ -12,6 +12,7 @@ domains: code
 Instead of one model turn per tool call, write ONE short program and run it:
 
 ```
+python -m delfin.agent.code_mode stub > tools_api.py
 python -m delfin.agent.code_mode run my_program.py
 ```
 
@@ -21,9 +22,13 @@ python -m delfin.agent.code_mode run my_program.py
 python -m delfin.agent.code_mode stub > tools_api.py
 ```
 
-The stub is a typed module: one function per DELFIN read-only tool
-(`job_status`, `read_calc_output`, `list_calcs`, `energy_table`, ...), each
+The stub is a typed module: one function per DELFIN read-only tool, each
 returning parsed data. Import it in the program, call it, print the result.
+
+The functions it carries are `search_calcs`, `get_calc_info`, `search_docs`,
+`list_docs`, `read_section`, `bash_status` and `bash_output` — the
+read-only allow-list, seven names.
+Read the names off the module rather than guessing at tool names.
 
 ## What the program may call
 
@@ -35,12 +40,15 @@ submits and writes stay individually approved direct tool calls.
 
 - The program runs through the normal bash path, inside DELFIN's existing
   cage: no network beyond the existing proxy, no writes outside the work
-  tree, wall-clock capped (120 s default).
+  tree.
 - Every tool call goes through the same central gate a direct call takes —
   Code Mode is another way to reach the SAME checked tools, never a way
   around them. A gate refusal surfaces as an error in your program.
 - Results are size-capped; a result over the cap comes back as an error
   naming the cap — filter or paginate in the program instead.
+- The wall-clock ceiling is the bash tool's, not Code Mode's: a program is
+  one bash command, so `bash_timeout_s` (120 s by default, at most
+  `bash_max_timeout_s`, 600 s) bounds it like every other command.
 - Print a compact table or a short summary; only what you print reaches
   the model.
 
@@ -50,14 +58,15 @@ submits and writes stay individually approved direct tool calls.
 import tools_api as api
 failed, rows = [], []
 for i in range(1, 21):
-    info = api.read_calc_output(f"run_tree/job_{i:02d}")
+    info = api.get_calc_info(calc_id=f"job_{i:02d}")
     if info.get("outcome") != "succeeded":
-        failed.append(info["job"])
+        failed.append(info["calc_id"])
     else:
-        rows.append((info["job"], info["method"], info["energy_eh"]))
+        rows.append((info["calc_id"], info.get("functional"),
+                     info.get("final_energy_eh")))
 print("failed:", failed)
-for job, method, energy in sorted(rows, key=lambda r: r[2]):
-    print(f"{job}  {method}  {energy:.6f}")
+for name, method, energy in sorted(rows, key=lambda r: r[2]):
+    print(f"{name}  {method}  {energy:.6f}")
 ```
 
 Save it as `census.py`, then `python -m delfin.agent.code_mode run census.py`.
