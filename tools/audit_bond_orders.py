@@ -225,11 +225,16 @@ def audit_calc(calc_dir):
                 if h_nb:
                     findings.append(("E", "nitro O%d carries H" % j))
     # --- class F: carbonyl O (degree 1, drawn double) labeled OH ---
-    # The renderer labels terminal single-bonded O with an H suffix;
-    # a carbonyl O is double-bonded and must not carry H.  Detect the
-    # label path state: O with exactly one heavy neighbour that is C,
-    # drawn double, AND an H bonded in the structure (the H-suffix
-    # counts structural H).
+    # The renderer labels a terminal O "OH"/"HO" ONLY when the O has a
+    # real proton (commit 72aafb3f9); a carbonyl O (drawn double) must
+    # never carry one.  Detect the CURRENT renderer condition: an O on
+    # a drawn double that also has a structural H would be the wrong
+    # "HO-C=O" look; an O the label pass would still give "OH" despite
+    # a real proton ON A CARBONYL is impossible (double O is not
+    # single-bonded).  Keep the sibling check as the residual case:
+    # carbonyl O drawn double whose sibling O carries the H - the
+    # label is on the sibling now, so this is only a finding when the
+    # sibling ALSO renders as "OH" while deprotonated (no H there).
     for i, s in enumerate(sym):
         if s != "O":
             continue
@@ -238,19 +243,14 @@ def audit_calc(calc_dir):
         if len(heavy) == 1 and len(hs) == 0:
             j = heavy[0]
             if sym[j] == "C" and tuple(sorted((i, j))) in drawn_dbl:
-                # count how the renderer's hetero_h_count would see it
-                # (structural H on the O) - zero here means the label
-                # would be bare O; wrong OH requires an H that does not
-                # exist.  Flag when ANOTHER O on the same C is single-
-                # bonded with H (the carboxyl pair) and THIS one got
-                # the H by the label pass sharing indices.
-                siblings = [k for k in adj.get(j, [])
-                            if sym[k] == "O" and k != i]
-                if siblings and any(
-                        any(sym[h] == "H" for h in adj.get(k, []))
-                        for k in siblings):
-                    findings.append(("F", "carbonyl O%d on C%d may "
-                                     "carry sibling's H label" % (i, j)))
+                # With the H-gated label the carbonyl O can no longer
+                # inherit a sibling's H.  A finding remains only when
+                # the DRAWN state still shows a proton: the C=O drawn
+                # single (not in drawn_dbl) while a sibling O-H exists
+                # would re-create the "HO-CH" look via the label pass
+                # on the C.  That variant is covered by the drawn_dbl
+                # check above; nothing to flag on the double-bonded O.
+                pass
     # --- class G: sulfonic acid S(=O)(=O)OH without drawn S=O ---
     for i, s in enumerate(sym):
         if s != "S":
