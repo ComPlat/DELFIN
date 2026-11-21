@@ -127,7 +127,7 @@ def test_the_undo_tool_records_the_undo_in_the_audit_log(home, ws):
     assert out["reverted"] == [str(p)], out
 
     log = home / ".delfin" / "audit.log"
-    records = al.read_last_n(20, log_path=log)
+    records = al._parse_log(log)[-20:]
     undos = [r for r in records if r.get("tool") == "undo_changes"]
     assert undos, "the one write nobody asked for twice has no audit record"
     assert undos[-1]["path"] == str(p)

@@ -3,7 +3,7 @@
 (audit_log.append / build_changes_report) as the main test file does.
 
 F1: a denied bash command is ALSO listed in the report's ``commands``
-(audit_log.py:1035-1038), so a repeat must be counted only for
+(audit_log.py:1007-1010), so a repeat must be counted only for
 occurrences of a refused command beyond the first: a denial alone is not
 a retry.
 F2/F3: when the last denial cannot be classified (tool the gate cannot

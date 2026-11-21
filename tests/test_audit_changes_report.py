@@ -30,7 +30,7 @@ def test_append_stamps_session_id(tmp_path):
                                 path="a.py")
     rec.pop("session_id", None)          # simulate a legacy caller
     audit_log.append(rec, log_path=p, session_id="sess-42")
-    out = audit_log.read_last_n(10, log_path=p)
+    out = audit_log._parse_log(p)[-10:]
     assert len(out) == 1
     assert out[0]["session_id"] == "sess-42"
 
@@ -40,7 +40,7 @@ def test_append_keeps_existing_session_id(tmp_path):
     rec = audit_log.make_record(tool="bash", decision="ok",
                                 command="ls", session_id="original")
     audit_log.append(rec, log_path=p, session_id="other")
-    out = audit_log.read_last_n(10, log_path=p)
+    out = audit_log._parse_log(p)[-10:]
     assert out[0]["session_id"] == "original"
 
 
@@ -49,7 +49,7 @@ def test_make_record_roundtrip_session_id(tmp_path):
     rec = audit_log.make_record(tool="edit_file", decision="ok",
                                 path="b.py", session_id="sess-rt")
     audit_log.append(rec, log_path=p)
-    out = audit_log.read_last_n(10, log_path=p)
+    out = audit_log._parse_log(p)[-10:]
     assert out[0]["session_id"] == "sess-rt"
     assert out[0]["tool"] == "edit_file"
     assert out[0]["path"] == "b.py"
