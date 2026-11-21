@@ -25,6 +25,21 @@ stub, warn has no notes, crash-on-sbatch not refused); with the patch
 sbatch dialog stubbed, MountsSource read patched, shell isolation
 resolved to the plain path because nested bwrap exits 126 inside the
 test cage) are in the fixtures below, each with its reason.
+
+WHICH LAYER EACH CASE EXERCISES (reviewer nacht-s2's point: do not
+assume a green here proves more wiring than it does). The stubs make
+the path ABOVE the hook permissive, not invisible:
+- calc_policy's resource dialog and its sbatch script scan are
+  stubbed to pass, so an sbatch command reaches _execute_bash instead
+  of being diverted to the dialog. In production calc_policy may
+  refuse first; this test measures the hook layer BELOW that.
+- _DocToolExecutor.execute is the real entry (api_client.py
+  _execute_bash is the function the px hunk sits in); hpc_io_check
+  itself is real except where a case monkeypatches it to raise.
+- The bash run resolves to the plain in-process path (cage off): the
+  command really executes, which is what makes the marker file a
+  witness. The production cage layer is exercised by the operator's
+  node build, not by this file.
 """
 from __future__ import annotations
 
