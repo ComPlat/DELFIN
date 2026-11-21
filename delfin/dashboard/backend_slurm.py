@@ -34,6 +34,40 @@ from .backend_base import JobBackend, JobInfo, SubmitResult
 from .input_processing import parse_resource_settings, parse_inp_resources
 
 
+#: Credentials removed from a job's environment before submission.
+#:
+#: ``sbatch --export=ALL`` propagates the whole submission environment to
+#: the compute node, where everything the job runs can read it. These are
+#: the model-provider and repository credentials: measured 2026-11-21, no
+#: file under ``delfin/submit_templates/``, ``delfin/mlp_tools/`` or
+#: ``delfin/cluster_bench/`` references any of them, so removing them costs
+#: a job nothing.
+#:
+#: Kept deliberately, because the same measurement found a job DOES use
+#: them: ``HF_TOKEN``, ``HUGGING_FACE_HUB_TOKEN`` and ``HF_TOKEN_PATH`` (a
+#: GPU MLIP job fetches its weights with them) and ``DELFIN_RUN_TOKEN``.
+#: That is why this is a list of names and not the bash cage's
+#: ``_API_KEY``/``_TOKEN`` suffix markers, which would take the first three
+#: as well and break those jobs.
+_CREDENTIALS_NO_JOB_NEEDS: tuple[str, ...] = (
+    'KIT_TOOLBOX_API_KEY',
+    'OPENAI_API_KEY',
+    'ANTHROPIC_API_KEY',
+    'ANTHROPIC_AUTH_TOKEN',
+    'BLABLADOR_API_KEY',
+    'CODEX_API_KEY',
+    'GITHUB_TOKEN',
+    'GH_TOKEN',
+    'BRAVE_SEARCH_API_KEY',
+    'GOOGLE_CSE_API_KEY',
+    'SEMANTIC_SCHOLAR_API_KEY',
+    'OPENALEX_API_KEY',
+    'AWS_SECRET_ACCESS_KEY',
+    'AWS_SESSION_TOKEN',
+    'NETRC',
+    'PGPASSWORD',
+)
+
 #: What a pending job's reason code means, in words a user can act on.
 _PENDING_REASONS: dict[str, str] = {
     'Priority': 'Waiting for jobs with higher priority to start first.',
@@ -508,6 +542,29 @@ class SlurmJobBackend(JobBackend):
             f'--job-name={job_name}',
         ]
         submit_env = {**os.environ, **self._env_vars_to_dict(env_vars)}
+        # --export=ALL above propagates the WHOLE submission environment to
+        # the compute node, so a credential the operator exported in the
+        # shell that started DELFIN travels with every job and is readable
+        # by everything that job runs. Supplying a key through the
+        # environment is one of the two documented ways to configure one,
+        # so this is a supported configuration and not a misuse.
+        #
+        # The bash cage already removes exactly these variables from every
+        # command it runs (api_client._scrubbed_bash_env: "Nothing the
+        # agent legitimately runs needs the model provider's own key"), and
+        # the same sentence holds for a chemistry job. This path built its
+        # environment from os.environ directly and never had that removal.
+        #
+        # Removed by NAME and not by the cage's "_API_KEY"/"_TOKEN" suffix
+        # markers, because those markers would also take HF_TOKEN and
+        # HUGGING_FACE_HUB_TOKEN -- measured: the submit templates and
+        # delfin/mlp_tools reference HF_TOKEN, HUGGING_FACE_HUB_TOKEN,
+        # HF_TOKEN_PATH and DELFIN_RUN_TOKEN, and a GPU MLIP job needs them
+        # to fetch its weights. No job script references any of the names
+        # below. Security must not cost function, so the list is the
+        # measured difference rather than every name that looks like a key.
+        for _cred in _CREDENTIALS_NO_JOB_NEEDS:
+            submit_env.pop(_cred, None)
         # Inherited SBATCH_* input variables act like sbatch CLI options.
         # SBATCH_GET_USER_ENV has NO command-line negation, so if a user's
         # shell exports it, env retrieval would come back despite

@@ -1561,6 +1561,17 @@ def run_agent_command(
     conf = confinement(cfg)
     if cfg.mode == "bwrap":
         argv = _bwrap_argv(cmd, repo_dir, cfg.allow_network)
+        # Every mask/bind target named in the argv must exist when bwrap
+        # sets the mount up: the leaf of a --tmpfs or --ro-bind whose
+        # parent chain sits under the read-only "--ro-bind / /" root cannot
+        # be created by bwrap itself. BW1 gave contained_run.py this step
+        # and it was the only caller; this builder handed its argv straight
+        # to bwrap. Measured with real bwrap on a target under the
+        # read-only root: without the step, "bwrap: Can't mkdir <path>:
+        # Read-only file system" and the command dies before it runs;
+        # with it, rc=0 and the mask still refuses the path.
+        from . import cage_binds as _cage_binds
+        _cage_binds.ensure_argv_bind_targets(argv)
         shell = False
     elif cfg.mode == "firejail":
         try:

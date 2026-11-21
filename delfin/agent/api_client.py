@@ -6383,10 +6383,22 @@ def _gh_alias_or_extension(cmd: str, cwd) -> Optional[tuple]:
 #
 # The push gate before it (push grants, the git role) is unchanged.
 
+#: ``[ \t]`` and not ``\s``: ``\s`` includes a newline, so a line break
+#: separated tokens exactly like a space and a TWO-LINE command parsed as
+#: one push. Measured on 2026-11-21: ``git push origin topic\nmain`` was
+#: accepted for the uncaged route and ran as ``git push origin topic main``
+#: -- the second line became a refspec, so a branch nobody asked for was
+#: pushed, and that line was itself neither run nor refused. The permission
+#: gate upstream had judged the two-line text. No arbitrary command came
+#: through (``rm -rf /tmp/x`` is refused by the flag allowlist), but an
+#: unrequested publish did, and publishing is the irreversible class.
+#:
+#: ``_github_pr_plan`` already refuses "\n" and "\r" outright; this is the
+#: same refusal expressed in the token separator, where the cause is.
 _PLAIN_PUSH_RE = re.compile(
-    r"^\s*git\s+push((?:\s+[A-Za-z0-9._/:@^~-]+)*)"
-    r"(\s+2>&1)?"
-    r"(?:\s*\|\s*(tail|head)\s+(?:-n\s*)?-?(\d+))?\s*$")
+    r"^[ \t]*git[ \t]+push((?:[ \t]+[A-Za-z0-9._/:@^~-]+)*)"
+    r"([ \t]+2>&1)?"
+    r"(?:[ \t]*\|[ \t]*(tail|head)[ \t]+(?:-n[ \t]*)?-?(\d+))?[ \t]*$")
 _PLAIN_PUSH_FLAGS = frozenset({
     "-u", "--set-upstream", "-q", "--quiet", "-v", "--verbose",
     "--porcelain", "-n", "--dry-run", "--tags", "--follow-tags", "--atomic",
@@ -9045,6 +9057,74 @@ def _rule_answers(perms, site: str, name: str, target=None) -> Optional[str]:
     return rule.text
 
 
+def known_tool_names(
+    tools: Optional[list[dict[str, Any]]] = None
+) -> frozenset[str]:
+    """Every name that IS a tool of this product, as one derivation.
+
+    Input: optionally a catalogue to read instead of the advertised one
+    (the tests pass a small list). Output: the names, bare and -- for the
+    ops server -- also namespaced.
+
+    Why it exists: two judges answered "is this a real tool name" from two
+    different sets, and neither was a superset of the other, so they
+    disagreed in BOTH directions. Measured 2026-11-20: the nine swarm lead
+    names passed ``unknown_tool_names`` and were refused by the preset
+    validator as "not a known tool", while the ops server's real
+    ``geometry_build_smiles`` / ``geometry_read_xyz`` /
+    ``geometry_add_hydrogens`` were reported as MISSPELT by a judge reading
+    the doc catalogue alone -- the catalogue carries none of the server's
+    102 ``tool_*`` functions.
+
+    The union, each part with the reason it belongs:
+
+    * the advertised catalogue -- what the model is offered;
+    * ``_ALWAYS_ALLOWED_TOOLS`` -- reachable whatever the session allows;
+    * ``_SWARM_LEAD_TOOL_NAMES`` -- dispatched through the swarm service
+      surface rather than the catalogue;
+    * ``_WRITE_TOOL_NAMES`` and ``_DELFIN_ONLY_TOOL_NAMES`` -- real tools a
+      preset may list;
+    * the ops server's ``tool_*`` functions, derived from the module so one
+      it registers later stays known automatically. EVERY ``tool_*``, not
+      only ``tool_geometry_*``: measured, the server defines 102 and the
+      geometry prefix derives 19, so 83 real tools would stay unknown.
+
+    ``mcp__`` names from other servers are NOT here: those are discovered
+    inside a turn, so at startup there is nothing to check them against
+    and a guess would be a false alarm. Callers skip them instead.
+    """
+    # Read from the module that defines it rather than from this module's
+    # own binding: that binding is made further down the file, so a caller
+    # reached during import -- which is what a preset validator is -- gets
+    # a NameError from the module-level name and the right list from here.
+    if tools is None:
+        from .tool_catalog import _DOC_TOOLS_OPENAI as catalogue
+    else:
+        catalogue = tools
+    names: set[str] = set()
+    for t in catalogue:
+        n = str(t.get("name")
+                or (t.get("function") or {}).get("name") or "")
+        if n:
+            names.add(n)
+    names |= set(_ALWAYS_ALLOWED_TOOLS)
+    names |= set(_SWARM_LEAD_TOOL_NAMES)
+    names |= set(_WRITE_TOOL_NAMES)
+    names |= set(_DELFIN_ONLY_TOOL_NAMES)
+    try:
+        from delfin.ops_server import server as _ops_server
+        for _n in dir(_ops_server):
+            if _n.startswith("tool_"):
+                base = _n[len("tool_"):]
+                names.add(base)
+                names.add(f"mcp__delfin-ops__{base}")
+    except Exception:
+        # The server is optional; without it the ops names stay unknown,
+        # which is the same answer this function gave before it existed.
+        pass
+    return frozenset(names)
+
+
 def unknown_tool_names(
     names: Any, tools: Optional[list[dict[str, Any]]] = None
 ) -> list[str]:
@@ -9059,13 +9139,10 @@ def unknown_tool_names(
     the turn, so at startup there is nothing to check them against and a
     guess would be a false alarm.
     """
-    catalogue = _DOC_TOOLS_OPENAI if tools is None else tools
-    known = {t.get("function", {}).get("name", "") for t in catalogue}
-    known |= set(_ALWAYS_ALLOWED_TOOLS)
-    # The swarm lead tools are dispatched through the swarm service
-    # surface, not the catalogue; a preset listing one is correct, not
-    # a typo.
-    known |= set(_SWARM_LEAD_TOOL_NAMES)
+    # The one derivation, shared with the preset validator: this judge
+    # used to read the catalogue plus the always-allowed and swarm-lead
+    # names only, which called the ops server's real tools misspelt.
+    known = known_tool_names(tools)
     return sorted(
         n for n in _normalise_tool_names(names)
         if not n.startswith("mcp__") and n not in known
@@ -9253,6 +9330,16 @@ _DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
     ".npmrc", "**/.npmrc", ".pypirc", "**/.pypirc", ".pgpass", "**/.pgpass",
     ".kube/**", "**/.kube/**", ".docker/config.json", "**/.docker/config.json",
     ".envrc", "**/.envrc", "*.env", "**/*.env",
+    # Two home secrets that sandbox.home_secret_paths masks in the cage and
+    # that nothing denied at the tool level, so the cage mask was their only
+    # layer -- and that mask is emitted only when the path already exists
+    # when the argv is built. Measured 2026-11-21: of 31 secret paths, a
+    # fresh HOME got ONE mask, and reading the unmasked file inside the cage
+    # succeeded. The other 29 are denied here as well (approval_codes,
+    # trust_store, messenger_sessions, messenger_pairing, user_schedules,
+    # credentials*), which is why these two are the ones added.
+    ".claude", ".claude/**", "**/.claude/**",
+    ".local/share/delfin-messenger/**", "**/delfin-messenger/**",
     # Common SSH private-key names even outside a .ssh/ directory.
     "id_rsa", "id_rsa.*", "id_dsa", "id_ecdsa", "id_ed25519",
     "**/id_rsa", "**/id_dsa", "**/id_ecdsa", "**/id_ed25519",

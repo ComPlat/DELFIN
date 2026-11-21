@@ -141,18 +141,6 @@ def _user_config_path() -> Path:
     return Path.home() / ".delfin" / "mcp_servers.json"
 
 
-def _project_config_path(workspace: Path) -> Path:
-    """Where a workspace's server config lives.
-
-    Derived from the trust registry rather than spelled out here, so the
-    file that SPAWNS processes and the file that needs a trust decision
-    (and a protected glob) cannot drift apart.
-    """
-    from . import workspace_trust as _trust
-    rel = _trust.get_kind(_trust.KIND_MCP_SERVERS).relative_paths[0]
-    return Path(workspace) / rel
-
-
 # Built-in MCP servers that ship WITH DELFIN — always available so a mode like
 # Pipeline works out-of-the-box without each user hand-registering them. The
 # user config can override an entry's command/args or disable it entirely

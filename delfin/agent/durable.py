@@ -125,15 +125,6 @@ class RecoveryPlan:
         return candidate.verdict is not RecoveryVerdict.RE_RUN_OK
 
 
-def _step_finished(session: str, *, root: "str | Path | None",
-                   step: int, turn: int) -> bool:
-    for entry in step_journal.read_steps(session, root=root):
-        if entry.get("kind") == "finish" and entry.get("step") == step \
-                and entry.get("turn") == turn:
-            return True
-    return False
-
-
 def _default_checker(_step: dict[str, Any]) -> CheckerResult:
     """No checker supplied: the effect is unverifiable -> MUST_ASK."""
     return "unknown"
