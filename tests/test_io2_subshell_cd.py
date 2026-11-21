@@ -43,13 +43,45 @@ def _script(directory, body, name="run.sh"):
 
 
 def test_subshell_cd_relative_walk_script_is_refused(lustre, tmp_path):
+    """The refusal must be about the CONTENT, not about a missing script.
+
+    Asserts the reason, not just the verdict: the gate also refuses a
+    relative script that does not resolve under the cd target, with "not
+    found from the cd target". A bare `verdict == "refuse"` would pass even
+    if the cd never reached the file and its content was never read -- a
+    false green. The walk reason and the resolved file's line number are
+    required, and the resolution reason is explicitly excluded.
+    """
     sub = tmp_path / "sub"
     _script(sub, WALK)
     verdict, text, may_run = hpc_io_check.sbatch_gate(
         f"( cd {sub}; sbatch run.sh )", env=dict(ENV))
     assert verdict == "refuse", (verdict, text)
     assert may_run is False
-    assert "tree_walk_on_lustre" in text
+    assert "tree_walk_on_lustre" in text, (
+        "refused for the wrong reason -- content was not read")
+    assert "not found from the cd target" not in text, (
+        "the cd did not reach the file; this refusal proves nothing about "
+        "content")
+    # The walking line of the RESOLVED file, so the content of sub/run.sh
+    # demonstrably came from the cd target and not from the process cwd.
+    assert "run.sh:2" in text, text
+
+
+def test_subshell_cd_missing_script_refuses_for_resolution(lustre, tmp_path):
+    """The control that keeps the test above honest.
+
+    A subshell cd naming a script that does not exist must give the
+    RESOLUTION reason. If this ever carried the walk reason, the content
+    assertion above would be measuring the wrong thing.
+    """
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    verdict, text, _may_run = hpc_io_check.sbatch_gate(
+        f"( cd {sub}; sbatch nosuch.sh )", env=dict(ENV))
+    assert verdict == "refuse"
+    assert "not found from the cd target" in text, text
+    assert "tree_walk_on_lustre" not in text, text
 
 
 def test_subshell_cd_relative_clean_script_still_runs(lustre, tmp_path):
