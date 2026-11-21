@@ -3711,7 +3711,13 @@ def _resolve_subagent_model(
             return parent_model, "parent"
         from .model_capabilities import resolve as _resolve_caps
         base_url = str(getattr(parent_client, "_base_url", "") or "")
-        caps = _resolve_caps(provider, candidate, base_url)
+        # The key goes with it: the /v1/models probe is authenticated, and
+        # without it the probe 401s and supports_tools comes from the
+        # heuristic -- which answers "no tools" for a model that has them,
+        # so the delegate falls back to the parent model for no reason.
+        caps = _resolve_caps(
+            provider, candidate, base_url,
+            api_key=str(getattr(parent_client, "_api_key", "") or ""))
         if not getattr(caps, "supports_tools", False):
             return parent_model, "parent"
         return candidate, "cheap"
