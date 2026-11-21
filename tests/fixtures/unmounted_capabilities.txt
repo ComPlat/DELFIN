@@ -27,7 +27,6 @@ nowhere	remove_read_dir	delfin/agent/kit_settings.py:342
 nowhere	request_swarm_pause	delfin/agent/swarm/lead.py:110
 nowhere	set_for_workspace_words	delfin/agent/workspace_profiles.py:220
 test-only	_bypass_failure_asks	delfin/agent/api_client.py:14120
-test-only	_claim_sentence	delfin/agent/verify_guard.py:2056
 test-only	_disabled_keyring_factory	delfin/agent/credentials.py:360
 test-only	_load_md_presets	delfin/agent/subagents.py:1606
 test-only	_locator_value	delfin/agent/cited_retrieval.py:218
@@ -42,13 +41,11 @@ test-only	enforce_quota	delfin/agent/shared_tmp.py:307
 test-only	for_files	delfin/agent/verify_recipe.py:327
 test-only	forget_pin_decisions	delfin/agent/mcp_client.py:429
 test-only	format_member_message	delfin/agent/swarm/lead.py:198
-test-only	format_prompt_size_report	delfin/agent/prompt_loader.py:2873
 test-only	friction_summary	delfin/agent/session_report.py:849
 test-only	hostile_reach	delfin/agent/prompt_head.py:144
 test-only	is_safe	delfin/agent/readonly_pipeline.py:371
 test-only	keyed_engines_configured	delfin/agent/web_tools.py:698
 test-only	map_to_host	delfin/agent/shared_tmp.py:207
-test-only	observations_are_complete	delfin/agent/verify_guard.py:1679
 test-only	open_dialogs	delfin/agent/knowledge_share.py:399
 test-only	pdf_xfa_data	delfin/agent/office.py:3514
 test-only	pilot_slot	delfin/agent/explore_pilot.py:79
@@ -67,7 +64,6 @@ test-only	resolve_pending	delfin/agent/skill_usage.py:247
 test-only	resources_within	delfin/agent/pack/benchmark/accept/w20_common.py:111
 test-only	role_tool_surface_report	delfin/agent/api_client.py:12107
 test-only	scan_for_dishonest_tests	delfin/agent/verify_guard.py:3554
-test-only	set_caveat_language	delfin/agent/verify_guard.py:1062
 test-only	stable_prefix_len	delfin/agent/prompt_head.py:44
 test-only	status_validate	delfin/agent/swarm/lead.py:49
 test-only	step_resume_note	delfin/agent/cli_resume.py:291

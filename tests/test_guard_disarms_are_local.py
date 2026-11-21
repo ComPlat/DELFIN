@@ -99,7 +99,8 @@ def test_a_hedge_one_sentence_away_does_not_excuse_a_location():
 
 def _sentence_around(text: str, needle: str) -> str:
     start = text.index(needle)
-    return vg._claim_sentence(text, start, start + len(needle))
+    lo, hi = vg._claim_sentence_span(text, start, start + len(needle))
+    return text[lo:hi]
 
 
 def test_an_abbreviation_never_splits_a_sentence():

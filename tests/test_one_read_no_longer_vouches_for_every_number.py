@@ -144,7 +144,6 @@ def test_a_result_that_arrived_cut_short_makes_the_pool_say_nothing():
     hole is not evidence -- it would flag a chemist's correctly-quoted
     energy from deep inside a long .out file."""
     vg.record_tool_numbers("STATE 1: 2.310 eV", truncated=True)
-    assert vg.observations_are_complete() is False
     assert vg.observed_numbers() is None
     assert vg.scan_for_unsourced_quantities(
         CLAIM, observed_files={"/w/calc/tddft.out"},

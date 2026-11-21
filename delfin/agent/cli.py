@@ -5198,6 +5198,48 @@ def cmd_friction(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_prompt_size(args: argparse.Namespace) -> int:
+    """What the composed system prompt costs, per section.
+
+    Input: the same arguments ``build_system_prompt`` takes, fixed here
+    to the solo role in the current directory. Output: the text table
+    ``format_prompt_size_report`` renders, on stdout; exit 0.
+
+    Why this command exists: the report dict was computed by
+    ``PromptLoader.prompt_size_report`` and rendered by
+    ``format_prompt_size_report``, but only the suite reached the
+    renderer -- a person tuning the prompt head had to read Python to
+    learn where the 15k tokens live.
+    """
+    from .prompt_loader import PromptLoader, format_prompt_size_report
+
+    role = (getattr(args, "role", "") or "").strip() or "solo_agent"
+    mode = (getattr(args, "mode", "") or "").strip() or "solo"
+    # Default repo_dir: the shipped pack, exactly what the engine's
+    # loader sees (AgentEngine never passes pack_dir). repo_dir=cwd is
+    # the test/override path and expects pack/ inside it.
+    loader = PromptLoader()
+    # An unknown role composes an empty prompt without complaint, which
+    # would print a table of zeros that reads as a measurement. The
+    # role prompt file is the registry: a role exists exactly when its
+    # agents/<role>.md does.
+    if not (loader.agent_dir / "agents" / f"{role}.md").is_file():
+        print(f"ERROR: unknown role {role!r} -- no "
+              f"agents/{role}.md in the pack", file=sys.stderr)
+        return 2
+    try:
+        report = loader.prompt_size_report(
+            role_id=role, mode_id=mode,
+            task_text="prompt size report",
+            permission_mode="default",
+        )
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(format_prompt_size_report(report))
+    return 0
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     """What one agent session actually did: tools, files, commands,
     tests, denials, cost. `--json` prints the SessionReport itself,
@@ -6285,6 +6327,19 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Print the SessionReport as JSON instead of "
                              "the terminal rendering")
     report.set_defaults(func=cmd_report)
+
+    # prompt-size — where the tokens of the system prompt live
+    psize = sub.add_parser(
+        "prompt-size",
+        help="Per-section chars/estimated tokens of the composed system "
+             "prompt, split into the cacheable stable prefix and the "
+             "per-turn volatile tail",
+    )
+    psize.add_argument("--role", default="solo_agent",
+                       help="Role id to compose for (default: solo_agent)")
+    psize.add_argument("--mode", default="solo",
+                       help="Mode id to compose for (default: solo)")
+    psize.set_defaults(func=cmd_prompt_size)
 
     # friction — ranked refusals, slow turns and silent exits, with tasks
     fric = sub.add_parser(
