@@ -1420,6 +1420,28 @@ def _expand_ansi_c_quoting(token: str) -> str:
                 out.append("\t")
                 i += 2
                 continue
+            # \xHH and \NNN change a NAME just as much as \\ does: bash
+            # turns $'\x2f' into `/`, and round 16 measured that a file
+            # reached through such an escape was allowed while its plain
+            # path refused. Expanding them is not "one more escape in the
+            # list": they are the reason the list can never be complete,
+            # so the numeric forms are decoded below rather than named.
+            if nxt == "x" and i + 3 < len(body):
+                hexits = body[i + 2:i + 4]
+                if all(c in "0123456789abcdefABCDEF" for c in hexits):
+                    out.append(chr(int(hexits, 16)))
+                    i += 4
+                    continue
+            if nxt in "01234567":
+                octits = ""
+                j = i + 1
+                while j < len(body) and len(octits) < 3 and body[j] in "01234567":
+                    octits += body[j]
+                    j += 1
+                if octits:
+                    out.append(chr(int(octits, 8)))
+                    i = j
+                    continue
         out.append(ch)
         i += 1
     return "".join(out)
