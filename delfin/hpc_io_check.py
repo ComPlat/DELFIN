@@ -579,7 +579,8 @@ def check_submit(script, env: dict | None = None,
     return refused, warned
 
 
-def _cd_dir_of_segment(segment: str) -> tuple[str, str, bool]:
+def _cd_dir_of_segment(segment: str,
+                       base_dir: str = "") -> tuple[str, str, bool]:
     """A segment that starts with ``cd <dir>``: ``(dir, rest, more)``.
 
     ``more`` is False when the segment is ONLY the cd (the dir carries
@@ -590,6 +591,12 @@ def _cd_dir_of_segment(segment: str) -> tuple[str, str, bool]:
     """
     import shlex
     stripped = _strip_wrappers(segment)
+    # A chained `cd` arrives behind a separator and KEEPS the leading
+    # space the splitter left on it (`cd A && cd relB && sbatch clean.sh`
+    # gives a second segment `" cd relB "`). Anchoring on ^cd missed it,
+    # so the pending dir stayed A and a clean submit was refused as "not
+    # found from the cd target A" (reviewer nacht-s2, round 11).
+    stripped = stripped.lstrip()
     m = re.match(r"^(cd|pushd)\s+(.+)$", stripped)
     if not m:
         # A subshell is split by the segment splitter on its inner
@@ -611,6 +618,12 @@ def _cd_dir_of_segment(segment: str) -> tuple[str, str, bool]:
     if not tokens:
         return "", "", False
     directory = tokens[0]
+    # A RELATIVE target is relative to the directory a previous cd left
+    # pending (`cd A && cd relB` means A/relB). Joining here keeps the
+    # consumer's "os.path.join(cd_dir, name)" correct.
+    if base_dir and not os.path.isabs(directory) and \
+            directory[:1] not in ("~", "-"):
+        directory = os.path.join(base_dir, directory)
     remainder = rest_text[len(tokens[0]):].strip()
     if not remainder:
         return directory, "", False
@@ -678,7 +691,8 @@ def sbatch_gate(cmd: str, env: dict | None = None,
         # the IO1 L4 class): `cd <dir> && sbatch walk.sh` resolves a
         # relative script against the CD TARGET, not the process cwd,
         # so the gate must apply the pending dir to later segments.
-        directory, rest, chained = _cd_dir_of_segment(segment)
+        directory, rest, chained = _cd_dir_of_segment(
+            segment, base_dir=pending_dir)
         if directory:
             if chained:
                 verdict, text, runs = _gate_sbatch_segment(
@@ -715,7 +729,16 @@ def sbatch_gate(cmd: str, env: dict | None = None,
     return "warn", texts[0], may_run
 
 
-_GATE_HEREDOC_RE = re.compile(r"<<(-?)\s*(?:(['\"])([\w.-]+)\2|([\w.-]+))")
+# The delimiter of a here-document. Bash does NOT expand it: `<<$TAG` uses
+# the LITERAL text `$TAG` as the terminator (measured: `cat <<$TAG` / body /
+# `$TAG` prints the body, rc 0), so a delimiter is any run of characters
+# that is not shell punctuation -- a bare word, `$VAR`, `${VAR}`, `$(...)`.
+# Matching only `[\w.-]+` left `<<$TAG` unrecognised, so no body was found
+# and the submit was allowed (reviewer nacht-s2, round 11, fail-open).
+# The trailing `[^\s]` run stops at whitespace or an operator; a quoted
+# delimiter keeps its own alternation so the quotes stay out of the tag.
+_GATE_HEREDOC_RE = re.compile(
+    r"<<(-?)\s*(?:(['\"])([^'\"\s]+)\2|([^\s;&|()<>]+))")
 
 
 def _consume_gate_heredoc(cmd: str, i: int) -> tuple[str, int] | None:
@@ -793,6 +816,13 @@ def _heredoc_of_segment(text: str) -> tuple[str | None, str]:
             quote = ch
             i += 1
             continue
+        if ch == "<" and text[i:i + 3] == "<<<":
+            # A here-STRING is not a here-document: skip the whole token.
+            # Without this the next index sees `<<` again (the '<' was
+            # merely stepped over) and the rest of the line is eaten as a
+            # here-document body, truncating the segment to `sbatch <`.
+            i += 3
+            continue
         if ch == "<" and text[i:i + 2] == "<<" and text[i:i + 3] != "<<<":
             consumed = _consume_gate_heredoc(text, i)
             if consumed is not None:
@@ -809,6 +839,70 @@ def _heredoc_of_segment(text: str) -> tuple[str | None, str]:
                 else:
                     body = rest
                 return body, text[:i] + text[end:]
+        i += 1
+    return None, text
+
+
+def _herestring_of_segment(text: str) -> tuple[str | None, str]:
+    """Split one segment into ``(here-string word, segment without it)``.
+
+    ``(None, text)`` when the segment carries no here-string. A
+    here-string (``<<< word``) feeds *word* to the command as stdin,
+    exactly as a here-document body does -- measured: ``bash <<<
+    "echo RAN"`` prints RAN, rc 0. For ``sbatch`` that stdin IS the batch
+    script, so the word is script text and must be judged.
+
+    Only a ``<<<`` at quote depth 0 counts: one inside a quoted argument
+    (``--wrap='a <<< b'``) is that argument's text, not a redirect.
+
+    The word ends at the first whitespace or shell operator outside
+    quotes; quotes around it are dropped, since the shell removes them
+    before the command sees the text.
+    """
+    quote: str | None = None
+    i = 0
+    while i < len(text) - 2:
+        ch = text[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if quote:
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            i += 1
+            continue
+        if ch == "<" and text[i:i + 3] == "<<<":
+            j = i + 3
+            while j < len(text) and text[j] in " \t":
+                j += 1
+            word_quote: str | None = None
+            start = j
+            out: list[str] = []
+            while j < len(text):
+                c = text[j]
+                if word_quote:
+                    if c == word_quote:
+                        word_quote = None
+                    else:
+                        out.append(c)
+                    j += 1
+                    continue
+                if c in "'\"":
+                    word_quote = c
+                    j += 1
+                    continue
+                if c.isspace() or c in ";&|<>":
+                    break
+                out.append(c)
+                j += 1
+            word = "".join(out)
+            if not word and j == start:
+                return None, text
+            return word, text[:i] + text[j:]
         i += 1
     return None, text
 
@@ -871,6 +965,12 @@ def _split_gate_segments(cmd: str) -> list[str]:
             quote = ch
             current.append(ch)
             i += 1
+            continue
+        if ch == "<" and cmd[i:i + 3] == "<<<":
+            # A here-string: no terminator, and it must be left INTACT for
+            # the segment-level reader. Stepping over one '<' only makes
+            # the next index see `<<` and treat the rest as a heredoc.
+            i += 3
             continue
         if ch == "<" and cmd[i:i + 2] == "<<":
             # A here-document: redirect + body belong to THIS segment.
@@ -1115,7 +1215,17 @@ def _gate_sbatch_segment(segment: str, env: dict,
     # the `<<tag` token can be mistaken for an argument, then judge it as
     # script text where it is the script -- exactly like `--wrap`.
     heredoc_body, segment_without_heredoc = _heredoc_of_segment(segment)
-    target = _strip_wrappers(segment_without_heredoc)
+    # A here-string feeds its WORD to the command as stdin, exactly as a
+    # here-document body does (measured: `bash <<< "echo ran"` runs it).
+    # For sbatch that stdin is the batch script, so the word is script
+    # text. It is stripped out of the segment like the here-document so
+    # the `<<<` token is not left behind as the redirect that truncates
+    # the argv scan, then judged where it is the script.
+    herestring_word, segment_without_redirect = _herestring_of_segment(
+        segment_without_heredoc)
+    if herestring_word is not None and heredoc_body is None:
+        heredoc_body = herestring_word
+    target = _strip_wrappers(segment_without_redirect)
     # A subshell's closing paren rides on the LAST segment
     # (`sbatch walk.sh)`): drop a lone trailing `)` so the script
     # argument is not polluted by it. Only a single trailing char, and
