@@ -168,10 +168,13 @@ def test_the_clearing_choice_is_the_person_s_not_a_background_tick(
 
             # Let whatever the patch polls run. The fixture shortens the
             # interval to 0.2 s, so this is many polls, not a machine-speed
-            # race: the bound is on polls elapsing, not on wall-clock luck.
+            # race. The bound counts TICKS, not seconds (it used to be
+            # monotonic() + 2.0, which is ~40 ticks on an idle machine and far
+            # fewer on a loaded one -- the same wall-clock dependency this
+            # package reports against the builder's :358). 60 ticks of 0.05 s
+            # is 15 poll intervals at 0.2 s, on any machine.
             import time
-            deadline = time.monotonic() + 2.0
-            while time.monotonic() < deadline:
+            for _ in range(60):
                 time.sleep(0.05)
 
             typed = "typed while the holder is still alive"
