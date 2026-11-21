@@ -54,7 +54,9 @@ def _judge(answer, **kw):
     # The value was cut off.
     ("DECISION: al", "cut"),
     ("DECISION:", "cut"),
-    # A decision line the model never filled in a verdict for.
+    # A complete, short, off-format answer. Without a finish_reason the
+    # length heuristic is all there is and still calls it a cut; the case
+    # below pins what the endpoint's own answer does to that guess.
     ("Sure! This looks fine to me.", "cut"),
     # Decide-able text the parser cannot read: not a cut.
     ("DECISION: maybe\nREASON: unsure.", "unreadable"),
@@ -117,3 +119,37 @@ def test_the_strictest_decision_still_wins():
     verdict = _judge("DECISION: allow\nREASON: echoed\n"
                      "DECISION: refuse\nREASON: destructive.")
     assert verdict.decision == "refuse"
+
+
+@pytest.mark.parametrize("answer,finish_reason,expected", [
+    # The endpoint says the model stopped because it ran out of room: a cut,
+    # whatever the length.
+    ("I think the right call here is probably", "length", "cut"),
+    ("x" * 2000, "length", "cut"),
+    # The endpoint says the model finished. A short off-format reply is then
+    # NOT a cut -- it is a model that did not follow the format, and calling
+    # it a cut told the operator the budget was spent when it was not.
+    ("Sure! This looks fine to me.", "stop", "unreadable"),
+    ("DECISION: maybe\nREASON: unsure.", "stop", "unreadable"),
+    # An empty reply is empty before any of this is asked.
+    ("", "length", "empty"),
+    ("   ", "stop", "empty"),
+])
+def test_the_endpoints_own_reason_beats_the_length_guess(
+        answer, finish_reason, expected):
+    """Length was used as a proxy for truncation.
+
+    Any reply under _SHAPE_SCAN_CHARS with no decision line was reported as
+    "cut" -- a reply that stopped before any decision. A complete 28-character
+    answer in the wrong format was therefore attributed to a spent budget, in
+    the function added to attribute these failures accurately. The endpoint
+    already says which it was.
+    """
+    assert ac.no_verdict_shape(answer, finish_reason) == expected
+
+
+def test_without_a_reason_the_guess_still_answers():
+    """An unattributed shape is what this function exists to prevent, so the
+    heuristic stays as the last resort -- named as a guess, not the rule."""
+    assert ac.no_verdict_shape("short, no decision line") == "cut"
+    assert ac.no_verdict_shape("x" * 2000) == "unreadable"

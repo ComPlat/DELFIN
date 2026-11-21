@@ -16,7 +16,104 @@ from __future__ import annotations
 
 from . import agent_metrics as _agent_metrics
 
-__all__ = ["BudgetLedger"]
+#: Input-token ceiling for a run that asked for none, in tokens.
+#:
+#: Derived, not chosen. Input: the per-turn ``input_tokens`` rows of
+#: ``turn_metrics`` -- the only size figure every provider returns -- for
+#: 2,328 recorded sessions on this host plus three field-reported
+#: sessions on an unpriced model (all three recorded ``cost_usd 0.0``, so
+#: no USD ceiling was in force in any of them):
+#:
+#: * 27.3 M input tokens, 223 tool calls -- the session finished its work;
+#: * 124.1 M input tokens, 707 tool calls -- also finished its work;
+#: * 363.5 M input tokens, 1,696 tool calls, 34 compactions -- ended with
+#:   "session korrupt, neue session wird empfohlen".
+#:
+#: Local distribution: p50 21 k, p95 18.6 M, p99 47.2 M, p99.5 58.4 M,
+#: max 81.7 M over 1,424 sessions that spent tokens at all.
+#:
+#: 200 M sits above every session observed to work (the largest, 124.1 M,
+#: reads 62 % and is not even wound down at 80 %) and below the one
+#: observed to break: that run would have been wound down at 160 M and
+#: refused a further turn at 220 M, roughly half way through the 1,696
+#: tool calls that destroyed it. No local session reaches 80 % of it, so
+#: the figure adds no prompt text to any run recorded here.
+#:
+#: An explicit ``agent.run_budget_tokens`` (including 0, which lifts the
+#: ceiling) replaces it; the attribute replaces both.
+DEFAULT_RUN_BUDGET_TOKENS = 200_000_000
+
+#: Per-turn input-token circuit-breaker, in tokens. Mirrors
+#: ``agent.cost_hard_limit_usd`` (default $50, "deliberately very high so
+#: it only ever trips on a loop gone wrong").
+#:
+#: **Do not tighten this to catch a large turn. The per-turn figure does
+#: not discriminate; the run total is the discriminating figure.** The
+#: largest single turn of the broken field session was 19,416,805 input
+#: tokens, and the two sessions that finished their work peaked at
+#: 7,480,063 and 14,033,061 -- the broken one's biggest turn is 1.4x the
+#: biggest turn of a session that worked, while its run total is 2.9x.
+#: Locally, 25.4 % of turns pass 1 M tokens, 1.06 % pass 20 M and 0.13 %
+#: pass 50 M, so a breaker tight enough to stop a 1 M-token turn would
+#: cut a quarter of real work.
+#:
+#: This cap is therefore the runaway backstop only, set above every turn
+#: in the evidence. The ceiling that separates a broken session from a
+#: working one is :data:`DEFAULT_RUN_BUDGET_TOKENS`.
+DEFAULT_TURN_TOKEN_CAP = 50_000_000
+
+#: Tokens past which an exact ``cost_usd == 0.0`` cannot be a cheap run.
+#:
+#: The defect this closes. ``_note_turn_price_state`` treats a reported
+#: spend as measured whatever the rate card says -- correct when the
+#: backend really observed something, because a subscription's $0.00 is a
+#: real observation. But a CLI backend talking to a provider with no rate
+#: card reports the same 0.00 for the ABSENCE of an observation, and by
+#: value alone the two are identical. The broken field session ran
+#: ``backend: cli``: it would have counted 0 unpriced turns, reported its
+#: USD ceiling as enforced, and shown ``$0.00 of $10.00 (0 %)`` through
+#: 363 M tokens.
+#:
+#: The two zeros cannot be told apart by value, so they are told apart by
+#: cross-checking the dimension that IS measured. Derived:
+#:
+#: * the cheapest published input rate in ``pricing`` is $0.10/MTok
+#:   (``gpt-5-nano``, ``gpt-4.1-nano``). 2 M tokens there is $0.20 --
+#:   40x the $0.005 that still rounds to $0.00 -- and $30.00 at the
+#:   table's most expensive rate ($15/MTok). An exact 0.00 after 2 M
+#:   tokens is therefore not a priced run being thrifty;
+#: * the three field sessions (27.3 M, 124.1 M, 363.5 M input tokens) are
+#:   13x to 180x past it, and all three recorded ``cost_usd 0.0``;
+#: * of 2,331 sessions recorded on this host, 369 pass 2 M tokens and
+#:   EVERY one of them ran entirely on a non-billing provider (kit 325,
+#:   blablador 44), which the NON_BILLING branch excludes before this
+#:   check is reached. The median recorded session is 21,211 tokens, two
+#:   orders of magnitude below.
+#:
+#: A real subscription run past 2 M tokens IS flagged, and that is the
+#: honest output rather than a false alarm: a USD ceiling on a
+#: subscription cannot bind either, so a run that says so is telling the
+#: truth about itself.
+DEFAULT_ZERO_COST_TOKEN_FLOOR = 2_000_000
+
+__all__ = ["BudgetLedger", "DEFAULT_RUN_BUDGET_TOKENS",
+           "DEFAULT_TURN_TOKEN_CAP", "DEFAULT_ZERO_COST_TOKEN_FLOOR",
+           "format_tokens"]
+
+
+def format_tokens(count: int) -> str:
+    """``41,000,000`` -> ``41.0 M``. One formatter, because a token
+    figure that appears as a raw integer in one notice and as millions in
+    the next cannot be compared by the person reading both."""
+    try:
+        n = int(count or 0)
+    except (TypeError, ValueError):
+        return "0"
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f} M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f} k"
+    return f"{n:,}"
 
 
 class BudgetLedger:
@@ -55,18 +152,28 @@ class BudgetLedger:
                 pass
         return usd, secs
 
-    def _run_ceiling_hit(self, spent_this_turn: float = 0.0) -> str:
+    def _run_ceiling_hit(self, spent_this_turn: float = 0.0,
+                         tokens_this_turn: int = 0) -> str:
         """The run ceiling a RUNNING turn has reached, or "".
 
         Input: what the running turn has spent so far (the client's
-        estimate; ``cost_usd`` holds the finished turns). Output: the
-        stop reason the turn ends with -- ``run_budget_s`` once the wall
-        clock since ``_run_started_at`` reaches ``run_budget_s``,
-        ``run_budget_usd`` once finished plus running spend reaches
-        ``run_budget_usd`` -- else "". The turn ceiling is not checked
-        here: it counts finished turns, which do not change mid-turn.
+        estimate; ``cost_usd`` holds the finished turns) and how many
+        tokens it has carried so far (``token_usage`` is only updated
+        when the turn ends). Output: the stop reason the turn ends with
+        -- ``run_budget_s`` once the wall clock since ``_run_started_at``
+        reaches ``run_budget_s``, ``run_budget_usd`` once finished plus
+        running spend reaches ``run_budget_usd``,
+        ``run_budget_tokens`` once finished plus running tokens reach the
+        token ceiling -- else "". The turn ceiling is not checked here:
+        it counts finished turns, which do not change mid-turn.
         Consulted by the client between tool rounds (``run_ceiling``);
         the 110 % gate before a turn stays. Never raises.
+
+        The token term is checked HERE and not only at the pre-turn gate
+        because a session on an unpriced model was one turn of 1,696 tool
+        calls: 1,031,096 input tokens arrived inside a single turn, and a
+        ceiling consulted once before it would have watched all of them
+        go past.
         """
         engine = self._engine
         hit = ""
@@ -82,6 +189,13 @@ class BudgetLedger:
                          + max(0.0, float(spent_this_turn or 0.0)))
                 if spent >= usd:
                     hit = "run_budget_usd"
+            if not hit:
+                tok_cap = self._run_budget_tokens()
+                if tok_cap > 0:
+                    carried = (self._run_budget_tokens_spent()
+                               + max(0, int(tokens_this_turn or 0)))
+                    if carried >= tok_cap:
+                        hit = "run_budget_tokens"
         except Exception:
             return ""
         if hit:
@@ -184,28 +298,295 @@ class BudgetLedger:
         A quota-funded or locally served run is NOT this case: its zero is
         a measurement, its ceiling holds, and calling it unmeasured would
         be a false statement in the other direction.
+
+        False in a second case, found by the token dimension and only
+        checkable because it exists: ``cost_usd`` is exactly 0.00 and the
+        run has carried :data:`DEFAULT_ZERO_COST_TOKEN_FLOOR` tokens.
+        A reported spend counts as an observation whatever the rate card
+        says -- the right rule, since a subscription's $0.00 is real --
+        but a backend talking to a provider with no rate card reports the
+        same 0.00 for the absence of an observation. The two zeros are
+        identical by value, so the measured dimension decides between
+        them. A non-billing turn explains the zero and is checked first.
         """
         engine = self._engine
         usd, _secs = self._run_budget()
-        return usd > 0 and int(getattr(engine, "_unpriced_turns", 0) or 0) == 0
+        if usd <= 0:
+            return False
+        if int(getattr(engine, "_unpriced_turns", 0) or 0) > 0:
+            return False
+        # The zero a provider that bills nothing produces is a fact; it
+        # needs no cross-check and must not be flagged.
+        if int(getattr(engine, "_non_billing_turns", 0) or 0) > 0:
+            return True
+        if (int(getattr(engine, "_measured_cost_turns", 0) or 0) > 0
+                and float(getattr(engine, "cost_usd", 0.0) or 0.0) == 0.0
+                and self._run_budget_tokens_spent()
+                >= DEFAULT_ZERO_COST_TOKEN_FLOOR):
+            return False
+        return True
+
+    def _usd_zero_is_unexplained(self) -> bool:
+        """Whether THIS run is the zero-with-tokens case specifically.
+
+        Separate from :meth:`_usd_budget_enforced` because the two
+        reasons a ceiling cannot fire need different sentences: "no
+        published rate" is about the model, "0.00 after N tokens" is
+        about the backend's report, and a notice that gave the first
+        reason for the second would send its reader to the wrong fix.
+        """
+        engine = self._engine
+        usd, _secs = self._run_budget()
+        return bool(
+            usd > 0
+            and int(getattr(engine, "_unpriced_turns", 0) or 0) == 0
+            and int(getattr(engine, "_non_billing_turns", 0) or 0) == 0
+            and int(getattr(engine, "_measured_cost_turns", 0) or 0) > 0
+            and float(getattr(engine, "cost_usd", 0.0) or 0.0) == 0.0
+            and self._run_budget_tokens_spent()
+            >= DEFAULT_ZERO_COST_TOKEN_FLOOR)
+
+    def _note_turn_token_state(self, input_delta: int = 0,
+                               produced: bool = True) -> None:
+        """Count the turn that just ran by whether its input size was
+        reported at all. The token twin of
+        :meth:`_note_turn_price_state`, and for the same reason: a
+        missing count reaches ``token_usage["input"]`` as +0, which the
+        fraction cannot tell from a short turn.
+
+        ``produced``: whether the turn produced anything (output tokens,
+        output text or a tool call). A turn that produced nothing — a
+        400 from the endpoint, a stop before the first round — measured
+        nothing and claims nothing; 21 such turns are in the three field
+        sessions and counting them as unmeasured would raise the notice
+        on every run that ever saw a failed request.
+
+        Of 3,040 productive turns recorded on this host, 19 (0.6 %, on
+        ``kit`` and ``blablador``) reported no input tokens. The hole is
+        small and it is real, so it is reported rather than averaged away.
+        """
+        engine = self._engine
+        try:
+            delta = int(input_delta or 0)
+        except (TypeError, ValueError):
+            delta = 0
+        if not produced:
+            return
+        if delta > 0:
+            engine._measured_token_turns = int(
+                getattr(engine, "_measured_token_turns", 0) or 0) + 1
+            engine._last_turn_token_state = "measured"
+            return
+        engine._untokened_turns = int(
+            getattr(engine, "_untokened_turns", 0) or 0) + 1
+        engine._last_turn_token_state = "unknown"
+        # Which provider left it out, exactly as the price notice names
+        # the model with no rate: "unmeasurable" without a name is a
+        # shrug, and the next field report would have to re-derive it.
+        try:
+            engine._untokened_provider = str(
+                getattr(engine, "provider", "") or "") or "this provider"
+        except Exception:
+            pass
+
+    def _token_budget_enforced(self) -> bool:
+        """Whether the token ceiling actually bounds this run.
+
+        The exact shape of :meth:`_usd_budget_enforced`: False when a
+        token ceiling is in force and at least one productive turn
+        reported no input count, because such a turn adds 0 to the sum
+        the fraction is taken over. A gate that silently reads 0 is worse
+        than no gate, so this is what the notice and the CLI line ask.
+        """
+        if self._run_budget_tokens() <= 0:
+            return False
+        return int(getattr(self._engine, "_untokened_turns", 0) or 0) == 0
+
+    def _unmeasured_token_block(self) -> str:
+        """Say ONCE that the token ceiling is not in force either, and
+        which provider left the count out.
+
+        Silent unless a token ceiling is configured AND a productive turn
+        came back without an input count. The default ceiling is on, so
+        the silence here is the normal case and the notice is the
+        exception — the opposite way round from the USD twin.
+        """
+        engine = self._engine
+        cap = self._run_budget_tokens()
+        untokened = int(getattr(engine, "_untokened_turns", 0) or 0)
+        if (cap <= 0 or untokened == 0
+                or getattr(engine, "_unmeasured_token_notice_shown", False)):
+            return ""
+        engine._unmeasured_token_notice_shown = True
+        provider = str(getattr(engine, "_untokened_provider", "")
+                       or getattr(engine, "provider", "") or "this provider")
+        spent = self._run_budget_tokens_spent()
+        engine._emit_budget_attention(
+            "tokens_unmeasurable",
+            "Run budget: the token ceiling is not fully in force",
+            f"{untokened} productive turn(s) came back from {provider} with "
+            f"no input-token count, so the {format_tokens(cap)}-token "
+            f"ceiling is measured over the turns that did report one "
+            f"({format_tokens(spent)} so far) and undercounts this run.")
+        return "\n".join([
+            "# Run budget token ceiling UNMEASURABLE in part "
+            "(auto-injected, once)",
+            f"- {untokened} productive turn(s) returned no input-token "
+            f"count from {provider}. Their size is unknown, NOT zero.",
+            f"- The ceiling therefore reads "
+            f"{format_tokens(spent)} of {format_tokens(cap)} "
+            f"({self._fraction_pct(spent, cap)}) over the turns that did "
+            f"report one, and the real figure is higher by an unknown "
+            f"amount.",
+            "- Judge this run by its turn count and wall clock as well, "
+            "and set agent.run_budget_turns / run_budget_s if neither "
+            "the price nor the token count can be measured here.",
+        ])
+
+    def _zero_cost_budget_block(self, usd: float, secs: float) -> str:
+        """The second reason the USD ceiling cannot fire: an exact 0.00
+        after a material number of tokens, which is the absence of an
+        observation and not a cheap run.
+
+        Names the backend rather than the model, because that is where
+        the figure came from and therefore where the fix is. Called only
+        from :meth:`_unmeasured_budget_block`, which owns the once-per-run
+        flag.
+        """
+        engine = self._engine
+        spent_tok = self._run_budget_tokens_spent()
+        turns = self._turns_taken()
+        backend = str(getattr(engine, "backend", "") or "this backend")
+        engine._emit_budget_attention(
+            "unenforceable",
+            "Run budget: the USD ceiling is not in force",
+            f"The {backend} backend reported exactly $0.00 for all "
+            f"{turns} turn(s) of this run while it carried "
+            f"{format_tokens(spent_tok)} tokens, so the ${usd:.2f} "
+            f"ceiling reads 0 % and cannot fire. The "
+            f"{format_tokens(self._run_budget_tokens())}-token ceiling IS "
+            f"in force (agent.run_budget_tokens).")
+        lines = [
+            "# Run budget NOT enforceable in USD (auto-injected, once)",
+            f"- The {backend} backend reported exactly $0.00 for all "
+            f"{turns} turn(s) of this run, and the run has carried "
+            f"{format_tokens(spent_tok)} tokens. At the cheapest published "
+            f"rate that would be ${spent_tok / 1_000_000 * 0.10:.2f}, so "
+            f"the 0.00 is the ABSENCE of a measurement, not a cheap run.",
+            f"- The ${usd:.2f} ceiling therefore reads 0 % whatever this "
+            f"run does, and so does the per-turn cost breaker.",
+        ]
+        tok_cap = self._run_budget_tokens()
+        if tok_cap > 0 and self._token_budget_enforced():
+            lines.append(
+                f"- Measured instead: {format_tokens(spent_tok)} of "
+                f"{format_tokens(tok_cap)} tokens "
+                f"({self._fraction_pct(spent_tok, tok_cap)}), "
+                f"agent.run_budget_tokens. That ceiling IS in force and "
+                f"still ends this run.")
+        if secs > 0:
+            lines.append(f"- The {secs:.0f}s wall-clock ceiling IS measured "
+                         "and still ends this run.")
+        if tok_cap <= 0:
+            lines.append("- For a ceiling that can be enforced, set "
+                         "agent.run_budget_tokens or agent.run_budget_s.")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _fraction_pct(spent, ceiling) -> str:
+        """``68 %`` — and ``—`` for a ceiling of 0, never ``inf``."""
+        try:
+            if float(ceiling or 0) <= 0:
+                return "—"
+            return f"{min(999, int(100 * float(spent) / float(ceiling)))} %"
+        except (TypeError, ValueError, ZeroDivisionError):
+            return "—"
+
+    def _budget_dimension_lines(self) -> list[str]:
+        """Every ceiling in force as ``spent of ceiling (pct)``.
+
+        Requirement that produced it: a notice saying "87 % of this run's
+        budget is spent" names neither the figure nor what it is against,
+        so the reader cannot tell a run that is nearly out of money from
+        one that is nearly out of tokens, nor decide what to raise. One
+        builder, used by the wind-down block, the exhausted block and the
+        attention notices, so the three cannot drift.
+        """
+        engine = self._engine
+        usd, secs = self._run_budget()
+        out: list[str] = []
+        if usd > 0:
+            spent_usd = float(getattr(engine, "cost_usd", 0.0) or 0.0)
+            tail = "" if self._usd_budget_enforced() else " — UNMEASURED"
+            out.append(f"${spent_usd:.2f} of ${usd:.2f} "
+                       f"({self._fraction_pct(spent_usd, usd)}){tail}")
+        if secs > 0:
+            import time as _t
+            started = float(getattr(engine, "_run_started_at", 0.0) or 0.0)
+            elapsed = max(0.0, _t.time() - started) if started > 0 else 0.0
+            out.append(f"{elapsed:.0f}s of {secs:.0f}s "
+                       f"({self._fraction_pct(elapsed, secs)})")
+        turn_cap = self._run_budget_turns()
+        if turn_cap > 0:
+            out.append(f"{self._turns_taken()} of {turn_cap} turns "
+                       f"({self._fraction_pct(self._turns_taken(), turn_cap)})")
+        reqs_cap = self._run_budget_requests()
+        if reqs_cap > 0:
+            taken = self._requests_taken()
+            out.append(f"{taken} of {reqs_cap} requests "
+                       f"({self._fraction_pct(taken, reqs_cap)})")
+        tok_cap = self._run_budget_tokens()
+        if tok_cap > 0:
+            spent_tok = self._run_budget_tokens_spent()
+            tail = "" if self._token_budget_enforced() else " — PARTLY UNMEASURED"
+            out.append(f"{format_tokens(spent_tok)} of "
+                       f"{format_tokens(tok_cap)} input+output tokens "
+                       f"({self._fraction_pct(spent_tok, tok_cap)}){tail}")
+        sub_cap = self._run_budget_subagents()
+        if sub_cap > 0:
+            taken = self._subagents_taken()
+            out.append(f"{taken} of {sub_cap} sub-agents "
+                       f"({self._fraction_pct(taken, sub_cap)})")
+        return out
 
     def _unmeasured_budget_block(self) -> str:
         """Say ONCE that no monetary ceiling is in force, and what is.
 
-        Silent unless a USD budget is configured AND an unpriced turn has
-        run: with no budget there is nothing to mislead anyone about, and
-        with every turn priced the ordinary wind-down block does the job.
-        Turn counts and token totals are always measured, so they are what
-        this offers in place of the ceiling that cannot be enforced.
+        Silent unless a USD budget is configured AND the ceiling cannot
+        be enforced: with no budget there is nothing to mislead anyone
+        about, and with the spend measurable the ordinary wind-down block
+        does the job. Turn counts and token totals are always measured,
+        so they are what this offers in place of the ceiling that cannot
+        be enforced.
+
+        Two reasons it cannot be, with a sentence each: the model has no
+        published rate (:meth:`_usd_budget_enforced`), or the backend
+        reported exactly 0.00 after a material number of tokens
+        (:meth:`_usd_zero_is_unexplained`).
         """
         engine = self._engine
         usd, secs = self._run_budget()
         unpriced = int(getattr(engine, "_unpriced_turns", 0) or 0)
-        if (usd <= 0 or unpriced == 0
+        if (usd <= 0 or self._usd_budget_enforced()
                 or getattr(engine, "_unmeasured_budget_notice_shown", False)):
             return ""
         engine._unmeasured_budget_notice_shown = True
+        if unpriced == 0:
+            return self._zero_cost_budget_block(usd, secs)
         turn_cap = self._run_budget_turns()
+        tok_cap = self._run_budget_tokens()
+        # What to offer in place of the ceiling that cannot fire. The
+        # token ceiling comes first because it is the one that bounds
+        # GROWTH: a wall clock does not -- one measured turn bought
+        # 1,031,096 input tokens in 10.7 minutes.
+        if tok_cap > 0 and self._token_budget_enforced():
+            instead = (f" The {format_tokens(tok_cap)}-token ceiling IS in "
+                       f"force (agent.run_budget_tokens).")
+        elif turn_cap > 0:
+            instead = f" The {turn_cap}-turn ceiling IS in force."
+        else:
+            instead = (" Set agent.run_budget_tokens, run_budget_turns or "
+                       "run_budget_s for a ceiling that can be.")
         # The prompt reaches the model and nobody else. A run budget is
         # what makes an unattended run deployable, so the one fact that
         # it is not in force has to reach whoever is not watching.
@@ -214,11 +595,7 @@ class BudgetLedger:
             "Run budget: the USD ceiling is not in force",
             f"{unpriced} turn(s) ran on a model with no published rate, so "
             f"the ${usd:.2f} ceiling cannot be enforced and neither can the "
-            f"per-turn cost breaker."
-            + (f" The {turn_cap}-turn ceiling IS in force."
-               if turn_cap > 0 else
-               " Set agent.run_budget_turns or agent.run_budget_s for a "
-               "ceiling that can be."))
+            f"per-turn cost breaker." + instead)
         turns = (unpriced + int(getattr(engine, "_measured_cost_turns", 0) or 0)
                  + int(getattr(engine, "_non_billing_turns", 0) or 0))
         tok_in = int(engine.token_usage.get("input", 0) or 0)
@@ -233,16 +610,33 @@ class BudgetLedger:
             f"{tok_out:,} output tokens. Judge the size of this run by "
             f"those, not by a dollar figure.",
         ]
+        if tok_cap > 0 and self._token_budget_enforced():
+            spent_tok = self._run_budget_tokens_spent()
+            lines.append(
+                f"- The token ceiling IS measured and still ends this run: "
+                f"{format_tokens(spent_tok)} of {format_tokens(tok_cap)} "
+                f"({self._fraction_pct(spent_tok, tok_cap)}), "
+                f"agent.run_budget_tokens.")
         if turn_cap > 0:
             lines.append(f"- The {turn_cap} turn(s) ceiling IS measured and "
                          "still ends this run.")
         if secs > 0:
             lines.append(f"- The {secs:.0f}s wall-clock ceiling IS measured "
-                         "and still ends this run.")
-        if turn_cap <= 0 and secs <= 0:
-            lines.append("- For a ceiling that can be enforced, set "
-                         "agent.run_budget_turns or agent.run_budget_s, or "
-                         "pick a model id with a published rate.")
+                         "and still ends this run. A wall clock does not "
+                         "bound token growth, so it is not a substitute for "
+                         "the ceiling above.")
+        # The dials that are measurable and NOT set, named so the reader
+        # can add one. Named individually rather than as one sentence
+        # about "a measurable ceiling", because a block that claims the
+        # run has a ceiling it does not have is the defect one level up.
+        missing = [name for name, off in (
+            ("agent.run_budget_tokens", tok_cap <= 0),
+            ("agent.run_budget_turns", turn_cap <= 0),
+            ("agent.run_budget_s", secs <= 0)) if off]
+        if missing:
+            lines.append("- For a further ceiling that can be enforced, set "
+                         + " or ".join(missing)
+                         + ", or pick a model id with a published rate.")
         return "\n".join(lines)
 
     # -- the fraction spent ------------------------------------------------
@@ -278,31 +672,46 @@ class BudgetLedger:
         return max(0, reqs)
 
     def _run_budget_tokens(self) -> int:
-        """Token ceiling for this run — 0 disables it. OPTIONAL, default
-        OFF: absent from the settings and unset on the engine it adds no
-        dimension to :meth:`_run_budget_detail` at all.
+        """Token ceiling for this run — 0 disables it. ON by default.
 
-        **Cost in prompt text:** when it is in force, the wind-down /
-        exhausted budget block and the >110 % refusal name it like the
-        other dials — one short setting name in text that is already
-        injected every turn past 80 % of any configured budget; with the
-        cap off the prompt text is unchanged.
+        This is the dimension that still binds when the USD one cannot.
+        A price has to be looked up and is missing for most of the ids
+        the model picker ships; a token count comes back from the API
+        with the answer, so there is no model for which this dimension is
+        unavailable in principle (:meth:`_token_budget_enforced` is what
+        says so when a particular provider leaves it out anyway).
 
-        Same precedence as the other dimensions: an explicit
-        ``run_budget_tokens`` attribute beats the settings value
-        ``agent.run_budget_tokens``. No command-line flag and no
-        unattended default: off until somebody asks for it.
+        Precedence, widest first: an explicit ``run_budget_tokens``
+        attribute (a flag, a scheduler entry, a test) — negative lifts
+        the ceiling for THIS run, the convention
+        :meth:`_run_budget_turns` already uses — then an explicit
+        ``agent.run_budget_tokens`` setting, including a 0 there, which
+        lifts it; then :data:`DEFAULT_RUN_BUDGET_TOKENS`, whose
+        docstring states which measured sessions it was derived from.
+
+        **Cost in prompt text:** none below 80 % of the ceiling, which
+        no session recorded on this host reaches. Past that it names the
+        dial like the other dimensions.
         """
         engine = self._engine
         tokens = int(getattr(engine, "run_budget_tokens", 0) or 0)
-        if tokens <= 0:
+        if tokens > 0:
+            return tokens
+        if tokens < 0:
+            return 0
+        try:
+            from delfin.user_settings import load_settings as _ls
+            ag = (_ls() or {}).get("agent", {}) or {}
+        except Exception:
+            ag = {}
+        if isinstance(ag, dict) and "run_budget_tokens" in ag:
+            # Present and 0 means "no token ceiling" -- an answer, not an
+            # absent one, so the default must not overrule it.
             try:
-                from delfin.user_settings import load_settings as _ls
-                ag = (_ls() or {}).get("agent", {}) or {}
-                tokens = int(ag.get("run_budget_tokens", 0) or 0)
-            except Exception:
-                tokens = 0
-        return max(0, tokens)
+                return max(0, int(ag.get("run_budget_tokens") or 0))
+            except (TypeError, ValueError):
+                return 0
+        return DEFAULT_RUN_BUDGET_TOKENS
 
     def _run_budget_subagents(self) -> int:
         """Sub-agent ceiling for this run — 0 disables it. OPTIONAL,
@@ -484,27 +893,24 @@ class BudgetLedger:
             parts.append(engine._unmeasured_budget_block())
         except Exception:
             pass
+        # ...and the same statement for the dimension that replaced it,
+        # for the case the whole fix would otherwise repeat one level
+        # down: a provider that returns no token count either.
+        try:
+            parts.append(self._unmeasured_token_block())
+        except Exception:
+            pass
         try:
             frac, exhausted, dim = self._run_budget_detail()
         except Exception:
             frac, exhausted, dim = 0.0, False, ""
         if frac >= 0.8:
             pct = min(999, int(frac * 100))
-            usd, secs = self._run_budget()
-            turn_cap = self._run_budget_turns()
-            # Every dial in force, so the notice says which run this was
-            # and the next line can say which one to turn.
-            ceiling = ", ".join(
-                [p for p in (f"${usd:.2f}" if usd > 0 else "",
-                             f"{secs:.0f}s" if secs > 0 else "",
-                             f"{turn_cap} turns" if turn_cap > 0 else "",
-                             f"{self._run_budget_requests()} requests"
-                             if self._run_budget_requests() > 0 else "",
-                             f"{self._run_budget_tokens()} tokens"
-                             if self._run_budget_tokens() > 0 else "",
-                             f"{self._run_budget_subagents()} sub-agents"
-                             if self._run_budget_subagents() > 0 else "")
-                 if p])
+            # Every dial in force, each as spent-of-ceiling: a bare
+            # percentage names neither the figure nor what it is against,
+            # so its reader cannot tell which dial to turn.
+            dims = self._budget_dimension_lines()
+            ceiling = "; ".join(dims)
             # The dial that is actually binding, not a fixed pair: a run
             # stopped by the request cap is not helped by more money.
             raise_it = (f"Raise {dim}" if dim
@@ -512,7 +918,8 @@ class BudgetLedger:
             if exhausted:
                 parts.append(
                     "# Run budget EXHAUSTED\n"
-                    f"- {pct}% of this run's budget is spent. Finish your "
+                    f"- {pct}% of this run's budget is spent ({ceiling}). "
+                    "Finish your "
                     "CURRENT sentence of work only: save state, mark task "
                     "statuses honestly, and summarise what remains. No new "
                     "work."
@@ -526,7 +933,8 @@ class BudgetLedger:
             else:
                 parts.append(
                     "# Run budget wind-down (auto-injected)\n"
-                    f"- {pct}% of this run's budget is spent. Start wrapping "
+                    f"- {pct}% of this run's budget is spent ({ceiling}). "
+                    "Start wrapping "
                     "up NOW: complete or checkpoint the current step, "
                     "commit/save state, mark tasks, and summarise open work. "
                     "If a follow-up run makes sense, note exactly where to "
@@ -551,6 +959,41 @@ class BudgetLedger:
             return max(0.0, float(v))
         except Exception:
             return 50.0
+
+    def _token_hard_cap(self) -> int:
+        """Per-turn input-token circuit-breaker — a runaway backstop, NOT
+        a cumulative session budget. 0 disables it. Configurable via
+        settings ``agent.token_hard_limit_in``; default
+        :data:`DEFAULT_TURN_TOKEN_CAP`.
+
+        The twin of :meth:`_cost_hard_cap` and deliberately the same
+        shape, because the cost breaker is the one that never trips on an
+        unpriced model: ``_estimate_cost`` hands it 0.0 and the
+        comparison against a dollar cap passes for ever. This one
+        compares a figure the API returns with the answer.
+
+        **A pre-send figure exists but is an estimate.** The assembled
+        request can be measured before it is sent
+        (``tool_catalog.estimate_schema_tokens``, chars // 4), which is
+        what the context-length 400 handler already reports. It is a
+        house estimate, so it is not what a refusal is based on: this cap
+        is checked between tool rounds against the counts the provider
+        returned, i.e. it stops the NEXT round rather than the one that
+        crossed it. That still converts an unusable session into a
+        refused one, which is the whole point -- the broken field session
+        spent 1,696 tool calls past the point of no return.
+        """
+        try:
+            from delfin.user_settings import load_settings as _ls
+            ag = (_ls() or {}).get("agent", {}) or {}
+        except Exception:
+            return DEFAULT_TURN_TOKEN_CAP
+        if isinstance(ag, dict) and "token_hard_limit_in" in ag:
+            try:
+                return max(0, int(ag.get("token_hard_limit_in") or 0))
+            except (TypeError, ValueError):
+                return DEFAULT_TURN_TOKEN_CAP
+        return DEFAULT_TURN_TOKEN_CAP
 
     # -- what the session delegated ----------------------------------------
 

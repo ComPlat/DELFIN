@@ -1,11 +1,30 @@
-"""Characterization: the tool catalogue is byte-identical after the move.
+"""Characterization: the tool catalogue changes only on purpose.
 
-Pins the state computed on the base commit (s06 started at origin/main
-026eba8f08cce9a86daf7bf6139c54906428e6c3): tool names in order, a sha256 of
-the sorted-key JSON of the whole catalogue, and the schema-token
-measurements. The object-identity check (api_client._DOC_TOOLS_OPENAI is
-tool_catalog._DOC_TOOLS_OPENAI) only passes once the api_client patch is
-applied; until then it is reported skipped so this file runs green on base.
+Pins the catalogue's shape and content so that an unintended change is
+caught: tool names in order, a sha256 of the sorted-key JSON of the whole
+catalogue, and the schema-token measurements. The object-identity check
+(api_client._DOC_TOOLS_OPENAI is tool_catalog._DOC_TOOLS_OPENAI) only
+passes once the api_client patch is applied; until then it is reported
+skipped so this file runs green on base.
+
+Input: the built catalogue. Output: whether it equals the recorded
+baseline. Semantics: a drift detector, not a budget. The authority on the
+schema's token TOTAL is tests/test_tool_schema_budget.py, which ratchets
+it; this file only answers whether anything moved. Where both pin the same
+number they are two copies of one answer, and two copies drift -- so the
+constants below are a recorded baseline, not a second ceiling.
+
+Moving a constant here is permitted and requires the deliberate cause to
+be named in the commit that moves it. The baseline was first taken at
+origin/main 026eba8f08cce9a86daf7bf6139c54906428e6c3, when the question
+was whether a refactor had changed the catalogue. That refactor landed.
+The values were re-taken on 2026-11-20 because the sub-agent tool's
+description is now derived from the preset registry instead of written by
+hand, so its text changes whenever a preset is added: the token total
+moved 11,678 -> 11,718 (+40, measured) and the token estimate 11,766 ->
+11,806, which the budget test accounts for. The tool COUNT and the name
+order did not move, and those two pins still carry their original
+baseline.
 """
 import hashlib
 import json
@@ -14,16 +33,18 @@ import pytest
 
 from delfin.agent import api_client
 
-# --- pinned on base (origin/main 026eba8f08cce9a86daf7bf6139c54906428e6c3) ---
+# --- the recorded baseline; see the module docstring before moving one ---
+# count and name order: unmoved since origin/main 026eba8f0.
+# content and token figures: re-taken 2026-11-20, derived description.
 PINNED_COUNT = 96
 PINNED_NAMES_SHA256 = (
     "7afa506ce5faf16ae47cb7b2b7957b3c6bf02a06e0672dd16bb9142167c528fb")
 PINNED_BLOB_SHA256 = (
-    "7cd398a3afeda3d1c53eed44f61030dafb3c0e382365a47c223fde2c385876be")
-PINNED_ESTIMATE = 11766
+    "3f544118a7c370b4e35a94afebd62a4b6dd11e8557e3485df4198e4a797ad2b2")
+PINNED_ESTIMATE = 11806
 PINNED_REPORT_SHA256 = (
-    "18f870f3c973cea10f2bdca8cee9bce72713620551b7aae708a5d345b5660591")
-PINNED_REPORT_TOTAL_TOKENS = 11678
+    "010c0d64db13fc81373deade1cd45f8680bdf9c06b1a59e6bfe5a5694d6c1439")
+PINNED_REPORT_TOTAL_TOKENS = 11718
 
 
 def _names_sha256() -> str:

@@ -1,0 +1,1635 @@
+{
+  "callables_scanned": {
+    "chem": 5087,
+    "infra": 4870
+  },
+  "candidates_named_in_docs": {
+    "chem": [
+      "check_goat_e2e",
+      "describe_mlp_backends"
+    ],
+    "infra": [
+      "_bypass_failure_asks",
+      "distill_for_shipping",
+      "reap_slot",
+      "recall_levels",
+      "write_supervisor_heartbeat"
+    ]
+  },
+  "candidates_with_a_twin": {
+    "chem": [],
+    "infra": []
+  },
+  "chemistry_rule": {
+    "chemistry_files_under_delfin": 328,
+    "chemistry_files_under_delfin_agent": 25,
+    "external_terms": [
+      "orca",
+      "xtb",
+      "crest",
+      "turbomole",
+      "gaussian",
+      "molpro",
+      "psi4",
+      "nwchem",
+      "gamess",
+      "cp2k",
+      "vasp",
+      "gromacs",
+      "openmm",
+      "goat",
+      "smiles",
+      "smarts",
+      "inchi",
+      "b3lyp",
+      "pbe0",
+      "wb97",
+      "tpss",
+      "cam_b3lyp",
+      "def2",
+      "cc_pvdz",
+      "ccsd",
+      "mp2",
+      "nevpt2",
+      "casscf",
+      "caspt2",
+      "dlpno",
+      "gfn2",
+      "gfn_ff",
+      "tddft",
+      "dft",
+      "nbo",
+      "nics",
+      "cpcm",
+      "smd",
+      "cosmo",
+      "xyz",
+      "mol2",
+      "sdf",
+      "cif",
+      "pdb",
+      "gbw",
+      "hess",
+      "molden",
+      "homo",
+      "lumo"
+    ],
+    "files_by_signal": {
+      "chemistry": 328,
+      "s1": 135,
+      "s2": 203,
+      "s3": 218,
+      "s3_only": 58,
+      "scanned": 1273
+    },
+    "granularity": "file",
+    "identifier_only_terms": [
+      "ir",
+      "uv",
+      "xrd",
+      "vcd",
+      "ecd"
+    ],
+    "libraries": [
+      "rdkit",
+      "ase",
+      "opi",
+      "openbabel",
+      "pybel",
+      "pyscf",
+      "cclib",
+      "pymatgen",
+      "spglib",
+      "openmm",
+      "MDAnalysis",
+      "xtb",
+      "morfeus",
+      "geometric",
+      "py3Dmol",
+      "nglview",
+      "dscribe",
+      "mace",
+      "nequip"
+    ],
+    "observable_terms": [
+      "fukui",
+      "raman",
+      "nmr",
+      "zpe",
+      "hessian",
+      "irc",
+      "isc",
+      "tadf",
+      "pka",
+      "conformer",
+      "tautomer",
+      "enantiomer",
+      "rotamer",
+      "multiplicity",
+      "solvation",
+      "shielding",
+      "shieldings",
+      "polarizability",
+      "hyperpolarizability"
+    ],
+    "py_files_under_delfin": 1273,
+    "s2_min_hits": 25,
+    "s2_min_per_1k": 2.0,
+    "s3_min_hits": 8,
+    "s3_min_share": 0.01
+  },
+  "counts": {
+    "chem": 99,
+    "infra": 80
+  },
+  "counts_by_package": {
+    "chem": {
+      "delfin": 25,
+      "delfin/agent": 7,
+      "delfin/analysis_tools": 3,
+      "delfin/class_modules": 2,
+      "delfin/co2": 1,
+      "delfin/common": 2,
+      "delfin/dashboard": 15,
+      "delfin/doc_server": 1,
+      "delfin/manta": 25,
+      "delfin/ml_train": 1,
+      "delfin/mlp_tools": 3,
+      "delfin/reporting": 5,
+      "delfin/tools": 4,
+      "delfin/tools/adapters": 1,
+      "delfin/workflows/engine": 4
+    },
+    "infra": {
+      "delfin/agent": 69,
+      "delfin/agent/pack/benchmark/accept": 2,
+      "delfin/agent/pack/benchmark/setup": 1,
+      "delfin/agent/service": 2,
+      "delfin/agent/swarm": 6
+    }
+  },
+  "counts_by_tier": {
+    "chem": {
+      "nowhere": 70,
+      "test-only": 29
+    },
+    "infra": {
+      "nowhere": 27,
+      "test-only": 53
+    }
+  },
+  "exclusions_removed": {},
+  "exclusions_removed_names": {
+    "defined_in_test": [],
+    "module_absent": [],
+    "short_name": []
+  },
+  "generated_for": "<session-scratch>/ab",
+  "main_ref": "origin/main",
+  "main_ref_readable": true,
+  "pools": {
+    "chem": [
+      {
+        "file": "delfin/dashboard/tab_agent.py",
+        "line": 7031,
+        "module": "delfin.dashboard.tab_agent",
+        "name": "_build_full_transcript_handoff",
+        "package": "delfin/dashboard",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/dashboard/__init__.py",
+        "line": 1612,
+        "module": "delfin.dashboard.__init__",
+        "name": "_build_orca_version_widget",
+        "package": "delfin/dashboard",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/verify_guard.py",
+        "line": 2056,
+        "module": "delfin.agent.verify_guard",
+        "name": "_claim_sentence",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/dashboard/__init__.py",
+        "line": 1574,
+        "module": "delfin.dashboard.__init__",
+        "name": "_compute_branch_options",
+        "package": "delfin/dashboard",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/manta/_coord_angle_corrector.py",
+        "line": 482,
+        "module": "delfin.manta._coord_angle_corrector",
+        "name": "_compute_clash_state",
+        "package": "delfin/manta",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/manta/_post_optimizer.py",
+        "line": 431,
+        "module": "delfin.manta._post_optimizer",
+        "name": "_decompose_into_fragments",
+        "package": "delfin/manta",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/dashboard/tab_agent.py",
+        "line": 7756,
+        "module": "delfin.dashboard.tab_agent",
+        "name": "_delegate_open",
+        "package": "delfin/dashboard",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/reporting/esp_report.py",
+        "line": 285,
+        "module": "delfin.reporting.esp_report",
+        "name": "_esp_vlim_from_cube",
+        "package": "delfin/reporting",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/cli_fukui.py",
+        "line": 320,
+        "module": "delfin.cli_fukui",
+        "name": "_extract_optimized_xyz",
+        "package": "delfin",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/reporting/delfin_docx_report.py",
+        "line": 360,
+        "module": "delfin.reporting.delfin_docx_report",
+        "name": "_format_energy_block",
+        "package": "delfin/reporting",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/dashboard/__init__.py",
+        "line": 1557,
+        "module": "delfin.dashboard.__init__",
+        "name": "_get_current_git_branch",
+        "package": "delfin/dashboard",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/co2/CO2_Coordinator6.py",
+        "line": 806,
+        "module": "delfin.co2.CO2_Coordinator6",
+        "name": "_is_orca_calculation_complete",
+        "package": "delfin/co2",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/cli.py",
+        "line": 912,
+        "module": "delfin.cli",
+        "name": "_is_workspace_artifact",
+        "package": "delfin",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/orca.py",
+        "line": 532,
+        "module": "delfin.orca",
+        "name": "_iter_orca_candidates",
+        "package": "delfin",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/tools/scaffold.py",
+        "line": 68,
+        "module": "delfin.tools.scaffold",
+        "name": "_kind_name",
+        "package": "delfin/tools",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/dashboard/__init__.py",
+        "line": 1566,
+        "module": "delfin.dashboard.__init__",
+        "name": "_list_local_git_branches",
+        "package": "delfin/dashboard",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/manta/polyhedra.py",
+        "line": 234,
+        "module": "delfin.manta.polyhedra",
+        "name": "_max_heavy_bond_order",
+        "package": "delfin/manta",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/manta/_isolated_reseat.py",
+        "line": 96,
+        "module": "delfin.manta._isolated_reseat",
+        "name": "_nonmetal_fragments",
+        "package": "delfin/manta",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/orca_read.py",
+        "line": 294,
+        "module": "delfin.orca_read",
+        "name": "_opi_final_single_point_energy",
+        "package": "delfin",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/manta/_prescribed_isomer_enumerator.py",
+        "line": 445,
+        "module": "delfin.manta._prescribed_isomer_enumerator",
+        "name": "_orbit_burnside_selftest",
+        "package": "delfin/manta",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/xtb_crest.py",
+        "line": 56,
+        "module": "delfin.xtb_crest",
+        "name": "_orca_ok",
+        "package": "delfin",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/reporting/esp_report.py",
+        "line": 198,
+        "module": "delfin.reporting.esp_report",
+        "name": "_orca_plot_generate_density_cube",
+        "package": "delfin/reporting",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/dashboard/tab_agent.py",
+        "line": 4695,
+        "module": "delfin.dashboard.tab_agent",
+        "name": "_render_slash_palette_html",
+        "package": "delfin/dashboard",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/reporting/esp_report.py",
+        "line": 270,
+        "module": "delfin.reporting.esp_report",
+        "name": "_robust_symmetric_vlim",
+        "package": "delfin/reporting",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/dashboard/input_processing.py",
+        "line": 112,
+        "module": "delfin.dashboard.input_processing",
+        "name": "_run_isomers_subprocess",
+        "package": "delfin/dashboard",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/cli_fukui.py",
+        "line": 333,
+        "module": "delfin.cli_fukui",
+        "name": "_run_orca_plot_density",
+        "package": "delfin",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/campaign.py",
+        "line": 233,
+        "module": "delfin.agent.campaign",
+        "name": "_seed_indices",
+        "package": "delfin/agent",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/cli_fukui.py",
+        "line": 85,
+        "module": "delfin.cli_fukui",
+        "name": "_smiles_to_xyz_text",
+        "package": "delfin",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/analysis_tools/conformer_fragment_recognition.py",
+        "line": 86,
+        "module": "delfin.analysis_tools.conformer_fragment_recognition",
+        "name": "_sp2_like_geometry",
+        "package": "delfin/analysis_tools",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/orca_read.py",
+        "line": 505,
+        "module": "delfin.orca_read",
+        "name": "_text_inner_energy",
+        "package": "delfin",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/campaign.py",
+        "line": 326,
+        "module": "delfin.agent.campaign",
+        "name": "_xtb_binary_env",
+        "package": "delfin/agent",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/dashboard/reaction_graph.py",
+        "line": 515,
+        "module": "delfin.dashboard.reaction_graph",
+        "name": "add_pending",
+        "package": "delfin/dashboard",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/dashboard/tab_chemdarwin.py",
+        "line": 103,
+        "module": "delfin.dashboard.tab_chemdarwin",
+        "name": "aromatize_ligand_smiles",
+        "package": "delfin/dashboard",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/manta/assemble_complex.py",
+        "line": 1023,
+        "module": "delfin.manta.assemble_complex",
+        "name": "assemble_heteroleptic",
+        "package": "delfin/manta",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/manta/_multiarm_coplanar.py",
+        "line": 241,
+        "module": "delfin.manta._multiarm_coplanar",
+        "name": "best_conformer",
+        "package": "delfin/manta",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/workflows/engine/occupier.py",
+        "line": 2131,
+        "module": "delfin.workflows.engine.occupier",
+        "name": "build_combined_occupier_and_postprocessing_jobs",
+        "package": "delfin/workflows/engine",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/pka.py",
+        "line": 256,
+        "module": "delfin.pka",
+        "name": "build_single_point_input",
+        "package": "delfin",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/manta/ml_targets_derive.py",
+        "line": 652,
+        "module": "delfin.manta.ml_targets_derive",
+        "name": "build_table",
+        "package": "delfin/manta",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/class_modules/smiles_name_lookup.py",
+        "line": 71,
+        "module": "delfin.class_modules.smiles_name_lookup",
+        "name": "cache_size",
+        "package": "delfin/class_modules",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/mlp_tools/goat_e2e_check.py",
+        "line": 68,
+        "module": "delfin.mlp_tools.goat_e2e_check",
+        "name": "check_goat_e2e",
+        "package": "delfin/mlp_tools",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/manta/ml_targets_derive.py",
+        "line": 474,
+        "module": "delfin.manta.ml_targets_derive",
+        "name": "cif_formula_sum",
+        "package": "delfin/manta",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/common/orca_input_checks.py",
+        "line": 490,
+        "module": "delfin.common.orca_input_checks",
+        "name": "clear_probe_cache",
+        "package": "delfin/common",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/dashboard/tab_agent.py",
+        "line": 8183,
+        "module": "delfin.dashboard.tab_agent",
+        "name": "close_open_tabs",
+        "package": "delfin/dashboard",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/manta/conformer_complete.py",
+        "line": 921,
+        "module": "delfin.manta.conformer_complete",
+        "name": "complete_frame",
+        "package": "delfin/manta",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/ts_goat.py",
+        "line": 515,
+        "module": "delfin.ts_goat",
+        "name": "connectivity_changes",
+        "package": "delfin",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/smiles_converter.py",
+        "line": 4726,
+        "module": "delfin.smiles_converter",
+        "name": "convert_input_if_smiles",
+        "package": "delfin",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/manta/_h_vsepr_realism.py",
+        "line": 1440,
+        "module": "delfin.manta._h_vsepr_realism",
+        "name": "correct_results_alkyl_donor_axis",
+        "package": "delfin/manta",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/reporting/esp_report.py",
+        "line": 445,
+        "module": "delfin.reporting.esp_report",
+        "name": "create_esp_isosurface_png",
+        "package": "delfin/reporting",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/pka.py",
+        "line": 137,
+        "module": "delfin.pka",
+        "name": "deprotonation_free_energy",
+        "package": "delfin",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/mlp_tools/__init__.py",
+        "line": 23,
+        "module": "delfin.mlp_tools.__init__",
+        "name": "describe_mlp_backends",
+        "package": "delfin/mlp_tools",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/analysis_tools/multiwfn_wrapper.py",
+        "line": 226,
+        "module": "delfin.analysis_tools.multiwfn_wrapper",
+        "name": "electrostatic_potential",
+        "package": "delfin/analysis_tools",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/manta/_ensemble_dispatch.py",
+        "line": 584,
+        "module": "delfin.manta._ensemble_dispatch",
+        "name": "ensemble_summary",
+        "package": "delfin/manta",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/tools/esd_opi.py",
+        "line": 181,
+        "module": "delfin.tools.esd_opi",
+        "name": "esd_inputs_equivalent",
+        "package": "delfin/tools",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/common/esd_numerics.py",
+        "line": 231,
+        "module": "delfin.common.esd_numerics",
+        "name": "est_reference_comparison",
+        "package": "delfin/common",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/afp_plot.py",
+        "line": 42,
+        "module": "delfin.afp_plot",
+        "name": "find_first_allowed_singlet",
+        "package": "delfin",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/ml_train/mlip_data.py",
+        "line": 363,
+        "module": "delfin.ml_train.mlip_data",
+        "name": "frames_to_extxyz",
+        "package": "delfin/ml_train",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/manta/assemble_complex.py",
+        "line": 1046,
+        "module": "delfin.manta.assemble_complex",
+        "name": "generate_complex_conformers",
+        "package": "delfin/manta",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/manta/_fragment_archetypes.py",
+        "line": 325,
+        "module": "delfin.manta._fragment_archetypes",
+        "name": "get_archetype_point_group",
+        "package": "delfin/manta",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/manta/_fragment_archetypes.py",
+        "line": 331,
+        "module": "delfin.manta._fragment_archetypes",
+        "name": "get_archetype_smarts",
+        "package": "delfin/manta",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/qm_runtime.py",
+        "line": 251,
+        "module": "delfin.qm_runtime",
+        "name": "get_csp_tools_bin_dir",
+        "package": "delfin",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/doc_server/calc_indexer.py",
+        "line": 964,
+        "module": "delfin.doc_server.calc_indexer",
+        "name": "get_default_calc_index_path",
+        "package": "delfin/doc_server",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/qm_runtime.py",
+        "line": 263,
+        "module": "delfin.qm_runtime",
+        "name": "get_mlp_tools_bin_dir",
+        "package": "delfin",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/fukui.py",
+        "line": 326,
+        "module": "delfin.fukui",
+        "name": "is_fukui_dir",
+        "package": "delfin",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/workflows/engine/classic.py",
+        "line": 1858,
+        "module": "delfin.workflows.engine.classic",
+        "name": "jobs_have_parallel_potential",
+        "package": "delfin/workflows/engine",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/manta/ml_targets_derive.py",
+        "line": 848,
+        "module": "delfin.manta.ml_targets_derive",
+        "name": "jt_rows",
+        "package": "delfin/manta",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/manta/ml_targets_derive.py",
+        "line": 889,
+        "module": "delfin.manta.ml_targets_derive",
+        "name": "jt_rows_sp5",
+        "package": "delfin/manta",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/manta/ml_targets_derive.py",
+        "line": 716,
+        "module": "delfin.manta.ml_targets_derive",
+        "name": "label_spins",
+        "package": "delfin/manta",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/manta/ml_targets_derive.py",
+        "line": 80,
+        "module": "delfin.manta.ml_targets_derive",
+        "name": "load_exclusions",
+        "package": "delfin/manta",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/fukui.py",
+        "line": 312,
+        "module": "delfin.fukui",
+        "name": "load_fukui_result",
+        "package": "delfin",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/workflows/engine/occupier.py",
+        "line": 1395,
+        "module": "delfin.workflows.engine.occupier",
+        "name": "log_orca_job_plan",
+        "package": "delfin/workflows/engine",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/dashboard/saddle.py",
+        "line": 1037,
+        "module": "delfin.dashboard.saddle",
+        "name": "neb_seconds_for",
+        "package": "delfin/dashboard",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/tools/esd_opi.py",
+        "line": 131,
+        "module": "delfin.tools.esd_opi",
+        "name": "normalise_esd_inp",
+        "package": "delfin/tools",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/verify_guard.py",
+        "line": 1679,
+        "module": "delfin.agent.verify_guard",
+        "name": "observations_are_complete",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/manta/_oxo_resonance.py",
+        "line": 33,
+        "module": "delfin.manta._oxo_resonance",
+        "name": "oxo_resonance_enabled",
+        "package": "delfin/manta",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/analysis_tools/packmol_wrapper.py",
+        "line": 136,
+        "module": "delfin.analysis_tools.packmol_wrapper",
+        "name": "pack_molecules",
+        "package": "delfin/analysis_tools",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/copy_helpers.py",
+        "line": 327,
+        "module": "delfin.copy_helpers",
+        "name": "prepare_occ_folder",
+        "package": "delfin",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/thread_safe_helpers.py",
+        "line": 224,
+        "module": "delfin.thread_safe_helpers",
+        "name": "prepare_occ_folder_2_threadsafe",
+        "package": "delfin",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/dashboard/reaction_graph.py",
+        "line": 629,
+        "module": "delfin.dashboard.reaction_graph",
+        "name": "reaction_energy",
+        "package": "delfin/dashboard",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/manta/ml_targets_derive.py",
+        "line": 99,
+        "module": "delfin.manta.ml_targets_derive",
+        "name": "read_first_xyz_frame",
+        "package": "delfin/manta",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/manta/ml_targets_derive.py",
+        "line": 540,
+        "module": "delfin.manta.ml_targets_derive",
+        "name": "record_from_cod",
+        "package": "delfin/manta",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/manta/ml_targets_derive.py",
+        "line": 239,
+        "module": "delfin.manta.ml_targets_derive",
+        "name": "record_from_smiles_crystal",
+        "package": "delfin/manta",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/mlp_tools/__init__.py",
+        "line": 246,
+        "module": "delfin.mlp_tools.__init__",
+        "name": "require_any_mlp",
+        "package": "delfin/mlp_tools",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/class_modules/smiles_name_lookup.py",
+        "line": 79,
+        "module": "delfin.class_modules.smiles_name_lookup",
+        "name": "reset_cache",
+        "package": "delfin/class_modules",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/ensemble_router.py",
+        "line": 142,
+        "module": "delfin.ensemble_router",
+        "name": "routing_summary",
+        "package": "delfin",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/runtime_setup.py",
+        "line": 1376,
+        "module": "delfin.runtime_setup",
+        "name": "run_ai_tools_installer",
+        "package": "delfin",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/pka.py",
+        "line": 401,
+        "module": "delfin.pka",
+        "name": "run_cycle",
+        "package": "delfin",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/orca.py",
+        "line": 1992,
+        "module": "delfin.orca",
+        "name": "run_orca_plot",
+        "package": "delfin",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/verify_guard.py",
+        "line": 3554,
+        "module": "delfin.agent.verify_guard",
+        "name": "scan_for_dishonest_tests",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/verify_guard.py",
+        "line": 1062,
+        "module": "delfin.agent.verify_guard",
+        "name": "set_caveat_language",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/workflows/engine/occupier.py",
+        "line": 1512,
+        "module": "delfin.workflows.engine.occupier",
+        "name": "should_use_parallel_occupier",
+        "package": "delfin/workflows/engine",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/dashboard/tab_agent.py",
+        "line": 3050,
+        "module": "delfin.dashboard.tab_agent",
+        "name": "slash_command_routes_to_builtin",
+        "package": "delfin/dashboard",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/manta/ml_targets_derive.py",
+        "line": 775,
+        "module": "delfin.manta.ml_targets_derive",
+        "name": "spin_rows",
+        "package": "delfin/manta",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/verify_guard.py",
+        "line": 3569,
+        "module": "delfin.agent.verify_guard",
+        "name": "test_honesty_feedback",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/dashboard/molecule_viewer.py",
+        "line": 7306,
+        "module": "delfin.dashboard.molecule_viewer",
+        "name": "ts_goat_viewer_step_js",
+        "package": "delfin/dashboard",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/config.py",
+        "line": 887,
+        "module": "delfin.config",
+        "name": "validate_control_file",
+        "package": "delfin",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/tools/adapters/orca_relspin_opi.py",
+        "line": 220,
+        "module": "delfin.tools.adapters.orca_relspin_opi",
+        "name": "validate_relspin",
+        "package": "delfin/tools/adapters",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/tools/co2_coordinator_opi.py",
+        "line": 636,
+        "module": "delfin.tools.co2_coordinator_opi",
+        "name": "write_co2_scan_opi_input",
+        "package": "delfin/tools",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/manta/ml_targets_derive.py",
+        "line": 680,
+        "module": "delfin.manta.ml_targets_derive",
+        "name": "write_target_table",
+        "package": "delfin/manta",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/xyz_io.py",
+        "line": 167,
+        "module": "delfin.xyz_io",
+        "name": "write_to_file",
+        "package": "delfin",
+        "tier": "nowhere"
+      }
+    ],
+    "infra": [
+      {
+        "file": "delfin/agent/workspace_selfservice.py",
+        "line": 82,
+        "module": "delfin.agent.workspace_selfservice",
+        "name": "_all_targets_inside",
+        "package": "delfin/agent",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/api_client.py",
+        "line": 14086,
+        "module": "delfin.agent.api_client",
+        "name": "_bypass_failure_asks",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/api_client.py",
+        "line": 11805,
+        "module": "delfin.agent.api_client",
+        "name": "_default_kit_permissions",
+        "package": "delfin/agent",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/audit_log.py",
+        "line": 642,
+        "module": "delfin.agent.audit_log",
+        "name": "_diff_line_counts",
+        "package": "delfin/agent",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/credentials.py",
+        "line": 360,
+        "module": "delfin.agent.credentials",
+        "name": "_disabled_keyring_factory",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/benchmark.py",
+        "line": 1226,
+        "module": "delfin.agent.benchmark",
+        "name": "_edited_paths",
+        "package": "delfin/agent",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/explore_pilot.py",
+        "line": 531,
+        "module": "delfin.agent.explore_pilot",
+        "name": "_fake_engine_factory_builder",
+        "package": "delfin/agent",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/result_claims.py",
+        "line": 136,
+        "module": "delfin.agent.result_claims",
+        "name": "_has_solvent",
+        "package": "delfin/agent",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/in_turn_compaction.py",
+        "line": 115,
+        "module": "delfin.agent.in_turn_compaction",
+        "name": "_is_goal",
+        "package": "delfin/agent",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/benchmark.py",
+        "line": 1281,
+        "module": "delfin.agent.benchmark",
+        "name": "_last_idx",
+        "package": "delfin/agent",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/subagents.py",
+        "line": 1606,
+        "module": "delfin.agent.subagents",
+        "name": "_load_md_presets",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/cited_retrieval.py",
+        "line": 218,
+        "module": "delfin.agent.cited_retrieval",
+        "name": "_locator_value",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/session_health.py",
+        "line": 79,
+        "module": "delfin.agent.session_health",
+        "name": "_now_minus",
+        "package": "delfin/agent",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/mcp_client.py",
+        "line": 144,
+        "module": "delfin.agent.mcp_client",
+        "name": "_project_config_path",
+        "package": "delfin/agent",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/hooks.py",
+        "line": 164,
+        "module": "delfin.agent.hooks",
+        "name": "_project_settings_paths",
+        "package": "delfin/agent",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/refusal_memory.py",
+        "line": 161,
+        "module": "delfin.agent.refusal_memory",
+        "name": "_redirect_targets_safe",
+        "package": "delfin/agent",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/scratch.py",
+        "line": 75,
+        "module": "delfin.agent.scratch",
+        "name": "_release_mine",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/api_client.py",
+        "line": 13203,
+        "module": "delfin.agent.api_client",
+        "name": "_scoped_test_cmd_for_edits",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/session_index.py",
+        "line": 322,
+        "module": "delfin.agent.session_index",
+        "name": "_source_state",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/durable.py",
+        "line": 128,
+        "module": "delfin.agent.durable",
+        "name": "_step_finished",
+        "package": "delfin/agent",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/kit_confirm.py",
+        "line": 1034,
+        "module": "delfin.agent.kit_confirm",
+        "name": "_suggest_bash_pattern",
+        "package": "delfin/agent",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/pack/benchmark/setup/w17_data_fixtures.py",
+        "line": 22,
+        "module": "delfin.agent.pack.benchmark.setup.w17_data_fixtures",
+        "name": "build_fixtures",
+        "package": "delfin/agent/pack/benchmark/setup",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/shared_tmp.py",
+        "line": 248,
+        "module": "delfin.agent.shared_tmp",
+        "name": "bwrap_substitution",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/compaction_quality.py",
+        "line": 169,
+        "module": "delfin.agent.compaction_quality",
+        "name": "category_names",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/prompt_head.py",
+        "line": 95,
+        "module": "delfin.agent.prompt_head",
+        "name": "check_ordering",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/loop_commands.py",
+        "line": 298,
+        "module": "delfin.agent.loop_commands",
+        "name": "controller_hint",
+        "package": "delfin/agent",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/process_budget.py",
+        "line": 269,
+        "module": "delfin.agent.process_budget",
+        "name": "count_descendants",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/durable.py",
+        "line": 142,
+        "module": "delfin.agent.durable",
+        "name": "decide_recovery",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/memory_distill.py",
+        "line": 380,
+        "module": "delfin.agent.memory_distill",
+        "name": "distill_for_shipping",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/shared_tmp.py",
+        "line": 307,
+        "module": "delfin.agent.shared_tmp",
+        "name": "enforce_quota",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/memory_nudge.py",
+        "line": 147,
+        "module": "delfin.agent.memory_nudge",
+        "name": "estimated_tokens",
+        "package": "delfin/agent",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/principles_guard.py",
+        "line": 51,
+        "module": "delfin.agent.principles_guard",
+        "name": "expected_digest",
+        "package": "delfin/agent",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/verify_recipe.py",
+        "line": 327,
+        "module": "delfin.agent.verify_recipe",
+        "name": "for_files",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/mcp_client.py",
+        "line": 429,
+        "module": "delfin.agent.mcp_client",
+        "name": "forget_pin_decisions",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/swarm/lead.py",
+        "line": 198,
+        "module": "delfin.agent.swarm.lead",
+        "name": "format_member_message",
+        "package": "delfin/agent/swarm",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/prompt_loader.py",
+        "line": 2873,
+        "module": "delfin.agent.prompt_loader",
+        "name": "format_prompt_size_report",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/session_report.py",
+        "line": 849,
+        "module": "delfin.agent.session_report",
+        "name": "friction_summary",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/code_mode.py",
+        "line": 292,
+        "module": "delfin.agent.code_mode",
+        "name": "generate_stub",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/swarm/policy.py",
+        "line": 183,
+        "module": "delfin.agent.swarm.policy",
+        "name": "home_owner",
+        "package": "delfin/agent/swarm",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/prompt_head.py",
+        "line": 144,
+        "module": "delfin.agent.prompt_head",
+        "name": "hostile_reach",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/harness_rows.py",
+        "line": 74,
+        "module": "delfin.agent.harness_rows",
+        "name": "is_harness_text",
+        "package": "delfin/agent",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/readonly_pipeline.py",
+        "line": 371,
+        "module": "delfin.agent.readonly_pipeline",
+        "name": "is_safe",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/web_tools.py",
+        "line": 698,
+        "module": "delfin.agent.web_tools",
+        "name": "keyed_engines_configured",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/provider_profile.py",
+        "line": 381,
+        "module": "delfin.agent.provider_profile",
+        "name": "load_shared_profile",
+        "package": "delfin/agent",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/shared_tmp.py",
+        "line": 207,
+        "module": "delfin.agent.shared_tmp",
+        "name": "map_to_host",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/knowledge_share.py",
+        "line": 399,
+        "module": "delfin.agent.knowledge_share",
+        "name": "open_dialogs",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/office.py",
+        "line": 3514,
+        "module": "delfin.agent.office",
+        "name": "pdf_xfa_data",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/explore_pilot.py",
+        "line": 79,
+        "module": "delfin.agent.explore_pilot",
+        "name": "pilot_slot",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/user_model.py",
+        "line": 655,
+        "module": "delfin.agent.user_model",
+        "name": "prompt_block",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/bug_filing.py",
+        "line": 370,
+        "module": "delfin.agent.bug_filing",
+        "name": "push_if_configured",
+        "package": "delfin/agent",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/compaction_quality.py",
+        "line": 75,
+        "module": "delfin.agent.compaction_quality",
+        "name": "quality_report",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/job_monitor.py",
+        "line": 369,
+        "module": "delfin.agent.job_monitor",
+        "name": "query_job_states",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/audit_log.py",
+        "line": 621,
+        "module": "delfin.agent.audit_log",
+        "name": "read_last_n",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/explore_pilot.py",
+        "line": 93,
+        "module": "delfin.agent.explore_pilot",
+        "name": "reap_slot",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/memory_distill.py",
+        "line": 495,
+        "module": "delfin.agent.memory_distill",
+        "name": "recall_levels",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/kit_settings.py",
+        "line": 378,
+        "module": "delfin.agent.kit_settings",
+        "name": "remove_pattern",
+        "package": "delfin/agent",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/kit_settings.py",
+        "line": 342,
+        "module": "delfin.agent.kit_settings",
+        "name": "remove_read_dir",
+        "package": "delfin/agent",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/cli_resume.py",
+        "line": 304,
+        "module": "delfin.agent.cli_resume",
+        "name": "replay_step",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/swarm/lead.py",
+        "line": 159,
+        "module": "delfin.agent.swarm.lead",
+        "name": "request_prcheck",
+        "package": "delfin/agent/swarm",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/swarm/lead.py",
+        "line": 110,
+        "module": "delfin.agent.swarm.lead",
+        "name": "request_swarm_pause",
+        "package": "delfin/agent/swarm",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/swarm/lead.py",
+        "line": 137,
+        "module": "delfin.agent.swarm.lead",
+        "name": "request_triage_answer",
+        "package": "delfin/agent/swarm",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/office.py",
+        "line": 6098,
+        "module": "delfin.agent.office",
+        "name": "reset_figure_ledger",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/diagnostics.py",
+        "line": 222,
+        "module": "delfin.agent.diagnostics",
+        "name": "reset_unavailability_note",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/skill_usage.py",
+        "line": 247,
+        "module": "delfin.agent.skill_usage",
+        "name": "resolve_pending",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/pack/benchmark/accept/w20_common.py",
+        "line": 111,
+        "module": "delfin.agent.pack.benchmark.accept.w20_common",
+        "name": "resources_within",
+        "package": "delfin/agent/pack/benchmark/accept",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/api_client.py",
+        "line": 12073,
+        "module": "delfin.agent.api_client",
+        "name": "role_tool_surface_report",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/code_mode.py",
+        "line": 108,
+        "module": "delfin.agent.code_mode",
+        "name": "serve_request",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/api_client.py",
+        "line": 9727,
+        "module": "delfin.agent.api_client",
+        "name": "set_commit_trailer_model",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/workspace_profiles.py",
+        "line": 220,
+        "module": "delfin.agent.workspace_profiles",
+        "name": "set_for_workspace_words",
+        "package": "delfin/agent",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/prompt_head.py",
+        "line": 44,
+        "module": "delfin.agent.prompt_head",
+        "name": "stable_prefix_len",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/swarm/lead.py",
+        "line": 49,
+        "module": "delfin.agent.swarm.lead",
+        "name": "status_validate",
+        "package": "delfin/agent/swarm",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/cli_resume.py",
+        "line": 291,
+        "module": "delfin.agent.cli_resume",
+        "name": "step_resume_note",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/shared_tmp.py",
+        "line": 353,
+        "module": "delfin.agent.shared_tmp",
+        "name": "sweep_stale",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/service/attention_feed.py",
+        "line": 333,
+        "module": "delfin.agent.service.attention_feed",
+        "name": "this_host",
+        "package": "delfin/agent/service",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/session_store.py",
+        "line": 1689,
+        "module": "delfin.agent.session_store",
+        "name": "touch_heartbeat",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/session_health.py",
+        "line": 192,
+        "module": "delfin.agent.session_health",
+        "name": "waits_summary",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/session_health.py",
+        "line": 218,
+        "module": "delfin.agent.session_health",
+        "name": "watch_cycle_events",
+        "package": "delfin/agent",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/bug_watcher.py",
+        "line": 650,
+        "module": "delfin.agent.bug_watcher",
+        "name": "watcher_status",
+        "package": "delfin/agent",
+        "tier": "nowhere"
+      },
+      {
+        "file": "delfin/agent/pack/benchmark/accept/w20_common.py",
+        "line": 15,
+        "module": "delfin.agent.pack.benchmark.accept.w20_common",
+        "name": "workflow_is",
+        "package": "delfin/agent/pack/benchmark/accept",
+        "tier": "test-only"
+      },
+      {
+        "file": "delfin/agent/service/durable_host.py",
+        "line": 96,
+        "module": "delfin.agent.service.durable_host",
+        "name": "write_supervisor_heartbeat",
+        "package": "delfin/agent/service",
+        "tier": "test-only"
+      }
+    ]
+  },
+  "scanned_at": "2026-11-20T18:54:24+00:00",
+  "task_sentence": "connect this capability to the product, or delete it together with its tests",
+  "tree_sha": "0eb187ff9f6afa76eb390d53549b8f01493f96be",
+  "underpowered": {
+    "chem": false,
+    "infra": false
+  }
+}

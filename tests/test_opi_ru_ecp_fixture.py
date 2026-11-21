@@ -24,8 +24,7 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("opi")
-
+from _skip_reasons import absent_reason, missing  # noqa: E402
 from test_lc1_fixtures_helper import private_fixtures_or_skip  # noqa: E402
 
 FIXTURE = Path("tests/fixtures/orca611/ru_nh3_6_cpcm")
@@ -66,9 +65,21 @@ def test_real_output_in_private_store_shows_the_ecp_lines():
 
 
 def test_adapter_drives_the_synthetic_run_through_fake_orca(monkeypatch, tmp_path):
+    # Three preconditions, and they are independent: the adapter builds its
+    # input on OPI's blocks, the ORCA run is faked by a shell script, and the
+    # fixture directory is committed here. This was a module-level
+    # importorskip("opi"), which fired at collection and turned the whole file
+    # into ONE skip naming the package -- so the three tests above, which use
+    # no OPI at all, never ran anywhere the package is absent, and the reason
+    # below was never shown on a machine that has it. Checking in order would
+    # only move the masking, so every missing one is named.
     script = Path("tests/scripts/fake_orca.sh").resolve()
-    if not script.is_file():
-        pytest.skip("fake_orca.sh helper not present")
+    reason = missing(
+        absent_reason("opi"),
+        None if script.is_file() else f"{script} (the fake-ORCA helper) is absent",
+    )
+    if reason:
+        pytest.skip(reason)
     monkeypatch.setenv("FAKE_ORCA_FIXTURE", str(FIXTURE.resolve()))
     import delfin.orca as orca_mod
     from delfin.tools.adapters.orca_basis_solv_opi import (

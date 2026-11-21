@@ -271,7 +271,19 @@ _NOT_CARRIED = {
     #    the row carries it; a resumed session asks the pricing table
     #    about its own next turn and needs nothing from the old one.
     "_last_turn_price_state",
+    #    ...and whether that turn's SIZE could be measured. Same
+    #    reasoning: the row carries it, and the next turn's provider
+    #    answers for itself. The two COUNTS behind it
+    #    (_measured_token_turns / _untokened_turns) are declared session
+    #    state, like the price counters.
+    "_last_turn_token_state",
     "_cost_cap_hit", "_cost_cap_value", "_ambiguous_columns_turn",
+    #    The input-token breaker's per-turn pair, and the token totals
+    #    this turn started from. All four are re-read at the top of every
+    #    turn, so a resumed session that carried them would compare the
+    #    new turn against the old turn's baseline.
+    "_token_cap_hit", "_token_cap_value",
+    "_turn_start_input_tokens", "_turn_start_output_tokens",
     "_truncated_tools_turn", "_turn_steers", "_stop_requested",
     "_steering_delivered",
     "_steering_refreshes",
@@ -355,6 +367,9 @@ _NOT_CARRIED = {
     # nothing without them; this flag is only "has the agent been told",
     # and the agent of a resumed session has not been.
     "_unmeasured_budget_notice_shown",
+    # The same flag for the token dimension's own "this cannot be fully
+    # measured" notice, re-armed for the same reason.
+    "_unmeasured_token_notice_shown",
     # Which budget levels have already been raised in the attention inbox.
     # Same reasoning one line up, from the other side: the notice exists
     # for a user who is not watching, and a resumed run is a new chance
