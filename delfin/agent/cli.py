@@ -5246,6 +5246,24 @@ def cmd_report(args: argparse.Namespace) -> int:
         print(_json.dumps(dataclasses.asdict(report), indent=2))
     else:
         print(_sr.render_terminal(report))
+        # The friction section (wave-10 patterns): where this session lost
+        # turns and time, computed from the same tool trace the report
+        # aggregates. Terminal only -- the SessionReport dataclass is a
+        # shared contract whose field list must not grow silently.
+        try:
+            frictions = _sr.friction_summary(
+                _sr._tool_entries(sid))
+            if frictions:
+                print("")
+                print("Friction (top of what was lost):")
+                for f in frictions:
+                    mag = f.get("magnitude")
+                    unit = f.get("unit") or ""
+                    cmd = str(f.get("command") or f.get("detail") or "")
+                    print(f"  {f.get('kind', '?')}: {mag} {unit} "
+                          f"— {cmd[:80]}")
+        except Exception:
+            pass
     return 0
 
 
