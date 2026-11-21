@@ -64,3 +64,20 @@ def test_real_memory_write_normal_path_redacts_secret(tmp_path, monkeypatch):
     facts = memory_store.load_memories(store)
     assert SECRET not in facts[0]["text"]
     assert facts[0]["text"], "the fact is still stored (non-empty text)"
+
+
+def test_real_task_state_phases_field_is_scrubbed(tmp_path):
+    # Reviewer finding (nacht-s6, review of 3dd8ed8d5): _as_dict wrote
+    # "phases": list(self.phases) RAW (task_state.py:302) while its
+    # docstring claimed every free-text field is scrubbed. A phase NAME
+    # is free text set via commit(phase=...). Latent today (commit has
+    # no in-repo caller with phase=), but the docstring overclaims and
+    # the write path would leak. The name must go through the redactor
+    # like every other free-text field.
+    state = task_state.TaskState(tmp_path / "task_state.json")
+    state.begin()
+    state.commit(phase=f"phase carries {SECRET}")
+    state.save()
+    raw = (tmp_path / "task_state.json").read_text(encoding="utf-8")
+    assert SECRET not in raw
+    assert "[redacted" in raw

@@ -299,7 +299,10 @@ class TaskState:
         return {
             "task": self._scrub_field(self.task),
             "waiting_for": self._scrub_field(self.waiting_for),
-            "phases": list(self.phases),
+            "phases": [
+                {**p, "name": self._scrub_field(p.get("name", "")),
+                 "status": self._scrub_field(p.get("status", ""))}
+                for p in self.phases],
             "commits": [self._scrub_field(c) for c in self.commits],
             "findings": [self._scrub_field(f) for f in self.findings],
             "success_criterion": self._scrub_field(self.success_criterion),
