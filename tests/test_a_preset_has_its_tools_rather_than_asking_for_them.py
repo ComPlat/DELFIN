@@ -328,18 +328,19 @@ def test_every_name_in_a_preset_list_is_a_real_tool(preset_name):
     does it silently — the same failure ``unknown_tool_names`` exists to
     report for the CLI flags."""
     tools = SUBAGENT_PRESETS[preset_name].tools
-    # Judged against the catalogue the preset check itself uses, which
-    # derives the ops server's tools from the server module. The doc-tool
-    # list alone is a THIRD answer to "which names are real" and it does
-    # not know them: measured 2026-11-20, the server defines 102 tool_*
-    # functions and the doc list carries none of them, so the structure
-    # and geometry presets (metal-smiles-builder, xyz-editor) reported
-    # real tools -- geometry_build_smiles, geometry_read_xyz,
-    # geometry_add_hydrogens -- as misspelt. A false alarm here is worse
-    # than no check: it teaches the reader to ignore the file.
+    # Judged against THE shared catalogue (_known_preset_tool_names, which
+    # is api_client.known_tool_names() plus the preset-only extensions) --
+    # one answer to "which names are real", the same one the CLI typo
+    # check and the T4 grounding read. The workaround this replaces was a
+    # hand-rolled union with unknown_tool_names([t], _DOC_TOOLS_OPENAI):
+    # the doc-tool list is the advertised surface and knows none of the
+    # ops server's 102 tool_* functions, so that union reported real
+    # tools -- geometry_build_smiles, geometry_read_xyz,
+    # geometry_add_hydrogens -- as misspelt and then nullified its own
+    # finding. A false alarm is worse than no check: it teaches the
+    # reader to ignore the file.
     unknown = [t for t in (tools or ())
-               if t not in _known_preset_tool_names()
-               and unknown_tool_names([t], _DOC_TOOLS_OPENAI)]
+               if t not in _known_preset_tool_names()]
     assert unknown == [], (
         f"{preset_name}: names no tool the product registers: {unknown}")
 

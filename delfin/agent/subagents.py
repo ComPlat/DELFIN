@@ -2001,6 +2001,28 @@ def _known_preset_tool_names() -> frozenset[str]:
     # on load order. Measured during this change: with presets refused at
     # load the catalogue shrank from 141 names to 134 and other presets
     # then failed on tools the first had justified.
+    # The swarm lead tools, which `api_client.unknown_tool_names` has
+    # always counted as real and this function did not. Measured on main:
+    # `swarm_status` is absent from the 300 names here while the typo judge
+    # accepts it, so a preset listing one was refused as "not a known tool"
+    # by one judge and called correct by the other.
+    #
+    # Imported in its own try/except, like the names above, because this
+    # function runs DURING module initialisation: the preset registry is
+    # built at import (``_build_preset_registry`` -> ``validate_preset`` ->
+    # here), and at that moment ``api_client`` is itself mid-import. That is
+    # also why the two judges cannot share ONE derivation yet, which was the
+    # obvious fix: calling into api_client from here raises ImportError from
+    # a partially initialised module, measured. They stay two derivations
+    # whose AGREEMENT is pinned by
+    # tests/test_the_tool_name_judges_agree.py instead -- a duplicate is
+    # tolerable when a test proves the copies say the same thing; it is the
+    # silent divergence that is not.
+    try:
+        from .api_client import _SWARM_LEAD_TOOL_NAMES
+        names |= set(_SWARM_LEAD_TOOL_NAMES)
+    except Exception:
+        pass
     names |= set(_READ_ONLY_PRESET_TOOLS)
     names.add("subagent_message")
     names.discard("")
@@ -2413,9 +2435,21 @@ _VERIFY_LIMITS_NOTE = (
 )
 
 # Tools whose call means the delegate MUTATED something.
+#
+# One-directional against api_client._WRITE_TOOL_NAMES: the two sets differ
+# on purpose -- that one is what the role denylists ENFORCE, this one is
+# what verification CLASSIFIES, and merging them would label a foreign
+# backend's spellings as this executor's writes. But nothing the denylists
+# enforce may fall out of this one, or the delegate is stopped from doing a
+# thing that then counts as nothing when it does it.
+#
+# make_plot was exactly that: enforced as a write, invisible here, so a
+# delegate's plot write scored less in its verification evidence than its
+# file write. Measured on main, it was the only name in that gap, and
+# tests/test_the_tool_name_judges_agree.py now holds the direction.
 _WRITE_TOOL_NAMES = frozenset({
     "write_file", "edit_file", "multi_edit", "apply_patch", "notebook_edit",
-    "write", "edit", "patch", "create_file", "undo_changes",
+    "write", "edit", "patch", "create_file", "undo_changes", "make_plot",
 })
 # Tools whose call means the delegate LOOKED AT the file it names. Mirrors
 # the parent's own observation set; a tool outside it (bash above all) names
