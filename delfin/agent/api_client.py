@@ -16187,6 +16187,62 @@ VIEW_IMAGE_NOTE = (
     "they do not see it unless you send it there.")
 
 
+_IO2_REFUSE_TEMPLATE = (
+    "hpc_io_check refused: the sbatch script would load the shared Lustre "
+    "file system. {text} Fix the script and submit again.")
+
+
+def _io2_sbatch_gate_verdict(cmd: str):
+    """The IO2 Lustre check for a bash command, shared by BOTH bash routes.
+    Called by :meth:`_DocToolExecutor._execute_bash` (foreground) and by
+    :meth:`_DocToolExecutor._execute_bash_background`, so the two cannot
+    drift: a walking submit typed into either tool reaches neither sbatch
+    nor the background job registry.
+
+    Input: the command text. Output: ``(may_run, error_json, warn_note)``
+    where ``may_run`` False means do not run anything, ``error_json`` is
+    the payload written as the tool result for a refusal, and
+    ``warn_note`` is the message to attach when the command runs ("" when
+    there is nothing to say).
+
+    Semantics, unchanged from the foreground hook:
+    - ``refuse`` -> the command must not run; the finding text is the
+      result, under the same ``{error, code: io_check_refused}`` shape the
+      dashboard and ``cluster_submit`` use.
+    - ``warn`` -> the command runs and the warning is attached.
+    - ``allow`` -> untouched.
+
+    A crash in the checker must not take the bash tool down, and must not
+    refuse an ordinary command (a bug in a checker is not a permission
+    decision). It fails CLOSED only where the command can submit: an
+    ``sbatch``-bearing command is refused with the checker's error, and
+    anything else runs with the error noted so it stays visible.
+    """
+    try:
+        from delfin import hpc_io_check as _io2_check
+        verdict, text, may_run = _io2_check.sbatch_gate(cmd,
+                                                        env=dict(os.environ))
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        if "sbatch" in cmd:
+            return False, json.dumps({
+                "error": (
+                    "hpc_io_check refused: the check itself failed "
+                    f"({exc.__class__.__name__}: {exc}); run the sbatch "
+                    "through the dashboard submit tab or cluster_submit, "
+                    "where the check is wired, or ask the person."),
+                "code": "io_check_refused",
+            }), ""
+        return True, None, (
+            "hpc_io_check could not run "
+            f"({exc.__class__.__name__}: {exc}); the command ran unchecked.")
+    if not may_run:
+        return False, json.dumps({"error": text,
+                                  "code": "io_check_refused"}), ""
+    if verdict == "warn" and text:
+        return True, None, text
+    return True, None, ""
+
+
 class _DocToolExecutor:
     """Lazy-loaded local executor for doc and calc search tools."""
 
@@ -25197,6 +25253,15 @@ class _DocToolExecutor:
         # cwd cannot be told apart from another workspace's.
         self._last_run_cwd = str(run_cwd)
 
+        # IO2 (wave 33): an sbatch command typed into THIS tool is checked
+        # by the same Lustre metadata rule the dashboard backend and
+        # cluster_submit apply. One shared helper with the background route
+        # (Finding 4: the two used to differ by a whole route).
+        _io2_may_run, _io2_error, _io2_warn_note = _io2_sbatch_gate_verdict(
+            cmd)
+        if not _io2_may_run:
+            return _io2_error
+
         # Every gate of this tool has run by here. `gate explain` stops,
         # carrying the argv the command would have been started with:
         # a host that cannot isolate a locked session answers with a
@@ -25502,6 +25567,10 @@ class _DocToolExecutor:
             "description": description,
             "cwd": self._display_path(run_cwd, perms) or ".",
         }
+        # IO2: a warn finding rides in the result so the model sees it (the
+        # command ran; the warning must not be silent).
+        if _io2_warn_note:
+            payload["notes"] = [_io2_warn_note]
         if _push is None and _pr is None:
             # The bubblewrap argv, also where the overlay helper started
             # it: the helper execs bwrap, so bwrap's own failure reads the
@@ -25684,6 +25753,15 @@ class _DocToolExecutor:
         # cwd cannot be told apart from another workspace's.
         self._last_run_cwd = str(run_cwd)
 
+        # IO2 (wave 33, Finding 4): the SAME check as the foreground route.
+        # Before this, a walking sbatch typed into `bash_background` started
+        # a job that ran sbatch unchecked -- the foreground route refused
+        # the identical command. One shared helper, so the two routes cannot
+        # drift again.
+        _io2_may_run, _io2_error, _bg_warn_note = _io2_sbatch_gate_verdict(cmd)
+        if not _io2_may_run:
+            return _io2_error
+
         # The same work already running in this session: hand back that
         # job instead of starting a second copy. Measured 2026-10-19: one
         # session started eight `python3 -m http.server` jobs to show a
@@ -25739,6 +25817,9 @@ class _DocToolExecutor:
             "cwd": self._display_path(run_cwd, perms) or ".",
             "timeout_s": timeout_s,
             **({"url": _url} if (_url := _served_url_of(cmd)) else {}),
+            # IO2: a warn finding rides in the result of the BACKGROUND
+            # route too, so a warning is never silent on one route only.
+            **({"notes": [_bg_warn_note]} if _bg_warn_note else {}),
             "hint": (
                 f"Use bash_status({job.job_id!r}) and "
                 f"bash_output({job.job_id!r}) to monitor; "
