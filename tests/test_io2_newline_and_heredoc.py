@@ -133,6 +133,25 @@ def test_heredoc_data_for_a_reader_is_not_a_script(lustre):
     assert verdict == "allow" and may_run, text
 
 
+def test_space_form_wrap_text_is_judged(lustre):
+    """`sbatch --wrap '<walk>'` (space form) hides the same walk.
+
+    Pre-existing defect found by my own adversarial pass in round 10: the
+    wrap regex captured the surrounding quotes, so the text arrived as
+    "'du -sh /pfs/...'" and the rule never saw the command.
+    """
+    cmd = "sbatch --wrap 'du -sh /pfs/data6/workspace/'"
+    verdict, text, may_run = _gate(cmd)
+    assert verdict == "refuse" and not may_run
+    assert "tree_walk_on_lustre" in text
+
+
+def test_space_form_clean_wrap_is_allowed(lustre):
+    cmd = "sbatch --wrap 'echo hello'"
+    verdict, text, may_run = _gate(cmd)
+    assert verdict == "allow" and may_run, text
+
+
 def test_heredoc_then_a_clean_submit_is_allowed(lustre, tmp_path):
     script = _script(tmp_path, CLEAN, name="clean.sh")
     cmd = ("cat <<'NOTE' > note.txt\n"
