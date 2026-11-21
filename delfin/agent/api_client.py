@@ -14278,6 +14278,23 @@ def bind_agent_workspace(
     return resolved
 
 
+#: Token budget for one verdict. Measured on a compute node 2026-11-20:
+#: at 120 one call in three ended ``finish_reason="length"`` with empty
+#: content, because on a session whose own model carries a reasoning
+#: channel the reasoning consumed all 120 tokens before a verdict was
+#: written. At 600 three of three answered in 1.3-1.7 s with completions of
+#: 98-169 tokens, so the budget is the fix and the headroom is real rather
+#: than guessed. An empty reply was read as "no verdict", which latched the
+#: gate into reporting the watcher as down -- see _CLASSIFIER_RETRY_TOKENS.
+_CLASSIFIER_MAX_TOKENS = 600
+
+#: One retry, at double the budget, for the one shape that is recoverable:
+#: truncated before a verdict. Not for an error and not for a refusal --
+#: those are answers. One retry only, because a verdict costs a request
+#: against the endpoint's daily count.
+_CLASSIFIER_RETRY_TOKENS = 1200
+
+
 def _classifier_timeout_s() -> float:
     """How long a verdict is waited for: ``agent.classifier.timeout_s``
     clamped to ``_CLASSIFIER_TIMEOUT_BOUNDS_S``, else
@@ -32917,8 +32934,40 @@ class OpenAIClient(_BaseClient):
         except Exception:
             return ""
 
+    def _classifier_once(
+        self, prompt: str, wire: str, budget: int,
+    ) -> tuple[str, bool]:
+        """One request. Returns (verdict text, truncated-before-a-verdict).
+
+        ``truncated`` is true only for the recoverable shape: no content and
+        the model stopped because it ran out of room. A refusal and an error
+        are answers and are not retried.
+        """
+        resp = self.client.with_options(
+            timeout=_classifier_timeout_s(), max_retries=0,
+        ).chat.completions.create(
+            model=wire or self.model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=budget, stream=False)
+        choice = resp.choices[0]
+        text = str(getattr(choice.message, "content", "") or "")
+        reason = str(getattr(choice, "finish_reason", "") or "")
+        return text, (not text.strip() and reason == "length")
+
     def _classifier_complete(self, prompt: str, model: str) -> str:
-        """One short, tool-less completion for the action classifier."""
+        """One short, tool-less completion for the action classifier.
+
+        Input: the classifier prompt and the configured model. Output: the
+        verdict text, or "" when the model produced none.
+
+        Semantics: a session on a backend other than KIT asks its OWN model,
+        and that model may carry a reasoning channel which spends the token
+        budget before any verdict is written. That case -- empty content with
+        ``finish_reason="length"`` -- is truncation, not an unreachable
+        model, so it is retried once at a larger budget instead of being
+        returned as the empty reply that latches the gate into reporting the
+        watcher as down. Any other empty reply is returned as it is.
+        """
         wire = str(model or "")
         if wire.startswith("kit.") and getattr(self, "_provider", "") != "kit":
             # The configured classifier model lives on the KIT proxy; a
@@ -32928,14 +32977,16 @@ class OpenAIClient(_BaseClient):
         t0 = time.monotonic()
         outcome = "error"
         try:
-            resp = self.client.with_options(
-                timeout=_classifier_timeout_s(), max_retries=0,
-            ).chat.completions.create(
-                model=wire or self.model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=120, stream=False)
-            outcome = "verdict"
-            return str(resp.choices[0].message.content or "")
+            text, truncated = self._classifier_once(
+                prompt, wire, _CLASSIFIER_MAX_TOKENS)
+            if truncated:
+                outcome = "truncated"
+                text, still = self._classifier_once(
+                    prompt, wire, _CLASSIFIER_RETRY_TOKENS)
+                outcome = "truncated_twice" if still else "verdict_after_retry"
+            else:
+                outcome = "verdict"
+            return text
         finally:
             # A request against the endpoint's quota like the turn's own:
             # written beside them, marked, so the count can be split by what
