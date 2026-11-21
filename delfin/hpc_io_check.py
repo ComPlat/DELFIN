@@ -428,52 +428,57 @@ def check(script_text: str, *, env: dict | None = None,
     # du is recursive by nature; find needs -r/--recursive or -maxdepth>1;
     # ls needs -R; rsync -a / cp -r recurse by their flags. Leading
     # VAR=val words are env prefixes (LC_ALL=C du ...), stripped first.
+    # A walk can sit AFTER a separator on its own line (`cd /pfs/work;
+    # du -sh /pfs/...` in a --wrap text, reviewer round 7): every
+    # quote-aware sub-segment of the line is judged, all under the
+    # same source line number.
     for i, line in enumerate(lines):
-        cmd = _strip_wrappers(line)
-        head = re.match(r"\s*(du|find|ls|rsync|cp)\b", cmd)
-        # A single-line loop ('for i in 1 2; do du ...; done') hides the
-        # command behind the loop head; also try the post-'do' segment
-        # so the start-anchored head match does not defeat the rule.
-        seg = None
-        if not head and " do " in cmd:
-            seg = cmd.split(" do ", 1)[1]
-            head = re.match(r"\s*(du|find|ls|rsync|cp)\b", seg)
-        if not head:
-            continue
-        if seg is not None:
-            cmd = seg
-        word = head.group(1)
-        recursive = (
-            word == "du"
-            or (word in ("rsync", "cp") and _WALK_FLAGS.search(cmd))
-            or (word == "ls" and re.search(r"\s-[a-zA-Z]*R", cmd))
-            or (word == "find"
-                and not (lambda d: d and int(d.group(1)) <= 1)(
-                    _MAXDEPTH.search(cmd))))
-        if not recursive:
-            continue
-        depth = _MAXDEPTH.search(cmd)
-        if depth and int(depth.group(1)) <= 1:
-            continue
-        # Absolute paths on the line, every $VAR expanded from the
-        # script's own assignments and env (F3), $TMPDIR, a relative
-        # path or the job's own run directory are fine.
-        paths = _expand_env_paths(cmd, vars_map)
-        # L5 fix: a stage-in -- one job folder copied TO a node-local
-        # destination -- is the fix the rule asks for, not a walk. But a
-        # copy whose SOURCE is HOME, a workspace root or a mount point
-        # still walks a whole tree on Lustre and stays refused.
-        if word in ("cp", "rsync") and _dest_is_node_local(cmd):
-            # The destination ($TMPDIR/...) expands to no absolute Lustre
-            # path, so paths holds only the source side: judge the
-            # source directly. HOME, a workspace root or a mount point
-            # stays a refusal; one job folder deeper is a stage-in.
-            if not any(_source_is_wide_root(p, env, lustres) for p in paths):
+        for sub in _split_gate_segments(line):
+            cmd = _strip_wrappers(sub)
+            head = re.match(r"\s*(du|find|ls|rsync|cp)\b", cmd)
+            # A single-line loop ('for i in 1 2; do du ...; done') hides the
+            # command behind the loop head; also try the post-'do' segment
+            # so the start-anchored head match does not defeat the rule.
+            seg = None
+            if not head and " do " in cmd:
+                seg = cmd.split(" do ", 1)[1]
+                head = re.match(r"\s*(du|find|ls|rsync|cp)\b", seg)
+            if not head:
                 continue
-        if not any(_is_lustre(p, lustres) for p in paths):
-            continue
-        findings.append(Finding(
-            "tree_walk_on_lustre", _src(i), "refuse", _WALK_WHY, _WALK_INSTEAD))
+            if seg is not None:
+                cmd = seg
+            word = head.group(1)
+            recursive = (
+                word == "du"
+                or (word in ("rsync", "cp") and _WALK_FLAGS.search(cmd))
+                or (word == "ls" and re.search(r"\s-[a-zA-Z]*R", cmd))
+                or (word == "find"
+                    and not (lambda d: d and int(d.group(1)) <= 1)(
+                        _MAXDEPTH.search(cmd))))
+            if not recursive:
+                continue
+            depth = _MAXDEPTH.search(cmd)
+            if depth and int(depth.group(1)) <= 1:
+                continue
+            # Absolute paths on the line, every $VAR expanded from the
+            # script's own assignments and env (F3), $TMPDIR, a relative
+            # path or the job's own run directory are fine.
+            paths = _expand_env_paths(cmd, vars_map)
+            # L5 fix: a stage-in -- one job folder copied TO a node-local
+            # destination -- is the fix the rule asks for, not a walk. But a
+            # copy whose SOURCE is HOME, a workspace root or a mount point
+            # still walks a whole tree on Lustre and stays refused.
+            if word in ("cp", "rsync") and _dest_is_node_local(cmd):
+                # The destination ($TMPDIR/...) expands to no absolute Lustre
+                # path, so paths holds only the source side: judge the
+                # source directly. HOME, a workspace root or a mount point
+                # stays a refusal; one job folder deeper is a stage-in.
+                if not any(_source_is_wide_root(p, env, lustres) for p in paths):
+                    continue
+            if not any(_is_lustre(p, lustres) for p in paths):
+                continue
+            findings.append(Finding(
+                "tree_walk_on_lustre", _src(i), "refuse", _WALK_WHY, _WALK_INSTEAD))
 
     # --- Rule: scratch on Lustre -> warn --------------------------------
     for i, line in enumerate(lines):
@@ -506,7 +511,8 @@ _SCRIPT_SUFFIXES = (".sh", ".bash", ".sub", ".py")
 
 
 def check_submit(script, env: dict | None = None,
-                 mounts_path: MountsSource | None = None
+                 mounts_path: MountsSource | None = None,
+                 is_text: bool = False
                  ) -> tuple[list[str], list[str]]:
     """The shared submit-time check: ONE helper both submit routes call.
 
@@ -524,6 +530,13 @@ def check_submit(script, env: dict | None = None,
     the check. Pure-text callers that must not inherit the process env
     pass ``env={}`` explicitly.
 
+    ``is_text=True`` (IO2 reviewer round 8/9, the QS ruling on the
+    ``--wrap`` route): the argument IS script text -- no file resolution
+    is attempted, so a text shaped like a script name (``run.sh``,
+    ``ls -R ...``) is judged as text and never read from disk; the
+    path-shape heuristic (:545) applies only when ``is_text`` is False
+    (the path route keeps its file semantics, H1 intact).
+
     Cost: one text read (a path) plus the regex passes of :func:`check`;
     the mounts source is one /proc/mounts read per call, injectable for
     tests. Raises OSError when a script path cannot be read -- the check
@@ -534,18 +547,18 @@ def check_submit(script, env: dict | None = None,
     wording; backend_slurm catches FileNotFoundError and leaves the
     missing script to sbatch's own error.
     """
-    if isinstance(script, Path):
+    if isinstance(script, Path) and not is_text:
         text = script.read_text(encoding="utf-8", errors="replace")
         name = script.name
-    elif (isinstance(script, str) and "\n" not in script
-          and script.endswith(_SCRIPT_SUFFIXES)):
+    elif (isinstance(script, str) and not is_text
+          and "\n" not in script and script.endswith(_SCRIPT_SUFFIXES)):
         # A script-shaped str is a PATH (H1): if it names nothing on
         # disk that is an error, never a silent reinterpretation as
         # one-line script text.
         text = Path(script).read_text(encoding="utf-8", errors="replace")
         name = Path(script).name
-    elif (isinstance(script, str) and "\n" not in script
-          and Path(script).is_file()):
+    elif (isinstance(script, str) and not is_text
+          and "\n" not in script and Path(script).is_file()):
         text = Path(script).read_text(encoding="utf-8", errors="replace")
         name = Path(script).name
     else:
@@ -590,13 +603,19 @@ def sbatch_gate(cmd: str, env: dict | None = None,
     --wrap is present the verdict is allow -- sbatch reads its script
     from stdin then, and there is nothing to inspect.
 
+    A ``--wrap`` TEXT is judged AS TEXT (QS ruling on requirement (a)):
+    ``check_submit(..., is_text=True)`` -- it is never file-resolved, so
+    a wrap text shaped like a script name (``bash run.sh``, ``ls -R
+    /pfs/data6``) is checked for what the TEXT itself does, not for what
+    a file of that name contains.
+
     Pure over text; the same mounts-source rules as :func:`check`.
     """
     import shlex
     # The shell would run EVERY segment; a `sbatch run.sh && echo ok`
     # must not let the suffix hide the submit. So each segment is
     # gated, and the worst verdict wins: refuse > warn > allow.
-    segments = re.split(r"&&|\|\||;|\|", cmd)
+    segments = _split_gate_segments(cmd)
     verdicts: list[str] = []
     texts: list[str] = []
     may_run = True
@@ -615,6 +634,80 @@ def sbatch_gate(cmd: str, env: dict | None = None,
     if "refuse" in verdicts:
         return "refuse", texts[verdicts.index("refuse")], False
     return "warn", texts[0], may_run
+
+
+def _split_gate_segments(cmd: str) -> list[str]:
+    """Split a command line on ``;`` ``&&`` ``|`` ``||`` at quote depth 0.
+
+    A separator inside single or double quotes (a ``--wrap='<cmd>;
+    <cmd>'`` text, a ``"<dir>/a;b/run.sh"`` path) belongs to that
+    argument, not to the caller's line (reviewer round 7: the naive
+    split let the walk fragment after the in-quote separator escape
+    the check). Backslash escapes are honoured; a lone ``&`` also
+    terminates a segment -- the shell backgrounds the left side and
+    runs the right side independently, so nothing may hide behind it
+    either way.
+
+    NOT the same function as ``delfin.agent.shell_words._split_shell_segments``
+    (the auto-allow splitter): that one is quote-aware too, but it
+    consumes here-documents and keeps redirects — shapes the gate here
+    must judge differently. Local copy, so this check cannot silently
+    change when that file changes; if a drift matters, merge them in a
+    future package.
+    """
+    segments: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    i = 0
+    n = len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if ch == "\\" and i + 1 < n:
+            # Escaped char: keep both, a "\;" never separates. At quote
+            # depth 0 a backslash-newline is a continuation: keep the
+            # newline too (the join happens downstream).
+            current.append(cmd[i:i + 2])
+            i += 2
+            continue
+        if quote:
+            if ch == quote:
+                quote = None
+            current.append(ch)
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            current.append(ch)
+            i += 1
+            continue
+        if ch == ";" or ch == "|":
+            # The operator TERMINATES the segment and is never kept in
+            # it: a trailing `&&` inside the segment text made shlex
+            # take it as the last positional (the script path), which
+            # named nothing and fell through to allow.
+            if ch == "|" and i + 1 < n and cmd[i + 1] == "|":
+                i += 2
+            else:
+                i += 1
+            segments.append("".join(current))
+            current = []
+            continue
+        if ch == "&":
+            if i + 1 < n and cmd[i + 1] == "&":
+                i += 2
+                segments.append("".join(current))
+                current = []
+                continue
+            # A lone `&` backgrounds the job: treat it as a separator
+            # too, nothing may hide on either side of it.
+            segments.append("".join(current))
+            current = []
+            i += 1
+            continue
+        current.append(ch)
+        i += 1
+    segments.append("".join(current))
+    return segments
 
 
 def _gate_sbatch_segment(segment: str, env: dict,
@@ -648,8 +741,12 @@ def _gate_sbatch_segment(segment: str, env: dict,
                      target)
     if wrap:
         text = next(g for g in wrap.groups() if g is not None)
+        # The wrap text IS the script: judged as text, never
+        # file-resolved (QS ruling (a) -- a wrap whose text carries no
+        # walk is allowed even when a file of the same name walks).
         refused, warned = check_submit(text, env=env,
-                                       mounts_path=mounts_path)
+                                       mounts_path=mounts_path,
+                                       is_text=True)
     else:
         # The script is the last token that is not an option or an
         # option's value. A token starting with '-' is an option; a
