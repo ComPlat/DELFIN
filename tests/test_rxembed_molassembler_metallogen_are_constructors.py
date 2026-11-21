@@ -30,6 +30,7 @@ pytest.importorskip("rdkit")
 
 from delfin.common import external_builders as eb  # noqa: E402
 from delfin.cluster_bench.tool_workers import smiles_tools as st  # noqa: E402
+from conftest import child_env
 
 REPO = Path(__file__).resolve().parents[1]
 NEW = ("rxembed", "molassembler", "metallogen")
@@ -135,12 +136,14 @@ def test_metallogen_without_orca_is_an_error_not_gaussian(tmp_path, monkeypatch)
     assert frames == [] and "ORCA" in error and "Gaussian" in error
 
 
-def test_importing_delfin_needs_none_of_them():
+def test_importing_delfin_needs_none_of_them(tmp_path):
     code = ("import sys, delfin.common.external_builders, delfin.ai_tools, "
             "delfin.cluster_bench.tool_workers.smiles_tools; "
             "bad = [m for m in ('rxembed', 'scine_molassembler', 'MetalloGen') if m in sys.modules]; "
             "sys.exit(1 if bad else 0)")
-    env = dict(os.environ, PYTHONPATH=str(REPO))
+    # The child imports three delfin packages, so it resolves their
+    # ~/.delfin sinks at import time against HOME.
+    env = dict(os.environ, PYTHONPATH=str(REPO), **child_env(tmp_path))
     assert subprocess.run([sys.executable, "-c", code], env=env, timeout=300).returncode == 0
 
 
