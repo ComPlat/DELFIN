@@ -282,10 +282,13 @@ def render_recovery_plan(plan) -> str:
     whether to repeat what a crash left open, and the lines that must
     not be repeated silently say so.
     """
-    lines = [f"session {plan.session}: "
-             f"{'in-flight turn, resume at turn ' + str(plan.resume_turn)}"
-             if plan.in_flight else "no in-flight turn: the session resumes "
-             "normally"]
+    # Both lines name the session: a plan is read next to other plans in
+    # a log, and the ternary written inside the f-string list dropped the
+    # "session <id>" prefix on the not-in-flight branch.
+    state = (f"in-flight turn, resume at turn {plan.resume_turn}"
+             if plan.in_flight
+             else "no in-flight turn: the session resumes normally")
+    lines = [f"session {plan.session}: {state}"]
     for d in plan.decisions:
         name = d.verdict.name
         extra = ""

@@ -13,8 +13,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from delfin.agent.cli import build_parser
 
 
@@ -215,3 +213,9 @@ def test_plan_without_journal_says_so(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert "no in-flight turn" in out, out
+    # The session the plan is about, on both branches: a plan is read
+    # next to other plans in a log. The first version of the renderer
+    # wrote the prefix only for the in-flight branch, because the
+    # ternary inside the f-string list took the whole prefixed string
+    # as its true case.
+    assert "no-such-session" in out, out
