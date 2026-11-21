@@ -96,3 +96,35 @@ def test_replay_step_is_gone():
     """The deleted names stay deleted (absence pin)."""
     assert not hasattr(cli_resume, "replay_step")
     assert not hasattr(step_journal, "finished_result")
+
+
+def test_resume_resets_the_diagnostics_note(journal_dir, monkeypatch):
+    """A resumed session may see the 'diagnostics unavailable' note once
+    again — the ruling says once per SESSION, and the flag is process
+    state, so the resume path resets it."""
+    from delfin.agent import diagnostics
+
+    session_store.save_session("s-diag", title="t", workspace="",
+                               chat_messages=[])
+
+    class _Engine:
+        session_id = "s-diag"
+        kit_permissions = None
+
+    monkeypatch.setattr(cli, "_resume_or_create", lambda engine, args: "")
+    monkeypatch.setattr(cli, "_claim_session", lambda sid: None)
+
+    class _Args:
+        new_session = False
+        session = "s-diag"
+        continue_session = False
+        resume = None
+        fork_session = False
+
+    diagnostics._unavailability_shown = True
+    try:
+        cli._open_session(_Engine(), _Args(), None)
+        assert diagnostics._unavailability_shown is False, (
+            "a resumed session must be able to see the note again")
+    finally:
+        diagnostics._unavailability_shown = False

@@ -1545,6 +1545,16 @@ def _open_session(engine, args: argparse.Namespace, workspace: Path) -> bool:
             step_note = None
         if step_note:
             print(step_note, file=sys.stderr)
+        # A resumed session is a NEW session for the diagnostics
+        # unavailability note (operator ruling 2026-10-18: the note shows
+        # ONCE PER SESSION). The flag lives in diagnostics.py and nothing
+        # reset it, so a resumed session in the same process stayed silent
+        # forever after another session had consumed the note.
+        try:
+            from . import diagnostics as _diag
+            _diag.reset_unavailability_note()
+        except Exception:
+            pass
 
     # One chain of decisions, in one order, so what was decided last
     # is what everything downstream reads:
