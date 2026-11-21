@@ -1343,51 +1343,54 @@ def _expansion_of_word(raw: str) -> str:
     has_brace = False
     has_command = False
     leading_tilde = False
-    try:
-        while i < n:
-            ch = raw[i]
-            if quote == "'":
-                # Nothing expands inside single quotes, an escaped quote aside.
-                if ch == "'":
-                    quote = ""
-                i += 1
-                continue
-            if quote == '"':
-                # Command substitution DOES expand inside double quotes.
-                if ch == "$" and i + 1 < n and raw[i + 1] == "(":
-                    has_command = True
-                elif ch == "`":
-                    has_command = True
-                elif ch == "\\" and i + 1 < n and raw[i + 1] in '$`"\\':
-                    i += 1  # the backslash protects the next character
-                elif ch == '"':
-                    quote = ""
-                i += 1
-                continue
-            # Unquoted.
-            if ch == "\\":
-                i += 2  # the escaped character is literal
-                continue
-            if ch in ("'", '"'):
-                quote = ch
-                i += 1
-                continue
-            if ch == "~" and i == 0:
-                # A leading tilde. `~` alone and `~/` count; `a~b` does not.
-                leading_tilde = True
-                i += 1
-                continue
-            if ch in "*?[":
-                has_glob = True
-            elif ch == "{":
-                has_brace = True
-            elif ch == "$" and i + 1 < n and raw[i + 1] == "(":
+    # No try/except around this loop: every index access is bounds-guarded
+    # (`while i < n` before `raw[i]`, `i + 1 < n` before `raw[i + 1]`), so no
+    # IndexError can arise, and a bare `except IndexError: pass` would have
+    # converted a future off-by-one into a silent "this word does not
+    # expand" verdict -- a fail-OPEN in exactly the rule that decides
+    # refusals. If an index bug is ever introduced, it must raise.
+    while i < n:
+        ch = raw[i]
+        if quote == "'":
+            # Nothing expands inside single quotes, an escaped quote aside.
+            if ch == "'":
+                quote = ""
+            i += 1
+            continue
+        if quote == '"':
+            # Command substitution DOES expand inside double quotes.
+            if ch == "$" and i + 1 < n and raw[i + 1] == "(":
                 has_command = True
             elif ch == "`":
                 has_command = True
+            elif ch == "\\" and i + 1 < n and raw[i + 1] in '$`"\\':
+                i += 1  # the backslash protects the next character
+            elif ch == '"':
+                quote = ""
             i += 1
-    except IndexError:  # pragma: no cover - the loop bound already guards
-        pass
+            continue
+        # Unquoted.
+        if ch == "\\":
+            i += 2  # the escaped character is literal
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "~" and i == 0:
+            # A leading tilde. `~` alone and `~/` count; `a~b` does not.
+            leading_tilde = True
+            i += 1
+            continue
+        if ch in "*?[":
+            has_glob = True
+        elif ch == "{":
+            has_brace = True
+        elif ch == "$" and i + 1 < n and raw[i + 1] == "(":
+            has_command = True
+        elif ch == "`":
+            has_command = True
+        i += 1
     if has_command:
         return "command"
     if has_glob:
@@ -1844,7 +1847,30 @@ def _gate_sbatch_segment(segment: str, env: dict,
         # decision, not as a measurement.
         existing_pos = [t for t in positional
                         if _gate_names_existing_file(t, cd_dir)]
-        if info_flag and not existing_pos:
+        # ROUND 24 (operator + QS ruling, #859 held): the carve-out asks for
+        # NO POSITIONAL WORD AT ALL, not "no positional that names a file".
+        # The old condition was `not existing_pos`, and a word the shell
+        # EXPANDS never names a file -- so a pattern beside a flag fell into
+        # the allow (measured at f4d3e2984):
+        #   sbatch <dir>/wal*.sh --version  -> allow   <- walk.sh would run
+        # while `sbatch <dir>/walk.sh --version` refused. Same class as
+        # round 22: the rule asked "does this word name a file" when the
+        # question is "could this word BE the script".
+        #
+        # Why `not positional` and not `not existing_pos and not expanding`:
+        # the expansion rule below already refuses every word the shell would
+        # change, so a positional that reaches the carve-out either names an
+        # existing file or names nothing and expands nothing. The second kind
+        # falls through to `check_submit`, which raises FileNotFoundError and
+        # allows (the genuine missing-name case, rounds 6-9). So
+        # `sbatch -p x --version` -- options only, no script -- still allows,
+        # without the gate having to know that `x` is an option's VALUE rather
+        # than a script. Knowing that is the sbatch grammar table this gate
+        # has refused to build four times.
+        if info_flag and not positional:
+            # The one shape the carve-out is for: `sbatch --version`,
+            # `sbatch -p x --version`. Pinned by
+            # tests/test_io2_informational_flag_needs_no_script.py.
             return "allow", "", True
         if not positional:
             # Nothing was named and no channel was present: sbatch would
