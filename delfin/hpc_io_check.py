@@ -29,6 +29,7 @@ page checked this session via DELFIN's web tools):
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -156,7 +157,8 @@ def _strip_wrappers(cmd: str) -> str:
         m = re.match(r"\s*\(\s*(.*)\s*\)\s*$", cmd)
         if m and ("&&" in m.group(1) or ";" not in m.group(1)):
             # A single command or a chain inside parentheses; a lone
-            # `( cmd )` in a script is one command.
+            # `( cmd )` in a script is one command. (cd X && sbatch ..)
+            # unwraps here so the cd-tracking in sbatch_gate sees it.
             cmd = m.group(1)
             continue
         return cmd
@@ -577,6 +579,47 @@ def check_submit(script, env: dict | None = None,
     return refused, warned
 
 
+def _cd_dir_of_segment(segment: str) -> tuple[str, str, bool]:
+    """A segment that starts with ``cd <dir>``: ``(dir, rest, more)``.
+
+    ``more`` is False when the segment is ONLY the cd (the dir carries
+    to the FOLLOWING segments, the shell keeps the working directory);
+    True when a chain follows (``cd X && sbatch ...``, ``cd X; ...``)
+    and ``rest`` is that chain, judged with the dir already applied.
+    Nothing matches when the segment does not start with cd/pushd.
+    """
+    import shlex
+    stripped = _strip_wrappers(segment)
+    m = re.match(r"^(cd|pushd)\s+(.+)$", stripped)
+    if not m:
+        # A subshell is split by the segment splitter on its inner
+        # operators: `(cd /dir ` is a segment that STARTS a subshell
+        # whose cd applies to the segments that follow (the trailing
+        # `)` belongs to the last one). Strip the leading paren so the
+        # cd rule fires; the sbatch segment's trailing `)` is dropped
+        # by _strip_wrappers' paren rule on the OTHER side.
+        m = re.match(r"^\(\s*(cd|pushd)\s+(.+)$", stripped)
+        if not m:
+            return "", "", False
+    rest_text = m.group(2)
+    # The dir is the first token; shlex keeps a quoted dir with spaces
+    # together. A separator AFTER it starts the chain that runs in it.
+    try:
+        tokens = shlex.split(rest_text)
+    except ValueError:
+        tokens = rest_text.split()
+    if not tokens:
+        return "", "", False
+    directory = tokens[0]
+    remainder = rest_text[len(tokens[0]):].strip()
+    if not remainder:
+        return directory, "", False
+    # The chain may itself re-split into further segments (a `;` inside
+    # the rest was NOT a split point -- it is part of this segment
+    # text); only what follows the FIRST separator runs in the cd dir.
+    return directory, remainder, True
+
+
 def sbatch_gate(cmd: str, env: dict | None = None,
                 mounts_path: MountsSource | None = None
                 ) -> tuple[str, str, bool]:
@@ -619,12 +662,41 @@ def sbatch_gate(cmd: str, env: dict | None = None,
     verdicts: list[str] = []
     texts: list[str] = []
     may_run = True
+    pending_dir = ""
     if env is None:
         import os as _os
         env = dict(_os.environ)
     for segment in segments:
+        # Track cd/pushd across segments (operator live run 2026-11-21,
+        # the IO1 L4 class): `cd <dir> && sbatch walk.sh` resolves a
+        # relative script against the CD TARGET, not the process cwd,
+        # so the gate must apply the pending dir to later segments.
+        directory, rest, chained = _cd_dir_of_segment(segment)
+        if directory:
+            if chained:
+                verdict, text, runs = _gate_sbatch_segment(
+                    rest, env=env, mounts_path=mounts_path,
+                    cd_dir=directory)
+                if verdict != "allow":
+                    verdicts.append(verdict)
+                    texts.append(text)
+                    may_run = may_run and runs
+                # The rest may hide further segments (`cd X && sbatch
+                # a.sh && sbatch b.sh`): judge those too, in the dir.
+                for sub_segment in _split_gate_segments(rest)[1:]:
+                    verdict, text, runs = _gate_sbatch_segment(
+                        sub_segment, env=env, mounts_path=mounts_path,
+                        cd_dir=directory)
+                    if verdict != "allow":
+                        verdicts.append(verdict)
+                        texts.append(text)
+                        may_run = may_run and runs
+            else:
+                # A bare cd segment carries the dir to the NEXT ones.
+                pending_dir = directory
+            continue
         verdict, text, runs = _gate_sbatch_segment(
-            segment, env=env, mounts_path=mounts_path)
+            segment, env=env, mounts_path=mounts_path, cd_dir=pending_dir)
         if verdict != "allow":
             verdicts.append(verdict)
             texts.append(text)
@@ -711,11 +783,28 @@ def _split_gate_segments(cmd: str) -> list[str]:
 
 
 def _gate_sbatch_segment(segment: str, env: dict,
-                         mounts_path: MountsSource | None
+                         mounts_path: MountsSource | None,
+                         cd_dir: str = ""
                          ) -> tuple[str, str, bool]:
-    """The gate for ONE shell segment (between ``;`` ``&&`` ``|``)."""
+    """The gate for ONE shell segment (between ``;`` ``&&`` ``|``).
+
+    ``cd_dir`` is the working directory a preceding ``cd``/``pushd``
+    in the same command line left the shell in (operator live run
+    2026-11-21, the IO1 L4 class): a relative script argument is
+    resolved against it, NOT against the process cwd. When the
+    resolution names no existing file the verdict is a narrow refuse
+    ("not found from the cd target") instead of a pass -- sbatch would
+    fail there anyway, and the gate cannot tell what the script would
+    have done, so it fails closed.
+    """
     import shlex
     target = _strip_wrappers(segment)
+    # A subshell's closing paren rides on the LAST segment
+    # (`sbatch walk.sh)`): drop a lone trailing `)` so the script
+    # argument is not polluted by it. Only a single trailing char, and
+    # only when the opening paren lived in an earlier segment.
+    if target.endswith(")") and not target.startswith("("):
+        target = target[:-1].rstrip()
     try:
         # shlex: a quoted path with a space is ONE argument, not a
         # split of the last word (reviewer round 6, the quoted-path
@@ -777,8 +866,21 @@ def _gate_sbatch_segment(segment: str, env: dict,
                 return "allow", "", True
         else:
             script_arg = positional[-1]
+        # Resolve a relative script against the cd target, not the
+        # process cwd (operator live run, IO1 L4 class).
+        resolved: str | None = script_arg
+        if cd_dir and not os.path.isabs(script_arg):
+            resolved = os.path.join(cd_dir, script_arg)
+            if not Path(resolved).is_file():
+                return ("refuse",
+                        "hpc_io_check refused: the sbatch script "
+                        f"'{script_arg}' is not found from the cd "
+                        f"target '{cd_dir}'. The gate cannot tell "
+                        "what that script would do, and sbatch will "
+                        "not run it either -- check the path.",
+                        False)
         try:
-            refused, warned = check_submit(script_arg, env=env,
+            refused, warned = check_submit(resolved, env=env,
                                            mounts_path=mounts_path)
         except FileNotFoundError:
             # sbatch will fail on its own with "No such file"; the gate

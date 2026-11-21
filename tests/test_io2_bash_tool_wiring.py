@@ -188,3 +188,18 @@ def test_checker_crash_still_refuses_sbatch(lustre, stub_sbatch,
     out = _run_bash(f"sbatch {script}", tmp_path, monkeypatch)
     assert out.get("code") == "io_check_refused", out
     assert not _marker(tmp_path)
+
+
+def test_cd_relative_walk_script_is_refused(lustre, stub_sbatch,
+                                            tmp_path, monkeypatch):
+    """The operator's live-run gap (2026-11-21): `cd <dir> &&
+    sbatch walk.sh` resolves the RELATIVE script against the cd
+    target. Unfixed, the gate resolved it against the process cwd,
+    found nothing and passed the submit through to sbatch."""
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    _script(sub, WALK, name="walk.sh")
+    out = _run_bash(f"cd {sub} && sbatch walk.sh", tmp_path, monkeypatch)
+    assert out.get("code") == "io_check_refused", out
+    assert not _marker(tmp_path), (
+        "a refused cd-relative submit must never reach sbatch")
