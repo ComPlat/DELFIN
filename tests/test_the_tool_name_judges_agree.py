@@ -36,7 +36,12 @@ from delfin.agent.swarm import lead
 # and lead tools (accepted by the typo check, refused by the preset
 # validator's catalogue).
 _OPS_NAMES = (
-    "geometry_build_smiles", "geometry_read_xyz", "geometry_add_hydrogens",
+    # geometry_fix_hydrogens, not _add_: measured against the server
+    # module, which defines 102 tool_* functions and no _add_hydrogens.
+    # The branch asserted the misspelling must be ACCEPTED, which
+    # would have weakened the typo judge for the case it exists for.
+    "geometry_build_smiles", "geometry_read_xyz",
+    "geometry_fix_hydrogens",
     "parse_orca_output", "find_orca_errors",
 )
 _LEAD_NAMES = tuple(sorted(ac._SWARM_LEAD_TOOL_NAMES))
@@ -66,7 +71,10 @@ def test_a_misspelling_is_still_reported():
     still surfaces, an mcp__ name is still exempt (deliberate asymmetry:
     remote MCP servers appear only inside the turn).  Passes at both ends
     -- a pin of the behaviour that existed before."""
-    assert ac.unknown_tool_names(["read_file"] + list(_TYPOS)) == list(_TYPOS)
+    # sorted(), so a set comparison; the point is WHICH names are
+    # reported, not the order the fixture lists them in.
+    assert set(ac.unknown_tool_names(["read_file"] + list(_TYPOS))) \
+        == set(_TYPOS)
     assert ac.unknown_tool_names(["mcp__nowhere__x"]) == []
     for typo in _TYPOS:
         assert typo not in SA._known_preset_tool_names()
@@ -80,7 +88,7 @@ def test_every_enforced_write_still_counts_as_a_write_in_classification():
     than its file write in verification evidence.  Rejected alternative:
     merging the two symbols (classification would then label foreign
     backend spellings as this executor's writes)."""
-    missing = set(ac._WRITE_TOOL_NAMES) - set(SA._write_tool_names())
+    missing = set(ac._WRITE_TOOL_NAMES) - set(SA._WRITE_TOOL_NAMES)
     assert missing == set(), (
         f"enforced writes invisible to classification: {sorted(missing)}")
 

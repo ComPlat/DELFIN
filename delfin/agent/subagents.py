@@ -1942,28 +1942,87 @@ _PROTECTED_GLOB_PREFIXES: tuple[str, ...] = (
 
 
 def _known_preset_tool_names() -> frozenset[str]:
-    """The tool names a preset may list -- the shared answer plus the
-    preset-only extensions.
-
-    Read from api_client.known_tool_names(), the ONE derivation behind
-    every 'is this a real tool name' judge, so the typo check and this
-    validator can no longer disagree. Measured 2026-11-20, before this
-    alias: the nine swarm_* lead names passed unknown_tool_names() and
-    were refused here ('not a known tool'), and a judge set on
-    _DOC_TOOLS_OPENAI alone reported the ops server's real
-    geometry_build_smiles / geometry_read_xyz / geometry_add_hydrogens
-    as misspelt -- the doc catalogue carries none of the server's 102
-    tool_* functions.
-
-    Input: known_tool_names() plus _READ_ONLY_PRESET_TOOLS and
-    subagent_message. Output: their frozenset union. The two extensions
-    are no-ops today (measured: every entry is already in the shared
-    set) and stay explicit -- they name what a preset may rely on even
-    if the advertised catalogue moves. Rejected: keeping this function's
-    old inline second derivation (the disagreement itself) and a union
-    over SUBAGENT_PRESETS, which legitimises a tool via load order.'''"""
-    from .api_client import known_tool_names
-    names = set(known_tool_names())
+    """The tool names a preset may list, built the way api_client builds
+    its real registered surface for T4 grounding (api_client.py:~17718):
+    write tools + DELFIN-only tools + the doc tools, plus the reporting
+    channel a preset already ships with (subagent_message). Read-only
+    catalogue names (explore's measured surface) are included via the
+    preset definitions themselves — a NEW preset listing a tool an
+    existing preset lists must not be refused for it. The ops server's own
+    structure/geometry tools are derived from the server module (see below),
+    never from a hand list.
+    """
+    names: set[str] = set()
+    try:
+        from .api_client import (
+            _WRITE_TOOL_NAMES,
+            _DELFIN_ONLY_TOOL_NAMES,
+            _DOC_TOOLS_OPENAI,
+        )
+        names |= set(_WRITE_TOOL_NAMES)
+        names |= set(_DELFIN_ONLY_TOOL_NAMES)
+        for t in _DOC_TOOLS_OPENAI:
+            n = str(t.get("name") or (t.get("function") or {}).get("name")
+                    or "")
+            if n:
+                names.add(n)
+    except Exception:
+        pass
+    # The ops server's tools: a preset may list one bare
+    # (geometry_renumber) or namespaced
+    # (mcp__delfin-ops__parse_orca_output). Derived from the server module
+    # so a tool it registers later stays known automatically — never a
+    # hand list, and a made-up name is still refused below.
+    #
+    # EVERY tool_*, not only tool_geometry_*. Measured 2026-11-20: the
+    # server defines 102 and the geometry prefix derives 19, so 83 real
+    # tools were missing from the catalogue and a preset listing one was
+    # called invalid. method-reviewer lists seven of them
+    # (parse_orca_output, compare_calculations, compare_across_functionals,
+    # extract_scf_convergence, extract_imaginary_frequencies,
+    # extract_delfin_json, find_orca_errors) and all seven exist.
+    try:
+        from delfin.ops_server import server as _ops_server
+        for _n in dir(_ops_server):
+            if _n.startswith("tool_"):
+                _base = _n[len("tool_"):]
+                names.add(_base)
+                names.add(f"mcp__delfin-ops__{_base}")
+    except Exception:
+        pass
+    # The read-only surface the looking presets share, from the constant
+    # that defines it.
+    #
+    # NOT a union over SUBAGENT_PRESETS, which is what stood here. That
+    # made the catalogue self-referential: a preset's own tools entered
+    # the list of names a preset may use, so an unknown tool in a LOADED
+    # preset could never be caught -- it legitimised itself -- while the
+    # same name in a new preset was refused, and which happened depended
+    # on load order. Measured during this change: with presets refused at
+    # load the catalogue shrank from 141 names to 134 and other presets
+    # then failed on tools the first had justified.
+    # The swarm lead tools, which `api_client.unknown_tool_names` has
+    # always counted as real and this function did not. Measured on main:
+    # `swarm_status` is absent from the 300 names here while the typo judge
+    # accepts it, so a preset listing one was refused as "not a known tool"
+    # by one judge and called correct by the other.
+    #
+    # Imported in its own try/except, like the names above, because this
+    # function runs DURING module initialisation: the preset registry is
+    # built at import (``_build_preset_registry`` -> ``validate_preset`` ->
+    # here), and at that moment ``api_client`` is itself mid-import. That is
+    # also why the two judges cannot share ONE derivation yet, which was the
+    # obvious fix: calling into api_client from here raises ImportError from
+    # a partially initialised module, measured. They stay two derivations
+    # whose AGREEMENT is pinned by
+    # tests/test_the_tool_name_judges_agree.py instead -- a duplicate is
+    # tolerable when a test proves the copies say the same thing; it is the
+    # silent divergence that is not.
+    try:
+        from .api_client import _SWARM_LEAD_TOOL_NAMES
+        names |= set(_SWARM_LEAD_TOOL_NAMES)
+    except Exception:
+        pass
     names |= set(_READ_ONLY_PRESET_TOOLS)
     names.add("subagent_message")
     names.discard("")
@@ -2315,9 +2374,21 @@ _VERIFY_LIMITS_NOTE = (
 )
 
 # Tools whose call means the delegate MUTATED something.
+#
+# One-directional against api_client._WRITE_TOOL_NAMES: the two sets differ
+# on purpose -- that one is what the role denylists ENFORCE, this one is
+# what verification CLASSIFIES, and merging them would label a foreign
+# backend's spellings as this executor's writes. But nothing the denylists
+# enforce may fall out of this one, or the delegate is stopped from doing a
+# thing that then counts as nothing when it does it.
+#
+# make_plot was exactly that: enforced as a write, invisible here, so a
+# delegate's plot write scored less in its verification evidence than its
+# file write. Measured on main, it was the only name in that gap, and
+# tests/test_the_tool_name_judges_agree.py now holds the direction.
 _WRITE_TOOL_NAMES = frozenset({
     "write_file", "edit_file", "multi_edit", "apply_patch", "notebook_edit",
-    "write", "edit", "patch", "create_file", "undo_changes",
+    "write", "edit", "patch", "create_file", "undo_changes", "make_plot",
 })
 # Tools whose call means the delegate LOOKED AT the file it names. Mirrors
 # the parent's own observation set; a tool outside it (bash above all) names
