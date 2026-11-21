@@ -943,9 +943,73 @@ def _herestring_of_segment(text: str) -> tuple[str | None, str]:
     return None, text
 
 
+def _stdin_redirect_of_segment(text: str) -> str | None:
+    """The FILE a ``<`` redirect feeds this segment, or None.
+
+    ``sbatch < run.sh`` (round 13, my finding: this route was never gated
+    at all) hands the file to sbatch as its script, exactly as a pipe does.
+    Only a plain single ``<`` counts: ``<<``/``<<-`` are here-documents
+    and ``<<<`` is a here-string, each handled by its own reader, and
+    ``2<`` is a descriptor duplication, not a script source. A quoted
+    target is unquoted. ``None`` when there is no such redirect or when its
+    target cannot be read as a path.
+    """
+    quote: str | None = None
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if quote:
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            i += 1
+            continue
+        if ch == "<":
+            # Skip the operators that are NOT a plain input redirect.
+            if text[i:i + 3] == "<<<":
+                i += 3
+                continue
+            if text[i:i + 2] == "<<":
+                i += 2
+                continue
+            # `2<` / `0<`: the operator is preceded by a file descriptor.
+            j = i + 1
+            while j < len(text) and text[j] in " \t":
+                j += 1
+            word_quote: str | None = None
+            out: list[str] = []
+            while j < len(text):
+                c = text[j]
+                if word_quote:
+                    if c == word_quote:
+                        word_quote = None
+                        j += 1
+                        continue
+                    out.append(c)
+                    j += 1
+                    continue
+                if c in "'\"":
+                    word_quote = c
+                    j += 1
+                    continue
+                if c in " \t;|&<>":
+                    break
+                out.append(c)
+                j += 1
+            target = "".join(out)
+            return target or None
+        i += 1
+    return None
+
+
 def _split_on_pipes(chunk: str) -> list[str]:
     """Split one command-list chunk at top-level single ``|``.
-
     ``||`` is a logical OR, not a pipe, and a ``|`` inside quotes belongs
     to the argument. Pipes bind tighter than ``;``/``&&``, so the caller
     splits on those first and hands one command list here.
@@ -1049,6 +1113,16 @@ def _sbatch_reads_stdin(side: str) -> bool:
     into it delivers the script. A named script argument, a here-document,
     a here-string or ``--wrap`` is a route that already judges something,
     and the file/body wins over the pipe.
+
+    Operator live run 2026-11-21 (round 13): this used to call ANY token
+    without a leading ``-`` a script argument, so in
+    ``sbatch --test-only -p dev_cpu -t 5`` the option VALUE ``dev_cpu``
+    was read as the script and the piped script went unjudged. The
+    deciding fact is the file system, not the token's shape -- the same
+    "only an EXISTING FILE exempts" rule the shell-body gate uses. An
+    option's value names no file, so it is not a script argument; a real
+    script argument does, so the pipe is that script's stdin and the
+    FILE wins.
     """
     import shlex
     if _heredoc_of_segment(side)[0] or _herestring_of_segment(side)[0]:
@@ -1062,7 +1136,12 @@ def _sbatch_reads_stdin(side: str) -> bool:
     for t in tokens[1:]:
         if t.startswith("-") or ">" in t or "<" in t:
             continue
-        return False
+        # An attached short-option value (`-o<file>`, `-e<file>`) is an
+        # option's value, never the batch script.
+        if re.match(r"^-([A-Za-z])(\S.*)$", t):
+            continue
+        if _gate_names_existing_file(t):
+            return False
     return True
 
 
@@ -1384,6 +1463,11 @@ def _gate_sbatch_segment(segment: str, env: dict,
         segment_without_heredoc)
     if herestring_word is not None and heredoc_body is None:
         heredoc_body = herestring_word
+    # `sbatch < run.sh` feeds a FILE as the script. That route was never
+    # gated at all (round 13, my own finding: it fails open even with no
+    # options, because the argv scan stops at the redirect). The target is
+    # read and judged as the script, exactly like a piped one.
+    stdin_file = _stdin_redirect_of_segment(segment_without_heredoc)
     target = _strip_wrappers(segment_without_redirect)
     # A subshell's closing paren rides on the LAST segment
     # (`sbatch walk.sh)`): drop a lone trailing `)` so the script
@@ -1472,6 +1556,23 @@ def _gate_sbatch_segment(segment: str, env: dict,
                 # that is judged further down; without one there is no
                 # script to inspect.
                 if heredoc_body is None or not heredoc_body.strip():
+                    # `sbatch < run.sh` names no argument but IS a submit
+                    # of that file (round 13, my finding: this route was
+                    # never gated). Judge it as the script.
+                    if stdin_file:
+                        resolved_in = stdin_file
+                        if cd_dir and not os.path.isabs(resolved_in):
+                            resolved_in = os.path.join(cd_dir, resolved_in)
+                        if not Path(resolved_in).is_file():
+                            return ("refuse",
+                                    "hpc_io_check refused: the sbatch script "
+                                    f"{stdin_file} is not found from "
+                                    f"{cd_dir or 'the working directory'}; "
+                                    "the gate cannot tell what it would "
+                                    "run, so it fails closed.", False)
+                        refused, warned = check_submit(resolved_in, env=env,
+                                                       mounts_path=mounts_path)
+                        return _verdict(refused, warned)
                     return "allow", "", True
                 script_arg = ""
                 # No argument names a file, so the body is what sbatch
@@ -1498,6 +1599,30 @@ def _gate_sbatch_segment(segment: str, env: dict,
                 return _substituted_outcome(target, heredoc_body, env,
                                             mounts_path, submitted=True,
                                             cd_dir=cd_dir)
+        # `sbatch --test-only -p dev_cpu < walk.sh` (round 13): the `<`
+        # ends the argv scan, so an option's VALUE survives as the last
+        # positional and is taken for a script name. An option value names
+        # no file. When a `< FILE` redirect is present and the named
+        # argument is not a file, the redirect IS the script -- judge it
+        # rather than letting the missing-file branch below allow.
+        if stdin_file:
+            here = script_arg
+            if cd_dir and not os.path.isabs(here):
+                here = os.path.join(cd_dir, here)
+            if not Path(here).is_file():
+                resolved_in = stdin_file
+                if cd_dir and not os.path.isabs(resolved_in):
+                    resolved_in = os.path.join(cd_dir, resolved_in)
+                if not Path(resolved_in).is_file():
+                    return ("refuse",
+                            "hpc_io_check refused: the sbatch script "
+                            f"{stdin_file} is not found from "
+                            f"{cd_dir or 'the working directory'}; the "
+                            "gate cannot tell what it would run, so it "
+                            "fails closed.", False)
+                refused, warned = check_submit(resolved_in, env=env,
+                                               mounts_path=mounts_path)
+                return _verdict(refused, warned)
         # Resolve a relative script against the cd target, not the
         # process cwd (operator live run, IO1 L4 class).
         resolved: str | None = script_arg
