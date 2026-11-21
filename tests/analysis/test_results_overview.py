@@ -292,33 +292,38 @@ def test_export_bytes_large_payload_single_run_js(tmp_path):
     ctx = FakeCtx()
 
     # Large payload: still exactly ONE run_js call, and the data rides
-    # in the HIDDEN BUFFER WIDGET in ~1 MB CHUNKS (single-shot widget
-    # sync carried 0.5 MB and 3 MB but not 15 MB, measured 2026-11-20;
-    # each slice is its own widget-state sync) with the script POLLING
-    # until every expected part is present, then assembling the Blob.
+    # in ONE HIDDEN BUFFER WIDGET PER ~1 MB SLICE (multi-buffer scheme:
+    # every widget-state sync stays at the measured-safe ~1 MB; the
+    # previous accumulating scheme made the FINAL sync carry the whole
+    # payload - 16.5 MB PDF -> ~22 MB in one assignment, above the
+    # measured 15 MB failure) with the script POLLING all buffer nodes
+    # until every slice is present, then assembling the Blob.
     payload = b"x" * (3 * 1024 * 1024)  # 3 MB binary -> ~4 MB b64
     panel._export_bytes("big.bin", payload, "application/octet-stream")
     assert len(ctx.scripts) == 1, (
         f"expected ONE run_js call, got {len(ctx.scripts)}")
     script = ctx.scripts[0]
-    stored = json.loads(panel._export_buffer.value)
-    entry = stored[next(iter(stored))]
-    n_parts = entry["n"]
-    b64 = "".join(entry["p%d" % k] for k in range(n_parts))
+    buffers = panel._buffer_box.children
+    expected_b64 = base64.b64encode(payload).decode("ascii")
+    n_parts = len(buffers)
     assert n_parts >= 4, "3 MB must arrive as several ~1 MB slices"
-    assert base64.b64decode(b64) == payload
+    # Each buffer carries ONLY its own slice; all slices concatenate to
+    # the full payload.
+    joined = "".join(json.loads(w.value) for w in buffers)
+    assert joined == expected_b64
+    for w in buffers:
+        assert len(json.loads(w.value)) <= 1_000_000 + 8, (
+            "every single sync must stay at the measured-safe ~1 MB")
     # The script polls, requires ALL parts, then downloads.
-    assert ".export-buffer" in script
+    assert "nParts" in script
+    assert "querySelectorAll('.export-buffer')" in script
     assert "setInterval" in script
     assert "clearInterval" in script
-    assert "parts.length<entry.n" in script
     assert "atob" in script
     assert "a.download" in script
-    # The node is NOT emptied by the script: stale content can never
-    # match a fresh export because each export uses a fresh tid key
-    # (sequential downloads without a reload were requested by the
-    # user after the single-shot version needed one per download).
-    assert "node.textContent=''" not in script
+    # The script clears the nodes AFTER the download so a second
+    # export in the same page cannot see stale slices.
+    assert "nd.textContent=''" in script
 
     # Small payload: still one call, same buffer transport.
     panel._export_bytes("small.bin", b"abc", "application/octet-stream")

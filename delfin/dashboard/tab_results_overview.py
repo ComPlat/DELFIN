@@ -189,6 +189,11 @@ class ResultsOverviewPanel:
         # this DOM node's textContent and assembles the Blob.
         self._export_buffer = widgets.HTML(
             value="", layout=widgets.Layout(display="none"))
+        # Multi-buffer strip: one hidden widget per payload slice, so
+        # every widget-state sync stays at the measured-safe ~1 MB
+        # (single-sync >15 MB does not arrive in voila).
+        self._buffer_box = widgets.VBox(
+            [], layout=widgets.Layout(display="none"))
         self._export_buffer.add_class("export-buffer")
         # Custom columns section (semantics shared with the calculations
         # browser table panel: text/regex/jsonpath per arbitrary file).
@@ -248,6 +253,7 @@ class ResultsOverviewPanel:
             self._show_h,
             self._pngs,
             self._export_buffer,
+            self._buffer_box,
         ])
         self.widget.add_class("ro-tab-root")
 
@@ -687,34 +693,34 @@ class ResultsOverviewPanel:
         # run_js/widget-state sync race is gone.  Python cannot know
         # whether the browser ran the download, so the status line
         # never claims "heruntergeladen" (honest wording after run_js).
-        # Chunked widget transfer (measured 2026-11-20: single-shot
-        # widget sync carried 0.5 MB and 3 MB but NOT 15 MB, and a
-        # second export in the same page needed a reload because the
-        # first download emptied the node).  The payload is split into
-        # ~1 MB base64 slices; Python writes ALL slices into the SAME
-        # tid entry, each assignment is its own widget-state sync, and
-        # the script assembles the entry only once every expected part
-        # is present.  The node is NOT emptied afterwards: stale
-        # content can never match a fresh export because each export
-        # uses a fresh tid key.  The 30 s window covers 20 MB at
-        # several syncs per second; the poll stays async (setInterval,
-        # never blocking).
+        # Multi-buffer widget transfer (measured 2026-11-20/21:
+        # single-shot widget sync carried 0.5 MB and 3 MB but NOT
+        # 15 MB, and the previous accumulating scheme made the FINAL
+        # sync carry the whole payload - a 16.5 MB PDF stalled at
+        # ~22 MB base64 in one assignment).  The payload is split into
+        # ~1 MB base64 slices and EACH slice gets its OWN hidden HTML
+        # buffer widget; every widget-state sync therefore stays at or
+        # below the measured-safe ~1 MB.  Each export allocates fresh
+        # widgets (fresh tid), the script polls them asynchronously
+        # (setInterval, never blocking), assembles the slices in
+        # order, downloads, and clears the nodes afterwards so a
+        # second export in the same page cannot see stale content.
         parts = [b64[k:k + _EXPORT_CHUNK_B64]
                  for k in range(0, len(b64), _EXPORT_CHUNK_B64)]
-        entry = {"n": len(parts)}
-        for k, part in enumerate(parts):
-            entry[f"p{k}"] = part
-            # ONE full payload per sync: every value assignment carries
-            # ALL parts written so far, so the browser's poll sees a
-            # consistent (if partial) entry and the FINAL sync has the
-            # complete set - never a slice-only view that breaks the
-            # round-trip mid-stream.
-            self._export_buffer.value = _json.dumps({tid: entry})
+        # (Re)build the buffer strip: one hidden widget per slice.
+        self._export_buffers = [
+            widgets.HTML(value=_json.dumps(part))
+            for part in parts
+        ]
+        for k, w in enumerate(self._export_buffers):
+            w.add_class(f"export-buffer-k{k}")
+            w.add_class("export-buffer")
+        self._buffer_box.children = tuple(self._export_buffers)
         js = (
             "(function(){"
             f"const fileName={_json.dumps(filename)};"
             f"const mimeType={_json.dumps(mime)};"
-            f"const exportId={_json.dumps(tid)};"
+            f"const nParts={len(parts)};"
             "let attempts=0;"
             "const timer=setInterval(function(){"
             "attempts=attempts+1;"
@@ -723,19 +729,17 @@ class ResultsOverviewPanel:
             "console.error('Download failed: buffer payload never arrived');"
             "return;"
             "}"
-            "const node=document.querySelector('.export-buffer');"
-            "const txt=node?node.textContent:'';"
-            "if(!txt||txt.length<50){return;}"
-            "let entry=null;"
-            "try{"
-            "entry=JSON.parse(txt)[exportId];"
-            "}catch(err){return;}"
-            "if(!entry){return;}"
+            "const nodes=document.querySelectorAll('.export-buffer');"
+            "if(nodes.length<nParts){return;}"
             "let parts=[];"
-            "for(let k=0;entry['p'+k]!==undefined;k++){"
-            "parts.push(entry['p'+k]);"
+            "let ready=true;"
+            "for(let k=0;k<nParts;k++){"
+            "const nd=document.querySelector('.export-buffer-k'+k);"
+            "const txt=nd?nd.textContent:'';"
+            "if(!txt){ready=false;break;}"
+            "parts.push(txt);"
             "}"
-            "if(!entry.n||parts.length<entry.n){return;}"
+            "if(!ready){return;}"
             "clearInterval(timer);"
             "try{"
             "const b64=parts.join('');"
@@ -754,6 +758,10 @@ class ResultsOverviewPanel:
             "URL.revokeObjectURL(url);"
             "if(a.parentNode){a.parentNode.removeChild(a);}"
             "},1500);"
+            "for(let k=0;k<nParts;k++){"
+            "const nd=document.querySelector('.export-buffer-k'+k);"
+            "if(nd){nd.textContent='';}"
+            "}"
             "}catch(err){"
             "console.error('Download failed:', err);"
             "}"
