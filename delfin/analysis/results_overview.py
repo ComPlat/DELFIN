@@ -862,25 +862,27 @@ def _rdkit_bond_orders(sym, bonds, positions):
         _nb_full.setdefault(b, []).append(a)
 
     def _overvalent(atom):
-        val = _VALENCE.get(sym[atom])
-        if val is None:
-            return False
-        # metal-coordinated ring N of a pyridine-type ring keeps its
-        # C=N (class A): donating the lone pair leaves N+ with the
-        # double bond intact.  Detect: N with a metal neighbour and
-        # exactly two carbon neighbours (ring N, no substituent).
-        if sym[atom] == "N":
-            ns = _nb_full.get(atom, ())
-            if any(sym[k] in _MET for k in ns):
+        # A ligand atom bonded to the metal got its fragment order
+        # assigned WITHOUT the dative bond: a thiolate S (metal +
+        # ring-C) rendered with a quinoid C=S into the ring (class C,
+        # 11-14).  An upgrade on a metal-bound atom is dropped - its
+        # valence is spent on the dative bond.
+        # Exemption: a metal-coordinated pyridine-type ring N (metal +
+        # two ring carbons, no H) keeps its C=N; donating the lone
+        # pair leaves N+ with the double bond intact (class A, user
+        # report 106-138_108..113).
+        if any(sym[k] in _MET for k in _nb_full.get(atom, ())):
+            if sym[atom] == "N":
+                ns = _nb_full.get(atom, ())
                 cs = [k for k in ns if sym[k] == "C"]
                 hs = [k for k in ns if sym[k] == "H"]
                 if len(cs) == 2 and not hs:
                     return False
-        deg_heavy = sum(1 for k in _nb_full.get(atom, ())
-                        if sym[k] != "H")
-        if deg_heavy < val:
-            return False
-        return True
+            return True
+        # No metal bond: the fragment order already includes every
+        # valence the atom has in the full graph - hypervalent S/P
+        # (sulfonate S=O, phosphate) are drawn as RDKit assigned them.
+        return False
 
     upgrades = {pair: o for pair, o in upgrades.items()
                 if not (_overvalent(pair[0]) or _overvalent(pair[1]))}
