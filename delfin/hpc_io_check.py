@@ -643,15 +643,15 @@ _STDIN_REFUSAL = (
 )
 
 
-_GLOB_REFUSAL = (
+_EXPANSION_REFUSAL = (
     "hpc_io_check refused: the word '{word}' given to sbatch is a shell "
-    "pattern. Bash expands it BEFORE sbatch sees an argument, so the script "
-    "that actually runs is whichever file the pattern happens to match -- "
-    "the gate cannot tell which one that is and cannot check it. Name the "
-    "job script exactly, or submit a file that exists: `sbatch [options] "
-    "job.sh`. If you meant a file whose name really contains that "
-    "character, quote or escape it (`sbatch 'wal*.sh'`), and it is checked "
-    "like any other file."
+    "pattern or expansion ({kind}). The shell expands it BEFORE sbatch sees "
+    "an argument, so the script that actually runs is not the word on the "
+    "command line and the gate cannot tell which file that is -- so it "
+    "cannot check it. Name the job script exactly, or submit a file that "
+    "exists: `sbatch [options] job.sh`. If you meant a file whose name "
+    "really contains that character, quote or escape it (`sbatch "
+    "'job*.sh'`), and it is checked like any other file."
 )
 
 
@@ -1306,44 +1306,138 @@ def _shell_command_head(text: str, cd_dir: str = "") -> str | None:
     return word
 
 
-def _shell_words_with_quoting(text: str) -> list[tuple[str, str, bool]]:
+def _expansion_of_word(raw: str) -> str:
+    """Which expansion would bash apply to this WORD? ``""`` when none.
+
+    Called with the word as written (quotes and escapes included), so the
+    answer is the shell's own rule and not a guess about the cleaned text.
+
+    The trigger set is s8's ruling (round 18) and every boundary below was
+    measured against a real bash by splicing the word UNQUOTED into
+    ``printf '%s\n' WORD`` (tests/test_zz_io2_expand_bounds.py):
+
+    - ``glob``: an unquoted ``*``, ``?`` or ``[``. Measured: ``/x/wal*.sh``
+      is handed over as ``/x/walk.sh``, while ``"/x/wal*.sh"`` stays
+      literal.
+    - ``brace``: an unquoted ``{`` that begins a brace EXPANSION, i.e. the
+      word carries a comma or a ``..`` range inside braces. Measured:
+      ``/x/{a,b}.sh`` -> two arguments, ``/x/{1..3}.sh`` -> three, but
+      ``/x/{a}.sh`` and ``/x/{}`` stay literal, so ``{`` alone is NOT a
+      trigger. It also fires MID-WORD (``/x/a{b,c}d.sh``).
+    - ``tilde``: a ``~`` at the START of the word (or after ``:`` or ``=``,
+      the assignment forms). Measured: ``~/a.sh`` expands, while
+      ``/x/~/a.sh`` and ``a~b.sh`` stay literal.
+    - ``command``: ``$(`` or a backtick, QUOTED OR NOT -- measured:
+      ``"$(echo hi)"`` and a backtick inside double quotes both expand, so
+      this one is NOT covered by the quoting exemption the other three get.
+      Escaped (``\\$(echo hi)``) does not expand.
+
+    Why not simulate the expansion: a gate that re-implements globbing is
+    the same enumeration trap in a new costume (s8's wording). The rule
+    answers "would the shell change this word", never "what to".
+    """
+    quote = ""
+    i = 0
+    n = len(raw)
+    has_glob = False
+    has_brace = False
+    has_command = False
+    leading_tilde = False
+    try:
+        while i < n:
+            ch = raw[i]
+            if quote == "'":
+                # Nothing expands inside single quotes, an escaped quote aside.
+                if ch == "'":
+                    quote = ""
+                i += 1
+                continue
+            if quote == '"':
+                # Command substitution DOES expand inside double quotes.
+                if ch == "$" and i + 1 < n and raw[i + 1] == "(":
+                    has_command = True
+                elif ch == "`":
+                    has_command = True
+                elif ch == "\\" and i + 1 < n and raw[i + 1] in '$`"\\':
+                    i += 1  # the backslash protects the next character
+                elif ch == '"':
+                    quote = ""
+                i += 1
+                continue
+            # Unquoted.
+            if ch == "\\":
+                i += 2  # the escaped character is literal
+                continue
+            if ch in ("'", '"'):
+                quote = ch
+                i += 1
+                continue
+            if ch == "~" and i == 0:
+                # A leading tilde. `~` alone and `~/` count; `a~b` does not.
+                leading_tilde = True
+                i += 1
+                continue
+            if ch in "*?[":
+                has_glob = True
+            elif ch == "{":
+                has_brace = True
+            elif ch == "$" and i + 1 < n and raw[i + 1] == "(":
+                has_command = True
+            elif ch == "`":
+                has_command = True
+            i += 1
+    except IndexError:  # pragma: no cover - the loop bound already guards
+        pass
+    if has_command:
+        return "command"
+    if has_glob:
+        return "glob"
+    if has_brace and ("}" in raw and ("," in raw or ".." in raw)):
+        return "brace"
+    if leading_tilde:
+        return "tilde"
+    return ""
+
+
+def _shell_words_with_quoting(text: str) -> list[tuple[str, str, str]]:
     """Split *text* into shell words, KEEPING the quoting information.
 
-    Returns one ``(raw, cleaned, has_active_glob)`` triple per word:
+    Returns one ``(raw, cleaned, expansion)`` triple per word:
 
     - ``raw``: the word as written, quote and escape characters included;
-    - ``cleaned``: what the shell would hand the program before PATHNAME
+    - ``cleaned``: what the shell would hand the program before any
       EXPANSION (quotes removed, ``\\x`` escapes resolved) -- the same
       string ``shlex.split`` produces;
-    - ``has_active_glob``: whether ``*``, ``?`` or ``[`` occurs in it
-      OUTSIDE quotes and unescaped, i.e. whether bash would expand it.
+    - ``expansion``: ``""`` for a word bash hands over unchanged, else the
+      kind of expansion it would apply -- see :func:`_expansion_of_word`.
 
     Why a second splitter at all: ``shlex.split`` strips the quotes, so
     ``"/a/wal*.sh"`` and ``/a/wal*.sh`` become the SAME token (measured,
     ``tests/test_zz_io2_quote_survival.py``). The quoted/unquoted decision
-    the glob rule needs therefore cannot be read from its result, and
+    the expansion rule needs therefore cannot be read from its result, and
     pairing its list with ``shlex.split(..., posix=False)`` by index is
     unsound -- that list disagrees on ``--wrap="a b"`` and on ``"$X"/*.sh``
     (measured: 2 of 12 shapes misaligned, ``tests/test_zz_io2_rawword_probe.py``).
     One pass that produces both forms keeps them aligned by construction.
 
-    This is deliberately NOT a shell parser: it models exactly the states
-    that decide whether a metacharacter is active (unquoted, single-quoted,
-    double-quoted, backslash-escaped).
+    The splitter returns whole words; WHICH expansion applies (and whether
+    quoting neutralises it) is decided by :func:`_expansion_of_word` on the
+    raw word, so that logic lives in exactly one place.
     """
-    words: list[tuple[str, str, bool]] = []
+    words: list[tuple[str, str, str]] = []
     raw: list[str] = []
     cleaned: list[str] = []
-    active = False
     quote = ""
     i = 0
     n = len(text)
 
     def _flush() -> None:
-        nonlocal raw, cleaned, active
+        nonlocal raw, cleaned
         if raw:
-            words.append(("".join(raw), "".join(cleaned), active))
-        raw, cleaned, active = [], [], False
+            raw_word = "".join(raw)
+            words.append((raw_word, "".join(cleaned),
+                          _expansion_of_word(raw_word)))
+        raw, cleaned = [], []
 
     while i < n:
         ch = text[i]
@@ -1366,8 +1460,6 @@ def _shell_words_with_quoting(text: str) -> list[tuple[str, str, bool]]:
                 raw.append(ch)
                 i += 1
                 continue
-            if ch in "*?[":
-                active = True
             raw.append(ch)
             cleaned.append(ch)
             i += 1
@@ -1719,17 +1811,22 @@ def _gate_sbatch_segment(segment: str, env: dict,
                 continue  # attached option VALUE, not a positional
             stripped.append(t)
         positional = [t for t in stripped if not t.startswith("-")]
-        # An option's VALUE is a non-option token too (`-J probe` puts
-        # `probe` here), so taking the LAST positional made an option's
-        # value the script whenever an option followed the real one:
-        # `sbatch walk.sh -J probe` read `probe`, got OSError and was
-        # allowed -- the walking script was never inspected (measured,
-        # IO2 round 19). The deciding fact is the file system, the same
-        # rule :646-660 already uses: a positional that NAMES AN EXISTING
-        # FILE is the script, and the FIRST such word wins because POSIX
-        # getopt stops at the first non-option. When no positional names a
-        # file, the last one is kept -- that is the genuine missing-name
-        # case (rounds 6-9), which sbatch refuses by itself.
+        # The deciding fact is the file system, the same rule :646-660
+        # already uses: a positional that NAMES AN EXISTING FILE is the
+        # script, and the FIRST such word wins because POSIX getopt stops at
+        # the first non-option. When no positional names a file, the last one
+        # is kept -- that is the genuine missing-name case (rounds 6-9),
+        # which sbatch refuses by itself.
+        #
+        # s8 (round 18, point 2) is right that taking purely the LAST
+        # positional judges the wrong file: `sbatch walk.sh clean.sh` was
+        # judged on clean.sh and allowed, while the FIRST positional is the
+        # script and it walks. No sbatch binary exists on this node, so
+        # "which positional sbatch submits" is NOT measured here; POSIX
+        # getopt and sbatch's own usage (`sbatch [options] script [args]`,
+        # the form the refusal text has always recommended) both say the
+        # first, and the fail-closed choice is the first. Recorded as a
+        # decision, not as a measurement.
         existing_pos = [t for t in positional
                         if _gate_names_existing_file(t, cd_dir)]
         if info_flag and not existing_pos:
@@ -1738,20 +1835,29 @@ def _gate_sbatch_segment(segment: str, env: dict,
             # Nothing was named and no channel was present: sbatch would
             # read its script from stdin, and there is nothing to inspect.
             return "refuse", _STDIN_REFUSAL, False
-        script_word = existing_pos[0] if existing_pos else positional[-1]
-        # s8's ruling (round 18): an UNQUOTED glob metacharacter in the
-        # script word means bash picks the file by pattern expansion
-        # BEFORE sbatch runs. The gate cannot name the file that will run,
-        # so it refuses -- and it refuses even when every current match
-        # would be clean, because the next file to appear in that
-        # directory changes the answer (measured fail-open: `sbatch
-        # <dir>/wal*.sh` was allowed while `sbatch <dir>/walk.sh` refused).
-        # The quoting decision comes from _shell_words_with_quoting, NOT
-        # from `last`, because shlex has already stripped the quotes.
-        for raw_word, cleaned_word, has_glob in _shell_words_with_quoting(target):
-            if has_glob and cleaned_word == script_word:
+        script_word = existing_pos[0] if existing_pos else positional[0]
+        # s8's ruling (round 18), the structural rule: a script argument the
+        # SHELL would expand is refused, because the file sbatch receives is
+        # not the word on the command line and the gate cannot name it. The
+        # answer is "would bash change this word", never "into what": a gate
+        # that re-implements globbing is the same enumeration trap in a new
+        # costume, which is why no expansion is simulated. Measured fail-opens
+        # at 43285ce79 (tests/test_zz_io2_s8_expansion.py, oracle = real bash):
+        #   sbatch <dir>/wal*.sh          -> allow   (glob)
+        #   sbatch ~/walk.sh              -> allow   (tilde)
+        #   sbatch <dir>/{walk,clean}.sh  -> allow   (brace)
+        #   sbatch $(echo <walking path>) -> allow   (command substitution)
+        # while `sbatch <dir>/walk.sh` refused. The quoted forms stay literal
+        # (measured: `"/x/wal*.sh"` is handed over unchanged) and go on to the
+        # ordinary file judgement, except command substitution, which bash
+        # expands inside double quotes too -- that boundary is measured, not
+        # assumed, in tests/test_zz_io2_expand_bounds.py.
+        for raw_word, cleaned_word, expansion in _shell_words_with_quoting(
+                target):
+            if expansion and cleaned_word == script_word:
                 return ("refuse",
-                        _GLOB_REFUSAL.format(word=raw_word), False)
+                        _EXPANSION_REFUSAL.format(word=raw_word,
+                                                  kind=expansion), False)
         # A here-document attached to a submit that names NO file is the
         # script itself (`sbatch -J x <<EOF ...`): refused under ruling
         # (a). With a file named above, the body is that file's stdin.
