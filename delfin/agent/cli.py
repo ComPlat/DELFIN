@@ -1533,6 +1533,18 @@ def _open_session(engine, args: argparse.Namespace, workspace: Path) -> bool:
             note = None
         if note:
             print(note, file=sys.stderr)
+        # Even without a crash, a resumed session may carry an OPEN step
+        # from an interrupted turn: the journal says what may or may not
+        # have run (CHECK BEFORE REPEATING). The resume is exactly where
+        # the person decides what to repeat — the step_resume_note path
+        # of cli_resume, reached here for the first time.
+        try:
+            from .cli_resume import step_resume_note
+            step_note = step_resume_note(sid)
+        except Exception:
+            step_note = None
+        if step_note:
+            print(step_note, file=sys.stderr)
 
     # One chain of decisions, in one order, so what was decided last
     # is what everything downstream reads:

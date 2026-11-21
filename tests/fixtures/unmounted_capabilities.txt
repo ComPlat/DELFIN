@@ -59,7 +59,6 @@ test-only	query_job_states	delfin/agent/job_monitor.py:369
 test-only	read_last_n	delfin/agent/audit_log.py:695
 test-only	reap_slot	delfin/agent/explore_pilot.py:93
 test-only	recall_levels	delfin/agent/memory_distill.py:495
-test-only	replay_step	delfin/agent/cli_resume.py:304
 test-only	request_prcheck	delfin/agent/swarm/lead.py:159
 test-only	request_triage_answer	delfin/agent/swarm/lead.py:137
 test-only	reset_figure_ledger	delfin/agent/office.py:6098
@@ -71,7 +70,6 @@ test-only	scan_for_dishonest_tests	delfin/agent/verify_guard.py:3554
 test-only	set_caveat_language	delfin/agent/verify_guard.py:1062
 test-only	stable_prefix_len	delfin/agent/prompt_head.py:44
 test-only	status_validate	delfin/agent/swarm/lead.py:49
-test-only	step_resume_note	delfin/agent/cli_resume.py:291
 test-only	sweep_stale	delfin/agent/shared_tmp.py:353
 test-only	test_honesty_feedback	delfin/agent/verify_guard.py:3569
 test-only	touch_heartbeat	delfin/agent/session_store.py:1689
