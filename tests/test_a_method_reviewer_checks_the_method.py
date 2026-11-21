@@ -128,7 +128,12 @@ def test_it_runs_in_plan_mode_with_a_narrow_list():
     for writer in _WRITERS:
         assert writer not in preset.tools, writer
     assert "subagent_message" in preset.tools
-    assert ac.unknown_tool_names(preset.tools, ac._DOC_TOOLS_OPENAI) == []
+    # The full product surface (ops-server tools included) -- the old
+    # check judged against _DOC_TOOLS_OPENAI alone and only stood because
+    # the preset spells its ops tools with the mcp__delfin-ops__ prefix
+    # (which the typo check exempts); a bare ops name in a PRESET list
+    # would have been called a typo here and known in the validator.
+    assert ac.unknown_tool_names(preset.tools) == []
 
 
 def test_a_write_is_refused_by_the_preset_list_even_without_plan_mode(tmp_path):
