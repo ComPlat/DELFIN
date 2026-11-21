@@ -75,6 +75,10 @@ def _build_parser() -> argparse.ArgumentParser:
         default="24:00:00",
         help="Time limit of the SLURM job: HH:MM:SS, D-HH:MM:SS, or e.g. 48h, 2d (default: 24:00:00)",
     )
+    parser.add_argument('--params-file', help='JSON object of adapter parameters; explicit CLI parameters override these values')
+    parser.add_argument('--slurm-memory-mb', type=int, help='Total job memory in MB, independent of adapter parameters')
+    parser.add_argument('--slurm-gpus', type=int, default=0, help='Number of GPUs to allocate; requires an explicit partition')
+    parser.add_argument('--slurm-partition', help='Explicit Slurm partition(s), comma-separated')
     return parser
 
 
@@ -161,23 +165,50 @@ def _submit_step_slurm(args, cores: int, extra: dict) -> int:
     """Submit a single step as a SLURM job."""
     import shutil
     import subprocess
+    import shlex
+    import re
+    import uuid
+
+    memory = getattr(args, 'slurm_memory_mb', None)
+    gpus = getattr(args, 'slurm_gpus', 0)
+    partition = getattr(args, 'slurm_partition', None)
+    if type(cores) is not int or cores < 1 or type(gpus) is not int or gpus < 0 or (memory is not None and (type(memory) is not int or memory < 1)):
+        print('Error: invalid CPU, memory or GPU request', file=sys.stderr)
+        return 1
+    if not re.fullmatch(r'[A-Za-z0-9_.-]+', args.step_name) or (partition is not None and not re.fullmatch(r'[A-Za-z0-9_.-]+(?:,[A-Za-z0-9_.-]+)*', partition)):
+        print('Error: invalid step or partition name', file=sys.stderr)
+        return 1
+    if gpus and not partition:
+        print('Error: GPU jobs require --slurm-partition', file=sys.stderr)
+        return 1
 
     sbatch = shutil.which("sbatch")
     if not sbatch:
         print("Error: sbatch not found. Is SLURM installed?", file=sys.stderr)
         return 1
 
-    # Build the command to run inside SLURM
-    cmd_parts = ["delfin-step", args.step_name, f"--cores={cores}"]
+    # Preserve nested dictionaries/lists and literal strings in a JSON snapshot.
+    job_name = f"delfin-{args.step_name}"
+    directory = Path(args.work_dir or '.').resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    script_path = directory / f'{job_name}_slurm.sh'
+    if script_path.exists():
+        script_path = directory / f'{job_name}_{uuid.uuid4().hex[:12]}_slurm.sh'
+    parameters = script_path.with_suffix('.params.json')
+    try:
+        payload = json.dumps(extra, indent=2, allow_nan=False)
+    except (ValueError, TypeError) as problem:
+        print(f'Error: invalid adapter parameters: {problem}', file=sys.stderr)
+        return 1
+    cmd_parts = [sys.executable, '-m', 'delfin.cli_step', args.step_name, f'--cores={cores}', f'--params-file={parameters}']
     if args.geometry:
         cmd_parts.append(f"--geometry={args.geometry}")
     if args.work_dir:
-        cmd_parts.append(f"--work-dir={args.work_dir}")
-    for k, v in extra.items():
-        cmd_parts.append(f"--{k}={v}")
+        cmd_parts.append(f"--work-dir={directory}")
+    if getattr(args, 'json_output', False):
+        cmd_parts.append('--json')
 
-    step_cmd = " ".join(cmd_parts)
-    job_name = f"delfin-{args.step_name}"
+    step_cmd = shlex.join(cmd_parts)
 
     from delfin.slurm_submit import normalize_time_limit, sbatch_command
 
@@ -194,6 +225,9 @@ def _submit_step_slurm(args, cores: int, extra: dict) -> int:
     memory_line = ""
     if isinstance(extra.get("maxcore"), (int, float)) and extra["maxcore"] > 0:
         memory_line = f"#SBATCH --mem={int(cores * extra['maxcore'])}M\n"
+    if memory is not None:
+        memory_line = f'#SBATCH --mem={memory}M\n'
+    resource_lines = (f'#SBATCH --gres=gpu:{gpus}\n' if gpus else '') + (f'#SBATCH --partition={partition}\n' if partition else '')
 
     script = f"""#!/bin/bash
 #SBATCH --job-name={job_name}
@@ -202,20 +236,18 @@ def _submit_step_slurm(args, cores: int, extra: dict) -> int:
 #SBATCH --cpus-per-task={cores}
 #SBATCH --threads-per-core=1
 #SBATCH --time={time_limit}
-{memory_line}#SBATCH --output={job_name}_%j.out
+{memory_line}{resource_lines}#SBATCH --output={job_name}_%j.out
 #SBATCH --error={job_name}_%j.err
 
-echo "DELFIN step: {args.step_name}"
-echo "Cores: {cores}"
-echo "Start: $(date)"
-
-{step_cmd}
-
-echo "End: $(date)"
+set -euo pipefail
+cd {shlex.quote(str(Path.cwd()))}
+export OMP_NUM_THREADS={cores} OPENBLAS_NUM_THREADS={cores} MKL_NUM_THREADS={cores}
+exec {step_cmd}
 """
-    script_path = Path(args.work_dir or ".") / f"{job_name}_slurm.sh"
-    script_path.parent.mkdir(parents=True, exist_ok=True)
-    script_path.write_text(script)
+    with parameters.open('x') as stream:
+        stream.write(payload)
+    with script_path.open('x') as stream:
+        stream.write(script)
 
     # Without a partition the job is refused on a cluster that has no default
     # one, bwUniCluster among them; with several it starts where there is room
@@ -298,6 +330,16 @@ def main(argv: list[str] | None = None) -> int:
 
     # Parse extra kwargs from remaining args
     extra = _parse_extra_kwargs(remaining)
+    if args.params_file:
+        try:
+            loaded = json.loads(Path(args.params_file).read_text())
+            if not isinstance(loaded, dict) or set(loaded) & {'cores', 'geometry', 'work_dir'}:
+                raise ValueError('parameter file must be an object without cores, geometry or work_dir')
+            json.dumps(loaded, allow_nan=False)
+            extra = {**loaded, **extra}
+        except (ValueError, OSError) as problem:
+            print(f'Error: invalid --params-file: {problem}', file=sys.stderr)
+            return 1
 
     # Resolve cores (supports "auto" for cluster detection)
     cores = _resolve_cores_arg(args.cores)

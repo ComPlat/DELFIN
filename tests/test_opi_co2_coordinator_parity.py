@@ -56,9 +56,22 @@ from delfin.tools.co2_coordinator_opi import (  # noqa: E402
     write_co2_sp_opi_input,
 )
 
-# Patch the classic module's ORCA launch before importing its writers.
+# `classic.shutil` IS the global shutil module: assigning `which` on it
+# stubs it for every later test in the process (a module attribute is not
+# a per-module copy).  Point the classic module at a namespace that holds
+# everything shutil has EXCEPT `which`, so the classic code's
+# `shutil.which("orca")` finds nothing while every other module keeps the
+# real shutil.
+import shutil as _real_shutil  # noqa: E402
+import types as _types  # noqa: E402
 import delfin.co2.CO2_Coordinator6 as classic  # noqa: E402
-classic.shutil.which = lambda *_a, **_k: None  # noqa: E731
+_shutil_stub = _types.SimpleNamespace(
+    **{k: v for k, v in vars(_real_shutil).items()
+       if not k.startswith("_") and k not in ("which", "copy")},
+)
+_shutil_stub.copy = _real_shutil.copy
+_shutil_stub.which = lambda *_a, **_k: None
+classic.shutil = _shutil_stub
 
 
 # A small metal-complex-like structure built from ideal geometry (never a

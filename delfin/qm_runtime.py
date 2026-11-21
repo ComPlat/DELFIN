@@ -135,6 +135,12 @@ _TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(name="gnrs", which_targets=("gnrs",), aliases=("genarris",), prefer_qm_tools=False),
 )
 
+from delfin.tools.bio.environments import RECIPES as _BIO_RECIPES
+_TOOL_SPECS += tuple(ToolSpec(name=command, which_targets=(command,), prefer_qm_tools=False,
+                            module_patterns=(item.name, "bio/" + item.name, "chem/" + item.name),
+                            module_env_hints=("EBROOT" + item.name.upper(), item.name.upper() + "_HOME"))
+                     for item in _BIO_RECIPES.values() for command in item.commands)
+
 _SPEC_BY_CANONICAL = {spec.name: spec for spec in _TOOL_SPECS}
 _ALIAS_TO_CANONICAL = {
     alias: spec.name for spec in _TOOL_SPECS for alias in (spec.name,) + spec.aliases
@@ -328,6 +334,9 @@ def _validate_candidate(candidate: str) -> Optional[str]:
         return None
     if not os.access(expanded, os.X_OK):
         return None
+    # Resolving a venv's Python symlink selects the base environment instead.
+    if expanded.name.startswith('python') and (expanded.parent.parent / 'pyvenv.cfg').is_file():
+        return str(expanded.absolute())
     return str(expanded.resolve())
 
 
@@ -415,6 +424,12 @@ def _iter_tool_candidates(spec: ToolSpec) -> Iterable[tuple[str, str]]:
         yield candidate.path, source
 
     if not spec.prefer_qm_tools:
+        from delfin.tools.bio.environments import RECIPES, prefix
+        for item in RECIPES.values():
+            if spec.name in item.commands:
+                candidate = prefix(item) / "bin" / spec.name
+                if candidate.is_file():
+                    yield str(candidate), "bio_tools"
         for bin_dir in iter_qm_tools_bin_dirs():
             local_candidate = bin_dir / spec.name
             if local_candidate.exists():
@@ -712,9 +727,12 @@ def run_tool(
     stdout=None,
     stderr=None,
     track_process: bool = False,
+    timeout: Optional[float] = None,
+    allow_install: bool = True,
+    environment_module: Optional[str] = None,
 ) -> subprocess.CompletedProcess:
     resolved = resolve_tool(name)
-    if resolved is None:
+    if resolved is None and allow_install:
         # Needed and not there. For anything DELFIN installs, that is a wait
         # rather than a wall -- and it is the moment to find out, because the
         # caller is about to use it. Imported here, not at the top: the health
@@ -730,8 +748,8 @@ def run_tool(
     if resolved is None:
         raise FileNotFoundError(f"QM tool not found: {name}")
 
-    if resolved.source.startswith("module:"):
-        module_name = resolved.source.split(":", 1)[1]
+    if environment_module or resolved.source.startswith("module:"):
+        module_name = environment_module or resolved.source.split(":", 1)[1]
         cmd = _module_wrapped_command(module_name, resolved.path, args)
     else:
         cmd = [resolved.path, *[str(arg) for arg in args]]
@@ -750,6 +768,8 @@ def run_tool(
 
     logger.info("Running QM tool %s from %s: %s", resolved.canonical_name, resolved.source, cmd)
     if not track_process:
+        if timeout is not None:
+            run_kwargs["timeout"] = timeout
         return subprocess.run(cmd, **run_kwargs)
 
     popen_kwargs = {
@@ -786,7 +806,17 @@ def run_tool(
             logger.debug("Failed to register QM tool subprocess %s: %s", resolved.canonical_name, exc)
 
     try:
-        stdout_data, stderr_data = process.communicate()
+        try:
+            stdout_data, stderr_data = (process.communicate(timeout=timeout)
+                                        if timeout is not None else process.communicate())
+        except subprocess.TimeoutExpired:
+            import signal
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                process.kill()
+            stdout_data, stderr_data = process.communicate()
+            raise subprocess.TimeoutExpired(cmd, timeout, output=stdout_data, stderr=stderr_data)
     finally:
         if manager is not None:
             try:

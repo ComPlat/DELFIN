@@ -80,6 +80,25 @@ def run_step(
             error=str(exc),
         )
 
+    # A step whose declared products are not in its result is a wiring
+    # defect that otherwise surfaces only at the consumer (the consumer
+    # then fails with "missing input capability" and no hint that the
+    # producer is mis-keyed).  Report it here, where the producer is known.
+    if result.ok:
+        from delfin.tools._products import check_declared_products, report_result
+        missing = check_declared_products(
+            adapter.contract().produces, result,
+        )
+        report_result(result, step_name, missing)
+        from delfin.tools._products import invalid_required_artifacts
+        from delfin.tools._types import ErrorKind
+        invalid = invalid_required_artifacts(adapter.contract().required_artifacts, result)
+        if invalid:
+            result.status = StepStatus.FAILED
+            result.error_kind = ErrorKind.TOOL_FAILED
+            result.error = f"Required output artifacts failed validation: {invalid}"
+            result.data["_invalid_required_artifacts"] = invalid
+
     return result
 
 

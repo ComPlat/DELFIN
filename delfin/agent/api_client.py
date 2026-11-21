@@ -7436,7 +7436,7 @@ _MCP_READONLY_TOOL_BASES: frozenset[str] = frozenset({
     "cron_list",
     # --- DELFIN tools server: discovery, description, dry validation ---
     "get_manifest", "get_guide", "resolve_spec", "scientific_lint",
-    "list_capabilities", "describe_capability", "catalog",
+    "list_capabilities", "describe_capability", "catalog", "bio_backends", "bio_plan",
     "compatible_successors", "new_capability_template",
     "list_keys", "describe_key",
     "list_applications", "describe_application",

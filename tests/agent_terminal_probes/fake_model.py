@@ -98,6 +98,9 @@ def plan(messages: list[dict]) -> dict:
             return {"tool": "write_file",
                     "args": {"path": path, "content": (rest[0] if rest else "")
                              + "\n"}}
+        if s.startswith("do-show "):
+            return {"tool": "show_molecule",
+                    "args": {"path": s[8:].strip()}}
         if s.startswith("do-xyz "):
             return {"tool": "write_file",
                     "args": {"path": s[7:].strip() or "water.xyz",

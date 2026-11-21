@@ -30,6 +30,7 @@ class ErrorKind(enum.Enum):
     CONVERGENCE = "convergence"          # SCF / geometry did not converge
     TIMEOUT = "timeout"
     PARSE = "parse"                      # could not parse tool output
+    UNSUITABLE_INPUT = "unsuitable_input"  # readable, but this step cannot use it
     TOOL_FAILED = "tool_failed"          # nonzero exit / generic failure
     INTERNAL = "internal"                # adapter raised an exception
 

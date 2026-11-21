@@ -35,6 +35,16 @@ def _dummy(pspec) -> object:
     return _DUMMY_BY_TYPE.get(pspec.type, "x")
 
 
+def _validation_kwargs(contract):
+    if contract.example_kwargs is not None:
+        from copy import deepcopy
+        example = deepcopy(contract.example_kwargs)
+        assert set(example) <= {p.name for p in contract.params}, contract.name
+        assert set(contract.required_params) <= set(example), contract.name
+        return example
+    return {p.name: _dummy(p) for p in contract.params}
+
+
 def test_contract_available_on_every_adapter():
     """Every registered adapter yields a valid StepContract, even undeclared ones."""
     for name, adapter in list_steps().items():
@@ -65,7 +75,7 @@ def test_declared_required_params_are_enforced():
         required = contract.required_params
         if not required:
             continue
-        full = {p.name: _dummy(p) for p in contract.params}
+        full = _validation_kwargs(contract)
         for req in required:
             kwargs = dict(full)
             kwargs.pop(req, None)
@@ -74,17 +84,18 @@ def test_declared_required_params_are_enforced():
 
 
 def test_full_declared_kwargs_pass_validation():
-    """Providing every declared param must satisfy validate_params.
+    """A declared example, or primitive parameter fixtures, must validate.
 
     Guards the opposite direction: the contract must declare *enough* params
-    that a fully-specified call is accepted (no hidden required key missing
-    from the contract).
+    that a call is accepted (no hidden required key). Structured requests and
+    mutually exclusive parameters use a real public example rather than
+    pretending arbitrary empty dictionaries are valid domain inputs.
     """
     for name, adapter in list_steps().items():
         contract = adapter.contract()
         if not contract.params:
             continue
-        full = {p.name: _dummy(p) for p in contract.params}
+        full = _validation_kwargs(contract)
         adapter.validate_params(**full)  # must not raise
 
 

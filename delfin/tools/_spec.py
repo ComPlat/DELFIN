@@ -34,6 +34,40 @@ produced tag 1:1 onto the artifact it injects downstream:
                     (OPI) reads; preferred over regex-parsing the .out file
     json_report   — a machine-readable JSON report
     docx_report   — a generated DOCX report
+
+Biomolecular file ports — the same idea for proteins, nucleic acids and the
+small molecules bound to them.  They are file ports like ``gbw`` and
+``hessian``: a block announces the file it leaves behind, the next block
+declares it consumes it, and the two connect without knowing about each
+other.  :mod:`delfin.tools.bio` is the shared reader/typing layer behind them,
+so a block never has to agree with another on a parser:
+
+    macromolecule — a macromolecular structure file (PDB or mmCIF): chains,
+                    residues with insertion codes and alternate locations,
+                    heteroatoms, waters and the file's own missing-residue and
+                    connection records.  Read with
+                    ``delfin.tools.bio.read_structure``.
+    ligand        — a small-molecule file (SDF/MOL or MOL2) for a bound or
+                    to-be-bound ligand, with its coordinates, bonds and data
+                    fields.  Read with
+                    ``delfin.tools.bio.read_small_molecule``.
+    binding_site  — a binding-site descriptor as JSON: either a centre and an
+                    edge length in Angstrom (``BindingBox``) or the residues
+                    that line the site (``ResidueSelection``).  Both carry
+                    their ``kind``, so a consumer reads
+                    ``delfin.tools.bio.binding_site_from_dict`` and knows
+                    which of the two it was handed.
+    complex       — a complex descriptor as JSON: one macromolecule file and
+                    one or more small-molecule files, named relative to the
+                    descriptor's own directory.  Read with
+                    ``delfin.tools.bio.read_complex``.
+    pose_set      — a multi-record SDF where each record is one placement of a
+                    molecule and SD tags carry scores.  Read with
+                    ``delfin.tools.bio.read_pose_set``.
+    sequence      — a protein sequence as a FASTA file: one identifier and one
+                    sequence per record, the 20 standard amino acids plus X.
+                    Read with ``delfin.tools.bio.read_fasta``.  A DNA or RNA
+                    record is recognised and refused for protein prediction.
 """
 
 from __future__ import annotations
@@ -91,6 +125,8 @@ class StepContract:
     # a parser declaring ("qc_output","filepath") gets its filepath from the
     # upstream QM .out automatically). Distinct from the global gbw→moread rule.
     wires: Tuple[Tuple[str, str], ...] = ()
+    required_artifacts: frozenset = frozenset()
+    example_kwargs: Optional[dict] = None
 
     @property
     def required_params(self) -> Tuple[str, ...]:

@@ -307,3 +307,54 @@ steps:
         data = json.loads(capsys.readouterr().out)
         assert data["ok"]
         assert len(data["steps"]) == 2
+
+
+def test_step_json_parameters_preserve_nested_bio_plan(tmp_path, capsys):
+    from delfin.cli_step import main
+    parameters = tmp_path / 'parameters.json'
+    plan = {'schema_version': 1, 'nodes': [{'settings': {'atom_indices': [0, 2], 'minimize': False}}]}
+    parameters.write_text(json.dumps({'plan': plan, 'label': 'literal spaces; $HOME', 'charge': 0}))
+    assert main(['fake_step', '--params-file', str(parameters), '--charge=2', '--work-dir', str(tmp_path / 'run'), '--json']) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['data']['plan'] == plan
+    assert result['data']['label'] == 'literal spaces; $HOME'
+    assert result['data']['charge'] == 2
+
+
+@pytest.mark.parametrize('value', [[], {'cores': 2}, {'invalid': float('inf')}])
+def test_invalid_step_parameter_file_is_rejected(tmp_path, value):
+    from delfin.cli_step import main
+    parameters = tmp_path / 'parameters.json'
+    parameters.write_text(json.dumps(value))
+    assert main(['fake_step', '--params-file', str(parameters)]) == 1
+
+
+def test_slurm_preserves_parameters_resources_and_failure_exit(tmp_path, monkeypatch):
+    import subprocess
+    import sys
+    from types import SimpleNamespace
+    from delfin import cli_step, slurm_submit
+    directory = tmp_path / 'job with spaces'
+    python = tmp_path / 'python stub'
+    python.write_text('#!/bin/sh\nexit 7\n')
+    python.chmod(0o755)
+    args = SimpleNamespace(step_name='fake_step', geometry=None, work_dir=str(directory), slurm_time='01:00:00',
+                           slurm_memory_mb=4096, slurm_gpus=1, slurm_partition='gpu_test', json_output=True)
+    parameters = {'plan': {'nodes': []}, 'label': 'literal $(touch unwanted) `echo nope`'}
+    submitted = []
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, 'executable', str(python))
+        patch.setattr('shutil.which', lambda name: '/fake/sbatch')
+        patch.setattr(slurm_submit, 'sbatch_command', lambda binary, script: [binary, str(script)])
+        patch.setattr(subprocess, 'run', lambda command, **kwargs: submitted.append(command) or SimpleNamespace(returncode=0, stdout='Submitted batch job 123', stderr=''))
+        assert cli_step._submit_step_slurm(args, 4, parameters) == 0
+        assert cli_step._submit_step_slurm(args, 4, parameters) == 0
+    assert submitted[0][-1] != submitted[1][-1]
+    script = Path(submitted[0][-1])
+    text = script.read_text()
+    assert '#SBATCH --gres=gpu:1' in text and '#SBATCH --mem=4096M' in text
+    assert '#SBATCH --partition=gpu_test' in text
+    assert parameters['label'] not in text
+    assert json.loads(script.with_suffix('.params.json').read_text()) == parameters
+    assert subprocess.run(['bash', str(script)], capture_output=True).returncode == 7
+    assert not Path('unwanted').exists()

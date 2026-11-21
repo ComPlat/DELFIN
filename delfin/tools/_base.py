@@ -45,6 +45,8 @@ class StepAdapter(abc.ABC):
     requires_python: Tuple[str, ...] = ()
     # opt-in input auto-wiring: {capability: kwarg} or ((capability, kwarg), ...)
     wires: Any = ()
+    required_artifacts: Tuple[str, ...] = ()
+    example_kwargs: Optional[dict] = None
 
     def contract(self) -> "StepContract":
         """Assemble this adapter's declarative :class:`StepContract`.
@@ -54,6 +56,7 @@ class StepAdapter(abc.ABC):
         single uniform view of every port the adapter exposes.
         """
         from delfin.tools._spec import StepContract
+        from copy import deepcopy
 
         produced = set(self.produces)
         if self.produces_geometry:
@@ -71,6 +74,8 @@ class StepAdapter(abc.ABC):
             requires_binaries=frozenset(self.requires_binaries),
             requires_python=frozenset(self.requires_python),
             wires=tuple((str(c), str(k)) for c, k in wires),
+            required_artifacts=frozenset(self.required_artifacts),
+            example_kwargs=deepcopy(self.example_kwargs),
         )
 
     @abc.abstractmethod
