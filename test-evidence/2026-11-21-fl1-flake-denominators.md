@@ -91,3 +91,22 @@ incident: the update path writes whatever the run just produced, with no
 check that the run was sound, so one re-baseline on a host without xtb
 would record failures **as** the baseline and every later comparison would
 pass. It has never fired.
+
+## What this did not measure
+
+Three limits, each one a boundary of this measurement rather than a
+finding:
+
+- **The cause of the six slow failures is not measured.** This work turned
+  the builder's reason channel on; it did not learn why the builder
+  declines in CI and passes here. The next slow failure will name its own
+  cause, and until it runs that cause is unknown.
+- **Whether the two single-failure tests are flaky is not verifiable from
+  what exists.** One CI failure and five local passes each is one
+  observation in each direction. A denominator was recorded precisely
+  because a verdict could not be.
+- **The environment difference itself could not be verified** from the
+  runner side: the slow workflow installs a real xtb 6.7.1, so the obvious
+  missing tool is ruled out, but dependency versions under
+  `constraints-ci.txt` were not compared against this host's, and no
+  claim is made about them.
