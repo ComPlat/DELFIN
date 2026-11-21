@@ -633,6 +633,53 @@ def _cd_dir_of_segment(segment: str,
     return directory, remainder, True
 
 
+_STDIN_REFUSAL = (
+    "hpc_io_check refused: an sbatch whose script comes from stdin cannot "
+    "be checked -- the gate cannot see whether that script walks the shared "
+    "Lustre file system, and a script fed through a pipe, a `<` redirect, a "
+    "here-document or a here-string leaves no file to inspect afterwards. "
+    "Write the job script to a file and submit that file: "
+    "`sbatch [options] job.sh` -- that file IS checked."
+)
+
+
+def _sbatch_names_a_script(side: str, cd_dir: str = "") -> bool:
+    """Does this ``sbatch`` segment name a script it can be checked by?
+
+    True only for a route the gate can inspect BEFORE the run: a ``--wrap``
+    TEXT, or an argument that names an EXISTING file. Everything else --
+    no argument at all, a pipe, a ``<`` redirect, a here-document, a
+    here-string -- is the stdin channel, and under the QS ruling (round 14,
+    the operator's proposal (a)) that is refused rather than reconstructed.
+
+    The deciding fact is the file system, not a token's shape: an option's
+    VALUE (``-p dev_cpu``, ``-t 5``) names no file, so it can never be
+    mistaken for a script. That is the same "only an EXISTING FILE
+    exempts" rule the shell-body gate uses, and it needs no knowledge of
+    sbatch's option grammar -- which matters, because sbatch is not
+    installed on every node and could not be measured.
+    """
+    import shlex
+    if "--wrap" in side:
+        return True
+    if _heredoc_of_segment(side)[0] or _herestring_of_segment(side)[0]:
+        return False
+    if _stdin_redirect_of_segment(side):
+        return False
+    try:
+        tokens = shlex.split(_strip_wrappers(side))
+    except ValueError:
+        return False
+    for t in tokens[1:]:
+        if t.startswith("-") or ">" in t or "<" in t:
+            continue
+        if re.match(r"^-([A-Za-z])(\S.*)$", t):
+            continue
+        if _gate_names_existing_file(t, cd_dir):
+            return True
+    return False
+
+
 def sbatch_gate(cmd: str, env: dict | None = None,
                 mounts_path: MountsSource | None = None,
                 _cd_dir: str = ""
@@ -679,42 +726,32 @@ def sbatch_gate(cmd: str, env: dict | None = None,
     verdicts: list[str] = []
     texts: list[str] = []
     may_run = True
-    # A script PIPED into sbatch is a submit of that text: sbatch reads its
-    # batch script from stdin, and a pipe delivers it (measured:
-    # `echo 'echo PIPED-PROGRAM' | bash` prints it). The segment splitter
-    # discards the pipe, so the two sides cannot be paired afterwards --
-    # this pass runs first, on the raw text, and chain segments never
-    # contain a top-level `|` (that is a split point).
+    # A script PIPED into sbatch is REFUSED, not reconstructed (QS ruling
+    # on the operator's proposal (a), round 14). sbatch reads its batch
+    # script from stdin, so the piped text IS the job script -- but a
+    # script that arrives that way cannot be identified afterwards, and
+    # four rounds each closed one spelling (pipe, `<<<`, `<<$TAG`, `<`)
+    # only for the next to appear. The refusal names the route that works
+    # instead of parsing producers: submit a FILE, which IS checked.
+    #
+    # A here-document or here-string on the sbatch side is the same
+    # channel and is refused by the segment gate below; `--wrap` and a
+    # named FILE keep working, because both are judgeable before the run.
     for chunk in re.split(r"&&|\|\||;|\n", cmd):
         sides = _split_on_pipes(chunk)
         if len(sides) < 2:
             continue
-        producer = sides[-2].strip()
         consumer = sides[-1].strip()
-        if not re.match(r"^(?:\S+\s+)*sbatch(?:\s|$)", _strip_wrappers(consumer)):
+        if not re.match(r"^(?:\S+\s+)*sbatch(?:\s|$)",
+                        _strip_wrappers(consumer)):
             continue
-        if not _sbatch_reads_stdin(consumer):
+        if _sbatch_names_a_script(consumer):
+            # `echo x | sbatch run.sh`: the FILE is the script and is
+            # judged by the segment gate; the pipe is that file's stdin.
             continue
-        text = _producer_text(producer)
-        if text is None:
-            verdicts.append("refuse")
-            texts.append(
-                "hpc_io_check refused: the sbatch script is piped in from a "
-                f"command whose output cannot be read ({producer or '?'}). "
-                "The gate cannot tell whether it walks /pfs, so it fails "
-                "closed -- name the script as an argument or use a "
-                "here-document, or let the producer be echo/printf/cat.")
-            may_run = False
-            continue
-        refused, warned = check_submit(text, env=env,
-                                       mounts_path=mounts_path, is_text=True)
-        if refused:
-            verdicts.append("refuse")
-            texts.append(refused[0])
-            may_run = False
-        elif warned:
-            verdicts.append("warn")
-            texts.append(warned[0])
+        verdicts.append("refuse")
+        texts.append(_STDIN_REFUSAL)
+        may_run = False
     # A shell body is judged by re-entering this function for the body; a
     # `cd` OUTSIDE the body still governs a RELATIVE script named inside
     # it, so the caller passes the pending directory in.
@@ -1046,105 +1083,6 @@ def _split_on_pipes(chunk: str) -> list[str]:
     return parts
 
 
-def _producer_text(producer: str) -> str | None:
-    """The text a pipe producer delivers, or ``None`` when it is unreadable.
-
-    ``sbatch`` reads its batch script from stdin, so what a producer writes
-    IS the script. A real ``bash`` runs what a pipe delivers (measured:
-    ``echo 'echo PIPED-PROGRAM' | bash`` prints PIPED-PROGRAM).
-
-    Only a producer whose output can be KNOWN is resolved: ``echo``/
-    ``printf`` with a literal argument, and ``cat <file>``. Anything else
-    returns ``None`` and the caller fails closed -- the same principle as
-    a path that is not a file: trust nothing that cannot be read.
-    """
-    import shlex
-    try:
-        tokens = shlex.split(producer)
-    except ValueError:
-        return None
-    if not tokens:
-        return None
-    head = tokens[0]
-    if head == "echo":
-        args = [t for t in tokens[1:] if not t.startswith("-")]
-        if not args:
-            return None
-        text = " ".join(args)
-        return text if text.endswith("\n") else text + "\n"
-    if head == "printf":
-        # printf's FIRST argument is a FORMAT, not text to emit: `%s` there
-        # is replaced by the next argument. Repeating the format for the
-        # remaining arguments is what the real command does too.
-        rest = [t for t in tokens[1:]]
-        while rest and rest[0].startswith("-") and rest[0] != "-":
-            rest = rest[1:]
-        if not rest:
-            return None
-        fmt, values = rest[0], rest[1:]
-        if "%" in fmt:
-            if not values:
-                return None
-            try:
-                text = fmt % tuple(values)
-            except (TypeError, ValueError):
-                return None
-        else:
-            text = fmt
-        return text if text.endswith("\n") else text + "\n"
-    if head == "cat":
-        args = [t for t in tokens[1:] if not t.startswith("-")]
-        if len(args) != 1:
-            return None
-        path = Path(args[0])
-        if not path.is_file():
-            return None
-        try:
-            return path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return None
-    return None
-
-
-def _sbatch_reads_stdin(side: str) -> bool:
-    """Does this ``sbatch`` segment name no script of its own?
-
-    True means sbatch would read its batch script from stdin, so a pipe
-    into it delivers the script. A named script argument, a here-document,
-    a here-string or ``--wrap`` is a route that already judges something,
-    and the file/body wins over the pipe.
-
-    Operator live run 2026-11-21 (round 13): this used to call ANY token
-    without a leading ``-`` a script argument, so in
-    ``sbatch --test-only -p dev_cpu -t 5`` the option VALUE ``dev_cpu``
-    was read as the script and the piped script went unjudged. The
-    deciding fact is the file system, not the token's shape -- the same
-    "only an EXISTING FILE exempts" rule the shell-body gate uses. An
-    option's value names no file, so it is not a script argument; a real
-    script argument does, so the pipe is that script's stdin and the
-    FILE wins.
-    """
-    import shlex
-    if _heredoc_of_segment(side)[0] or _herestring_of_segment(side)[0]:
-        return False
-    if "--wrap" in side:
-        return False
-    try:
-        tokens = shlex.split(_strip_wrappers(side))
-    except ValueError:
-        return False
-    for t in tokens[1:]:
-        if t.startswith("-") or ">" in t or "<" in t:
-            continue
-        # An attached short-option value (`-o<file>`, `-e<file>`) is an
-        # option's value, never the batch script.
-        if re.match(r"^-([A-Za-z])(\S.*)$", t):
-            continue
-        if _gate_names_existing_file(t):
-            return False
-    return True
-
-
 def _split_gate_segments(cmd: str) -> list[str]:
     """Split a command line on ``;`` ``&&`` ``|`` ``||`` ``&`` or newline
     at quote depth 0.
@@ -1205,9 +1143,15 @@ def _split_gate_segments(cmd: str) -> list[str]:
             i += 1
             continue
         if ch == "<" and cmd[i:i + 3] == "<<<":
-            # A here-string: no terminator, and it must be left INTACT for
-            # the segment-level reader. Stepping over one '<' only makes
-            # the next index see `<<` and treat the rest as a heredoc.
+            # A here-string: no terminator, and its WORD is that command's
+            # stdin. Keep the operator in the segment so the segment-level
+            # reader can see it (`sbatch <<< 'text'` was reaching the
+            # segment gate as `sbatch  'text'`, i.e. an innocently quoted
+            # script name, and the channel was invisible -- found by probe
+            # in round 14 while implementing ruling (a)). Stepping over
+            # three characters instead of appending them was the bug: the
+            # comment said "left intact" and the code deleted it.
+            current.append(cmd[i:i + 3])
             i += 3
             continue
         if ch == "<" and cmd[i:i + 2] == "<<":
@@ -1525,6 +1469,34 @@ def _gate_sbatch_segment(segment: str, env: dict,
                                        mounts_path=mounts_path,
                                        is_text=True)
     else:
+        # QS ruling (a), round 14: a script that arrives through a CHANNEL
+        # -- here-document, here-string, `<` redirect, or a pipe (refused
+        # in the pass above) -- cannot be identified afterwards, so it is
+        # refused rather than reconstructed.
+        #
+        # A NAMED argument is a different case and keeps its earlier
+        # decision: `sbatch nosuch.sh` names a script that is not there,
+        # and sbatch fails on it by itself. That is not a stdin submit, so
+        # it must not be dressed up as one (round 6-9 decision, preserved
+        # here: the narrow "not found from the cd target" refusal).
+        #
+        # `sbatch <file> <<EOF` names a FILE, so the file is the script and
+        # the body is that script's stdin -- data, not the job script
+        # (rounds 10-13 decision, preserved). A heredoc body is refused
+        # only when NO file is named.
+        if stdin_file:
+            return "refuse", _STDIN_REFUSAL, False
+        # Informational flags are not submits at all -- but ONLY on
+        # sbatch's own arguments, never inside a quoted word. The segment
+        # still carries the here-string's quotes, so `sbatch <<< "sbatch
+        # --version"` arrives as the single token `sbatch --version` and a
+        # naive search reads it as an informational flag of THIS command
+        # (found by probe, round 14: the clean here-string was allowed
+        # after ruling (a) had made it a refusal).
+        tokens_info = [t for t in tokens[1:] if not t.startswith("<")]
+        if any(t in ("--help", "--usage", "--version", "--show-valid")
+               for t in tokens_info):
+            return "allow", "", True
         # The script is the last token that is not an option or an
         # option's value. A token starting with '-' is an option; a
         # leading '--' token with '=' carries its value attached. An
@@ -1539,90 +1511,28 @@ def _gate_sbatch_segment(segment: str, env: dict,
             stripped.append(t)
         positional = [t for t in stripped if not t.startswith("-")]
         if not positional:
-            # The whole command line was options (e.g. `sbatch
-            # -o<value>` only): no batch script is named, sbatch reads
-            # stdin. But an attached value that LOOKS like a script
-            # path is checked conservatively -- if it exists and would
-            # be refused, refuse (a wrong -o path is never a walk, so
-            # this can only fire on a real script path).
-            for t in argv:
-                m = re.match(r"^-([A-Za-z])(\S.*)$", t)
-                if m and m.group(1) in "oe" and Path(m.group(2)).is_file():
-                    script_arg = m.group(2)
-                    break
-            else:
-                # No script argument named. A here-document attached to
-                # this submit IS its stdin (`sbatch <<EOF ... EOF`), and
-                # that is judged further down; without one there is no
-                # script to inspect.
-                if heredoc_body is None or not heredoc_body.strip():
-                    # `sbatch < run.sh` names no argument but IS a submit
-                    # of that file (round 13, my finding: this route was
-                    # never gated). Judge it as the script.
-                    if stdin_file:
-                        resolved_in = stdin_file
-                        if cd_dir and not os.path.isabs(resolved_in):
-                            resolved_in = os.path.join(cd_dir, resolved_in)
-                        if not Path(resolved_in).is_file():
-                            return ("refuse",
-                                    "hpc_io_check refused: the sbatch script "
-                                    f"{stdin_file} is not found from "
-                                    f"{cd_dir or 'the working directory'}; "
-                                    "the gate cannot tell what it would "
-                                    "run, so it fails closed.", False)
-                        refused, warned = check_submit(resolved_in, env=env,
-                                                       mounts_path=mounts_path)
-                        return _verdict(refused, warned)
-                    return "allow", "", True
-                script_arg = ""
-                # No argument names a file, so the body is what sbatch
-                # reads as its script.
-                return _substituted_outcome(target, heredoc_body, env,
-                                            mounts_path, submitted=True,
-                                            cd_dir=cd_dir)
-        else:
-            script_arg = positional[-1]
-        # A here-document is attached to this submit, so its script may be
-        # the BODY (stdin) rather than a file: `sbatch -J name <<EOF ...`
-        # names no file at all, and an unrecognised option VALUE is
-        # indistinguishable from a script name by shape alone (the same
-        # ambiguity the `-o<value>` branch above names). The deciding fact
-        # is whether the named argument IS a file -- here, or from the cd
-        # target for a relative name. When it is not, the body is what
-        # sbatch would run and is judged as text (a body is script
-        # content, never a file name).
-        if heredoc_body is not None:
-            candidate = script_arg
-            if cd_dir and not os.path.isabs(candidate):
-                candidate = os.path.join(cd_dir, candidate)
-            if not Path(candidate).is_file() and heredoc_body.strip():
-                return _substituted_outcome(target, heredoc_body, env,
-                                            mounts_path, submitted=True,
-                                            cd_dir=cd_dir)
-        # `sbatch --test-only -p dev_cpu < walk.sh` (round 13): the `<`
-        # ends the argv scan, so an option's VALUE survives as the last
-        # positional and is taken for a script name. An option value names
-        # no file. When a `< FILE` redirect is present and the named
-        # argument is not a file, the redirect IS the script -- judge it
-        # rather than letting the missing-file branch below allow.
-        if stdin_file:
-            here = script_arg
-            if cd_dir and not os.path.isabs(here):
-                here = os.path.join(cd_dir, here)
-            if not Path(here).is_file():
-                resolved_in = stdin_file
-                if cd_dir and not os.path.isabs(resolved_in):
-                    resolved_in = os.path.join(cd_dir, resolved_in)
-                if not Path(resolved_in).is_file():
-                    return ("refuse",
-                            "hpc_io_check refused: the sbatch script "
-                            f"{stdin_file} is not found from "
-                            f"{cd_dir or 'the working directory'}; the "
-                            "gate cannot tell what it would run, so it "
-                            "fails closed.", False)
-                refused, warned = check_submit(resolved_in, env=env,
-                                               mounts_path=mounts_path)
-                return _verdict(refused, warned)
+            # Nothing was named and no channel was present: sbatch would
+            # read its script from stdin, and there is nothing to inspect.
+            return "refuse", _STDIN_REFUSAL, False
+        # A here-document attached to a submit that names NO file is the
+        # script itself (`sbatch -J x <<EOF ...`): refused under ruling
+        # (a). With a file named above, the body is that file's stdin.
+        if heredoc_body is not None and heredoc_body.strip():
+            candidate = positional[-1]
+            if not _gate_names_existing_file(candidate, cd_dir):
+                return "refuse", _STDIN_REFUSAL, False
+        # A QUOTED non-option word that names NO file is not a script
+        # argument: the splitter has already removed the `<<<`/`<<`
+        # operator, so `sbatch <<< 'echo hi'` reaches here as
+        # `sbatch  'echo hi'` and would otherwise be read as a named
+        # script called `echo hi`. A legitimate quoted script still names
+        # a file -- `sbatch "my dir/run.sh"` (reviewer round 6) -- so the
+        # test is existence, not quoting.
+        last = positional[-1]
+        if last[:1] in ("'", '"') and not _gate_names_existing_file(
+                last.strip("'\""), cd_dir):
+            return "refuse", _STDIN_REFUSAL, False
+        script_arg = last
         # Resolve a relative script against the cd target, not the
         # process cwd (operator live run, IO1 L4 class).
         resolved: str | None = script_arg

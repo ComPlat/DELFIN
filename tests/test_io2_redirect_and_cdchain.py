@@ -53,61 +53,87 @@ def _v(cmd):
 # 1. here-strings
 # --------------------------------------------------------------------------
 
-def test_a_here_string_script_is_judged(lustre):
-    """`sbatch <<< '<walking text>'` is a submit of that text."""
+def test_a_here_string_script_is_refused(lustre):
+    """`sbatch <<< '<walking text>'` must not reach sbatch.
+
+    INTENT UNCHANGED (the walking script must not be submitted); the
+    DECISION changed in round 14. Rounds 11-13 judged the here-string word
+    as script text and refused only when that text walked. The QS then
+    ruled that sbatch's stdin channel is refused outright, because a
+    script that arrives that way cannot be identified afterwards -- so the
+    verdict is still `refuse`, now with the stdin-channel reason.
+    """
     verdict, text, may_run = _v(f'sbatch <<< "{WALK.strip()}"')
     assert verdict == "refuse", (
-        f"FAIL-OPEN: a here-string is the batch script and was not judged "
+        f"FAIL-OPEN: a here-string is the batch script and was not refused "
         f"(verdict={verdict!r})")
-    assert "tree_walk_on_lustre" in text
+    assert "job.sh" in text, (
+        f"the refusal must name the file route, not only say no: {text[:160]}")
     assert may_run is False
 
 
-def test_a_clean_here_string_still_runs(lustre):
-    """The same shape with clean text must not be refused."""
+def test_a_clean_here_string_is_also_refused(lustre):
+    """Ruling (a) refuses the CHANNEL, so a clean body refuses too.
+
+    This REVERSES the rounds 11-13 decision (a clean here-string ran,
+    because its text was judged and was clean). QS ruling, round 14: the
+    point is that no artefact is left to inspect, not that this particular
+    text is harmless. Pinned so nobody relaxes it back.
+    """
     verdict, text, may_run = _v('sbatch <<< "sbatch --version"')
-    assert verdict == "allow", (
-        f"OVER-REFUSAL: a clean here-string was refused: {text[:120]}")
-    assert may_run is True
+    assert verdict == "refuse", (
+        f"a clean here-string must still refuse under ruling (a); got "
+        f"{verdict!r}")
+    assert "job.sh" in text
+    assert may_run is False
 
 
 # --------------------------------------------------------------------------
 # 2. here-documents whose delimiter is not a bare word
 # --------------------------------------------------------------------------
 
-def test_a_variable_tagged_heredoc_body_is_judged(lustre):
-    """`<<$TAG` is a literal delimiter in bash; its body is the script."""
+def test_a_variable_tagged_heredoc_body_is_refused(lustre):
+    """`<<$TAG` is a literal delimiter in bash; its body is the script.
+
+    INTENT UNCHANGED (this body must never reach sbatch); the reason is
+    the stdin channel itself under ruling (a), round 14.
+    """
     cmd = "sbatch <<$TAG\n" + WALK + "$TAG\n"
     verdict, text, may_run = _v(cmd)
     assert verdict == "refuse", (
-        f"FAIL-OPEN: a heredoc tagged with a variable was not read "
+        f"FAIL-OPEN: a heredoc tagged with a variable was not refused "
         f"(verdict={verdict!r})")
-    assert "tree_walk_on_lustre" in text
+    assert "job.sh" in text
 
 
-def test_an_unterminated_variable_tagged_body_is_judged(lustre):
+def test_an_unterminated_variable_tagged_body_is_refused(lustre):
     """A body whose terminator never matches runs to the end in bash."""
     cmd = "sbatch <<$TAG\n" + WALK + "TAG\n"
     verdict, text, may_run = _v(cmd)
     assert verdict == "refuse", (
-        f"FAIL-OPEN: an unterminated variable-tagged body was not judged "
+        f"FAIL-OPEN: an unterminated variable-tagged body was not refused "
         f"(verdict={verdict!r})")
-    assert "tree_walk_on_lustre" in text
+    assert "job.sh" in text
 
 
 def test_a_literal_tagged_heredoc_still_refuses(lustre):
     """Control: the plain form must keep working (no regression)."""
     verdict, text, may_run = _v("sbatch <<TAG\n" + WALK + "TAG\n")
     assert verdict == "refuse"
-    assert "tree_walk_on_lustre" in text
+    assert "job.sh" in text
 
 
-def test_a_clean_variable_tagged_body_still_runs(lustre):
-    """A clean body behind a variable tag must not be refused."""
+def test_a_clean_variable_tagged_body_is_refused_too(lustre):
+    """Ruling (a): a CLEAN heredoc body is refused as well.
+
+    REVERSES the rounds 11-13 decision (clean body ran). The channel, not
+    the text, is what ruling (a) refuses.
+    """
     verdict, text, may_run = _v("sbatch <<$TAG\n" + CLEAN + "$TAG\n")
-    assert verdict == "allow", (
-        f"OVER-REFUSAL: a clean variable-tagged body was refused: "
-        f"{text[:120]}")
+    assert verdict == "refuse", (
+        f"a clean heredoc body must refuse under ruling (a); got "
+        f"{verdict!r}")
+    assert "job.sh" in text
 
 
 # --------------------------------------------------------------------------

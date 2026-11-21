@@ -71,26 +71,33 @@ def test_submit_on_a_later_line_of_three_is_refused(lustre, tmp_path):
     assert "tree_walk_on_lustre" in text
 
 
-def test_heredoc_script_is_checked_as_text(lustre, tmp_path):
-    """`sbatch <<EOF` submits the BODY: it is script text, not segments."""
+def test_heredoc_script_is_refused(lustre, tmp_path):
+    """`sbatch <<EOF` submits the BODY: it must not reach sbatch.
+
+    INTENT UNCHANGED (a heredoc body was hidden from the gate); the
+    DECISION changed in round 14. Rounds 10-13 judged the body as script
+    text and refused when it walked. QS ruling (a): the stdin channel is
+    refused outright, so the reason is now the channel, not the walk.
+    """
     cmd = ("sbatch <<'EOF'\n"
            "#!/bin/bash\n"
            "du -sh /pfs/data6/workspace/\n"
            "EOF")
     verdict, text, may_run = _gate(cmd)
     assert verdict == "refuse" and not may_run
-    assert "tree_walk_on_lustre" in text
+    assert "job.sh" in text, (
+        f"the refusal must tell the person to submit a FILE: {text[:160]}")
 
 
-def test_heredoc_script_with_options_is_checked_as_text(lustre, tmp_path):
-    """Options on the heredoc's own line do not turn the body into data."""
+def test_heredoc_script_with_options_is_refused(lustre, tmp_path):
+    """Options on the heredoc's own line do not change the channel."""
     cmd = ("sbatch -J io2 <<EOF\n"
            "#!/bin/bash\n"
            "find /pfs/data6/workspace/ -type f\n"
            "EOF")
     verdict, text, may_run = _gate(cmd)
     assert verdict == "refuse" and not may_run
-    assert "tree_walk_on_lustre" in text
+    assert "job.sh" in text
 
 
 # --- allowed: ordinary multi-line work and non-script heredocs ----------
@@ -115,13 +122,22 @@ def test_backslash_continuation_stays_one_command(lustre, tmp_path):
     assert "tree_walk_on_lustre" in text
 
 
-def test_clean_heredoc_script_is_allowed(lustre):
+def test_clean_heredoc_script_is_refused_too(lustre):
+    """Ruling (a): a CLEAN heredoc body is refused as well.
+
+    REVERSES the rounds 10-13 decision (a clean body ran, because its text
+    was judged and clean). The channel is what ruling (a) refuses: no
+    artefact is left to inspect afterwards.
+    """
     cmd = ("sbatch <<'EOF'\n"
            "#!/bin/bash\n"
            "export ORCA_SCRATCH=/tmp/scr\n"
            "EOF")
     verdict, text, may_run = _gate(cmd)
-    assert verdict == "allow" and may_run, text
+    assert verdict == "refuse", (
+        f"a clean heredoc body must refuse under ruling (a); got "
+        f"{verdict!r}")
+    assert "job.sh" in text
 
 
 def test_heredoc_data_for_a_reader_is_not_a_script(lustre):

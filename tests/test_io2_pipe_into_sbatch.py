@@ -39,20 +39,27 @@ def _v(cmd):
 
 
 def test_an_echoed_walk_into_sbatch_is_refused(lustre):
+    """INTENT UNCHANGED (a walking script must not reach sbatch).
+
+    Rounds 11-13 asserted the WALK reason (`tree_walk_on_lustre`) because
+    the producer text was read and judged. Ruling (a), round 14: the stdin
+    CHANNEL is refused, so the reason is the channel and the assertion on
+    the walk reason is gone with the code that produced it.
+    """
     verdict, text, may_run = _v(f"echo '{WALK}' | sbatch")
     assert verdict == "refuse", (
-        f"FAIL-OPEN: a piped walking script was not judged "
+        f"FAIL-OPEN: a piped walking script was not refused "
         f"(verdict={verdict!r})")
-    assert "tree_walk_on_lustre" in text
+    assert "job.sh" in text
     assert may_run is False
 
 
 def test_a_printf_walk_into_sbatch_is_refused(lustre):
     verdict, text, may_run = _v(f"printf '%s' '{WALK}' | sbatch")
     assert verdict == "refuse", (
-        f"FAIL-OPEN: a printf'd walking script was not judged "
+        f"FAIL-OPEN: a printf'd walking script was not refused "
         f"(verdict={verdict!r})")
-    assert "tree_walk_on_lustre" in text
+    assert "job.sh" in text
 
 
 def test_a_catted_walking_file_into_sbatch_is_refused(lustre, tmp_path):
@@ -60,23 +67,33 @@ def test_a_catted_walking_file_into_sbatch_is_refused(lustre, tmp_path):
     script.write_text("#!/bin/bash\n" + WALK + "\n", encoding="utf-8")
     verdict, text, may_run = _v(f"cat {script} | sbatch")
     assert verdict == "refuse", (
-        f"FAIL-OPEN: a catted walking script was not judged "
+        f"FAIL-OPEN: a catted walking script was not refused "
         f"(verdict={verdict!r})")
-    assert "tree_walk_on_lustre" in text
+    assert "job.sh" in text
 
 
-def test_a_catted_clean_file_into_sbatch_runs(lustre, tmp_path):
+def test_a_catted_clean_file_is_refused_too(lustre, tmp_path):
+    """Ruling (a): a CLEAN piped script is refused, the channel decides.
+
+    REVERSED from rounds 11-13, where the producer was read and its text
+    judged clean. The QS ruled the channel refused: submit the FILE
+    instead, and it is checked.
+    """
     script = tmp_path / "clean.sh"
     script.write_text("#!/bin/bash\n" + CLEAN + "\n", encoding="utf-8")
     verdict, text, may_run = _v(f"cat {script} | sbatch")
-    assert verdict != "refuse", (
-        f"OVER-REFUSAL: a clean catted script was refused: {text[:150]}")
+    assert verdict == "refuse", (
+        f"a clean piped script must refuse under ruling (a); got "
+        f"{verdict!r}")
+    assert "job.sh" in text
 
 
-def test_a_clean_echo_into_sbatch_runs(lustre):
+def test_a_clean_echo_into_sbatch_is_refused(lustre):
     verdict, text, may_run = _v(f"echo '{CLEAN}' | sbatch")
-    assert verdict != "refuse", (
-        f"OVER-REFUSAL: a clean echoed script was refused: {text[:150]}")
+    assert verdict == "refuse", (
+        f"a clean echoed script must refuse under ruling (a); got "
+        f"{verdict!r}")
+    assert "job.sh" in text
 
 
 def test_an_unreadable_producer_fails_closed(lustre):
