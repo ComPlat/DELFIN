@@ -209,7 +209,7 @@ def test_a_command_that_ran_and_failed_is_not_logged_ok(home, ws):
     result = ex._execute_bash({"command": "exit 7"}, perms)
     ex._audit_call("bash", {"command": "exit 7"}, perms, result)
 
-    rec = al.read_last_n(1, log_path=_log(home))[0]
+    rec = al._parse_log(_log(home))[-1]
     assert rec["decision"] == "error"
     assert rec["exit_code"] == 7
     text = al.format_changes_report(
@@ -224,7 +224,7 @@ def test_a_command_that_succeeded_is_still_logged_ok(home, ws):
     result = ex._execute_bash({"command": "true"}, perms)
     ex._audit_call("bash", {"command": "true"}, perms, result)
 
-    rec = al.read_last_n(1, log_path=_log(home))[0]
+    rec = al._parse_log(_log(home))[-1]
     assert rec["decision"] == "ok"
     assert rec["exit_code"] == 0
     assert "[exit" not in al.format_changes_report(
@@ -250,7 +250,7 @@ def test_a_background_job_gets_a_completion_record(home, ws):
             break
         time.sleep(0.02)
 
-    records = al.read_last_n(50, log_path=_log(home))
+    records = al._parse_log(_log(home))[-50:]
     done = [r for r in records if r.get("event") == "completed"]
     assert done, "a background job still finishes without a record"
     assert done[-1]["exit_code"] == 3

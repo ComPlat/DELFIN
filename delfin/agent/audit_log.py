@@ -618,45 +618,6 @@ def format_verify(reports: list[dict]) -> str:
     return "\n".join(out)
 
 
-def read_last_n(n: int = 100, *, log_path: Optional[Path] = None) -> list[dict]:
-    """Return the last ``n`` parseable records (utility for the dashboard)."""
-    path = log_path or _default_log_path()
-    if not path.exists():
-        return []
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except Exception:
-        return []
-    out: list[dict] = []
-    for line in lines[-(n * 2):]:        # over-read a little for parse errors
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            out.append(json.loads(line))
-        except Exception:
-            continue
-    return out[-n:]
-
-
-def _diff_line_counts(old: str, new: str) -> tuple[int, int]:
-    """Quick added / removed line counts for the audit record.
-
-    Not a real diff — just compares line sets to avoid bringing
-    difflib into a hot path. Good enough for "approximately how big
-    was this change" telemetry.
-    """
-    old_lines = old.splitlines() if old else []
-    new_lines = new.splitlines() if new else []
-    added = max(0, len(new_lines) - len(old_lines))
-    removed = max(0, len(old_lines) - len(new_lines))
-    # If the line counts match, count the actually-different lines.
-    if added == 0 and removed == 0 and old_lines != new_lines:
-        diffs = sum(1 for a, b in zip(old_lines, new_lines) if a != b)
-        return diffs, diffs
-    return added, removed
-
-
 def make_record(
     *,
     tool: str,
