@@ -176,13 +176,3 @@ def deny_patterns_for(role: str, *, home: Path | str | None = None
             if pattern not in merged:
                 merged.append(pattern)
     return merged
-
-
-# The owning-user key for the current process's home, for callers that
-# need to name it without repeating the derivation.
-def home_owner(home: Path | str | None = None) -> str:
-    return _home_owner(_resolve_home(home))
-
-
-def _resolve_home(home: Path | str | None = None) -> Path:
-    return (Path(home) if home is not None else Path.home()).expanduser()
