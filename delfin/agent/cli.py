@@ -6366,7 +6366,8 @@ def build_parser() -> argparse.ArgumentParser:
                             "nondeterminism and block")
     cmp_p.add_argument("--prereg", default="",
                        help="The pre-registration file; reported whether it "
-                            "predates the first stamp")
+                            "predates the first stamp and whether its "
+                            "content registers an experiment")
     cmp_p.add_argument("--allow-shared-switches", action="store_true",
                        help="Accept behaviour variables set identically in "
                             "both arms")
