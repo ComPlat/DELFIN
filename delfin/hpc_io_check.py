@@ -1852,9 +1852,31 @@ def _gate_sbatch_segment(segment: str, env: dict,
         # ordinary file judgement, except command substitution, which bash
         # expands inside double quotes too -- that boundary is measured, not
         # assumed, in tests/test_zz_io2_expand_bounds.py.
+        #
+        # EVERY word, not only `script_word` (operator live run, round 22).
+        # Electing the script word is exactly what failed: with
+        # `-p dev_cpu -t 5 <walking glob>` the option VALUES are non-option
+        # tokens, `existing_pos` is empty for a glob, so `script_word` became
+        # `dev_cpu` and the glob was never compared. Measured at 7ad808610:
+        # glob, tilde and brace all ALLOWED once an option with a value came
+        # first, and all three refused without one.
+        #
+        # Electing the word correctly would mean modelling sbatch's option
+        # grammar (which options take a value, which values are attached),
+        # which is the enumeration trap this gate has been bitten by four
+        # times. The structural fact needs no grammar at all: if ANY word in
+        # sbatch's argv is one the shell would expand, the argument list
+        # sbatch receives is not the one on the command line, so the gate
+        # cannot name the file it will run. Hence: judge every word.
+        #
+        # The stated COST is that an unquoted glob in a word that is not the
+        # script is refused too (`-o out*.log`). Bash expands that word as
+        # well, so the refusal is honest and cheap to obey by quoting, and it
+        # is pinned in tests/test_io2_expansion_after_options.py so it cannot
+        # be discovered by surprise.
         for raw_word, cleaned_word, expansion in _shell_words_with_quoting(
                 target):
-            if expansion and cleaned_word == script_word:
+            if expansion:
                 return ("refuse",
                         _EXPANSION_REFUSAL.format(word=raw_word,
                                                   kind=expansion), False)
