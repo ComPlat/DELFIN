@@ -22,6 +22,7 @@ even while a guard is red.
 
 from __future__ import annotations
 
+import re as _re
 import os
 import re
 import subprocess
@@ -114,6 +115,12 @@ _CHILD_ENV_EXEMPT: dict[str, str] = {
     # window matched the test function's own delfin import instead.
     "test_the_control_task_scores_what_it_means_to.py":
         "its child runs pytest in a fixture repo that imports no delfin",
+    # The flagged child is a sleeper for the emergency-stop control:
+    # `import os, sys, time` and a loop on os.path.exists. It imports no
+    # delfin, so it resolves no ~/.delfin sink; the window matched the
+    # test function's own delfin import.
+    "test_an_emergency_stop_reaches_every_machine.py":
+        "its child imports only os, sys and time",
 }
 
 
@@ -148,6 +155,27 @@ def _delfin_children(path: Path, text: str) -> int:
     return 0
 
 
+#: The fixture's own name, as a WHOLE identifier. A substring test cleared
+#: any file that merely contained the letters: measured 2026-11-20,
+#: test_cm1_the_bash_route_runs_a_program.py defines a LOCAL helper also
+#: called ``_child_env`` (wrapping ``api_client._code_mode_child_env``,
+#: something else entirely) and was exempted by it, while its two children
+#: were started with ``env = dict(os.environ)`` -- the real HOME and the
+#: real credentials. A guard defeated by an unrelated identifier is the
+#: shape this whole file exists to refuse, so the check is on the token.
+_FIXTURE_TOKEN = _re.compile(r"(?<![A-Za-z0-9_])child_env(?![A-Za-z0-9_])")
+
+
+def _uses_the_fixture(text: str) -> bool:
+    """True when the file names ``child_env`` as a whole identifier.
+
+    Input: a test file's source. Output: whether the fixture itself is
+    named. Semantics: ``_child_env`` and ``_code_mode_child_env`` are
+    different names and do not clear a file.
+    """
+    return bool(_FIXTURE_TOKEN.search(text))
+
+
 def test_every_delfin_child_start_passes_child_env():
     """The future half of the guard: scan the suite's sources for child
     starts whose code is DELFIN's own, and require the environment they
@@ -160,7 +188,7 @@ def test_every_delfin_child_start_passes_child_env():
         text = path.read_text(encoding="utf-8", errors="replace")
         if path.name in _CHILD_ENV_EXEMPT:
             continue
-        if "child_env" not in text:
+        if not _uses_the_fixture(text):
             line = _delfin_children(path, text)
             if line:
                 offenders.append(f"{path.name}:{line}")

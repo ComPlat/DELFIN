@@ -664,6 +664,17 @@ class AgentEngine:
         self._non_billing_turns: int = 0
         self._unpriced_turns: int = 0
         self._unmeasured_budget_notice_shown: bool = False
+        # The same question for the dimension that replaced the price,
+        # because answering it with a 0 is the defect being fixed: a
+        # productive turn whose provider returned no input-token count
+        # adds +0 to token_usage, which the token fraction cannot tell
+        # from a short turn. 19 of 3,040 productive turns recorded on
+        # this host are such turns. _untokened_provider names who.
+        self._measured_token_turns: int = 0
+        self._untokened_turns: int = 0
+        self._untokened_provider: str = ""
+        self._last_turn_token_state: str = ""
+        self._unmeasured_token_notice_shown: bool = False
         # Budget notices already raised in the durable attention inbox,
         # by level. The prompt block below reaches the MODEL and the
         # per-turn breaker writes to the CHAT STREAM, so a run that hit
@@ -3623,6 +3634,15 @@ class AgentEngine:
                 getattr(self, "_cost_cap_value", 0.0) or 0.0)
         except Exception:
             pass
+        # ...and the per-turn INPUT-TOKEN breaker, the one dimension the
+        # cap above cannot express: on a model with no published rate
+        # _estimate_cost returns 0.0 on every round, so the dollar
+        # comparison passes however many tokens the turn carries.
+        try:
+            self.client.turn_token_cap = lambda: int(
+                getattr(self, "_token_cap_value", 0) or 0)
+        except Exception:
+            pass
         # ...and the RUN's wall-clock and spend ceilings, for the same
         # reason one level up: the gate above runs before a turn, and a
         # one-turn unattended run is a single turn of many rounds.
@@ -3727,6 +3747,35 @@ class AgentEngine:
         self._turn_start_cost = self.cost_usd
         self._cost_cap_hit = False
         self._cost_cap_value = self._cost_hard_cap()   # read once per turn
+        # The same snapshot for the dimension that is always measurable.
+        # The cost breaker above is inert on every model with no
+        # published rate -- _estimate_cost hands it 0.0 for ever -- so
+        # the pair exists for the breaker that is not.
+        try:
+            self._turn_start_input_tokens = int(
+                self.token_usage.get("input", 0) or 0)
+            self._turn_start_output_tokens = int(
+                self.token_usage.get("output", 0) or 0)
+        except Exception:
+            self._turn_start_input_tokens = 0
+            self._turn_start_output_tokens = 0
+        self._token_cap_hit = False
+        self._token_cap_value = self._token_hard_cap()  # read once per turn
+        # The model behind this turn's commits. Set here because this is the
+        # thread that runs the turn's tool calls and the trailer is carried
+        # in a context variable, and set per TURN rather than once per
+        # session because a successor switch changes the model mid-run: the
+        # trailer then names the model that actually produced the diff.
+        # Until this line existed, nothing in the product called the setter
+        # at all -- the whole rewrite path was unreachable and no commit
+        # ever carried the line (its own tests set the variable themselves,
+        # so they passed throughout).
+        try:
+            from .api_client import set_commit_trailer_model
+            set_commit_trailer_model(
+                str(getattr(self.client, "model", "") or ""))
+        except Exception:
+            pass
         # The live phase both indicators read (activity.py). Begun here,
         # immediately before the try whose finally ends it, so no exit
         # path leaves a surface showing a turn that is over.
@@ -4353,6 +4402,26 @@ class AgentEngine:
             try:
                 self._note_turn_price_state(
                     float(self.cost_usd) - float(self._turn_start_cost))
+            except Exception:
+                pass
+            # ...and whether its SIZE could be measured. Same delta
+            # arithmetic over the same counter turn_metrics is written
+            # from (token_usage["input"]), so there is no second counter
+            # to drift: the dashboard's row and this gate read one
+            # number. ``produced`` keeps a 400 from the endpoint out of
+            # the unmeasured count -- such a turn measured nothing
+            # because nothing happened in it.
+            try:
+                _tok_delta = (int(self.token_usage.get("input", 0) or 0)
+                              - int(getattr(self, "_turn_start_input_tokens",
+                                            0) or 0))
+                self._note_turn_token_state(
+                    _tok_delta,
+                    produced=bool(
+                        chunks
+                        or int(self.token_usage.get("output", 0) or 0)
+                        > int(getattr(self, "_turn_start_output_tokens", 0)
+                              or 0)))
             except Exception:
                 pass
             # Turn is over (normally or with a surfaced error) — the
@@ -7976,20 +8045,25 @@ class AgentEngine:
         the scheduler daemon per entry) overrides the settings values."""
         return self._budget_ledger()._run_budget()
 
-    def _run_ceiling_hit(self, spent_this_turn: float = 0.0) -> str:
+    def _run_ceiling_hit(self, spent_this_turn: float = 0.0,
+                         tokens_this_turn: int = 0) -> str:
         """The run ceiling a RUNNING turn has reached, or "".
 
         Input: what the running turn has spent so far (the client's
-        estimate; ``cost_usd`` holds the finished turns). Output: the
-        stop reason the turn ends with -- ``run_budget_s`` once the wall
-        clock since ``_run_started_at`` reaches ``run_budget_s``,
-        ``run_budget_usd`` once finished plus running spend reaches
-        ``run_budget_usd`` -- else "". The turn ceiling is not checked
+        estimate; ``cost_usd`` holds the finished turns) and the tokens
+        it has carried so far (``token_usage`` is only updated when the
+        turn ends). Output: the stop reason the turn ends with --
+        ``run_budget_s`` once the wall clock since ``_run_started_at``
+        reaches ``run_budget_s``, ``run_budget_usd`` once finished plus
+        running spend reaches ``run_budget_usd``,
+        ``run_budget_tokens`` once finished plus running tokens reach the
+        token ceiling -- else "". The turn ceiling is not checked
         here: it counts finished turns, which do not change mid-turn.
         Consulted by the client between tool rounds (``run_ceiling``);
         the 110 % gate before a turn stays. Never raises.
         """
-        return self._budget_ledger()._run_ceiling_hit(spent_this_turn)
+        return self._budget_ledger()._run_ceiling_hit(
+            spent_this_turn, tokens_this_turn)
 
     def _run_budget_turns(self) -> int:
         """Turn ceiling for this run — 0 disables it.
@@ -8095,8 +8169,52 @@ class AgentEngine:
         A quota-funded or locally served run is NOT this case: its zero is
         a measurement, its ceiling holds, and calling it unmeasured would
         be a false statement in the other direction.
+
+        False in a second case the token dimension made checkable: an
+        exact ``cost_usd`` of 0.00 after a material number of tokens. A
+        backend's reported spend outranks the rate card, which is right
+        for a subscription's real $0.00 and wrong for the identical 0.00
+        a backend reports when it observed nothing. See
+        ``BudgetLedger._usd_budget_enforced``.
         """
         return self._budget_ledger()._usd_budget_enforced()
+
+    def _usd_zero_is_unexplained(self) -> bool:
+        """Whether this run's $0.00 is the unexplained kind: no unpriced
+        turn, no non-billing provider, and a material token count behind
+        it. See ``BudgetLedger._usd_zero_is_unexplained``."""
+        return self._budget_ledger()._usd_zero_is_unexplained()
+
+    def _note_turn_token_state(self, input_delta: int = 0,
+                               produced: bool = True) -> None:
+        """Count the turn that just ran by whether its input size was
+        reported at all — the token twin of
+        :meth:`_note_turn_price_state`. See
+        ``BudgetLedger._note_turn_token_state``."""
+        self._budget_ledger()._note_turn_token_state(input_delta, produced)
+
+    def _token_budget_enforced(self) -> bool:
+        """Whether the configured token ceiling actually bounds this run.
+
+        False when a token ceiling is in force and at least one
+        productive turn reported no input count: that turn added 0 to the
+        sum the fraction is taken over, so the fraction undercounts the
+        run by an unknown amount. Exactly the shape of
+        :meth:`_usd_budget_enforced`, because an unavailable figure read
+        as zero is the same defect whichever dimension it is in.
+        """
+        return self._budget_ledger()._token_budget_enforced()
+
+    def _unmeasured_token_block(self) -> str:
+        """Say ONCE that the token ceiling is only partly measured, and
+        which provider left the count out."""
+        return self._budget_ledger()._unmeasured_token_block()
+
+    def _token_hard_cap(self) -> int:
+        """Per-turn input-token circuit-breaker in tokens, or 0. The twin
+        of :meth:`_cost_hard_cap`, which cannot fire on an unpriced
+        model. See ``BudgetLedger._token_hard_cap``."""
+        return self._budget_ledger()._token_hard_cap()
 
     def _unmeasured_budget_block(self) -> str:
         """Say ONCE that no monetary ceiling is in force, and what is.
@@ -8510,6 +8628,19 @@ class AgentEngine:
         _SessionField(
             "_unpriced_turns", "unpriced_turns", "state",
             lambda v: int(v or 0), lambda v: int(v or 0), lambda: 0),
+        # The token dimension's two counters, carried for exactly the
+        # reason above one level down: a resume that dropped them would
+        # restore a token total covering only the turns whose size was
+        # reported and hand it to the gates as if it covered the run.
+        _SessionField(
+            "_measured_token_turns", "measured_token_turns", "state",
+            lambda v: int(v or 0), lambda v: int(v or 0), lambda: 0),
+        _SessionField(
+            "_untokened_turns", "untokened_turns", "state",
+            lambda v: int(v or 0), lambda v: int(v or 0), lambda: 0),
+        _SessionField(
+            "_untokened_provider", "untokened_provider", "state",
+            lambda v: str(v or ""), lambda v: str(v or ""), lambda: ""),
         _SessionField(
             "_project_dir", "project_dir", "state",
             lambda v: str(v or ""), lambda v: str(v or ""), lambda: ""),

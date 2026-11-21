@@ -22,7 +22,7 @@
   },
   "parser": "unavailable",
   "opi": "SolvationModelAndSolvent",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "solv-cpcmc",
@@ -44,7 +44,7 @@
   },
   "parser": "unavailable",
   "opi": "SolvationModelAndSolvent",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "solv-alpb",
@@ -71,7 +71,7 @@
   },
   "parser": "unavailable",
   "opi": "SolvationModelAndSolvent",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "solv-ddcosmo",
@@ -95,7 +95,7 @@
   },
   "parser": "unavailable",
   "opi": "SolvationModelAndSolvent",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "solv-cpcmx",
@@ -119,7 +119,7 @@
   },
   "parser": "unavailable",
   "opi": "SolvationModelAndSolvent",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "solv-smd",
@@ -141,7 +141,7 @@
   },
   "parser": "unavailable",
   "opi": "SMD (solvation_model.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "solv-smd18",
@@ -161,7 +161,7 @@
   },
   "parser": "accepted",
   "opi": "SMD18 (solvation.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "solv-draco",
@@ -184,7 +184,7 @@
   },
   "parser": "accepted",
   "opi": "DRACO (solvation.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "solv-ecrism",
@@ -229,7 +229,7 @@
   },
   "parser": "unavailable",
   "opi": "BlockCosmors",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "sqm-am1",
@@ -253,7 +253,7 @@
   },
   "parser": "accepted",
   "opi": "AM1 (sqm.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "sqm-pm3",
@@ -275,7 +275,7 @@
   },
   "parser": "accepted",
   "opi": "PM3 (sqm.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "sqm-mndo",
@@ -297,7 +297,7 @@
   },
   "parser": "accepted",
   "opi": "MNDO (sqm.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "sqm-zindo",
@@ -320,7 +320,7 @@
   },
   "parser": "accepted",
   "opi": "ZINDO/1, ZINDO/2, ZINDO/S (sqm.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "sqm-znddo",
@@ -418,7 +418,7 @@
   },
   "parser": "unavailable",
   "opi": "GFN2_XTB (sqm.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "sqm-xtb1",
@@ -447,7 +447,7 @@
   },
   "parser": "unavailable",
   "opi": "GFN1_XTB (sqm.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "sqm-xtb0",
@@ -474,7 +474,7 @@
   },
   "parser": "unavailable",
   "opi": "GFN0_XTB (sqm.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "sqm-native-xtb1",
@@ -500,7 +500,7 @@
   },
   "parser": "accepted",
   "opi": "NATIVE_GFN1_XTB (sqm.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "sqm-native-xtb2",
@@ -523,7 +523,7 @@
   },
   "parser": "unavailable",
   "opi": "NATIVE_GFN2_XTB (sqm.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "ff-mm",
@@ -545,7 +545,7 @@
   },
   "parser": "accepted",
   "opi": "MM (force_field.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "ff-gfnff",
@@ -569,7 +569,7 @@
   },
   "parser": "unavailable",
   "opi": "GFN_FF (force_field.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "wf-goat",
@@ -595,7 +595,7 @@
   },
   "parser": "accepted",
   "opi": "GOAT (goat.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "wf-goat-entropy",
@@ -615,7 +615,7 @@
   },
   "parser": "accepted",
   "opi": "GOAT_ENTROPY (goat.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "wf-goat-explore",
@@ -635,7 +635,7 @@
   },
   "parser": "accepted",
   "opi": "GOAT_EXPLORE (goat.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "wf-goat-diversity",
@@ -655,7 +655,7 @@
   },
   "parser": "accepted",
   "opi": "GOAT_DIVERSITY (goat.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "wf-goat-react",
@@ -675,7 +675,7 @@
   },
   "parser": "accepted",
   "opi": "GOAT_REACT (goat.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "wf-goat-coarse",
@@ -695,7 +695,7 @@
   },
   "parser": "accepted",
   "opi": "GOAT_COARSE (goat.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "wf-goat-ts",
@@ -740,7 +740,7 @@
   },
   "parser": "accepted",
   "opi": "NEB (neb.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "wf-neb-ci",
@@ -760,7 +760,7 @@
   },
   "parser": "accepted",
   "opi": "NEB_CI (neb.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "wf-neb-ts",
@@ -782,7 +782,7 @@
   },
   "parser": "accepted",
   "opi": "NEB_TS (neb.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "wf-neb-fast-ts",
@@ -802,7 +802,7 @@
   },
   "parser": "accepted",
   "opi": "FAST_NEB_TS (neb.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "wf-neb-loose-ts",
@@ -822,7 +822,7 @@
   },
   "parser": "accepted",
   "opi": "LOOSE_NEB_TS (neb.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "wf-neb-tight-ts",
@@ -842,7 +842,7 @@
   },
   "parser": "accepted",
   "opi": "TIGHT_NEB_TS (neb.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "wf-zoom-neb",
@@ -865,7 +865,7 @@
   },
   "parser": "accepted",
   "opi": "ZOOM_NEB (neb.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "wf-neb-idpp",
@@ -885,7 +885,7 @@
   },
   "parser": "accepted",
   "opi": "NEB_IDPP (neb.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "wf-neb-mmfts",
@@ -970,7 +970,7 @@
   },
   "parser": "accepted",
   "opi": "IRC (neb.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "qmmm-qmmm",
@@ -993,7 +993,7 @@
   },
   "parser": "accepted",
   "opi": "QMMM (qmmm.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "qmmm-qm-am1",
@@ -1015,7 +1015,7 @@
   },
   "parser": "accepted",
   "opi": "QM_AM1 (qmmm.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "qmmm-qm-am1-mm",
@@ -1037,7 +1037,7 @@
   },
   "parser": "accepted",
   "opi": "QM_AM1_MM (qmmm.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "qmmm-qm-xtb1",
@@ -1059,7 +1059,7 @@
   },
   "parser": "accepted",
   "opi": "QM_XTB1 (qmmm.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "qmmm-qm-gfn-ff",
@@ -1081,7 +1081,7 @@
   },
   "parser": "accepted",
   "opi": "QM_GFN_FF (qmmm.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "qmmm-crystal-mol",
@@ -1104,7 +1104,7 @@
   },
   "parser": "accepted",
   "opi": "MOL_CRYSTAL_QMMM (qmmm.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "qmmm-crystal-ion",
@@ -1124,7 +1124,7 @@
   },
   "parser": "accepted",
   "opi": "IONIC_CRYSTAL_QMMM (qmmm.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "qmmm-fmm",
@@ -1146,7 +1146,7 @@
   },
   "parser": "accepted",
   "opi": "FMM_QMMM (qmmm.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "qmmm-setup",
@@ -1166,7 +1166,7 @@
   },
   "parser": "accepted",
   "opi": "QMMMSETUP (qmmm.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "qmmm-surff",
@@ -1210,7 +1210,7 @@
   },
   "parser": "accepted",
   "opi": "QUICKDOCK (docker.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "dock-normaldock",
@@ -1230,7 +1230,7 @@
   },
   "parser": "accepted",
   "opi": "Normaldock (docker.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "dock-completedock",
@@ -1250,7 +1250,7 @@
   },
   "parser": "accepted",
   "opi": "Completedock (docker.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "dock-dock-gfn2",
@@ -1276,7 +1276,7 @@
   },
   "parser": "accepted",
   "opi": "DOCK (docker.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "dock-screendock",
@@ -1316,7 +1316,7 @@
   },
   "parser": "accepted",
   "opi": "DOCKER (docker.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "ext-extopt",
@@ -1341,7 +1341,7 @@
   },
   "parser": "accepted",
   "opi": "EXTOPT (external_tools.py)",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-cpcm-aqueous",
@@ -1530,7 +1530,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockCpcm",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-cpcm-draco_charges",
@@ -1593,7 +1593,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockCpcm",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-cpcm-fepstype",
@@ -1656,7 +1656,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockCpcm",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-cpcm-ndiv",
@@ -1845,7 +1845,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockCpcm",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-cpcm-rmin",
@@ -1887,7 +1887,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockCpcm",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-cpcm-rsolv_sas",
@@ -1950,7 +1950,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockCpcm",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-cpcm-smd18",
@@ -1971,7 +1971,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockCpcm",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-cpcm-smdold",
@@ -2181,7 +2181,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockCpcm",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-cpcm-surfacetype",
@@ -2202,7 +2202,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockCpcm",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-cpcm-thresh_h",
@@ -2307,7 +2307,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockCpcm",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-cpcm-vpotopt",
@@ -2391,7 +2391,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockCosmors",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-cosmors-astd",
@@ -2454,7 +2454,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockCosmors",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-cosmors-dftfunc",
@@ -2475,7 +2475,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockCosmors",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-cosmors-dgsolv_eta",
@@ -2601,7 +2601,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockCosmors",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-cosmors-rav",
@@ -2685,7 +2685,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockCosmors",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-cosmors-solventfilename",
@@ -2706,7 +2706,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockCosmors",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-cosmors-temp",
@@ -2727,7 +2727,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockCosmors",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-cosmors-zcoord",
@@ -2769,7 +2769,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockXtb",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-xtb-accuracy",
@@ -2790,7 +2790,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockXtb",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-xtb-bhess",
@@ -2853,7 +2853,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockXtb",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-xtb-docpcmx",
@@ -2937,7 +2937,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockXtb",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-xtb-maxcore",
@@ -2958,7 +2958,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockXtb",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-xtb-nprocs",
@@ -2979,7 +2979,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockXtb",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-xtb-randomseed",
@@ -3126,7 +3126,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockGoat",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-goat-bondfactor",
@@ -3882,7 +3882,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockGoat",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-goat-maxitermult",
@@ -4092,7 +4092,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockGoat",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-goat-optts",
@@ -4218,7 +4218,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockGoat",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-goat-randomtype",
@@ -4533,7 +4533,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockGoat",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-goat-tempmult",
@@ -4827,7 +4827,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockNeb",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-neb-climbingimage",
@@ -4869,7 +4869,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockNeb",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-neb-energy_weighted",
@@ -5436,7 +5436,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockNeb",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-neb-lbfgs_dr",
@@ -5793,7 +5793,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockNeb",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-neb-neb_ts_image",
@@ -5856,7 +5856,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockNeb",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-neb-nmax",
@@ -6087,7 +6087,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockNeb",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-neb-printlevel",
@@ -6402,7 +6402,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockNeb",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-neb-springconst2",
@@ -6486,7 +6486,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockNeb",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-neb-tol_maxf_ci",
@@ -6885,7 +6885,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockIrc",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-irc-do_sd_corr",
@@ -6948,7 +6948,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockIrc",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-irc-hessmode",
@@ -7011,7 +7011,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockIrc",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-irc-interpolate_only",
@@ -7074,7 +7074,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockIrc",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-irc-monitor_internals",
@@ -7095,7 +7095,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockIrc",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-irc-printlevel",
@@ -7179,7 +7179,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockIrc",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-irc-sd_corr_parabolicfit",
@@ -7326,7 +7326,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockIrc",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-docker-checkguesttopo",
@@ -7368,7 +7368,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockDocker",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-docker-docklevel",
@@ -7389,7 +7389,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockDocker",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-docker-evoptlevel",
@@ -7473,7 +7473,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockDocker",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-docker-guestcharge",
@@ -7494,7 +7494,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockDocker",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-docker-guestmult",
@@ -7515,7 +7515,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockDocker",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-docker-maxiter",
@@ -7599,7 +7599,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockDocker",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-docker-opt",
@@ -7683,7 +7683,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockDocker",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-docker-randomseed",
@@ -7725,7 +7725,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockSolvator",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-solvator-droplet",
@@ -7746,7 +7746,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockSolvator",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-solvator-fixsolute",
@@ -7788,7 +7788,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockSolvator",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-solvator-printlevel",
@@ -7851,7 +7851,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockSolvator",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-solvator-solvatorfile",
@@ -7893,7 +7893,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockSolvator",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-solvator-vacuumsearch",
@@ -7914,7 +7914,7 @@
   "parser": "accepted",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockSolvator",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-solvator-wallfac",
@@ -7956,7 +7956,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockFrag",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-frag-dointerfragbonds",
@@ -7998,7 +7998,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockFrag",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-frag-printinputflags",
@@ -8733,7 +8733,7 @@
   "parser": "rejected",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockQmmm",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-qmmm-conv_charges_convthresh",
@@ -8775,7 +8775,7 @@
   "parser": "rejected",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockQmmm",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-qmmm-coupling",
@@ -9657,7 +9657,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockQmmm",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-qmmm-outerpclayers",
@@ -10119,7 +10119,7 @@
   "parser": "rejected",
   "parser_note": "block option probed via probe_input with a minimal input",
   "opi": "BlockQmmm",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-qmmm-scale_qm2charges_mmatom",
@@ -10518,7 +10518,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockGeom",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-geom-constraints",
@@ -11610,7 +11610,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockGeom",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-geom-relaxhfrags",
@@ -11631,7 +11631,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockGeom",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-geom-resethessmethod",
@@ -11694,7 +11694,7 @@
   "parser": "unavailable",
   "parser_note": "value type not renderable from the OPI field annotation; not probed",
   "opi": "BlockGeom",
-  "status": "grounded"
+  "status": "draft"
  },
  {
   "id": "block-geom-scaleembeddingpc",
