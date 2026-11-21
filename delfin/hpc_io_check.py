@@ -642,9 +642,12 @@ def sbatch_gate(cmd: str, env: dict | None = None,
     :func:`_strip_wrappers` handles). The script to check is the LAST
     positional argument (an ``-o/-o``-style attached token is an
     option, not the script); ``--wrap=<text>`` or ``--wrap <text>`` is
-    checked as script text instead. When neither a script argument nor
-    --wrap is present the verdict is allow -- sbatch reads its script
-    from stdin then, and there is nothing to inspect.
+    checked as script text instead. An sbatch with NO script argument and
+    NO here-document has nothing to inspect and is allowed -- but when a
+    here-document is attached, its BODY is what sbatch reads as its
+    script, and it is judged AS TEXT (never file-resolved: a body is
+    script content, not a file name). An explicit script argument that IS
+    a file wins over the body, which is then that command's stdin.
 
     A ``--wrap`` TEXT is judged AS TEXT (QS ruling on requirement (a)):
     ``check_submit(..., is_text=True)`` -- it is never file-resolved, so
