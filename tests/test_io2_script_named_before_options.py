@@ -14,18 +14,29 @@ A. s2's F-R16 (`sbatch <walk.sh> --version`). hpc_io_check.py:1694-1697
      sbatch <abs>/walk.sh             -> refuse
 
    s2's premise, "POSIX getopt stops at the first non-option, so the
-   script IS that file", is the ONLY reading under which this is a
-   fail-open. The other failure mode is over-refusal: if sbatch really
-   meant "--version" and printed its version, refusing `--version` would be
-   wrong. No sbatch binary exists on this node (measured,
-   tests/test_zz_io2_sbatch_presence.py: shutil.which and
-   installer.find both None), so the premise is NOT verified here and is
-   recorded as such in the module docstring of the test -- the decision is
-   the QS's fail-closed ruling, not a measurement of sbatch.
+   script IS that file", was the only reading under which this is a
+   fail-open; the other failure mode is over-refusal. It is no longer a
+   premise and no longer my guess -- the operator MEASURED it on a cluster
+   (Slurm 25.11.8, harmless script, `--hold`, jobs cancelled at once):
 
-   What IS measured: an informational flag with NO script named must still
-   allow (`sbatch --version` is a version query, and refusing it would
-   break the ordinary way a person checks the tool).
+     sbatch clean.sh --version  -> "Submitted batch job"   script submitted
+     sbatch clean.sh --help     -> "Submitted batch job"   script submitted
+     sbatch clean.sh --usage    -> "Submitted batch job"   script submitted
+     sbatch --version clean.sh  -> version printed only,   no job
+
+   So a flag AFTER the script name is that script's own argument and the
+   script IS submitted: allowing it is a fail-open, and refusing is not
+   over-reach. A flag BEFORE the script submits nothing, so refusing there
+   is a deliberate, harmless asymmetry (ruling of the QS lead nacht-s8:
+   nobody submits a script and asks for the version in one breath, and a
+   position-keyed allow is one parser difference away from a walk). This
+   is why the carve-out below keeps a flag-first command refused instead
+   of allowing it: the shape is judged by whether a POSITIONAL NAMES AN
+   EXISTING FILE, not by where the flag sits.
+
+   An informational flag with NO script named still allows (`sbatch
+   --version` is a version query and the ordinary way a person checks the
+   tool); that case is pinned by its own test.
 
 B. The option-VALUE case, found while probing A and not named by anyone:
 
@@ -99,9 +110,20 @@ def test_a_flag_after_a_walking_script_does_not_hide_it(
 @pytest.mark.parametrize("name,flag", INFO_AFTER, ids=[c[0] for c in INFO_AFTER])
 def test_a_flag_before_a_walking_script_does_not_hide_it(
         lustre, scripts, name, flag):
+    """The MEASURED asymmetry, pinned deliberately.
+
+    The operator measured (`sbatch --version clean.sh` -> version only, no
+    job), so allowing this shape would be defensible. The QS lead ruled
+    REFUSE anyway: the refusal costs nobody anything, and a position-keyed
+    allow is one parser difference away from a walk. Pinned so a later
+    "simplification" of the carve-out to `flag present -> allow` fails here
+    rather than in production. All four spellings are rows, so a field
+    that special-cases --version and --help cannot pass.
+    """
     verdict, text, may_run = _v(f"sbatch {flag} {scripts / 'walk.sh'}")
     assert verdict == "refuse", (
-        f"FAIL-OPEN [{name}]: `sbatch {flag} walk.sh` was allowed")
+        f"[{name}] `sbatch {flag} walk.sh` must stay refused by ruling "
+        f"(it submits nothing, but the refusal is free): got {verdict!r}")
     assert may_run is False
 
 
