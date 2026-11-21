@@ -203,12 +203,25 @@ _NAME_NOT_SHOWN = "(name not shown)"
 
 def _scrubber_leaves(text: str) -> bool:
     """True when the secret scrubber (exact values DELFIN holds, then key
-    shapes) would return ``text`` unchanged. Fails closed. Only the
-    verdict is used, so a printed value is always the original text or a
-    fixed sentence, never the scrubber's output."""
+    shapes) returned ``text`` unchanged AND certified that every pass ran.
+    Fails closed. Only the verdict is used, so a printed value is always
+    the original text or a fixed sentence, never the scrubber's output.
+
+    The certified form is asked, not ``scrub_secrets``, and the difference
+    is the whole guarantee: ``scrub_secrets`` promises never to raise and
+    to return the INPUT when scrubbing fails, so an unchanged text means
+    either "no secret present" or "the scan never finished". Catching an
+    exception here could not tell them apart, because the function it
+    called does not raise -- it returns the text. Measured consequence:
+    with the held-credential lookup failing, this returned True for a
+    text holding a KIT key (which has no recognisable shape, so no
+    pattern pass can catch it), and :func:`printable_error` then returned
+    that text verbatim for printing and for a webhook.
+    """
     try:
-        from .output_guard import scrub_secrets
-        return scrub_secrets(text) == text
+        from .output_guard import scrub_secrets_certified
+        scrubbed, certified = scrub_secrets_certified(text)
+        return certified and scrubbed == text
     except Exception:
         return False
 
