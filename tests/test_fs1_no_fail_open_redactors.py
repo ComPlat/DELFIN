@@ -46,7 +46,8 @@ REDACTOR_NAMES = {"scrub_secrets", "_without_secrets", "_redact_secrets",
 #   redact.py::text                    -- service redactor: :54-55 except
 #       pass around the shape pass, :43-44 an unreadable credential store
 #       empties the held-value list; fix delivered as the FS1 operator
-#       patch .gate/fs1_service_redact_fail_closed.patch
+#       patch .gate/fs1_service_redact_fail_closed.patch -- remove this
+#       entry once the operator has committed it.
 KNOWN_FOLLOWUPS = {
     ("api_client.py", "_redact_tool_result"),
     ("working_state.py", "_scrub"),

@@ -80,3 +80,122 @@ def test_failure_logged_once_per_process_with_type_only(
     assert len(records) == 1, "the failure is logged once per process"
     assert "RuntimeError" in records[0].getMessage()
     assert SECRET not in records[0].getMessage()
+
+
+# --- service/redact.py (FS1's fourth owned file, QS ruling 2026-11-15) ---
+
+def test_service_redactor_shape_pass_fails_closed(
+        raising_redactor, tmp_path, monkeypatch):
+    # The shape pass raising must withhold the text, like every other
+    # FS1 wrapper -- on be43f5b46 the "except: pass" returned it raw.
+    from delfin.agent.service import redact as service_redact
+
+    red = service_redact.Redactor()
+    out = red.text(f"bearer {SECRET}")
+    assert SECRET not in out
+    assert out == PLACEHOLDER
+
+
+def test_service_redactor_lookup_failure_withholds_masking(
+        tmp_path, monkeypatch, caplog):
+    # An unreadable credential store empties the exact list; a shapeless
+    # held key (a KIT key has none) would then pass the shape pass
+    # untouched. Masking is withheld with a visible warning instead.
+    from delfin.agent.service import redact as service_redact
+
+    caplog.set_level(logging.WARNING, logger="delfin.agent.service.redact")
+
+    def broken():
+        raise RuntimeError("store unreadable")
+
+    monkeypatch.setattr(
+        "delfin.agent.web_tools._known_secret_values", broken)
+    red = service_redact.Redactor()
+    shapeless_key = "q" * 40  # no vendor shape, only the exact list sees it
+    out = red.text(f"use {shapeless_key} for the api")
+    assert shapeless_key not in out
+    assert out == PLACEHOLDER
+    records = [r for r in caplog.records
+               if r.name.startswith("delfin.agent.service")]
+    assert records, "the degraded mask list is announced, never silent"
+    assert "RuntimeError" in records[-1].getMessage()
+    assert shapeless_key not in records[-1].getMessage()
+
+
+def test_service_redactor_first_failing_call_withholds_text(
+        tmp_path, monkeypatch, caplog):
+    # Operator node run defect 1: text() checked _lookup_failed BEFORE
+    # _known_values() ran, so the one call that hits the failure still
+    # returned the text unmasked. The failing call itself must withhold.
+    from delfin.agent.service import redact as service_redact
+
+    caplog.set_level(logging.WARNING, logger="delfin.agent.service.redact")
+    state = {"n": 0}
+
+    def broken():
+        state["n"] += 1
+        raise RuntimeError("store unreadable")
+
+    monkeypatch.setattr(
+        "delfin.agent.web_tools._known_secret_values", broken)
+    red = service_redact.Redactor()
+    shapeless_key = "q" * 40  # only the exact list would see it
+    # FIRST call: the lookup fails inside this call -> withheld.
+    out = red.text(f"use {shapeless_key} for the api")
+    assert state["n"] == 1, "the first call performs the lookup"
+    assert shapeless_key not in out
+    assert out == PLACEHOLDER
+
+
+def test_service_redactor_recovers_after_store_comes_back(
+        tmp_path, monkeypatch, caplog):
+    # Operator node run defect 2: _lookup_failed was set but never
+    # cleared, so after the store recovered every text -- even "hello" --
+    # stayed withheld forever. A successful refresh must resume normal
+    # masking (and pass plain text through).
+    from delfin.agent.service import redact as service_redact
+
+    caplog.set_level(logging.WARNING, logger="delfin.agent.service.redact")
+    held = "z" * 40
+    state = {"fail": True}
+
+    def flaky():
+        if state["fail"]:
+            raise RuntimeError("store unreadable")
+        return [held]
+
+    monkeypatch.setattr(
+        "delfin.agent.web_tools._known_secret_values", flaky)
+    red = service_redact.Redactor()
+    shapeless_key = "q" * 40
+
+    out1 = red.text(f"use {shapeless_key} for the api")
+    assert out1 == PLACEHOLDER, "the failing window withholds"
+
+    state["fail"] = False
+    # The SAME instance: jump the monotonic clock past the 60 s refresh
+    # window so the next text() refreshes the store on the success path.
+    import delfin.agent.service.redact as red_mod
+    t0 = red_mod.time.monotonic()
+    monkeypatch.setattr(red_mod.time, "monotonic", lambda: t0 + 61.0)
+    out2 = red.text(f"key {held} and plain hello")
+    assert shapeless_key not in out2
+    assert held not in out2
+    assert out2 == "key [redacted:credential] and plain hello"
+
+
+def test_service_redactor_healthy_path_still_redacts(
+        tmp_path, monkeypatch):
+    # Harmless action works: a held credential in the exact list is
+    # replaced, a shaped key is replaced by the shape pass.
+    from delfin.agent.service import redact as service_redact
+
+    held = "z" * 40
+    monkeypatch.setattr(
+        "delfin.agent.web_tools._known_secret_values", lambda: [held])
+    red = service_redact.Redactor()
+    out = red.text(f"key {held} and key sk-a{'b' * 32}")
+    assert held not in out
+    assert "sk-a" not in out
+    assert out == "key [redacted:credential] and key [redacted:provider-api-key]"
+
