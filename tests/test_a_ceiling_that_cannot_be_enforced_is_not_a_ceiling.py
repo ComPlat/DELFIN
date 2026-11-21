@@ -97,12 +97,38 @@ def test_a_usd_only_ceiling_on_an_unpriced_run_bounds_nothing(agent_tree):
     eng = _engine(agent_tree, model="opus")
     eng.run_budget_usd = 10.0
     eng.run_budget_s = 0.0
+    eng.run_budget_tokens = -1          # the dimension that DOES bind, off
     for _ in range(10):
         eng.stream_response("hi")
     frac, exhausted = eng._run_budget_status()
     assert eng._unpriced_turns == 10
     assert frac == 0.0
     assert exhausted is False
+
+
+def test_the_token_ceiling_is_what_moves_on_the_same_unpriced_run(
+        agent_tree, monkeypatch):
+    """The same ten turns with the default token ceiling left on.
+
+    Not a bare 0 any more: the dimension the API always reports moves,
+    and it moves with its denominator. This is the reference above after
+    the fix, kept beside it so the difference is the test.
+    """
+    monkeypatch.setattr("delfin.user_settings.load_settings",
+                        lambda: {"agent": {}})
+    from delfin.agent.budget_ledger import DEFAULT_RUN_BUDGET_TOKENS
+    eng = _engine(agent_tree, model="opus")
+    eng.run_budget_usd = 10.0
+    eng.run_budget_s = 0.0
+    for _ in range(10):
+        eng.stream_response("hi")
+    frac, _exhausted, dim = eng._run_budget_detail()
+    assert eng._unpriced_turns == 10
+    assert dim == "agent.run_budget_tokens"
+    assert frac == pytest.approx(15_000 / DEFAULT_RUN_BUDGET_TOKENS)
+    # ...and the figure is measured, so the run can be judged by it.
+    assert eng._token_budget_enforced() is True
+    assert eng._untokened_turns == 0
 
 
 # ---------------------------------------------------------------------------
@@ -170,11 +196,33 @@ def test_no_turn_ceiling_configured_changes_nothing(agent_tree):
     eng = _engine(agent_tree, model="opus")
     eng.run_budget_usd = 10.0
     eng.run_budget_turns = 0
+    eng.run_budget_tokens = -1          # and no token ceiling either
     for _ in range(50):
         eng.stream_response("hi")
     frac, exhausted = eng._run_budget_status()
     assert frac == 0.0
     assert exhausted is False
+
+
+def test_fifty_turns_stay_far_below_the_default_token_ceiling(
+        agent_tree, monkeypatch):
+    """The default must not stop a run that is doing its job.
+
+    Fifty turns of this engine carry 75 k tokens: 0 % of the 200 M
+    default, so nothing is injected and nothing is refused. The figure
+    was derived from sessions three orders of magnitude larger than this
+    one (see DEFAULT_RUN_BUDGET_TOKENS).
+    """
+    monkeypatch.setattr("delfin.user_settings.load_settings",
+                        lambda: {"agent": {}})
+    eng = _engine(agent_tree, model="opus")
+    eng.run_budget_usd = 10.0
+    for _ in range(50):
+        eng.stream_response("hi")
+    frac, exhausted, _dim = eng._run_budget_detail()
+    assert frac < 0.001
+    assert exhausted is False
+    assert "wind-down" not in eng._build_budget_block()
 
 
 def test_a_priced_run_is_not_told_about_a_ceiling_it_does_not_need(

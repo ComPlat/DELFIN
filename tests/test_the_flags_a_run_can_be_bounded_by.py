@@ -112,7 +112,31 @@ def test_a_usd_ceiling_on_an_unpriced_model_says_it_cannot_fire(monkeypatch):
                             "provider": "ollama"})()
     notes = agent_cli._bounding_notices(_args(max_budget_usd=5.0), engine)
     assert any("not enforceable" in n and "mystery-7b" in n for n in notes)
-    assert any("--max-run-seconds" in n for n in notes)
+    # The alternative it points at is the TOKEN ceiling, not the wall
+    # clock it used to offer. A wall clock is measurable but bounds the
+    # wrong thing: three field sessions on unpriced models ran 27 M,
+    # 124 M and 363 M input tokens, and the broken one's last turn alone
+    # carried 1,031,096 of them in 10.7 minutes.
+    assert any("--max-run-tokens" in n for n in notes)
+    assert not any("--max-run-seconds" in n for n in notes)
+
+
+def test_the_warning_names_the_token_ceiling_that_is_already_in_force(
+        monkeypatch):
+    """With the default ceiling on, the line states it rather than
+    telling the user to go and set something."""
+    from delfin.agent.budget_ledger import BudgetLedger
+    monkeypatch.setattr(agent_cli, "_usd_ceiling_measurable", lambda e: False)
+    monkeypatch.setattr("delfin.user_settings.load_settings",
+                        lambda: {"agent": {}})
+    engine = type("E", (), {"client": type("C", (), {"model": "mystery-7b"})(),
+                            "provider": "ollama"})()
+    engine._run_budget_tokens = BudgetLedger(engine)._run_budget_tokens
+    notes = agent_cli._bounding_notices(_args(max_budget_usd=5.0), engine)
+    line = next(n for n in notes if "not enforceable" in n)
+    assert "the token ceiling IS in force" in line
+    assert "200.0 M tokens" in line
+    assert "agent.run_budget_tokens" in line
 
 
 def test_a_usd_ceiling_on_a_priced_model_says_nothing(monkeypatch):
