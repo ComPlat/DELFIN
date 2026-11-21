@@ -77,7 +77,7 @@ def test_guard_poll_once_records_the_breach(monkeypatch, tmp_path):
                 break
             time.sleep(0.1)
         assert breach is not None
-        recs = audit_log.read_last_n(10, log_path=log)
+        recs = audit_log._scan(log)[0][-10:]
         assert any(r.get("tool") == "process_budget"
                    and r.get("profile") == "hook"
                    and r.get("limit") == "max_processes" for r in recs), recs
@@ -105,7 +105,7 @@ def test_background_breach_reaches_the_audit_log(monkeypatch, tmp_path):
     while time.monotonic() < deadline and job.budget_breach is None:
         time.sleep(0.2)
     assert job.budget_breach is not None
-    recs = audit_log.read_last_n(10, log_path=tmp_path / "audit.log")
+    recs = audit_log._scan(tmp_path / "audit.log")[0][-10:]
     assert any(r.get("tool") == "process_budget"
                and r.get("profile") == "background"
                and r.get("session_id") == "sess-bg"

@@ -71,10 +71,6 @@ def user_row(text: Any) -> dict:
     return {"role": "user", "content": text}
 
 
-def is_harness_text(value: Any) -> bool:
-    return isinstance(value, HarnessText)
-
-
 def is_harness_row(msg: Any) -> bool:
     """True for a row carrying any of the three marks, or whose content
     is ``HarnessText``."""

@@ -76,7 +76,11 @@ tasks:
     max_cost_usd: 0.50
     max_tool_calls: 12
 
-  # verified: score_outcome at delfin/agent/benchmark.py:1938;
+  # verified: score_outcome at delfin/agent/benchmark.py:1915;
+  # (1938 before the unreached _edited_paths and _last_idx were
+  # deleted from that file; the line is pinned in
+  # tests/test_sp1_pilot_tasks.py too, and the test reads only its
+  # own copy -- so this comment drifts silently unless both move.)
   # BenchmarkResult at benchmark.py:520.
   - id: sp1_scoring_result
     task_class: pilot
