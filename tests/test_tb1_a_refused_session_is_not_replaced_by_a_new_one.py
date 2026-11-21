@@ -24,6 +24,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -66,6 +67,40 @@ _READY_POLLS = 1200            # the holder child printing HELD
 _KILL_WAIT_POLLS = 400         # a killed child leaving exit status
 _PID_DEATH_POLLS = 600         # the holder's pid gone (teardown)
 _OPEN_POLLS = 1200             # the tab noticing the holder let go
+_DRAIN_POLLS = 60              # tab threads finishing inside their own test
+
+
+def _live_threads_since(baseline):
+    """Threads alive now that did not exist at *baseline*."""
+    return [t for t in threading.enumerate()
+            if t.is_alive() and t.ident not in baseline
+            and t is not threading.current_thread()]
+
+
+def _drain_threads_since(baseline, polls: int = _DRAIN_POLLS):
+    """Wait for tab threads started after *baseline* to finish; report the ones
+    that did not.
+
+    Why this exists: the tab's polling timer runs its callback in its own
+    thread. If a test ends while one is pending, the callback fires after the
+    test and its autosave lands in whichever session store is active by then
+    -- measured, not assumed: s4's fixture teardown caught exactly that
+    (``test_tb1_adversarial_a_refused_session_is_not_replaced_silently.py:
+    178-187``, "a session file appeared after the test ended") when this file
+    ran before hers in the same process. Draining inside the test that started
+    the thread keeps the late write where it can be attributed.
+
+    Counted in polls, never seconds, so a loaded runner only makes it slower
+    (wave-17 lesson 5). Returns the names of threads that never ended -- the
+    caller decides whether that is a failure.
+    """
+    for _ in range(polls):
+        live = _live_threads_since(baseline)
+        if not live:
+            return []
+        for thread in live:
+            thread.join(timeout=_POLL_PAUSE_S)
+    return [t.name for t in _live_threads_since(baseline)]
 
 
 def _read_line_within(stream, polls: int):
@@ -278,9 +313,11 @@ def _open_tab(tmp_path, monkeypatch):
 
     from delfin.agent import engine as engine_mod
     monkeypatch.setattr(engine_mod, "AgentEngine", _factory)
+    baseline = {t.ident for t in threading.enumerate() if t.is_alive()}
     tab, refs = tab_agent.create_tab(ctx)
     refs["_stub"] = {"engines": created_engines, "state": session_state,
                      "exported": saved_states}
+    refs["_baseline"] = baseline
     return tab, refs
 
 
@@ -320,6 +357,27 @@ def _writable_sessions():
                   if not r.get("deleted"))
 
 
+def _close_tab(refs):
+    """Close the tab the way the person does, then let what it started finish.
+
+    ``shutdown(save=False)`` alone is not enough: the tab's polling timer runs
+    its callback in its own thread, and a callback that fires after the test
+    writes its autosave into whichever session store is current by then --
+    the next test's. Measured, not assumed: s4's fixture teardown caught
+    exactly that late file ("a session file appeared after the test ended",
+    test_tb1_adversarial_a_refused_session_is_not_replaced_silently.py:184-187)
+    when this module ran before hers in one process.
+
+    The drain gives such a write the chance to land INSIDE its own test, where
+    it can be attributed. It deliberately does not assert on live threads: a
+    re-arming interval timer stays alive by design, so "a thread is alive" is
+    not a defect -- "a file appeared after the test" is (the observable s4
+    proved, and the one this package is about).
+    """
+    refs["shutdown"](save=False)
+    _drain_threads_since(refs.get("_baseline", set()))
+
+
 def test_a_send_after_the_refusal_starts_no_session_and_keeps_the_text(
         tmp_path, monkeypatch, store, holder):
     """THE red test. Today: the refusal stores nothing, the send mints a new
@@ -357,7 +415,7 @@ def test_a_send_after_the_refusal_starts_no_session_and_keeps_the_text(
         # the missing variable -- reviewer finding F1).
         assert state.get("_held_refused", {}).get("session_id") == SID
     finally:
-        refs["shutdown"](save=False)
+        _close_tab(refs)
 
 
 def test_choosing_start_makes_exactly_one_session_from_the_held_one(
@@ -388,7 +446,7 @@ def test_choosing_start_makes_exactly_one_session_from_the_held_one(
         assert state.get("_held_refused") is None, (
             "the choice cleared the refused state")
     finally:
-        refs["shutdown"](save=False)
+        _close_tab(refs)
 
 
 def test_wait_then_the_holder_ends_and_the_tab_opens_the_conversation(
@@ -431,7 +489,7 @@ def test_wait_then_the_holder_ends_and_the_tab_opens_the_conversation(
         _press_send(tab, refs, "now it is mine")
         assert _writable_sessions() == [SID]
     finally:
-        refs["shutdown"](save=False)
+        _close_tab(refs)
 
 
 def test_a_new_session_choice_clears_the_refused_state(
@@ -478,7 +536,7 @@ def test_a_new_session_choice_clears_the_refused_state(
             "choosing a different session clears the refused state")
         assert _writable_sessions() == [SID]
     finally:
-        refs["shutdown"](save=False)
+        _close_tab(refs)
 
 
 def test_an_ordinary_send_with_no_refusal_still_starts_its_session(
@@ -498,4 +556,4 @@ def test_an_ordinary_send_with_no_refusal_still_starts_its_session(
         assert len(_writable_sessions()) >= n_before + 1, (
             "an ordinary send with no refusal must start a session")
     finally:
-        refs["shutdown"](save=False)
+        _close_tab(refs)
