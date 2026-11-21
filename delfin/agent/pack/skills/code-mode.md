@@ -25,8 +25,9 @@ python -m delfin.agent.code_mode stub > tools_api.py
 The stub is a typed module: one function per DELFIN read-only tool, each
 returning parsed data. Import it in the program, call it, print the result.
 
-The functions it carries are `search_calcs`, `get_calc_info`, `list_docs`,
-`read_section`, `bash_status` and `bash_output` — the read-only allow-list.
+The functions it carries are `search_calcs`, `get_calc_info`, `search_docs`,
+`list_docs`, `read_section`, `bash_status` and `bash_output` — the
+read-only allow-list, seven names.
 Read the names off the module rather than guessing at tool names.
 
 ## What the program may call

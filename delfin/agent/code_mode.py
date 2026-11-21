@@ -9,23 +9,22 @@ direct call takes (``KitToolExecutor.execute``).
 There is exactly ONE launcher, and it is not in this module: the bash tool.
 ``api_client._code_mode_child_env`` recognises a runner command, starts the
 :class:`RpcServer` and exports the socket to the caged child. A second
-launcher here would build its own argv -- without the cage, the wall-clock
-ceiling or the output truncation the bash tool owns -- and would be a way
-round them.
+launcher here would build its own argv -- without the cage, the ceiling or
+the output truncation the bash tool owns -- and would be a way round them.
 
 Phase 1 = READ-ONLY tools only. A call to any write/submit/delete tool is
 refused with a message naming the direct route. The allow-list is enforced
 per call, twice: once in :class:`Connection` (this module) and again inside
 the agent-side RPC server wrapper before the executor is touched.
 
-The model obtains the API module and runs a program like::
+The model gets the API and runs a program like::
 
     python -m delfin.agent.code_mode stub > tools_api.py
     python -m delfin.agent.code_mode run my_program.py
 
 inside the cage. ``DELFIN_CODE_MODE_RPC`` (the socket path) is exported ONLY
 to that caged child process; without it :func:`make_client` returns ``None``
-and the stub functions raise — no program can fake a connection.
+and the stub functions raise -- no program can fake a connection.
 """
 from __future__ import annotations
 
@@ -33,7 +32,7 @@ import json
 import os
 import contextvars
 import sys
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Optional
 
 #: Tools the model may call from a Code Mode program. Phase 1: read-only,
 #: job status, output reading/parsing, listing, tables. Every name must exist
@@ -53,6 +52,7 @@ _DIRECT_ROUTE_HINT = (
 #: Results are capped before they return to the model: a program that
 #: tabulates a whole run tree must not flood the context.
 MAX_RESULT_BYTES = 200_000
+
 
 def _check_allowed(name: str) -> Optional[str]:
     """Refusal text for a tool outside the read-only allow-list, else None."""
@@ -287,8 +287,11 @@ def generate_stub() -> str:
     lines = [
         '"""Code Mode API — DELFIN\'s read-only tools as typed functions.',
         "",
-        "Save this file as tools_api.py next to your program, then: "
-        "import tools_api and call the functions below.",
+        "Save this file where your program can import it -- the "
+        "documented route is `python -m delfin.agent.code_mode stub > "
+        "tools_api.py` -- then `import tools_api` and call the functions "
+        "below, or `from tools_api import delfin_tools` for the same "
+        "functions under one name.",
         "",
         "Every call goes through the agent's central gate. Refusals raise.",
         '"""',
@@ -331,22 +334,16 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     Two subcommands, both documented in the Code Mode skill:
 
-    * ``stub`` writes the typed API (:func:`generate_stub`) to stdout, so
+    * ``stub`` writes the typed API (``generate_stub()``) to stdout, so
       ``... stub > tools_api.py`` materialises the module a program imports.
-      Without this branch the documented command printed the ``run`` usage and
-      exited 2, so the API module could not be obtained at all.
+      Before this route existed the command printed the ``run`` usage and
+      exited 2, so the API the skill documents could not be obtained at all.
     * ``run <program.py>`` executes the program: the program side of the RPC.
-
-    There is no third subcommand and no in-module launcher. A program is
-    started by the bash tool, where ``api_client._code_mode_child_env``
-    recognises this command, starts the RPC server and exports the socket to
-    the caged child; the bash tool owns the cage, the wall-clock ceiling and
-    the output truncation for it.
 
     Returns 0 on success, 2 for a usage error.
     """
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv == ["stub"]:
+    if argv and argv[0] == "stub" and len(argv) == 1:
         sys.stdout.write(generate_stub())
         return 0
     if len(argv) != 2 or argv[0] != "run":
@@ -356,7 +353,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     program = argv[1]
     sys.path.insert(0, os.path.dirname(os.path.abspath(program)))
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    # The stub is materialised next to the program by the caller; import by name.
+    stub_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+    # The stub is materialised next to the program by the caller (the bash
+    # command writes it with the generated_stub() text); import by name.
     import runpy
     try:
         runpy.run_path(program, run_name="__main__")

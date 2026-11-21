@@ -15,6 +15,12 @@ Every case enters at ``RpcServer.handle_payload``, the request path the
 product's serve loop (``serve_one``) calls. There is no second request entry
 and no in-module program launcher: a program is started by the bash tool,
 which owns the cage, the wall-clock ceiling and the output truncation.
+
+The wall-clock limit and the stdout cap are therefore not tested here: the
+launcher that owned them locally (``run_program``) is gone, and
+``test_cm1_the_bash_route_runs_a_program.py`` holds the bash route to the
+ceiling it inherits. Kept from the branch this file was merged with, because
+a reader of this file needs to know where that coverage went.
 """
 import json
 
