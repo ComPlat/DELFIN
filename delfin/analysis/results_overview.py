@@ -453,7 +453,17 @@ def _rotate_inertia(sym, pts):
 
     The camera looks along z; the SMALLEST extent axis must become z so the
     largest cross-section faces the viewer.  eigh() sorts ascending, so
-    column 0 (smallest eigenvalue) becomes z.
+      column 0 (smallest eigenvalue) becomes z.
+
+    A view straight along a principal axis can align two bonds to the
+    same ligand atom near-collinearly in projection (user report
+    106-138_111: the two Ni-Cl bonds projected 1 deg apart and read as
+    one "Cl-Cl-Ni" line).  A rotation WITHIN the projection plane
+    cannot change that (angles are invariant); only tilting the camera
+    off the axis can.  Tilt the view in 20 deg steps around the
+    projected x/y axes and keep the orientation that separates
+    near-collinear METAL-LIGAND bond pairs the most; ties keep the
+    first (deterministic).
     """
     import numpy
     pts = numpy.asarray(pts, dtype=float)
@@ -463,8 +473,65 @@ def _rotate_inertia(sym, pts):
     _eigvals, eigvecs = numpy.linalg.eigh(inertia)
     if numpy.linalg.det(eigvecs) < 0:  # keep a right-handed frame
         eigvecs[:, 2] = -eigvecs[:, 2]
-    rotated = pts @ eigvecs
-    rotated = rotated[:, [1, 2, 0]]
+    base = pts @ eigvecs
+    base = base[:, [1, 2, 0]]
+
+    def _tilt(view, ax_deg, ay_deg):
+        # Rotate the point cloud (equivalently: the camera moves the
+        # opposite way) around the view-plane x and y axes.
+        import numpy as _n
+        r = _n.radians(ax_deg)
+        cx_, sx_ = _n.cos(r), _n.sin(r)
+        y = cx_ * view[:, 1] - sx_ * view[:, 2]
+        z = sx_ * view[:, 1] + cx_ * view[:, 2]
+        r = _n.radians(ay_deg)
+        cy_, sy_ = _n.cos(r), _n.sin(r)
+        x2 = cy_ * view[:, 0] + sy_ * z
+        z2 = -sy_ * view[:, 0] + cy_ * z
+        out = view.copy()
+        out[:, 0] = x2
+        out[:, 1] = y
+        out[:, 2] = z2
+        return out
+
+    def _collinear_penalty(view):
+        # 0 when no two metal bonds are near-collinear in projection;
+        # grows as the smallest angle between two metal bonds shrinks.
+        met = set(_XYZ_MASS) - {"H", "B", "C", "N", "O", "F", "Si", "P",
+                                "S", "Cl", "Br", "I"}
+        met_idx = [i for i, s in enumerate(sym) if s in met]
+        if len(met_idx) == 0:
+            return 0.0
+        v2 = view[:, :2]
+        worst = 1e9
+        for m in met_idx:
+            dirs = []
+            for j, s in enumerate(sym):
+                if j == m or s in ("H",):
+                    continue
+                d = v2[j] - v2[m]
+                n = float(numpy.hypot(d[0], d[1]))
+                if n < 1e-6:
+                    continue
+                dirs.append(d / n)
+            for a in range(len(dirs)):
+                for b in range(a + 1, len(dirs)):
+                    cross = abs(dirs[a][0] * dirs[b][1]
+                                - dirs[a][1] * dirs[b][0])
+                    ang = numpy.arcsin(min(1.0, cross))
+                    worst = min(worst, ang)
+        if worst > 1e8:
+            return 0.0
+        return 1.0 / (worst + 1e-3)
+
+    best, best_pen = base, _collinear_penalty(base)
+    for ax in range(-40, 41, 20):
+        for ay in range(-40, 41, 20):
+            view = _tilt(base, ax, ay)
+            pen = _collinear_penalty(view)
+            if pen < best_pen - 1e-9:
+                best, best_pen = view, pen
+    rotated = best
     # Centre on the projected bounding box, not the mean: the mean can
     # sit off-centre after an asymmetric rotation and then the frame
     # clips atoms on one side (user report 430-450_432).
@@ -802,7 +869,8 @@ def _rdkit_bond_orders(sym, bonds, positions):
         except Exception:
             continue
     if not orders_ok:
-        return _infer_bond_orders(sym, bonds)
+        return _pyrazolate_complete(sym, bonds, taken=set(),
+                                    matched=_infer_bond_orders(sym, bonds))
     upgrades = {}
     for b in range(mol.GetNumBonds()):
         bond = mol.GetBondWithIdx(b)
@@ -929,7 +997,92 @@ def _rdkit_bond_orders(sym, bonds, positions):
         matched[pair] = upgrades[pair]
         taken.add(i)
         taken.add(j)
-    return matched or _infer_bond_orders(sym, bonds)
+
+    # Pyrazolate rings: a metal-coordinated 5-ring with adjacent N-N
+    # and three carbons needs exactly TWO doubles on its ring edges,
+    # neither on the N-N edge nor at the coordinated N (its valence is
+    # spent on the dative bond).  The fragment sweep often spends the
+    # ring's valence elsewhere (user report 106-138_111: 1 of 2
+    # doubles), so the two missing doubles are added greedily on the
+    # still-unmatched ring edges (carbon-carbon edges preferred over
+    # C-N edges).  Runs on EVERY return path (see _pyrazolate_complete).
+    return _pyrazolate_complete(sym, bonds, taken=taken, matched=matched)
+
+
+def _pyrazolate_complete(sym, bonds, taken, matched):
+    """Add missing pyrazolate ring doubles; shared by all return paths.
+
+    A metal-coordinated pyrazolate 5-ring (adjacent N-N, three C) needs
+    two doubles on its ring edges, neither on the N-N edge nor at the
+    coordinated N.  ``matched`` is mutated in place and returned.
+    """
+    metal = set(_XYZ_MASS) - {"H", "B", "C", "N", "O", "F", "Si", "P",
+                              "S", "Cl", "Br", "I"}
+    _nb_full = {}
+    for a, b in bonds:
+        _nb_full.setdefault(a, []).append(b)
+        _nb_full.setdefault(b, []).append(a)
+    for ring in _find_rings(sym, bonds):
+        if len(ring) != 5:
+            continue
+        ns = [k for k in ring if sym[k] == "N"]
+        cs = [k for k in ring if sym[k] == "C"]
+        if len(ns) != 2 or len(cs) != 3:
+            continue
+        # N-N adjacent pair identifies the pyrazole; skip pyrrole
+        # (N not adjacent) - those keep the pyrrolate drop rule above.
+        edges = list(zip(ring, ring[1:] + ring[:1]))
+        if not any({a, b} == set(ns) for a, b in edges):
+            continue
+        # The ring is pyrazolate only when one N coordinates the metal
+        # (its lone pair is donated, the ring is an anion): an unbound
+        # neutral pyrazole already renders correctly.
+        if not any(any(sym[k] in metal for k in _nb_full.get(n, ()))
+                   for n in ns):
+            continue
+        # The pyrazolate kekule pattern is fixed: both doubles on the
+        # two C-C edges (23-24, 24-25 style) never touch the N-N edge
+        # nor the coordinated N.  A single sweep double on a wrong edge
+        # blocks the pattern (its endpoints sit in `taken`), so the
+        # ring's edge doubles are REBUILT from scratch: existing ones
+        # are removed and their atoms freed ONLY if those atoms carry
+        # no double outside the ring.
+        coord_n = next(n for n in ns
+                       if any(sym[k] in metal for k in _nb_full.get(n, ())))
+        ring_edges = {(min(a, b), max(a, b)) for a, b in edges}
+        outside = {}
+        for a, b in bonds:
+            p = (min(a, b), max(a, b))
+            if p[0] in ring and p[1] in ring:
+                continue
+            outside.setdefault(p[0], set()).add(p[1])
+            outside.setdefault(p[1], set()).add(p[0])
+        out_dbl = {a for a in ring
+                   if any(matched.get((min(a, o), max(a, o))) for o in
+                          outside.get(a, ()))}
+        for p in ring_edges:
+            if matched.get(p):
+                del matched[p]
+                for x in p:
+                    if x not in out_dbl:
+                        taken.discard(x)
+        # Doubles on the two C-C edges that do not touch the coordinated
+        # N: for a 5-ring N-N-C-C-C the C-C edges are the 2nd and 3rd.
+        c_seq = [k for k in ring if sym[k] == "C"]
+        # The two C-C edges: consecutive carbons in the ring order.
+        cand = [(min(a, b), max(a, b)) for a, b in edges
+                if sym[a] == "C" and sym[b] == "C"]
+        for p in cand[:2]:
+            matched[p] = 2
+            taken.add(p[0])
+            taken.add(p[1])
+    return matched
+
+
+def _len_orig(sym, bonds, pair):
+    """Edge length helper for _pyrazolate_complete (no positions here:
+    prefer carbon-carbon edges; equal rank keeps insertion order)."""
+    return 0.0 if (sym[pair[0]] == "C" and sym[pair[1]] == "C") else 1.0
 
 
 def _infer_bond_orders(sym, bonds, rotated_pos=None):
