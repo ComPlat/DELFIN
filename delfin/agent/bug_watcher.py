@@ -647,22 +647,6 @@ def release_pid_lock(path: Path | None = None) -> None:
         pass
 
 
-def watcher_status(path: Path | None = None, settings: dict | None = None) -> dict:
-    """For the dashboard: is a daemon running, how many reports pending."""
-    p = path or _PID_PATH
-    pid = 0
-    try:
-        pid = int(p.read_text().strip() or "0") if p.exists() else 0
-    except Exception:
-        pid = 0
-    running = bool(pid and _pid_alive(pid))
-    try:
-        pending = len(find_unsolved(settings=settings))
-    except Exception:
-        pending = 0
-    return {"running": running, "pid": pid if running else 0, "pending": pending}
-
-
 def run_loop(
     *,
     settings: dict | None = None,

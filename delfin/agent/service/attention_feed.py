@@ -30,7 +30,6 @@ watches the service, receives the items.
 
 from __future__ import annotations
 
-import os
 import re
 import time
 from pathlib import Path
@@ -328,11 +327,3 @@ def dismiss(item_id: str) -> dict:
     """Cleared without an answer; never handed to a model."""
     from .. import attention
     return attention.dismiss_item(item_id)
-
-
-def this_host() -> str:
-    try:
-        import socket
-        return socket.gethostname()
-    except Exception:
-        return os.environ.get("HOSTNAME", "")

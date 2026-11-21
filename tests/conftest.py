@@ -1803,7 +1803,12 @@ _SLOW_TEST_FILES = frozenset({
     "test_metal_isomer_determinism.py", "test_multihapto_patches.py",
     "test_multi_sigma_path_v2.py", "test_platform.py",
     "test_ring_bounds_embed.py", "test_smiles_converter_regressions.py",
-    "test_tool_contracts.py", "test_uff_soft_determinism.py",
+    # test_tool_contracts.py is deliberately absent: its 32 contract
+    # consistency guards finish in ~1.2 s and pass in any subset, so it is
+    # a fast-gate file, not a slow-bucket one. The 2026-06-27 tiering sweep
+    # (7174b3e0a) put it here as part of a "heavy" bulk, which left all 32
+    # tests outside the merge gate and kept a red contract invisible.
+    "test_uff_soft_determinism.py",
     # test_user_smiles_suite.py is deliberately absent: it marks itself per
     # ENTRY instead. Twelve SMILES sat behind one file-level mark, and the
     # spread between them is 1.2 s to 702 s — so the whole SMILES contract

@@ -2001,6 +2001,28 @@ def _known_preset_tool_names() -> frozenset[str]:
     # on load order. Measured during this change: with presets refused at
     # load the catalogue shrank from 141 names to 134 and other presets
     # then failed on tools the first had justified.
+    # The swarm lead tools, which `api_client.unknown_tool_names` has
+    # always counted as real and this function did not. Measured on main:
+    # `swarm_status` is absent from the 300 names here while the typo judge
+    # accepts it, so a preset listing one was refused as "not a known tool"
+    # by one judge and called correct by the other.
+    #
+    # Imported in its own try/except, like the names above, because this
+    # function runs DURING module initialisation: the preset registry is
+    # built at import (``_build_preset_registry`` -> ``validate_preset`` ->
+    # here), and at that moment ``api_client`` is itself mid-import. That is
+    # also why the two judges cannot share ONE derivation yet, which was the
+    # obvious fix: calling into api_client from here raises ImportError from
+    # a partially initialised module, measured. They stay two derivations
+    # whose AGREEMENT is pinned by
+    # tests/test_the_tool_name_judges_agree.py instead -- a duplicate is
+    # tolerable when a test proves the copies say the same thing; it is the
+    # silent divergence that is not.
+    try:
+        from .api_client import _SWARM_LEAD_TOOL_NAMES
+        names |= set(_SWARM_LEAD_TOOL_NAMES)
+    except Exception:
+        pass
     names |= set(_READ_ONLY_PRESET_TOOLS)
     names.add("subagent_message")
     names.discard("")
@@ -2046,6 +2068,68 @@ def _protected_write_prefixes() -> tuple[str, ...]:
         if g:
             out.add(g)
     return tuple(sorted(out))
+
+
+#: The type names the subset validator understands. ``_conforming_sample``
+#: knows how to build a value for each of these and nothing else, so the
+#: builder and the validator stay on the SAME subset by construction: a
+#: type the validator accepts but the set omits would be sampled as a
+#: string and fail its own self-check. A new type must be added here and in
+#: ``structured_output._SCHEMA_TYPES`` together.
+_CONFORMING_SAMPLE_TYPES: frozenset[str] = frozenset(
+    {"object", "array", "string", "number", "integer", "boolean"})
+
+
+def _conforming_sample(schema: object) -> Any:
+    """A value the subset validator accepts for a JSON-Schema subset schema.
+
+    Built for ``validate_preset``'s self-check, not for the runtime: the
+    shipped schema is a contract a model must be able to FILL, and a
+    sample the builder cannot fill would be a contract the check itself
+    cannot keep. The builder follows the SAME subset the validator
+    enforces (type, enum, required, properties, items) and recurses into
+    objects and arrays, so a NESTED ``required:`` object is sampled to
+    its own required properties — the flat ``object: {}`` it used to
+    produce is exactly the value a nested ``required:`` rejects, which
+    is what wrongly refused a legitimate nested schema at load.
+
+    Input: a schema dict (possibly nested). Output: a value
+    ``validate_json_schema`` accepts for it, so the sample and the
+    validator agree on the subset — if a new keyword is added to one
+    without the other, the self-check turns red. A required key the
+    schema gives no type for reads as a string, so an unknown shape never
+    fabricates a failure; an empty array validates against any item
+    schema, so it is left empty.
+    """
+    if not isinstance(schema, dict):
+        return "x"
+    t = schema.get("type")
+    if not isinstance(t, str) or t not in _CONFORMING_SAMPLE_TYPES:
+        return "x"
+    enum = schema.get("enum")
+    if isinstance(enum, list) and enum:
+        return enum[0]
+    if t == "object":
+        obj: dict = {}
+        props = schema.get("properties")
+        if isinstance(props, dict):
+            for key, sub in props.items():
+                obj[key] = _conforming_sample(sub)
+        req = schema.get("required")
+        if isinstance(req, list):
+            for key in req:
+                if isinstance(key, str) and key not in obj:
+                    obj[key] = "x"
+        return obj
+    if t == "array":
+        return []
+    if t == "boolean":
+        return True
+    if t == "integer":
+        return 1
+    if t == "number":
+        return 1.0
+    return "x"
 
 
 def validate_preset(path_or_text: str) -> list[str]:
@@ -2189,15 +2273,14 @@ def validate_preset(path_or_text: str) -> list[str]:
             "JSON-Schema object")
     schema = _parse_preset_schema(raw_schema)
     if isinstance(schema, dict) and schema:
-        sample: dict = {}
-        props = schema.get("properties")
-        if isinstance(props, dict):
-            for prop, spec in props.items():
-                t = spec.get("type") if isinstance(spec, dict) else None
-                sample[prop] = {"string": "x", "integer": 1,
-                                "number": 1.0, "boolean": True,
-                                "array": [], "object": {}}.get(
-                    t if isinstance(t, str) else "", "x")
+        # The return contract is a JSON object, so the sample is the object a
+        # conforming delegate would produce. A top-level schema that is not an
+        # object cannot be honoured by the extraction (it keeps the first JSON
+        # object in the message), so it is sampled as the empty object and
+        # fails validation -- the same refusal the check gave before the
+        # builder learned to nest.
+        sample = _conforming_sample(schema) if schema.get("type") == "object" \
+            else {}
         errs = validate_json_schema(sample, schema)
         if errs:
             problems.append(
@@ -2352,9 +2435,21 @@ _VERIFY_LIMITS_NOTE = (
 )
 
 # Tools whose call means the delegate MUTATED something.
+#
+# One-directional against api_client._WRITE_TOOL_NAMES: the two sets differ
+# on purpose -- that one is what the role denylists ENFORCE, this one is
+# what verification CLASSIFIES, and merging them would label a foreign
+# backend's spellings as this executor's writes. But nothing the denylists
+# enforce may fall out of this one, or the delegate is stopped from doing a
+# thing that then counts as nothing when it does it.
+#
+# make_plot was exactly that: enforced as a write, invisible here, so a
+# delegate's plot write scored less in its verification evidence than its
+# file write. Measured on main, it was the only name in that gap, and
+# tests/test_the_tool_name_judges_agree.py now holds the direction.
 _WRITE_TOOL_NAMES = frozenset({
     "write_file", "edit_file", "multi_edit", "apply_patch", "notebook_edit",
-    "write", "edit", "patch", "create_file", "undo_changes",
+    "write", "edit", "patch", "create_file", "undo_changes", "make_plot",
 })
 # Tools whose call means the delegate LOOKED AT the file it names. Mirrors
 # the parent's own observation set; a tool outside it (bash above all) names
