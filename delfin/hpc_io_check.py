@@ -1780,16 +1780,31 @@ def _gate_sbatch_segment(segment: str, env: dict,
         # nothing else names a real script. s2's F-R16: this used to return
         # allow on ANY informational token BEFORE the script was examined,
         # so `sbatch walk.sh --version` never had its script read
-        # (measured: allow, while `sbatch walk.sh` refused). POSIX getopt
-        # stops at the first non-option, so the named file IS the script
-        # and the flag is that script's first argument.
+        # (measured: allow, while `sbatch walk.sh` refused).
         #
-        # No sbatch binary exists on this node, so "what sbatch really does
-        # with `--version` after a script" is NOT measured here; the
-        # fail-closed reading is the QS's decision and is recorded as such
-        # in tests/test_io2_script_named_before_options.py. A flag with NO
-        # script named still allows -- `sbatch --version` is the ordinary
-        # way a person checks the tool, and that case is pinned.
+        # The reading is now MEASURED, not chosen. Operator run, Slurm
+        # 25.11.8, harmless script, --hold, jobs cancelled at once:
+        #   sbatch clean.sh --version -> "Submitted batch job" (IS submitted)
+        #   sbatch clean.sh --help    -> "Submitted batch job"
+        #   sbatch clean.sh --usage   -> "Submitted batch job"
+        #   sbatch --version clean.sh -> version only, no job
+        # So a flag AFTER the script name is that script's argument and the
+        # script is submitted, which makes the old early return a real
+        # fail-open rather than an over-refusal to be avoided. A flag BEFORE
+        # the script submits nothing; refusing there anyway is a deliberate
+        # asymmetry (QS lead ruling: the refusal costs nobody anything, and a
+        # position-keyed allow is one parser difference away from a walk).
+        #
+        # A flag with NO script named still allows -- `sbatch --version` is
+        # the ordinary way a person checks the tool, and that case is pinned.
+        #
+        # `--show-valid` is in the tuple because an earlier round's probe
+        # carried it; it is NOT confirmed against sbatch's documentation
+        # (a web lookup was refused, and no sbatch exists on the login node).
+        # Treating it as informational is fail-CLOSED in effect only when no
+        # positional names a file, so an invented spelling cannot open a
+        # hole: it can only make the gate allow slightly more when nothing
+        # names a script at all.
         #
         # The `<<`-prefixed filter stays even though the here-string case
         # that motivated it is caught by the empty-positional rule below
