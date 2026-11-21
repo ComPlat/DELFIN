@@ -736,3 +736,29 @@ def test_skeleton_keeps_heteroatom_protons(tmp_path):
     off = ro.initial_xyz_png_bytes(str(calc), show_h=False)
     on = ro.initial_xyz_png_bytes(str(calc), show_h=True)
     assert off and on and off == on
+
+
+def test_get_smiles_prefers_stored_smiles(tmp_path):
+    """A calc with input.smiles in DELFIN_Data.json returns exactly that
+    string, and the PNG built from it is non-empty (dashboard col 2)."""
+    pytest.importorskip("rdkit")
+    calc = make_calc(tmp_path, "withsmiles",
+                     data={"input": {"smiles": "c1ccccc1O"}})
+    smiles = ro.get_smiles(str(calc))
+    assert smiles == "c1ccccc1O"
+    png = ro.smiles_png_bytes(smiles)
+    assert png and png[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_get_smiles_derives_from_3d_when_not_stored(tmp_path):
+    """An old calc without input.smiles: get_smiles falls back to the
+    initial.xyz derivation (rdDetermineBonds, charge sweep) and still
+    yields a non-empty SMILES and a non-empty PNG - the dashboard's
+    2D column must not stay empty for pre-SMILES calcs."""
+    pytest.importorskip("rdkit")
+    calc = make_calc(tmp_path, "nokeys")  # DELFIN_Data.json ABSENT
+    (calc / "initial.xyz").write_text(_WATER_XYZ, encoding="utf-8")
+    smiles = ro.get_smiles(str(calc))
+    assert smiles, "3D fallback must produce a SMILES for water"
+    png = ro.smiles_png_bytes(smiles)
+    assert png and png[:8] == b"\x89PNG\r\n\x1a\n"
