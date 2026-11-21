@@ -49,6 +49,27 @@ def test_ops_health_prints_the_waits_table(home, capsys):
                out.splitlines()), out
 
 
+def test_a_session_with_two_waits_shows_both_of_them(home):
+    """One row per WAIT, not one per session.
+
+    The shape changed with the new scan: ``waits_summary`` used to return
+    one row per session key with every wait joined by "; ", and now
+    returns one row per registered wait, each naming its own session. Both
+    waits must be visible either way -- the reason the display exists is
+    to say who waits on whom -- so the new shape is pinned rather than
+    left to a joined string nobody asserted.
+    """
+    register("message_from", "first", key="s17",
+             on_whom="session", for_what="the plan")
+    register("message_from", "second", key="s17",
+             on_whom="session", for_what="the number")
+    rows = session_health.waits_summary()
+    mine = [r for r in rows if r["session"] == "s17"]
+    assert len(mine) == 2, rows
+    assert {"the plan", "the number"} <= {
+        r["waits"].split(": ", 1)[-1] for r in mine}, mine
+
+
 def test_ops_health_wait_loop_emits_one_event_per_new_cycle(
         home, capsys, monkeypatch, one_pass):
     """A mutual wait emits exactly one attention event through the real
