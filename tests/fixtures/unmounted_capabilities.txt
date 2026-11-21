@@ -56,7 +56,6 @@ test-only	pilot_slot	delfin/agent/explore_pilot.py:79
 test-only	prompt_block	delfin/agent/user_model.py:655
 test-only	quality_report	delfin/agent/compaction_quality.py:75
 test-only	query_job_states	delfin/agent/job_monitor.py:369
-test-only	read_last_n	delfin/agent/audit_log.py:695
 test-only	reap_slot	delfin/agent/explore_pilot.py:93
 test-only	recall_levels	delfin/agent/memory_distill.py:495
 test-only	request_prcheck	delfin/agent/swarm/lead.py:159

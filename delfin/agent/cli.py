@@ -4712,9 +4712,50 @@ def _doctor_repair(results: list) -> int:
 
 def cmd_audit(args: argparse.Namespace) -> int:
     """``delfin-agent audit verify``: 0 when every log checked is intact,
-    1 when one is not, 2 without a subcommand. Reads only."""
+    1 when one is not, 2 without a subcommand. Reads only.
+
+    ``audit last [N]`` shows the newest N records (default 20) through
+    audit_log.read_last_n — the one reader (_scan) verified them, so
+    what is shown and what 'audit verify' would report on are the same
+    bytes. Records print as compact one-liners; a tampered log is said
+    so BEFORE the records, because a list read under a false premise is
+    worse than no list.
+    """
     from . import audit_log as _al
-    if getattr(args, "audit_action", "") != "verify":
+    action = str(getattr(args, "audit_action", "") or "")
+    if action == "last":
+        log = str(getattr(args, "log", "") or "")
+        path = Path(log).expanduser() if log else None
+        try:
+            n = int(getattr(args, "count", 0) or 20)
+        except (TypeError, ValueError):
+            n = 20
+        records = _al.read_last_n(n, log_path=path)
+        # The verdict on the SAME bytes the records came from: the
+        # report's ok flag is what 'audit verify' would print for this
+        # log. A not-intact log must not present its records as trusted.
+        report = _al.verify(path) if path else None
+        if report is not None and not report.get("ok", True):
+            print("WARNING: this log is NOT intact -- the records below "
+                  "are not necessarily what was recorded. Run "
+                  "`delfin-agent audit verify` for the lines that do "
+                  "not check out.")
+        elif report is None:
+            print("(verdict on the default log: run `delfin-agent audit "
+                  "verify` for the full check)")
+        if not records:
+            print("no audit records found")
+            return 0
+        for rec in records:
+            ts = str(rec.get("ts", "") or "")[:19]
+            tool = str(rec.get("tool", "?") or "?")
+            decision = str(rec.get("decision", "") or "")
+            target = str(rec.get("path", "") or rec.get("command", "")
+                         or "")
+            sid = str(rec.get("session_id", "") or "")[:12]
+            print(f"{ts}  {tool:<14} {decision:<8} {sid:<12} {target[:70]}")
+        return 0
+    if action != "verify":
         print("usage: delfin-agent audit verify [--log PATH] [--json]",
               file=sys.stderr)
         return 2
@@ -6262,6 +6303,16 @@ def build_parser() -> argparse.ArgumentParser:
                                    "audit.log and every rotated week)")
     audit_verify.add_argument("--json", action="store_true",
                               help="Emit the reports as JSON")
+    # audit last [N] -- the newest N records through read_last_n (the
+    # one reader); the verdict on those bytes is printed first, so a
+    # tampered log is named before its records are shown.
+    audit_last = audit_sub.add_parser(
+        "last", help="Show the newest audit records (default 20; the "
+                     "log's integrity verdict is printed first)")
+    audit_last.add_argument("count", nargs="?", default=20,
+                            help="How many records (default 20)")
+    audit_last.add_argument("--log", default="",
+                            help="One log file (default: ~/.delfin/audit.log)")
     audit_p.set_defaults(func=cmd_audit)
 
     # capabilities / gate explain -- the boundary, read before a session
