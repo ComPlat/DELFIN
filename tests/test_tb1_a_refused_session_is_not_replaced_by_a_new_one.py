@@ -86,14 +86,44 @@ def holder(store, tmp_path):
     env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
     proc = subprocess.Popen(
         [sys.executable, "-c", _HOLD, str(store), SID],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=env)
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, env=env)
+    # Readiness WITH a timeout: a child that dies at import (broken store
+    # path, import error) must fail the fixture with the child's own
+    # stderr -- not hang, and not fail later with an opaque assertion on
+    # an empty readline (operator finding 3, 01:30: the holder child never
+    # printed HELD and the test died in setup with BrokenPipe +
+    # SessionLockedError from a still-live pid).
+    line = None
+    deadline = time.monotonic() + 30.0
     try:
-        assert proc.stdout.readline().strip() == "HELD"
+        line = proc.stdout.readline()
+    except Exception:
+        pass
+    if line is None or not line.strip():
+        rc = proc.poll()
+        stderr_text = ""
+        if rc is None:
+            proc.kill()
+        try:
+            proc.wait(10)
+        except Exception:
+            pass
+        try:
+            stderr_text = proc.stderr.read() or ""
+        except Exception:
+            pass
+        pytest.fail(
+            "the holder child never became ready "
+            f"(exit {rc}): {stderr_text[-800:]}")
+    assert line.strip() == "HELD", (
+        f"the holder child printed {line.strip()!r} instead of HELD")
+    try:
         yield proc
     finally:
-        proc.stdin.write("release\n")
-        proc.stdin.flush()
         try:
+            proc.stdin.write("release\n")
+            proc.stdin.flush()
             proc.stdout.readline()
         except Exception:
             pass
