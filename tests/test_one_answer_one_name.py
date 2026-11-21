@@ -116,7 +116,58 @@ def _production_mentions(symbol: str) -> list[str]:
     )
     if out.returncode not in (0, 1):  # 1 = no match, which is the answer
         pytest.fail(f"git grep failed ({out.returncode}): {out.stderr[:400]}")
-    return [ln for ln in out.stdout.splitlines() if ln.strip()]
+    lines = [ln for ln in out.stdout.splitlines() if ln.strip()]
+    return [ln for ln in lines if _is_a_reference(ln.split(":", 1)[0], symbol)]
+
+
+def _is_a_reference(rel: str, symbol: str) -> bool:
+    """Whether *symbol* appears in *rel* as CODE, not only as prose.
+
+    The grep above answers "do these letters occur", and a comment that
+    says what a name used to be occurs. Measured: after #834 deleted
+    ``_redirect_targets_safe``, the only mention left in ``delfin/`` was
+    ``refusal_memory.py``'s own note -- "an alias, _redirect_targets_safe,
+    used to sit above" -- and this scan read that sentence as a caller. The
+    same false alarm appeared in #834's own CI, from a docstring naming the
+    alias it had just removed.
+
+    So the rule, and it is deliberately not "ignore every string":
+
+    * an identifier (``Name``/``Attribute``) IS a reference;
+    * a string literal IS one too -- ``getattr(mod, "name")`` dispatches
+      by name, and the reachability ratchet counts those on purpose;
+    * a module, class or function DOCSTRING is not, and neither is a
+      comment, because neither can dispatch anything.
+
+    A file that will not parse counts as a reference: the question is
+    whether anything still calls the name, and an unparseable file is not
+    an answer.
+    """
+    import ast
+
+    path = _REPO / rel
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, SyntaxError):
+        return True
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                             ast.AsyncFunctionDef)):
+            body = getattr(node, "body", None) or []
+            if (body and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)):
+                docstrings.add(id(body[0].value))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == symbol:
+            return True
+        if isinstance(node, ast.Attribute) and node.attr == symbol:
+            return True
+        if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and id(node) not in docstrings and symbol in node.value):
+            return True
+    return False
 
 
 def test_the_scanner_finds_a_name_that_is_there():
@@ -145,3 +196,36 @@ def test_the_removed_predicate_has_no_caller(symbol):
     assert hits == [], (
         f"{symbol} is still referenced in delfin/, so removing it removes "
         f"something reachable:\n" + "\n".join(hits[:12]))
+
+
+def test_a_reference_is_told_from_prose_about_one(tmp_path, monkeypatch):
+    """The filter above, in both directions, on files written for it.
+
+    Without this, "no caller" could mean the filter swallows callers. The
+    four cases are the ones that actually occur: a call, a dynamic
+    dispatch by name, a docstring that explains what a name used to be,
+    and a comment that does the same.
+    """
+    import test_one_answer_one_name as mod
+
+    cases = {
+        "a_call.py": "from x import gone\ngone()\n",
+        "an_attribute.py": "import x\nx.gone()\n",
+        "a_dispatch.py": 'import x\ngetattr(x, "gone")()\n',
+        "a_docstring.py": '"""An alias, gone, used to sit above."""\n',
+        "a_comment.py": "# An alias, gone, used to sit above.\npass\n",
+        "unparseable.py": "def (\n",
+    }
+    for name, text in cases.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    monkeypatch.setattr(mod, "_REPO", tmp_path)
+
+    assert mod._is_a_reference("a_call.py", "gone")
+    assert mod._is_a_reference("an_attribute.py", "gone")
+    assert mod._is_a_reference("a_dispatch.py", "gone"), (
+        "a name dispatched by string is a caller; the reachability ratchet "
+        "counts those on purpose")
+    assert not mod._is_a_reference("a_docstring.py", "gone")
+    assert not mod._is_a_reference("a_comment.py", "gone")
+    assert mod._is_a_reference("unparseable.py", "gone"), (
+        "a file that will not parse is not an answer")
