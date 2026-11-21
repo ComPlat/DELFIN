@@ -950,15 +950,46 @@ def _shell_command_head(text: str) -> str | None:
     if word not in _SHELL_WORDS:
         return None
     # A script or a -c argument means the body is NOT the program.
+    # Consume an option's VALUE where the shell does (QS lead finding 3):
+    # `-o posix`, `+o posix`, `-O extglob`, `+O extglob` each take exactly
+    # one word, so it is not a script argument. The `-eu pipefail` row is
+    # the reason this is a per-option list and not "skip any token after
+    # an option": there `pipefail` IS the script name.
     rest = tokens[1:]
-    for i, tok in enumerate(rest):
-        if tok in ("-c", "--command"):
+    i = 0
+    while i < len(rest):
+        tok = rest[i]
+        if tok in ("-c", "--command", "--command="):
             return None
-        if tok in ("-s", "--stdin") or re.fullmatch(r"-[A-Za-z]*s[A-Za-z]*",
-                                                    tok):
+        if tok == "--":
+            # End of options: the next word, if any, is the script.
+            return None if len(rest) > i + 1 else word
+        if tok in ("-s", "--stdin"):
+            # Everything after -s is $0/positional, never a script. The
+            # `--stdin` spelling is kept for other shells (real bash
+            # rejects it: "--stdin: invalid option"), and it costs
+            # nothing to treat it as stdin where it does exist.
+            return word
+        if tok in ("-o", "+o", "-O", "+O"):
+            i += 2  # the option and its one value word
             continue
-        if tok.startswith("-") or re.fullmatch(r"[+]-?[A-Za-z]+", tok):
-            continue  # an option, including the `+o` pair form
+        if tok.startswith("--"):
+            if "=" in tok:
+                i += 1  # `--option=value` carries its own value
+                continue
+            i += 1  # a long switch that takes no separate value here
+            continue
+        if re.fullmatch(r"-[A-Za-z]+", tok):
+            body = tok[1:]
+            if "c" in body:
+                return None  # clustered `-ec`, `-xc`: a command argument
+            if "s" in body:
+                return word  # clustered `-es`, `-xs`: stdin
+            i += 1
+            continue
+        if re.fullmatch(r"[+][A-Za-z]+", tok):
+            i += 1  # `+x`, `+e`: a switch with no separate value
+            continue
         return None  # a script argument: the body is stdin DATA
     return word
 

@@ -7,13 +7,17 @@ NOT script arguments while the shell is still reading stdin:
 
 - the VALUE of an option that takes one: ``-o posix``, ``+o posix``,
   ``-O extglob``, ``+O extglob``;
-- the ``$0`` NAME after ``-s``/``--stdin``: ``bash -s myname``.
+- the ``$0`` NAME after ``-s``: ``bash -s myname``.
 
 So ``bash -o posix <<'EOF' … sbatch walk.sh … EOF`` — one line anyone can
 type — reached sbatch unchecked, while bare ``bash`` was refused. QS lead
 nacht-s8 found it (their probe drove REAL bash with the body on a pipe
-and a marker file as the witness), and the six rows below were red on
-10bc22c19 before this file's fix.
+and a marker file as the witness), and the seven rows below were red on
+10bc22c19 before this file's fix. Before pinning them I re-ran the real
+binary myself: every head below writes the marker, and ``bash --stdin``
+does not exist (real bash: "--stdin: invalid option", rc 2), so that
+spelling is not pinned — a verdict for a command that cannot run measures
+nothing.
 
 The counter-row is why the rule cannot be "any token after an option is
 an option": ``bash -eu pipefail`` runs a SCRIPT called ``pipefail``,
@@ -59,9 +63,19 @@ def _gate(cmd: str):
     "bash +o posix",      # +o takes a value
     "bash -O extglob",    # -O takes a value
     "bash +O extglob",    # +O takes a value
-    "bash --stdin name",  # the long spelling of -s, then $0
+    "bash -o errexit",    # the same option with a different value
 ])
 def test_option_value_does_not_cancel_stdin(lustre, tmp_path, head):
+    """Each of these was ALLOWED on 10bc22c19 with a walking submit inside.
+
+    Measured with the real binary before being pinned here: bash runs its
+    stdin for every one of them (marker file written), while
+    ``bash -eu pipefail`` does not -- pipefail is a script name there.
+    ``bash --stdin`` was dropped from this list on purpose: real bash
+    rejects it ("--stdin: invalid option", rc 2), so it is not a spelling
+    that can run a body at all and pinning a verdict for it would measure
+    nothing.
+    """
     script = _script(tmp_path, WALK)
     cmd = f"{head} <<'EOF'\nsbatch {script}\nEOF"
     verdict, text, may_run = _gate(cmd)
