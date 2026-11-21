@@ -19,9 +19,9 @@ from delfin.agent.model_profiles import get_profile
 
 @pytest.fixture(autouse=True)
 def _german():
-    vg.set_caveat_language("de")
+    # The caveat notes are English by design (verify_guard's rule); no
+    # language switch exists to set.
     yield
-    vg.set_caveat_language("de")
 
 
 def test_the_notice_names_the_model_and_the_measured_wait():
@@ -32,7 +32,6 @@ def test_the_notice_names_the_model_and_the_measured_wait():
 
 
 def test_the_notice_is_english_whatever_the_session():
-    vg.set_caveat_language("de")
     text = vg.cold_start_notice("kit.glm-5.3", 200.0)
     assert "First turn" in text and "Erster Zug" not in text
 
