@@ -842,6 +842,48 @@ def _rdkit_bond_orders(sym, bonds, positions):
     def _len(pair):
         d = positions[pair[0]] - positions[pair[1]]
         return float(_np.sqrt(d @ d))
+    # Metal-ligand bonds are dative: they consume a valence of the
+    # ligand atom.  DetermineBondOrders sees only the metal-stripped
+    # fragment, so a ligand atom that carries the metal in the FULL
+    # graph got its order assigned WITHOUT that bond.  For a thiolate
+    # S (metal + ring-C) that produced a quinoid "C=S" to the ring
+    # (user report class C, 11-14).  But a blanket drop would also
+    # strip the pyridine C=N the metal-coordinated ring N must keep
+    # (class A fix).  The precise rule: drop an upgrade only when the
+    # atom would become OVERVALENT in the full graph - its heavy-atom
+    # degree there (metal bonds included) already reaches its normal
+    # valence, so a double bond has no valence left to use.
+    _MET = set(_XYZ_MASS) - {"H", "B", "C", "N", "O", "F", "Si", "P",
+                             "S", "Cl", "Br", "I"}
+    _VALENCE = {"C": 4, "N": 3, "O": 2, "S": 2, "P": 3, "Si": 4, "B": 3}
+    _nb_full = {}
+    for a, b in bonds:
+        _nb_full.setdefault(a, []).append(b)
+        _nb_full.setdefault(b, []).append(a)
+
+    def _overvalent(atom):
+        val = _VALENCE.get(sym[atom])
+        if val is None:
+            return False
+        # metal-coordinated ring N of a pyridine-type ring keeps its
+        # C=N (class A): donating the lone pair leaves N+ with the
+        # double bond intact.  Detect: N with a metal neighbour and
+        # exactly two carbon neighbours (ring N, no substituent).
+        if sym[atom] == "N":
+            ns = _nb_full.get(atom, ())
+            if any(sym[k] in _MET for k in ns):
+                cs = [k for k in ns if sym[k] == "C"]
+                hs = [k for k in ns if sym[k] == "H"]
+                if len(cs) == 2 and not hs:
+                    return False
+        deg_heavy = sum(1 for k in _nb_full.get(atom, ())
+                        if sym[k] != "H")
+        if deg_heavy < val:
+            return False
+        return True
+
+    upgrades = {pair: o for pair, o in upgrades.items()
+                if not (_overvalent(pair[0]) or _overvalent(pair[1]))}
     taken = set()
     matched = {}
     for pair in sorted(upgrades, key=_len):
