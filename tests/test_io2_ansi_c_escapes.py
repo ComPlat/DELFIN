@@ -83,3 +83,39 @@ def test_plain_paths_are_unchanged(lustre, tmp_path):
     clean.write_text(CLEAN, encoding="utf-8")
     assert _v(f"sbatch {walk}")[0] == "refuse"
     assert _v(f"sbatch {clean}")[0] == "allow"
+
+
+# --------------------------------------------------------------------------
+# the expansion must COMPOSE with a cd target, not bypass it
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("tail,expected", [
+    ("sbatch walk.sh", "refuse"),
+    ("sbatch $'walk.sh'", "refuse"),
+    ("sbatch $'\\x77alk.sh'", "refuse"),
+    ("sbatch clean.sh", "allow"),
+    ("sbatch $'clean.sh'", "allow"),
+    ("sbatch $'\\x63lean.sh'", "allow"),
+], ids=["plain_walk", "ansi_c_walk", "hex_walk",
+        "plain_clean", "ansi_c_clean", "hex_clean"])
+def test_a_cd_target_composes_with_the_expansion(lustre, tmp_path, tail,
+                                                 expected):
+    """`cd X && sbatch $'<relative>'` resolves the EXPANDED name in X.
+
+    A refuse is only meaningful if it names the CONTENT: the resolution
+    refusal ("not found from the cd target") would also refuse a walk that
+    was never resolved, so the reason is asserted too (round-11 lesson).
+    """
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "walk.sh").write_text(WALK, encoding="utf-8")
+    (sub / "clean.sh").write_text(CLEAN, encoding="utf-8")
+    verdict, text, _may_run = _v(f"cd {sub} && {tail}")
+    assert verdict == expected, (
+        f"{tail!r} from the cd target: expected {expected}, got {verdict!r} "
+        f"({text[:120]})")
+    if expected == "refuse":
+        assert "tree_walk_on_lustre" in text, (
+            f"the refusal must come from the CONTENT, not from a failed "
+            f"resolution: {text[:160]}")
+        assert "not found from the cd target" not in text
