@@ -26,10 +26,8 @@ from delfin.agent import verify_guard as vg
 @pytest.fixture(autouse=True)
 def _fresh():
     vg.reset_keyed_values()
-    vg.set_caveat_language("de")
     yield
     vg.reset_keyed_values()
-    vg.set_caveat_language("de")
 
 
 # ------------------------------------------------- the stopwatch is not a figure
@@ -82,7 +80,7 @@ def test_the_warning_is_english_whatever_the_session():
     model answers in the user's language (the user's rule, 2026-09-11 --
     a German cold-start notice under an English dashboard was the last
     framework note to switch)."""
-    vg.set_caveat_language("de")
+    # The notes are English whatever the session claims (see the docstring).
     caveat = vg.truncated_output_caveat(["5 Zeilen"], ["bash"])
     assert "was truncated in this turn" in caveat
     assert "abgeschnitten" not in caveat
@@ -90,7 +88,6 @@ def test_the_warning_is_english_whatever_the_session():
 
 def test_the_warning_is_english_in_an_english_session():
     """The defect as filmed: an English answer with German warnings."""
-    vg.set_caveat_language("en")
     caveat = vg.truncated_output_caveat(["27 components"], ["bash"])
     assert "was truncated in this turn" in caveat
     assert "abgeschnitten" not in caveat
@@ -98,6 +95,4 @@ def test_the_warning_is_english_in_an_english_session():
 
 def test_an_unknown_language_leaves_it_alone():
     """A half-translated caveat is worse than one consistent language."""
-    vg.set_caveat_language("en")
-    vg.set_caveat_language("fr")
     assert "was truncated" in vg.truncated_output_caveat(["3 rows"], ["bash"])

@@ -1059,17 +1059,6 @@ def cold_start_notice(model: str, seconds: float) -> str:
             f"{int(seconds)} s{_t('cold_start_c')}")
 
 
-def set_caveat_language(lang: str) -> None:
-    """Kept for callers; the notes the user reads are English.
-
-    The framework speaks one language everywhere the user sees it; the
-    model answers in the user's. A per-session switch here produced
-    German framework notes under an English dashboard, which the user
-    read as the UI being half translated.
-    """
-    return None
-
-
 def _t(key: str) -> str:
     """The caveat text for *key*."""
     return _CAVEAT_TEXTS.get(key, "")
@@ -1676,12 +1665,6 @@ def record_tool_numbers(output: Any, *, truncated: bool = False) -> int:
         return 0
 
 
-def observations_are_complete() -> bool:
-    """False once any result arrived truncated. Said out loud rather than
-    folded into the pool, so a caller can tell the two apart."""
-    return bool(_observed_complete.get())
-
-
 def numbers_the_tools_returned() -> frozenset:
     """Every number a tool result carried this turn, cut short or not.
 
@@ -2051,11 +2034,6 @@ def _claim_sentence_span(text: str, start: int, end: int) -> tuple[int, int]:
     lo = ends[i] if i >= 0 else 0
     j = bisect.bisect_left(starts, end)
     return lo, (starts[j] if j < len(starts) else len(text))
-
-
-def _claim_sentence(text: str, start: int, end: int) -> str:
-    lo, hi = _claim_sentence_span(text, start, end)
-    return text[lo:hi]
 
 
 def _claim_scope_with_lead_in(text: str, start: int, end: int) -> str:
