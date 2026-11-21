@@ -179,7 +179,6 @@ def test_service_redactor_recovers_after_store_comes_back(
     t0 = red_mod.time.monotonic()
     monkeypatch.setattr(red_mod.time, "monotonic", lambda: t0 + 61.0)
     out2 = red.text(f"key {held} and plain hello")
-    assert shapeless_key not in out2
     assert held not in out2
     assert out2 == "key [redacted:credential] and plain hello"
 
