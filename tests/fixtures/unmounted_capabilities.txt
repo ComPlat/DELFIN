@@ -44,7 +44,6 @@ test-only	distill_for_shipping	delfin/agent/memory_distill.py:380
 test-only	enforce_quota	delfin/agent/shared_tmp.py:307
 test-only	for_files	delfin/agent/verify_recipe.py:327
 test-only	forget_pin_decisions	delfin/agent/mcp_client.py:429
-test-only	format_member_message	delfin/agent/swarm/lead.py:198
 test-only	format_prompt_size_report	delfin/agent/prompt_loader.py:2873
 test-only	friction_summary	delfin/agent/session_report.py:849
 test-only	hostile_reach	delfin/agent/prompt_head.py:144
@@ -60,8 +59,6 @@ test-only	query_job_states	delfin/agent/job_monitor.py:369
 test-only	read_last_n	delfin/agent/audit_log.py:695
 test-only	recall_levels	delfin/agent/memory_distill.py:495
 test-only	replay_step	delfin/agent/cli_resume.py:304
-test-only	request_prcheck	delfin/agent/swarm/lead.py:159
-test-only	request_triage_answer	delfin/agent/swarm/lead.py:137
 test-only	reset_figure_ledger	delfin/agent/office.py:6098
 test-only	reset_unavailability_note	delfin/agent/diagnostics.py:222
 test-only	resolve_pending	delfin/agent/skill_usage.py:247
@@ -70,7 +67,6 @@ test-only	role_tool_surface_report	delfin/agent/api_client.py:12107
 test-only	scan_for_dishonest_tests	delfin/agent/verify_guard.py:3554
 test-only	set_caveat_language	delfin/agent/verify_guard.py:1062
 test-only	stable_prefix_len	delfin/agent/prompt_head.py:44
-test-only	status_validate	delfin/agent/swarm/lead.py:49
 test-only	step_resume_note	delfin/agent/cli_resume.py:291
 test-only	sweep_stale	delfin/agent/shared_tmp.py:353
 test-only	test_honesty_feedback	delfin/agent/verify_guard.py:3569
