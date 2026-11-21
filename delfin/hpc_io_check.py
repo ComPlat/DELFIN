@@ -621,7 +621,8 @@ def _cd_dir_of_segment(segment: str) -> tuple[str, str, bool]:
 
 
 def sbatch_gate(cmd: str, env: dict | None = None,
-                mounts_path: MountsSource | None = None
+                mounts_path: MountsSource | None = None,
+                _cd_dir: str = ""
                 ) -> tuple[str, str, bool]:
     """The decision hook the agent's bash gate calls for a command that
     runs sbatch (IO2 phase 3, the px in ``api_client.py``).
@@ -665,7 +666,10 @@ def sbatch_gate(cmd: str, env: dict | None = None,
     verdicts: list[str] = []
     texts: list[str] = []
     may_run = True
-    pending_dir = ""
+    # A shell body is judged by re-entering this function for the body; a
+    # `cd` OUTSIDE the body still governs a RELATIVE script named inside
+    # it, so the caller passes the pending directory in.
+    pending_dir = _cd_dir
     if env is None:
         import os as _os
         env = dict(_os.environ)
@@ -922,17 +926,21 @@ _SHELL_WORDS = frozenset({"bash", "sh", "dash", "zsh", "ksh", "mksh", "ash",
                           "yash", "rbash", "lksh", "posh"})
 
 
-def _shell_command_head(text: str) -> str | None:
+def _shell_command_head(text: str, cd_dir: str = "") -> str | None:
     """The shell word when *text* runs a shell that reads its STDIN as
     commands, else ``None``.
 
     ``bash``/``sh``/``dash``/``zsh``/``ksh`` (and an absolute path to one)
-    with no ``-c`` and no script argument run whatever arrives on stdin --
-    so ``bash <<'EOF' ... EOF`` and ``bash -s <<'EOF' ... EOF`` execute
-    the here-document body exactly as ``bash -c '...'`` executes its
-    argument, which :func:`_strip_wrappers` already unwraps. QS lead
+    with no ``-c`` and no EXISTING script argument run whatever arrives on
+    stdin -- so ``bash <<'EOF' ... EOF`` and ``bash -s <<'EOF' ... EOF``
+    execute the here-document body exactly as ``bash -c '...'`` executes
+    its argument, which :func:`_strip_wrappers` already unwraps. QS lead
     nacht-s8, round 10: the gate refused the ``-c`` spelling and allowed
     its here-document twin.
+
+    *cd_dir* is the directory a preceding ``cd``/``pushd`` left the shell
+    in, so a relative script argument is found where the shell would find
+    it (:func:`_gate_names_existing_file`).
 
     Deliberately NOT a shell: any other reader (python, cat, tee, perl,
     awk, ...) treats a body as data -- ``delfin/agent/shell_words.py:241``
@@ -949,35 +957,38 @@ def _shell_command_head(text: str) -> str | None:
     word = tokens[0].rsplit("/", 1)[-1]
     if word not in _SHELL_WORDS:
         return None
-    # A script or a -c argument means the body is NOT the program.
-    # Consume an option's VALUE where the shell does (QS lead finding 3):
-    # `-o posix`, `+o posix`, `-O extglob`, `+O extglob` each take exactly
-    # one word, so it is not a script argument. The `-eu pipefail` row is
-    # the reason this is a per-option list and not "skip any token after
-    # an option": there `pipefail` IS the script name.
+    # A SCRIPT ARGUMENT exempts the body only when a FILE is behind it.
+    # Three rounds produced three leaks here (`-s NAME`, `-o/+o VALUE`,
+    # `--rcfile VALUE`), each because this code enumerated what to SKIP --
+    # a hand-written approximation of bash's argument grammar, which leaks
+    # by design. QS lead nacht-s8 ruled the shape instead:
+    #   - consume the values bash consumes (`-o +o -O +O --rcfile
+    #     --init-file`, and `--long=value` which carries its own);
+    #   - any remaining non-option token exempts the body ONLY IF IT NAMES
+    #     AN EXISTING FILE (resolved against the segment's cd target);
+    #   - otherwise the body IS the program and gets judged.
+    # The last point is what ends the class: an unrecognised word is no
+    # longer a licence to skip the check. It is the same fail-closed rule
+    # check_submit applies to a path that is not a file.
     rest = tokens[1:]
     i = 0
     while i < len(rest):
         tok = rest[i]
-        if tok in ("-c", "--command", "--command="):
+        if tok in ("-c", "--command") or tok.startswith("--command="):
             return None
         if tok == "--":
-            # End of options: the next word, if any, is the script.
-            return None if len(rest) > i + 1 else word
+            i += 1
+            break  # end of options; the next word is the script, if any
         if tok in ("-s", "--stdin"):
             # Everything after -s is $0/positional, never a script. The
             # `--stdin` spelling is kept for other shells (real bash
-            # rejects it: "--stdin: invalid option"), and it costs
-            # nothing to treat it as stdin where it does exist.
+            # rejects it: "--stdin: invalid option").
             return word
-        if tok in ("-o", "+o", "-O", "+O"):
-            i += 2  # the option and its one value word
+        if tok in ("-o", "+o", "-O", "+O", "--rcfile", "--init-file"):
+            i += 2  # the option and the one value word it consumes
             continue
         if tok.startswith("--"):
-            if "=" in tok:
-                i += 1  # `--option=value` carries its own value
-                continue
-            i += 1  # a long switch that takes no separate value here
+            i += 1  # a long switch, or `--long=value` carrying its own
             continue
         if re.fullmatch(r"-[A-Za-z]+", tok):
             body = tok[1:]
@@ -990,8 +1001,34 @@ def _shell_command_head(text: str) -> str | None:
         if re.fullmatch(r"[+][A-Za-z]+", tok):
             i += 1  # `+x`, `+e`: a switch with no separate value
             continue
-        return None  # a script argument: the body is stdin DATA
+        # A non-option word. It is the script ONLY if that file exists;
+        # otherwise the body is what a shell would have to read.
+        if _gate_names_existing_file(tok, cd_dir):
+            return None
+        return word
+    if i < len(rest):
+        return None if _gate_names_existing_file(rest[i], cd_dir) else word
     return word
+
+
+def _gate_names_existing_file(token: str, cd_dir: str = "") -> bool:
+    """Does *token* name a file that exists (as written, or in *cd_dir*)?
+
+    The exemption test for a shell-argument word (QS lead round 10): an
+    existing file is the only thing that makes a body "that script's
+    stdin". A relative name is resolved against the segment's cd target,
+    the same way :func:`_gate_sbatch_segment` resolves an sbatch script --
+    `cd X && bash run.sh` must find X/run.sh. Anything unreadable or
+    non-existent answers False, so the body is judged (fail closed).
+    """
+    if not token or token.startswith("-"):
+        return False
+    try:
+        if cd_dir and not os.path.isabs(token):
+            return Path(os.path.join(cd_dir, token)).is_file()
+        return Path(token).is_file()
+    except OSError:
+        return False
 
 
 def _verdict(refused: list[str], warned: list[str]) -> tuple[str, str, bool]:
@@ -1011,7 +1048,7 @@ def _verdict(refused: list[str], warned: list[str]) -> tuple[str, str, bool]:
 
 def _substituted_outcome(prefix: str, body: str, env: dict,
                          mounts_path: MountsSource | None,
-                         submitted: bool = False
+                         submitted: bool = False, cd_dir: str = ""
                          ) -> tuple[str, str, bool]:
     """The verdict for a here-document body, decided by WHO reads it.
 
@@ -1037,13 +1074,14 @@ def _substituted_outcome(prefix: str, body: str, env: dict,
     if submitted:
         return _verdict(*check_submit(body, env=env, mounts_path=mounts_path,
                                       is_text=True))
-    if _shell_command_head(prefix) is not None:
+    if _shell_command_head(prefix, cd_dir) is not None:
         # A shell runs the body as a COMMAND: judge it as one. Its submits
         # are gated by the same function (a nested submit is not a special
         # case), and its text goes through the metadata rules.
         if "sbatch" in body:
             verdict, text, runs = sbatch_gate(body, env=env,
-                                              mounts_path=mounts_path)
+                                              mounts_path=mounts_path,
+                                              _cd_dir=cd_dir)
             if verdict != "allow":
                 return verdict, text, runs
         findings = check(body, env=env, mounts_path=mounts_path)
@@ -1076,8 +1114,8 @@ def _gate_sbatch_segment(segment: str, env: dict,
     # 10). Strip it out of the segment first so neither the body text nor
     # the `<<tag` token can be mistaken for an argument, then judge it as
     # script text where it is the script -- exactly like `--wrap`.
-    heredoc_body, target = _heredoc_of_segment(segment)
-    target = _strip_wrappers(target)
+    heredoc_body, segment_without_heredoc = _heredoc_of_segment(segment)
+    target = _strip_wrappers(segment_without_heredoc)
     # A subshell's closing paren rides on the LAST segment
     # (`sbatch walk.sh)`): drop a lone trailing `)` so the script
     # argument is not polluted by it. Only a single trailing char, and
@@ -1101,8 +1139,12 @@ def _gate_sbatch_segment(segment: str, env: dict,
             # the same program as `bash -c '...'`, which this gate already
             # refuses. A non-shell reader (python, cat, ...) keeps the body
             # as data and stays allowed (QS lead nacht-s8, round 10).
-            return _substituted_outcome(target, heredoc_body, env,
-                                        mounts_path)
+            # `target` keeps the here-document's redirect tokens, which
+            # would be read as arguments; the shell head is decided from
+            # the segment WITHOUT them.
+            head_target = _strip_wrappers(segment_without_heredoc)
+            return _substituted_outcome(head_target, heredoc_body, env,
+                                        mounts_path, cd_dir=cd_dir)
         return "allow", "", True
     # Drop redirections and everything after them: `sbatch run.sh
     # 2>&1` or `sbatch run.sh > log` must not leave the redirect (or
@@ -1166,7 +1208,8 @@ def _gate_sbatch_segment(segment: str, env: dict,
                 # No argument names a file, so the body is what sbatch
                 # reads as its script.
                 return _substituted_outcome(target, heredoc_body, env,
-                                            mounts_path, submitted=True)
+                                            mounts_path, submitted=True,
+                                            cd_dir=cd_dir)
         else:
             script_arg = positional[-1]
         # A here-document is attached to this submit, so its script may be
@@ -1184,7 +1227,8 @@ def _gate_sbatch_segment(segment: str, env: dict,
                 candidate = os.path.join(cd_dir, candidate)
             if not Path(candidate).is_file() and heredoc_body.strip():
                 return _substituted_outcome(target, heredoc_body, env,
-                                            mounts_path, submitted=True)
+                                            mounts_path, submitted=True,
+                                            cd_dir=cd_dir)
         # Resolve a relative script against the cd target, not the
         # process cwd (operator live run, IO1 L4 class).
         resolved: str | None = script_arg
