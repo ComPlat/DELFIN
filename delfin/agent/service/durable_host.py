@@ -36,8 +36,14 @@ from .. import session_store
 # Target 2 — supervisor heartbeat on the shared filesystem
 # --------------------------------------------------------------------------
 
-HEARTBEAT_FILE = "supervisor_heartbeat.json"
-"""Basename of the supervisor heartbeat, stored under the sessions dir."""
+HEARTBEAT_FILE = session_store.SUPERVISOR_HEARTBEAT_FILE
+"""Basename of the supervisor heartbeat, stored under the sessions dir.
+
+One definition, in the module that owns that directory: the readers which
+enumerate it have to skip this name, so the name cannot live only with the
+writer. Re-exported here because that is where the heartbeat's own
+functions and their tests look for it.
+"""
 
 FRESH_WINDOW_S = 90
 """How long a heartbeat is considered fresh (no wall-clock sleep in tests:
