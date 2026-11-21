@@ -6383,10 +6383,22 @@ def _gh_alias_or_extension(cmd: str, cwd) -> Optional[tuple]:
 #
 # The push gate before it (push grants, the git role) is unchanged.
 
+#: ``[ \t]`` and not ``\s``: ``\s`` includes a newline, so a line break
+#: separated tokens exactly like a space and a TWO-LINE command parsed as
+#: one push. Measured on 2026-11-21: ``git push origin topic\nmain`` was
+#: accepted for the uncaged route and ran as ``git push origin topic main``
+#: -- the second line became a refspec, so a branch nobody asked for was
+#: pushed, and that line was itself neither run nor refused. The permission
+#: gate upstream had judged the two-line text. No arbitrary command came
+#: through (``rm -rf /tmp/x`` is refused by the flag allowlist), but an
+#: unrequested publish did, and publishing is the irreversible class.
+#:
+#: ``_github_pr_plan`` already refuses "\n" and "\r" outright; this is the
+#: same refusal expressed in the token separator, where the cause is.
 _PLAIN_PUSH_RE = re.compile(
-    r"^\s*git\s+push((?:\s+[A-Za-z0-9._/:@^~-]+)*)"
-    r"(\s+2>&1)?"
-    r"(?:\s*\|\s*(tail|head)\s+(?:-n\s*)?-?(\d+))?\s*$")
+    r"^[ \t]*git[ \t]+push((?:[ \t]+[A-Za-z0-9._/:@^~-]+)*)"
+    r"([ \t]+2>&1)?"
+    r"(?:[ \t]*\|[ \t]*(tail|head)[ \t]+(?:-n[ \t]*)?-?(\d+))?[ \t]*$")
 _PLAIN_PUSH_FLAGS = frozenset({
     "-u", "--set-upstream", "-q", "--quiet", "-v", "--verbose",
     "--porcelain", "-n", "--dry-run", "--tags", "--follow-tags", "--atomic",
