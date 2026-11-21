@@ -679,6 +679,42 @@ def sbatch_gate(cmd: str, env: dict | None = None,
     verdicts: list[str] = []
     texts: list[str] = []
     may_run = True
+    # A script PIPED into sbatch is a submit of that text: sbatch reads its
+    # batch script from stdin, and a pipe delivers it (measured:
+    # `echo 'echo PIPED-PROGRAM' | bash` prints it). The segment splitter
+    # discards the pipe, so the two sides cannot be paired afterwards --
+    # this pass runs first, on the raw text, and chain segments never
+    # contain a top-level `|` (that is a split point).
+    for chunk in re.split(r"&&|\|\||;|\n", cmd):
+        sides = _split_on_pipes(chunk)
+        if len(sides) < 2:
+            continue
+        producer = sides[-2].strip()
+        consumer = sides[-1].strip()
+        if not re.match(r"^(?:\S+\s+)*sbatch(?:\s|$)", _strip_wrappers(consumer)):
+            continue
+        if not _sbatch_reads_stdin(consumer):
+            continue
+        text = _producer_text(producer)
+        if text is None:
+            verdicts.append("refuse")
+            texts.append(
+                "hpc_io_check refused: the sbatch script is piped in from a "
+                f"command whose output cannot be read ({producer or '?'}). "
+                "The gate cannot tell whether it walks /pfs, so it fails "
+                "closed -- name the script as an argument or use a "
+                "here-document, or let the producer be echo/printf/cat.")
+            may_run = False
+            continue
+        refused, warned = check_submit(text, env=env,
+                                       mounts_path=mounts_path, is_text=True)
+        if refused:
+            verdicts.append("refuse")
+            texts.append(refused[0])
+            may_run = False
+        elif warned:
+            verdicts.append("warn")
+            texts.append(warned[0])
     # A shell body is judged by re-entering this function for the body; a
     # `cd` OUTSIDE the body still governs a RELATIVE script named inside
     # it, so the caller passes the pending directory in.
@@ -905,6 +941,129 @@ def _herestring_of_segment(text: str) -> tuple[str | None, str]:
             return word, text[:i] + text[j:]
         i += 1
     return None, text
+
+
+def _split_on_pipes(chunk: str) -> list[str]:
+    """Split one command-list chunk at top-level single ``|``.
+
+    ``||`` is a logical OR, not a pipe, and a ``|`` inside quotes belongs
+    to the argument. Pipes bind tighter than ``;``/``&&``, so the caller
+    splits on those first and hands one command list here.
+    """
+    parts: list[str] = []
+    cur: list[str] = []
+    quote: str | None = None
+    i = 0
+    while i < len(chunk):
+        ch = chunk[i]
+        if ch == "\\":
+            cur.append(chunk[i:i + 2])
+            i += 2
+            continue
+        if quote:
+            if ch == quote:
+                quote = None
+            cur.append(ch)
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            cur.append(ch)
+            i += 1
+            continue
+        if ch == "|" and chunk[i:i + 2] != "||":
+            parts.append("".join(cur))
+            cur = []
+            i += 1
+            continue
+        cur.append(ch)
+        i += 1
+    parts.append("".join(cur))
+    return parts
+
+
+def _producer_text(producer: str) -> str | None:
+    """The text a pipe producer delivers, or ``None`` when it is unreadable.
+
+    ``sbatch`` reads its batch script from stdin, so what a producer writes
+    IS the script. A real ``bash`` runs what a pipe delivers (measured:
+    ``echo 'echo PIPED-PROGRAM' | bash`` prints PIPED-PROGRAM).
+
+    Only a producer whose output can be KNOWN is resolved: ``echo``/
+    ``printf`` with a literal argument, and ``cat <file>``. Anything else
+    returns ``None`` and the caller fails closed -- the same principle as
+    a path that is not a file: trust nothing that cannot be read.
+    """
+    import shlex
+    try:
+        tokens = shlex.split(producer)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+    head = tokens[0]
+    if head == "echo":
+        args = [t for t in tokens[1:] if not t.startswith("-")]
+        if not args:
+            return None
+        text = " ".join(args)
+        return text if text.endswith("\n") else text + "\n"
+    if head == "printf":
+        # printf's FIRST argument is a FORMAT, not text to emit: `%s` there
+        # is replaced by the next argument. Repeating the format for the
+        # remaining arguments is what the real command does too.
+        rest = [t for t in tokens[1:]]
+        while rest and rest[0].startswith("-") and rest[0] != "-":
+            rest = rest[1:]
+        if not rest:
+            return None
+        fmt, values = rest[0], rest[1:]
+        if "%" in fmt:
+            if not values:
+                return None
+            try:
+                text = fmt % tuple(values)
+            except (TypeError, ValueError):
+                return None
+        else:
+            text = fmt
+        return text if text.endswith("\n") else text + "\n"
+    if head == "cat":
+        args = [t for t in tokens[1:] if not t.startswith("-")]
+        if len(args) != 1:
+            return None
+        path = Path(args[0])
+        if not path.is_file():
+            return None
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+    return None
+
+
+def _sbatch_reads_stdin(side: str) -> bool:
+    """Does this ``sbatch`` segment name no script of its own?
+
+    True means sbatch would read its batch script from stdin, so a pipe
+    into it delivers the script. A named script argument, a here-document,
+    a here-string or ``--wrap`` is a route that already judges something,
+    and the file/body wins over the pipe.
+    """
+    import shlex
+    if _heredoc_of_segment(side)[0] or _herestring_of_segment(side)[0]:
+        return False
+    if "--wrap" in side:
+        return False
+    try:
+        tokens = shlex.split(_strip_wrappers(side))
+    except ValueError:
+        return False
+    for t in tokens[1:]:
+        if t.startswith("-") or ">" in t or "<" in t:
+            continue
+        return False
+    return True
 
 
 def _split_gate_segments(cmd: str) -> list[str]:
