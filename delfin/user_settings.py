@@ -164,6 +164,25 @@ DEFAULT_SETTINGS = {
             "max_wall_s": 3600,
             "max_output_tokens": 16000,
         },
+        # Department switches for the chemistry specialists shipped in
+        # delfin/agent/pack/agents. A preset declares one as
+        # `enabled_setting: agent.departments.<name>`;
+        # subagents._build_preset_registry skips the preset while the key
+        # is not truthy, so the type is not in the registry, is never
+        # offered to the model, and a call for it hits the unknown-type
+        # refusal. The two keys gate five presets:
+        #   reactivity -- ts-finder, irc-checker, reactivity-department
+        #   structure  -- metal-smiles-builder, xyz-editor
+        # Both default True. They were off by absence (a missing key reads
+        # as off), which made the five experts unreachable in a default
+        # installation although they ship with it; the departments are
+        # part of the product, so the default now offers them. Setting
+        # either to False still removes its presets from the registry --
+        # the switch keeps switching off.
+        "departments": {
+            "reactivity": True,
+            "structure": True,
+        },
         # Dashboard ACTION rounds: a round that issues at least one NEW
         # command is progress and only draws on the ceiling; a round that
         # re-issues what already ran this turn is charged against

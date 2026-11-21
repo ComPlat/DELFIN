@@ -296,7 +296,19 @@ _BASELINE_TOKENS = 11_422
 # 2026-11-12 (SW3): the swarm-lead preset (pack/agents/swarm-lead_subagent.md).
 # Its only schema text is its name in the subagent_type enum, as for the
 # method-reviewer above; measured +3 tokens, 11_675 -> 11_678.
-_TOKEN_BUDGET = 11_678
+# 2026-11-20: the two chemistry department switches default on
+# (user_settings, agent.departments), so five presets
+# _build_preset_registry used to skip are in the registry of a default
+# installation -- ts-finder, irc-checker, reactivity-department,
+# metal-smiles-builder, xyz-editor. Their only schema text is their names
+# in the subagent_type enum, as for the swarm-lead above. Measured in two
+# parts, because the surface moved under them: the subagent schema now
+# follows the registry rather than its import, which cost +5 on the
+# twelve-preset registry (11_678 -> 11_683, unpaid when it landed), and
+# the five names cost +38 under that schema (11_683 -> 11_721). A
+# department switched off returns its share, so 11_721 is the ceiling of
+# the default installation, not a floor.
+_TOKEN_BUDGET = 11_721
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but
