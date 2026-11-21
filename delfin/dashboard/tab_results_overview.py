@@ -737,7 +737,13 @@ class ResultsOverviewPanel:
             "const nd=document.querySelector('.export-buffer-k'+k);"
             "const txt=nd?nd.textContent:'';"
             "if(!txt){ready=false;break;}"
-            "parts.push(txt);"
+            # The widget value is JSON-quoted (json.dumps of the slice),
+            # so the DOM text carries surrounding double quotes; atob
+            # rejects them (InvalidCharacterError, user console
+            # 2026-11-21). JSON.parse strips them; the fallback keeps
+            # a plain-text value decodable.
+            "try{parts.push(JSON.parse(txt));}"
+            "catch(e){parts.push(txt);}"
             "}"
             "if(!ready){return;}"
             "clearInterval(timer);"
