@@ -32,6 +32,9 @@ import os
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
+
+from conftest import child_env
 
 from delfin.agent import api_client, code_mode
 
@@ -63,8 +66,23 @@ def _permissions(workspace):
 
 
 def _child_env(workspace, executor, command):
-    """The env the bash tool would give a child for this command."""
-    env = dict(os.environ)
+    """The env the bash tool would give a child for this command.
+
+    Built on ``conftest.child_env`` and not on ``os.environ``: the child
+    here is a real ``python -m delfin.agent.code_mode`` process, it
+    inherits none of the suite's in-memory redirects, and it resolves
+    every ``~/.delfin`` sink of its own at import time against whatever
+    HOME says. With the ambient environment it writes into the operator's
+    real home -- measured 2026-09-22, nine confirmation requests from
+    suite children landed in the real ``~/.delfin``.
+
+    The local name is deliberately the same shape as the helper it now
+    calls, which is how this slipped through: a scan looking for
+    ``child_env`` finds ``_child_env`` and reads the file as compliant.
+    ``test_a_child_process_writes_into_no_real_home`` compares something
+    stricter than the name, which is why it caught it.
+    """
+    env = child_env(Path(workspace))
     env.update(api_client._code_mode_child_env(
         command, workspace, _permissions(workspace), executor))
     env["PYTHONPATH"] = TREE + os.pathsep + env.get("PYTHONPATH", "")
