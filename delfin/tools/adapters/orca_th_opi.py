@@ -270,6 +270,26 @@ class OrcaThOpiAdapter(StepAdapter):
     requires_python = ("opi",)
 
     # ------------------------------------------------------------------ #
+    # validation
+    # ------------------------------------------------------------------ #
+
+    def validate_params(self, **kwargs: Any) -> None:
+        """Reject a call missing the declared-required ``output_file``.
+
+        ``output_file`` is the one parameter the contract marks
+        ``required=True``; the consistency test
+        (``tests/test_tool_contracts.py::test_declared_required_params_are_enforced``)
+        requires that a required parameter is actually enforced here rather
+        than only inside :meth:`execute`, so a pipeline fails pre-flight the
+        same way every other adapter with a required parameter does
+        (``multiwfn``, ``smiles``, …).
+        """
+        if kwargs.get("output_file") is None:
+            raise ValueError(
+                "'output_file' parameter is required (the ORCA frequency .out to read)"
+            )
+
+    # ------------------------------------------------------------------ #
     # execution
     # ------------------------------------------------------------------ #
 
