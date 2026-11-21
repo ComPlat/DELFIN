@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from delfin import hpc_io_check
 from delfin.qm_runtime import (
     binary_env_var_name,
     canonical_tool_name,
@@ -478,6 +479,43 @@ class SlurmJobBackend(JobBackend):
                 stderr=(f'Invalid time limit {str(time_limit)!r}: {problem}. Use HH:MM:SS, '
                         'D-HH:MM:SS, or a duration such as 48h, 2d or 90min.'),
             )
+        # IO2: the Lustre metadata-load check runs on the submit script
+        # BEFORE sbatch runs it — the same rule the agent's
+        # cluster_submit applies (IO1), so the dashboard route cannot
+        # skip it. A "refuse" finding stops the submit; its text lands
+        # in stderr, exactly where callers show an sbatch refusal. A
+        # "warn" finding rides on the SUCCESSFUL result's stdout next to
+        # the job id (D1: stderr is only shown when rc != 0, so a
+        # warning there would reach nobody). The env comes from
+        # os.environ (D2: cluster_tools passes dict(os.environ); with
+        # none the HOME rule could not fire and the routes would see
+        # different things).
+        try:
+            refused, warned = hpc_io_check.check_submit(
+                submit_script, env=dict(os.environ))
+        except FileNotFoundError:
+            # A submit script that does not exist is sbatch's own error
+            # ("No such file"), unchanged below — nothing was checked
+            # and nothing passed the check: sbatch will not run it.
+            refused, warned = [], []
+            _warn_text = ''
+        except OSError as problem:
+            return subprocess.CompletedProcess(
+                args=['sbatch'], returncode=1, stdout='',
+                stderr=f'cannot read submit script {submit_script}: {problem}. '
+                       'The Lustre metadata check never fails open: fix the '
+                       'path and submit again.')
+        if refused:
+            return subprocess.CompletedProcess(
+                args=['sbatch'], returncode=1, stdout='',
+                stderr=('hpc_io_check refused: the job script would load the '
+                        'shared Lustre file system. ' + ' '.join(refused)
+                        + ' Fix the script and submit again.'))
+        if warned:
+            # The warning rides with the result, never silently.
+            _warn_text = ('hpc_io_check warn: ' + ' '.join(warned))
+        else:
+            _warn_text = ''
         env_vars = self._append_profile_env(env_vars)
         env_vars = self._append_runtime_location_env(env_vars)
         # USR1 for preemptive sync: half the walltime, capped 30s–300s
@@ -558,6 +596,25 @@ class SlurmJobBackend(JobBackend):
             # The queue just changed by our own doing -- show it at once
             # instead of making the user wait out the squeue rate limit.
             self._invalidate_jobs_cache()
+        if _warn_text:
+            # D1: a successful submit's caller reads stdout (stderr is
+            # only shown when rc != 0), so the warning goes there. It
+            # goes BEFORE the "Submitted batch job N" line: 15 dashboard
+            # call sites take the LAST whitespace token of stdout as the
+            # job id (e.g. tab_submit.py:714, tab_recalc.py:156), so a
+            # warning after it would displace the id (consumer
+            # regression, wave-33 round 5). On a failure it rides in
+            # stderr so the reason is not lost.
+            if result.returncode == 0:
+                result = subprocess.CompletedProcess(
+                    args=result.args, returncode=result.returncode,
+                    stdout=_warn_text + '\n' + (result.stdout or ''),
+                    stderr=result.stderr)
+            else:
+                result = subprocess.CompletedProcess(
+                    args=result.args, returncode=result.returncode,
+                    stdout=result.stdout,
+                    stderr=(result.stderr or '') + '\n' + _warn_text)
         return result
 
     @staticmethod
