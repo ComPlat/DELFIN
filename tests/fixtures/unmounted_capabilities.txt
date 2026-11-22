@@ -28,11 +28,9 @@ test-only	_scoped_test_cmd_for_edits	delfin/agent/api_client.py:13237
 test-only	build_fixtures	delfin/agent/pack/benchmark/setup/w17_data_fixtures.py:22
 test-only	bwrap_substitution	delfin/agent/shared_tmp.py:248
 test-only	category_names	delfin/agent/compaction_quality.py:169
-test-only	check_ordering	delfin/agent/prompt_head.py:95
 test-only	distill_for_shipping	delfin/agent/memory_distill.py:380
 test-only	enforce_quota	delfin/agent/shared_tmp.py:307
 test-only	for_files	delfin/agent/verify_recipe.py:327
-test-only	hostile_reach	delfin/agent/prompt_head.py:144
 test-only	is_safe	delfin/agent/readonly_pipeline.py:371
 test-only	keyed_engines_configured	delfin/agent/web_tools.py:698
 test-only	map_to_host	delfin/agent/shared_tmp.py:207
@@ -42,6 +40,5 @@ test-only	recall_levels	delfin/agent/memory_distill.py:495
 test-only	reset_figure_ledger	delfin/agent/office.py:6098
 test-only	resources_within	delfin/agent/pack/benchmark/accept/w20_common.py:111
 test-only	role_tool_surface_report	delfin/agent/api_client.py:12107
-test-only	stable_prefix_len	delfin/agent/prompt_head.py:44
 test-only	sweep_stale	delfin/agent/shared_tmp.py:353
 test-only	workflow_is	delfin/agent/pack/benchmark/accept/w20_common.py:15
