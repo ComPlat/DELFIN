@@ -313,7 +313,7 @@ _NOT_CARRIED = {
     #    The request-head check's per-turn diagnostics, from the
     #    prompt_head mount: findings of the last composed turn, the rows
     #    of that turn (for the cross-turn prefix), the cross-turn prefix
-    #    report, and the once-per-session warning latch. Not carried: a
+    #    report, and the set of findings already warned about. Not carried: a
     #    resumed session composes a fresh first turn anyway, so the
     #    report would be recomputed from that turn's rows; carrying the
     #    last turn's rows across a resume would hold prompt-sized bytes

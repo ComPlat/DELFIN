@@ -3190,13 +3190,36 @@ class AgentEngine:
                     "cache cannot reach it"]
             self._prompt_head_last_sections = list(sections)
             self._prompt_head_findings = problems
-            if problems and not getattr(self, "_prompt_head_noted", False):
-                self._prompt_head_noted = True
-                import logging
-                logging.getLogger(__name__).warning(
-                    "request-head invariants broken: %s", problems)
-        except Exception:
-            self._prompt_head_findings = []
+            if problems:
+                self._note_prompt_head(problems)
+        except Exception as exc:
+            # A failed check is not a clean head. An empty finding list
+            # here would report "nothing wrong with this turn's rows" for
+            # a turn whose rows nobody managed to read, which is the one
+            # answer this mount must never give.
+            self._prompt_head_findings = [
+                f"the request-head check itself failed: {exc!r}"]
+            self._note_prompt_head(self._prompt_head_findings)
+
+    def _note_prompt_head(self, problems: list) -> None:
+        """Log each DISTINCT request-head finding once per session.
+
+        A single boolean latch logged the first finding and silenced every
+        later one, including a different finding from a different cause --
+        and a reordering that breaks the fixed layer order appears on the
+        turn it happens, not on the first turn of the session.
+        """
+        seen = getattr(self, "_prompt_head_noted", None)
+        if not isinstance(seen, set):
+            seen = set()
+            self._prompt_head_noted = seen
+        fresh = [p for p in problems if p not in seen]
+        if not fresh:
+            return
+        seen.update(fresh)
+        import logging
+        logging.getLogger(__name__).warning(
+            "request-head invariants broken: %s", fresh)
 
     def _held_system_prompt(self, role: str, sections: list,
                             *, can_update: bool) -> tuple[str, list[str]]:

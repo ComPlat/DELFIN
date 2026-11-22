@@ -10,6 +10,8 @@ cross-turn prefix report kept, and the rows checked are the ones the
 engine actually built — not a helper called with synthetic rows.
 """
 
+import logging
+
 from unittest.mock import patch
 
 from delfin.agent.engine import AgentEngine
@@ -59,3 +61,37 @@ def test_turn_path_runs_prompt_head_checks(tmp_path):
         f"no shared prefix measured on real engine turns: {report}")
     assert report["rows_all_stable"], (
         f"a stable row sits after the shared prefix: {report}")
+
+
+def test_a_check_that_fails_is_not_reported_as_a_clean_head(tmp_path,
+                                                            caplog):
+    """The one answer the mount must never give.
+
+    Input: a turn whose check raises. Output: a finding naming the
+    failure -- not the empty list that means "these rows are fine".
+    """
+    engine, _client = _engine(tmp_path, how="answer")
+    rows = [{"name": "critical_anchor", "layer": 3, "content": ""}]
+    with patch.object(ph, "check_ordering",
+                      side_effect=RuntimeError("reader gone")):
+        with caplog.at_level(logging.WARNING):
+            engine._prompt_head_check(rows)
+    findings = engine._prompt_head_findings
+    assert findings, "a failed check reported a clean head"
+    assert "check itself failed" in findings[0], findings
+    assert "reader gone" in findings[0], findings
+    assert "reader gone" in caplog.text
+
+
+def test_a_later_different_finding_is_reported_too(tmp_path, caplog):
+    """A single boolean latch reported the first finding and silenced
+    every later one; a reordering appears on the turn it happens."""
+    engine, _client = _engine(tmp_path, how="answer")
+    with caplog.at_level(logging.WARNING):
+        engine._note_prompt_head(["layer 1 after layer 2 at row 4"])
+        engine._note_prompt_head(["layer 1 after layer 2 at row 4"])
+        engine._note_prompt_head(["hostile marker in a stable row"])
+    assert caplog.text.count("layer 1 after layer 2 at row 4") == 1, (
+        "the same finding was warned about more than once")
+    assert "hostile marker in a stable row" in caplog.text, (
+        "a second, different finding was swallowed by the latch")
