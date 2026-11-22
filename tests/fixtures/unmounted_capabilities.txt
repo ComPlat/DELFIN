@@ -24,7 +24,6 @@ test-only	_bypass_failure_asks	delfin/agent/api_client.py:14120
 test-only	_disabled_keyring_factory	delfin/agent/credentials.py:360
 test-only	_load_md_presets	delfin/agent/subagents.py:1606
 test-only	_locator_value	delfin/agent/cited_retrieval.py:218
-test-only	_scoped_test_cmd_for_edits	delfin/agent/api_client.py:13237
 test-only	build_fixtures	delfin/agent/pack/benchmark/setup/w17_data_fixtures.py:22
 test-only	bwrap_substitution	delfin/agent/shared_tmp.py:248
 test-only	category_names	delfin/agent/compaction_quality.py:169
