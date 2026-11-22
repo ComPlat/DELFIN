@@ -20,9 +20,12 @@ from __future__ import annotations
 
 import glob
 import json as _json
+import logging
 import os
 import re
 from typing import Any, Dict, List, Optional
+
+_LOG = logging.getLogger(__name__)
 
 # hartree -> kJ/mol
 HARTREE_KJ_MOL = 2625.499638
@@ -215,8 +218,15 @@ def _smiles_from_3d(calc_dir: str):
             rdDetermineBonds.DetermineConnectivity(trial)
             rdDetermineBonds.DetermineBondOrders(trial, charge=charge)
             return Chem.MolToSmiles(trial, kekuleSmiles=True)
-        except Exception:  # noqa: BLE001  (charge mismatch, valence)
+        except Exception as exc:  # noqa: BLE001  (charge mismatch, valence)
+            # Expected control flow (each charge attempt fails on
+            # valence/charge mismatch), but log it so a dead sweep is
+            # diagnosable instead of silently yielding None.
+            _LOG.debug("DetermineBondOrders charge=%s failed: %s",
+                       charge, exc)
             continue
+    _LOG.warning("_smiles_from_3d: all charge attempts failed for a "
+                 "fragment; returning None")
     return None
 
 
