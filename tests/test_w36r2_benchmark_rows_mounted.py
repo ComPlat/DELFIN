@@ -30,11 +30,20 @@ _ROOT = Path(__file__).resolve().parents[1]
 def _ev(**control) -> Evidence:
     """One terminated, input-carrying step + CONTROL. The step clears
     grade_run's other checks so the resource verdict is the only thing
-    that can move the outcome."""
+    that can move the outcome.
+
+    The step names its OUTPUT as well as its input. A step that claims
+    to have terminated normally while naming no output is a shape
+    ``run_evidence.collect`` never produces -- it reads the termination
+    state OUT of the output file -- and the execution contract refuses
+    it, correctly: an input alone does not show a calculation. Without
+    the output this fixture made the control pass for the wrong reason
+    (measured 2026-11-22, when the contract was mounted in grade_run).
+    """
     return Evidence(
         workspace="ws",
         control=dict(control),
-        steps=[{"program": "orca", "input": "a.inp",
+        steps=[{"program": "orca", "input": "a.inp", "output": "a.out",
                 "terminated_normally": True,
                 "charge": control.get("charge"),
                 "multiplicity": control.get("multiplicity")}],
