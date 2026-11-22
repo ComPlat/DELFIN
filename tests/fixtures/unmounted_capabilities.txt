@@ -16,7 +16,6 @@
 #
 # Measured 2026-11-20, by the functions in that test file, so the list
 # and the check cannot compute it differently.
-nowhere	_default_kit_permissions	delfin/agent/api_client.py:11839
 nowhere	_project_settings_paths	delfin/agent/hooks.py:164
 nowhere	controller_hint	delfin/agent/loop_commands.py:298
 nowhere	estimated_tokens	delfin/agent/memory_nudge.py:147
