@@ -93,8 +93,16 @@ def record_compaction(
         lost = compare_loss(
             compacted_texts, state_block=state_block,
             summary_text=summary_text)
+        # ``total`` is the number of facts EXAMINED in this category,
+        # ``n_lost`` the number that survived nowhere, and ``lost`` their
+        # names, truncated to ten. n_lost is recorded because the
+        # truncation is lossy in the one direction that matters: without
+        # it a record of ten names cannot say whether ten or fifty facts
+        # were dropped, and a reader counting the names would report the
+        # truncation limit as the loss.
         record["lost"] = {
-            cat: {"total": v["total"], "lost": v["lost"][:10]}
+            cat: {"total": v["total"], "n_lost": len(v["lost"]),
+                  "lost": v["lost"][:10]}
             for cat, v in lost.items()
         }
     except Exception:
