@@ -20,6 +20,9 @@ import time
 from pathlib import Path
 
 from .state_paths import ensure_dir, open_append, state_root
+from .compaction_quality import category_names  # noqa: F401  (re-export:
+# the keep-list categories the funnel's report carries; consumers name it
+# here, on the module they already read the compaction record from)
 
 #: Resolved at import time so the suite can redirect it
 #: (``USER_STATE_SINKS`` in state_paths.py) — see the sink table's header
@@ -84,9 +87,34 @@ def record_compaction(
         }
     except Exception:
         pass
+    # The keep-list loss (compaction_quality.quality_report): the seven
+    # categories the brief names (person goal, instructions, constraints,
+    # refusals, decisions, waits, tests) over the same before/after pair.
+    # Advisory only — the report never vetoes a compaction; here it only
+    # names what the surviving state block and summary did NOT carry.
+    # Wrapped as texts so the report reads them as it reads history rows.
+    try:
+        from . import compaction_quality as _cq
+        report = _cq.quality_report(
+            [{"role": "user", "content": t}
+             for t in (compacted_texts or [])],
+            after_state_block=state_block, after_summary_text=summary_text)
+        record["keep_list_loss"] = {
+            name: {"kept": len(v["kept"]), "lost": v["lost"][:5]}
+            for name, v in report.items()
+        }
+    except Exception:
+        pass
     line = json.dumps(record, ensure_ascii=False)
     if len(line) > _MAX_RECORD_CHARS:
         record["note"] = ""
+        # The keep-list report is the newest, largest field: on an over-long
+        # record it is reduced to counts before the note is, mirroring how
+        # the other bounded fields shed names first.
+        record["keep_list_loss"] = {
+            name: {"kept": v["kept"], "lost_count": len(v["lost"]) }
+            for name, v in record.get("keep_list_loss", {}).items()
+        }
         line = json.dumps(record, ensure_ascii=False)
     try:
         with open_append(_log_path(session_id or "")) as fh:
