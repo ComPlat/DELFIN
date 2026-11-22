@@ -855,6 +855,8 @@ def molecular_formula(calc_dir: str):
     readable initial.xyz exists.
     """
     import collections
+    if not calc_dir:
+        return None
     atoms = _parse_xyz(calc_dir)
     if not atoms:
         return None
