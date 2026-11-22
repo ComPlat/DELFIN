@@ -190,6 +190,12 @@ def _assigned_attributes(node: ast.AST) -> set[str]:
 # "does a resumed session need this?" to be answered here, in one line,
 # instead of being answered by silence three releases later.
 _NOT_CARRIED = {
+    # When this PROCESS last moved the stored session's heartbeat forward
+    # (the per-tool-call tick in _keep_stored_heartbeat_fresh). A
+    # monotonic clock reading means nothing in another process, and a
+    # resumed session should refresh "last seen" at once rather than wait
+    # out a limiter it inherited -- which is what 0.0 does.
+    "_last_session_heartbeat",
     # The BudgetLedger the budget methods delegate to: it holds no state of
     # its own (it reads the engine's fields through its engine reference)
     # and is rebuilt on first use, so a resumed session gets a fresh one.
