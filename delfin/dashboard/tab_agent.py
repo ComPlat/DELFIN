@@ -5494,13 +5494,143 @@ def _text_requests_confirmation(agent_text: str) -> bool:
     return any(p in haystack for p in _CONFIRMATION_PATTERNS)
 
 
+#: RDKit sanitisation flags kept when a structure contains a metal atom.
+#: The default ``MolFromSmiles`` sanitisisation valences every atom against
+#: the organic template, and a coordination metal then comes back as a
+#: sanitisation failure -- the skeleton lost its central atom. Skipping only
+#: kekulisation, aromaticity typing and property calculation keeps the metal
+#: and its dative-style bonds while rings still get bond orders ordered.
+def _metal_skip_flags():
+    from rdkit import Chem
+    return (
+        Chem.SanitizeFlags.SANITIZE_KEKULIZE
+        | Chem.SanitizeFlags.SANITIZE_SETAROMATICITY
+        | Chem.SanitizeFlags.SANITIZE_PROPERTIES
+    )
+
+
+def _parse_smiles_keep_metals(smiles: str):
+    """An RDKit Mol for a SMILES, keeping coordination metals.
+
+    Plain ``Chem.MolFromSmiles`` fails on metal complexes whose metal has
+    an organic-invalid valence: the whole molecule comes back ``None`` and
+    the skeleton loses its centre. Metal-bearing SMILES are instead parsed
+    without sanitisation and sanitised with the flags that would strip the
+    metal (kekulisation, aromaticity, properties) left out -- the metal and
+    its bonds survive; organic ring bond orders still get laid out.
+    """
+    from rdkit import Chem, RDLogger
+    try:
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is not None:
+            return mol
+        raw = Chem.MolFromSmiles(smiles, sanitize=False)
+        if raw is None:
+            return None
+        RDLogger.DisableLog("rdApp.warning")
+        try:
+            Chem.SanitizeMol(
+                raw, Chem.SanitizeFlags.SANITIZE_ALL ^ _metal_skip_flags()
+            )
+        except Exception:
+            pass  # draw what parsed rather than lose the structure
+        finally:
+            RDLogger.EnableLog("rdApp.warning")
+        return raw
+    except Exception:
+        return None
+
+
+#: Element symbols counted as coordination metals when deciding whether a
+#: molecule needs the metal-preserving parse. Period-4 and heavier
+#: transition metals plus common main-group coordination centres.
+_METAL_SYMBOLS = frozenset({
+    "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn", "Y", "Zr",
+    "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd", "Hf", "Ta", "W", "Re",
+    "Os", "Ir", "Pt", "Au", "Hg", "La", "Ce", "Eu", "Gd", "Yb", "Lu",
+    "Al", "Ga", "In", "Sn", "Pb", "Bi",
+})
+
+
+def _mol_has_metal(mol) -> bool:
+    """True when any atom is one of the coordination metals."""
+    try:
+        return any(a.GetSymbol() in _METAL_SYMBOLS for a in mol.GetAtoms())
+    except Exception:
+        return False
+
+
+def _smiles_line_html(smiles: str) -> str:
+    """A SMILES string as a wrapping ``<code>`` line.
+
+    Long SMILES used to run off the card in one unbroken line: a SMILES
+    is one token and the browser only breaks it where told to.
+    ``overflow-wrap:anywhere`` lets it wrap at any character, and the
+    string is shown in full rather than cut at 120 characters -- a cut
+    SMILES cannot be copied back into a submission.
+    """
+    return (
+        '<code style="display:block;text-align:left;color:#374151;'
+        'font-size:12px;word-break:break-all;overflow-wrap:anywhere;'
+        f'white-space:normal;">{_html.escape(smiles)}</code>'
+    )
+
+
+def _render_molecule_svg_b64(
+    mol_or_smiles, *, size: tuple[int, int] = (560, 400)
+) -> str | None:
+    """Render an RDKit Mol or SMILES to base64 SVG -- a vector graphic.
+
+    The 2D card draws structures as SVG rather than PNG so the skeleton
+    stays crisp at any zoom. Returns ``None`` if RDKit is unavailable or
+    the molecule is invalid.
+    """
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+        from rdkit.Chem.Draw import rdMolDraw2D
+    except ImportError:
+        return None
+    try:
+        if isinstance(mol_or_smiles, str):
+            mol = _parse_smiles_keep_metals(mol_or_smiles)
+        else:
+            mol = mol_or_smiles
+        if mol is None:
+            return None
+        # Compute 2D coords if missing (XYZ-derived mols often lack them)
+        if mol.GetNumConformers() == 0:
+            try:
+                AllChem.Compute2DCoords(mol)
+            except Exception:
+                pass
+        drawer = rdMolDraw2D.MolDraw2DSVG(*size)
+        opts = drawer.drawOptions()
+        opts.explicitMethyl = True
+        opts.bondLineWidth = 3
+        opts.minFontSize = 22
+        opts.padding = 0.12
+        opts.clearBackground = True
+        try:
+            drawer.DrawMolecule(mol)
+        except Exception:
+            return None
+        drawer.FinishDrawing()
+        svg = drawer.GetDrawingText()
+        import base64 as _b64
+        return _b64.b64encode(svg.encode("utf-8")).decode("ascii")
+    except Exception:
+        return None
+
+
 def _render_molecule_to_png_b64(
     mol_or_smiles, *, size: tuple[int, int] = (320, 240)
 ) -> str | None:
     """Render an RDKit Mol or SMILES string to a base64 PNG.
 
-    Returns ``None`` if RDKit is unavailable or the molecule is invalid.
-    Used by the artifact renderer to draw 2D structures inline in the chat.
+    Kept as the raster fallback for callers without SVG support; new
+    cards use ``_render_molecule_svg_b64``. Returns ``None`` if RDKit is
+    unavailable or the molecule is invalid.
     """
     try:
         from rdkit import Chem
@@ -5509,7 +5639,7 @@ def _render_molecule_to_png_b64(
         return None
     try:
         if isinstance(mol_or_smiles, str):
-            mol = Chem.MolFromSmiles(mol_or_smiles)
+            mol = _parse_smiles_keep_metals(mol_or_smiles)
         else:
             mol = mol_or_smiles
         if mol is None:
@@ -5870,10 +6000,11 @@ def _formula_card_html(path: Path, name_html: str) -> str | None:
         f'{_img_box(svg.encode("utf-8"))} '
         'style="display:block;margin:0 auto;width:min(560px,100%);'
         'height:auto;"/>'
-        '<div style="text-align:center;margin-top:6px;font-size:15px;'
-        f'color:#111827;">{_sum_formula_html(formula)}'
-        '<span style="margin-left:12px;font-size:12px;color:#6b7280;'
-        f'font-family:monospace;">{_html.escape(smiles)}</span></div>'
+        '<div style="margin-top:6px;text-align:left;">'
+        '<span style="font-size:15px;color:#111827;">'
+        f'{_sum_formula_html(formula)}</span></div>'
+        '<div style="margin-top:4px;">'
+        f'{_smiles_line_html(smiles)}</div>'
         '</div>'
     )
 
@@ -6655,24 +6786,24 @@ def _render_artifact_body(path) -> str | None:
         if not text:
             return None
         first = text.splitlines()[0].split()[0]
-        b64 = _render_molecule_to_png_b64(first)
+        b64 = _render_molecule_svg_b64(first)
         if b64 is None:
             return (
                 f'<div class="delfin-artifact" style="font-size:11px;'
                 f'color:#9ca3af;padding:6px 0;">'
                 f'🧪 <code>{name_html}</code> SMILES: '
-                f'<code>{_html.escape(first[:120])}</code></div>'
+                f'{_smiles_line_html(first)}</div>'
             )
         return (
             f'<div class="delfin-artifact" style="margin:6px 0;padding:6px;'
             f'border:1px solid #e5e7eb;border-radius:6px;background:#fff;">'
             f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
             f'🧪 <code>{name_html}</code> '
-            f'<code style="color:#374151;">{_html.escape(first[:120])}</code></div>'
-            f'<img src="data:image/png;base64,{b64}"'
-            f'{_img_box_b64(b64)} '
+            f'</div>'
+            f'{_smiles_line_html(first)}'
+            f'<img src="data:image/svg+xml;base64,{b64}"'
             f'style="display:block;border-radius:4px;max-width:100%;'
-            f'height:auto;" '
+            f'height:auto;margin:4px auto 0;" '
             f'alt="{name_html}"/></div>'
         )
 
@@ -6692,7 +6823,7 @@ def _render_artifact_body(path) -> str | None:
             mol = None
         if mol is None:
             return None
-        b64 = _render_molecule_to_png_b64(mol)
+        b64 = _render_molecule_svg_b64(mol)
         if b64 is None:
             return None
         return (
@@ -6701,10 +6832,9 @@ def _render_artifact_body(path) -> str | None:
             f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
             f'🧪 <code>{name_html}</code> '
             f'({mol.GetNumAtoms()} atoms, {mol.GetNumBonds()} bonds)</div>'
-            f'<img src="data:image/png;base64,{b64}"'
-            f'{_img_box_b64(b64)} '
+            f'<img src="data:image/svg+xml;base64,{b64}"'
             f'style="display:block;border-radius:4px;max-width:100%;'
-            f'height:auto;" '
+            f'height:auto;margin:0 auto;" '
             f'alt="{name_html}"/></div>'
         )
 
@@ -6716,6 +6846,16 @@ def _render_artifact_body(path) -> str | None:
     if suffix in (".xyz", ".trj", ".traj", ".cube", ".pdb"):
         card = _mol3d_card_html(p, name_html)
         if card is not None:
+            if suffix == ".xyz":
+                # The 3D card is a raster canvas; a single structure also
+                # gets the 2D vector skeleton, so the drawing survives a
+                # zoom and can be read off the page directly.
+                summary = _render_xyz_summary(p)
+                if summary is not None:
+                    n_atoms, formula = summary
+                    skeleton = _xyz_skeleton_svg_html(p, n_atoms, formula)
+                    if skeleton:
+                        card += skeleton
             return card
 
     # ---- XYZ coordinates: formula summary + first atoms -----------------
@@ -6730,9 +6870,58 @@ def _render_artifact_body(path) -> str | None:
             f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
             f'⚛️ <code>{name_html}</code> '
             f'({n_atoms} atoms)</div>'
+            f'{_xyz_skeleton_svg_html(p, n_atoms, formula)}'
             f'<div style="font-size:13px;color:#1f2937;font-family:monospace;'
             f'padding:4px 0;">{_html.escape(formula)}</div></div>'
         )
+
+
+def _xyz_skeleton_svg_html(path, n_atoms: int, formula: str) -> str:
+    """A 2D vector skeleton drawn from an optimised XYZ structure.
+
+    The 3D card above is a WebGL canvas -- its pixels cannot be reused
+    in a document, and its projection hides the skeleton a reader wants
+    to see. This derives an RDKit Mol from the XYZ block, lays it out in
+    2D and draws it as an SVG (vector, print-crisp). The metal-preserving
+    parser is not needed here -- an XYZ already names every atom, so the
+    metal was never at risk of being dropped; the skeleton only has to
+    keep it. An empty string when RDKit is missing or the structure
+    cannot be parsed: the formula line below still identifies the file.
+    """
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+        from rdkit.Chem.Draw import rdMolDraw2D
+    except ImportError:
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        mol = Chem.MolFromXYZBlock(text)
+        if mol is None or mol.GetNumAtoms() == 0:
+            return ""
+        AllChem.Compute2DCoords(mol)
+        drawer = rdMolDraw2D.MolDraw2DSVG(560, 400)
+        opts = drawer.drawOptions()
+        opts.explicitMethyl = True
+        opts.bondLineWidth = 3
+        opts.minFontSize = 22
+        opts.padding = 0.12
+        opts.clearBackground = True
+        drawer.DrawMolecule(mol)
+        drawer.FinishDrawing()
+        svg = drawer.GetDrawingText()
+    except Exception:
+        return ""
+    import base64 as _b64
+    data = _b64.b64encode(svg.encode("utf-8")).decode("ascii")
+    return (
+        '<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
+        '🧬 2D skeleton (vector)</div>'
+        f'<img src="data:image/svg+xml;base64,{data}"'
+        f'alt="{formula}"'
+        'style="display:block;border-radius:4px;max-width:100%;'
+        'height:auto;margin:0 auto 4px;"/>'
+    )
 
     # ---- JSON pretty-print ---------------------------------------------
     if suffix == ".json":
