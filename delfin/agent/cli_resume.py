@@ -26,6 +26,7 @@ from typing import Any
 
 from . import proc_identity
 from . import step_journal
+from . import session_store
 from .session_store import _SESSIONS_DIR  # location only; never mutated here
 
 
@@ -39,8 +40,8 @@ def _iter_session_files(sessions_dir: Path) -> list[Path]:
         return []
     files = []
     for f in sessions_dir.glob("*.json"):
-        if f.name.endswith(".turn.json"):
-            continue  # mid-turn crash checkpoint, not a session
+        if not session_store.is_session_file(f):
+            continue  # a checkpoint or a shared record, not a session
         files.append(f)
     return files
 
