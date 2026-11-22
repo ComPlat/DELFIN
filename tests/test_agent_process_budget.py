@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from delfin.agent.process_budget import (  # noqa: E402
     BudgetLimits,
     BudgetGuard,
-    count_descendants,
+    descendants_of,
     sample_descendants,
     verdict,
 )
@@ -38,6 +38,15 @@ def _wait_for(predicate, timeout=10.0, interval=0.05):
             return value
         time.sleep(interval)
     return None
+
+
+def count_descendants(root_pid):
+    """The live census, as the product computes it: one set of live
+    descendants (root excluded). The suite's own counting helper -- the
+    ``count_descendants`` wrapper in the module was deleted: nothing in
+    the product called it, and len() of the set the real function
+    returns is the same number without a second name for it."""
+    return len(descendants_of(root_pid))
 
 
 class TestCounting:
