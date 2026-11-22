@@ -23,6 +23,7 @@ import json as _json
 import logging
 import os
 import re
+import numpy as _np
 from typing import Any, Dict, List, Optional
 
 _LOG = logging.getLogger(__name__)
@@ -203,25 +204,45 @@ def _smiles_from_3d(calc_dir: str):
     keep = [i for i, s in enumerate(sym) if s not in _SMILES_METALS]
     if not keep:
         return None
+    # Metal-bound S (thiolate/thiol): give the stripped fragment the real
+    # anionic form up front.  Without it RDKit's charge sweep settles on
+    # a first-valid charge that paints the thiolate S as a quinoid C=S
+    # (measured on 11-14_11: charge -2 won the sweep and drew C(=S); with
+    # [S-] seeded, the sulfonate/thiolate lone pairs stay on S).
+    pos = _np.array([[a[1], a[2], a[3]] for a in atoms])
+    nb3d = {}
+    cov3d = [_XYZ_COVALENT.get(s, _XYZ_COVALENT_DEFAULT) for s in sym]
+    for i in range(len(sym)):
+        for j in range(i + 1, len(sym)):
+            d = float(_np.linalg.norm(pos[i] - pos[j]))
+            if d <= 1.25 * (cov3d[i] + cov3d[j]):
+                nb3d.setdefault(i, []).append(j)
+                nb3d.setdefault(j, []).append(i)
+    n_thiolate = sum(
+        1 for n, i in enumerate(keep)
+        if sym[i] == "S" and any(sym[x] in _SMILES_METALS
+                                 for x in nb3d.get(i, ())))
     rw = Chem.RWMol()
-    for i in keep:
-        rw.AddAtom(Chem.Atom(sym[i]))
+    for n, i in enumerate(keep):
+        atom = Chem.Atom(sym[i])
+        if (sym[i] == "S"
+                and any(sym[x] in _SMILES_METALS for x in nb3d.get(i, ()))):
+            atom.SetFormalCharge(-1)
+        rw.AddAtom(atom)
     mol = rw.GetMol()
     conf = Chem.Conformer(len(keep))
     for n, i in enumerate(keep):
         conf.SetAtomPosition(n, (float(atoms[i][1]), float(atoms[i][2]),
                                  float(atoms[i][3])))
     mol.AddConformer(conf)
-    for charge in (0, 1, -1, 2, -2, 3, -3, 4, -4):
+    base = -n_thiolate
+    for charge in [base + d for d in (0, 1, -1, 2, -2, 3, -3, 4, -4)]:
         try:
             trial = Chem.RWMol(mol)
             rdDetermineBonds.DetermineConnectivity(trial)
             rdDetermineBonds.DetermineBondOrders(trial, charge=charge)
             return Chem.MolToSmiles(trial, kekuleSmiles=True)
-        except Exception as exc:  # noqa: BLE001  (charge mismatch, valence)
-            # Expected control flow (each charge attempt fails on
-            # valence/charge mismatch), but log it so a dead sweep is
-            # diagnosable instead of silently yielding None.
+        except Exception as exc:  # noqa: BLE001
             _LOG.debug("DetermineBondOrders charge=%s failed: %s",
                        charge, exc)
             continue

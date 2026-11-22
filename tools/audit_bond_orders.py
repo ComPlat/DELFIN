@@ -124,7 +124,7 @@ def _reference_orders(sym, bonds, atoms_3d):
     except Exception:
         return None
     orders = {}
-    for bond in mol.GetBonds():
+    for bond in m.GetBonds():  # m = bond-order-assigned molecule (mol is all-SINGLE input)
         bt = bond.GetBondType()
         o = {Chem.BondType.SINGLE: 1, Chem.BondType.DOUBLE: 2,
              Chem.BondType.TRIPLE: 3}.get(bt)
