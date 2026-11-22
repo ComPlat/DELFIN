@@ -115,15 +115,19 @@ def test_may_or_may_not_have_run_line_for_open_side_effect(journal_dir):
     assert "CHECK BEFORE REPEATING" in note
 
 
-def test_finished_readonly_step_result_digest_replayable(journal_dir):
+def test_finished_step_records_a_scrubbed_digest(journal_dir):
+    """The finish record itself carries the scrubbed digest (the
+    finished_result reader was deleted with the unreached replay path;
+    the record's guarantee is what stays)."""
     step_journal.start_step("s1", turn=1, step=2, tool="read_file",
                             arguments={"path": "a.md"})
     step_journal.finish_step("s1", turn=1, step=2, tool="read_file", ok=True,
                              result="1  the content of a.md")
-    fin = step_journal.finished_result("s1", step=2)
-    assert fin is not None
-    assert fin["ok"] is True
-    assert fin["result_digest"], "digest must be non-empty"
+    steps, _ = step_journal.read_steps("s1")
+    fin = [s for s in steps if s.get("kind") == "finish"
+           and int(s.get("step", -1)) == 2]
+    assert fin and fin[-1]["ok"] is True
+    assert fin[-1]["result_digest"], "digest must be non-empty"
 
 
 def test_corrupt_line_skipped_with_note_never_a_crash(journal_dir):

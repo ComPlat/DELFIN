@@ -5,10 +5,9 @@ The surfaces under test:
 
 * ``cli_resume.step_resume_note(session_id)`` — the resume path's read
   of the step journal: the open-step note when a step is open, None
-  otherwise, "" for an unknown session.
-* ``cli_resume.replay_step(session_id, step)`` — a finished step's
-  recorded result, so a resume can hand the recorded result back
-  instead of re-running the tool.
+  otherwise, "" for an unknown session. (Mounted 2026-11-21: the
+  ``--resume`` path in cli._open_session prints it; the product entry
+  is tests/test_a_resumed_session_names_its_open_step.py.)
 * ``working_state.build_working_state_block(..., session_id=...)`` — a
   "Last recorded finished step" section built from the step journal, so
   compaction keeps the last finished step across restarts.
@@ -59,31 +58,10 @@ def test_step_resume_note_none_for_unknown_session(journal_dir):
     assert cli_resume.step_resume_note("no-such-session") is None
 
 
-# -- cli_resume.replay_step -----------------------------------------------
-
-def test_replay_step_gives_back_recorded_result(journal_dir):
-    step_journal.start_step("s1", turn=1, step=2, tool="read_file",
-                            arguments={"path": "a.md"})
-    step_journal.finish_step("s1", turn=1, step=2, tool="read_file", ok=True,
-                             result="# heading\ncontent")
-    rec = cli_resume.replay_step("s1", 2)
-    assert rec["ok"] is True
-    # The record stores the scrubbed digest, never the raw text:
-    assert rec["result_digest"]
-    assert "content" not in rec["result_digest"]
-    assert rec["tool"] == "read_file"
-
-    # turn-narrowed replay matches the same record:
-    assert cli_resume.replay_step("s1", 2, turn=1) is not None
-    assert cli_resume.replay_step("s1", 2, turn=9) is None
-
-
-def test_replay_step_unknown_step_is_none(journal_dir):
-    step_journal.start_step("s1", turn=1, step=1, tool="read_file",
-                            arguments={"path": "a.md"})
-    step_journal.finish_step("s1", turn=1, step=1, tool="bash", ok=True, result="x")
-    assert cli_resume.replay_step("s1", 99) is None
-    assert cli_resume.replay_step("no-such", 1) is None
+# cli_resume.replay_step and step_journal.finished_result were DELETED
+# (2026-11-21, reachability wave 34): the wrapper's only caller was this
+# suite, and test_a_crash_recovery_names_the_open_step.py pins that the
+# model must NOT be offered a replay tool. The absence pin lives there.
 
 
 # -- working_state: the last finished step survives compaction -------------
