@@ -27,7 +27,6 @@ test-only	_locator_value	delfin/agent/cited_retrieval.py:218
 test-only	_scoped_test_cmd_for_edits	delfin/agent/api_client.py:13237
 test-only	build_fixtures	delfin/agent/pack/benchmark/setup/w17_data_fixtures.py:22
 test-only	bwrap_substitution	delfin/agent/shared_tmp.py:248
-test-only	category_names	delfin/agent/compaction_quality.py:169
 test-only	check_ordering	delfin/agent/prompt_head.py:95
 test-only	distill_for_shipping	delfin/agent/memory_distill.py:380
 test-only	enforce_quota	delfin/agent/shared_tmp.py:307

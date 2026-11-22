@@ -16,7 +16,11 @@ The questions it answers (the brief, item 2):
     the probe — the same survival definition as fact recall),
   * goal drift and redone work (KG4 already measures them; F2 reuses the
     definitions on its own inputs),
-  * tokens, cost, cache hit rate, number and size of compactions, wall time.
+  * tokens, cost, cache hit rate, number and size of compactions, wall time,
+  * what each compaction lost from the fixed keep-list (per category, in
+    compaction_quality.category_names() order — the loss the product's
+    own compaction_log records carry, carried here so the yardstick can
+    see it).
 
 Writers of the inputs (one line each, as in longrun_metric's docstring):
   * ``turns``              -- turn_metrics.record / turn_metrics.read.
@@ -38,9 +42,19 @@ records carry it' does not.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-__all__ = ["LongHorizonResult", "measure", "to_json", "to_text"]
+from .. import compaction_quality as _cq
+
+__all__ = ["LongHorizonResult", "measure", "to_json", "to_text",
+           "keep_list_categories"]
+
+
+def keep_list_categories() -> Tuple[str, ...]:
+    """The keep-list categories the metric reports, in the order
+    ``compaction_quality.category_names()`` gives (the writer's own
+    order — the metric never re-invents the list it measures)."""
+    return _cq.category_names()
 
 
 def _norm(text: Any) -> str:
@@ -117,6 +131,12 @@ class LongHorizonResult:
 
     # --- compactions
     compactions_size: List[Dict[str, Any]] = field(default_factory=list)
+
+    # --- keep-list loss, per category, in compaction_quality's own order
+    # (see keep_list_categories). Each entry: {"category": str,
+    # "lost_total": int|None, "lost_names": [str, ...]}.
+    # ``None`` marks a value no compaction record attests — never zero.
+    keep_list_loss: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
     def recall_late(self) -> float:
@@ -279,6 +299,41 @@ def measure(
             "messages_compacted": c.get("messages_compacted"),
             "tokens_before": c.get("tokens_before"),
             "tokens_after": c.get("tokens_after"),
+        })
+
+    # --- keep-list loss, carried from compaction_log's records:
+    # compaction_log.record_compaction writes compaction_quality's
+    # keep-list report per category (its ``keep_list_loss`` key; today
+    # the key is written by the change in flight in compaction_log.py —
+    # until it lands, no record attests and every category reports
+    # None). Counts AND names: the count is the number the yardstick can
+    # trend; the names are the auditable evidence behind it, bounded to
+    # 10 per category in total (no unbounded dump from a long session).
+    # Aggregated as the MAXIMUM across the session's compactions (worst
+    # loss, not a sum that double-counts an item lost by every
+    # compaction). Per category, in category_names() order. A category
+    # no record attests reports ``None`` — never a guessed zero (module
+    # invariant). The report entry may carry ``total`` directly or only
+    # the ``lost`` item list; the count is derived either way.
+    for cat in keep_list_categories():
+        totals: List[int] = []
+        names: List[str] = []
+        for c in (compactions or []):
+            report = c.get("keep_list_loss") or {}
+            entry = report.get(cat)
+            if not isinstance(entry, dict):
+                continue
+            lst = entry.get("lost")
+            if isinstance(lst, list):
+                item_names = [str(x) for x in lst if isinstance(x, str)]
+                names.extend(item_names)
+                total = entry.get("total")
+                totals.append(total if isinstance(total, int)
+                              else len(item_names))
+        res.keep_list_loss.append({
+            "category": cat,
+            "lost_total": max(totals) if totals else None,
+            "lost_names": names[:10],   # bounded: at most 10 names reported
         })
 
     return res
