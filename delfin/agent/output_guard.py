@@ -291,8 +291,10 @@ def scrub_secrets_certified(
     certified = True
     if exact_values is None:
         try:
-            from .web_tools import _known_secret_values_complete
-            exact_values, certified = _known_secret_values_complete()
+            from .web_tools import (_known_secret_values,
+                                    _secret_lookup_complete)
+            exact_values = _known_secret_values()
+            certified = _secret_lookup_complete()
         except Exception:
             exact_values = ()
             certified = False

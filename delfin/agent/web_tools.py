@@ -92,27 +92,16 @@ _MAX_QUERY_CHARS = 2000
 def _known_secret_values() -> list[str]:
     """The values of every credential DELFIN holds (file, keyring and
     well-known env), for an exact-match egress check and for scrub_secrets
-    on every tool result. Never raises; short values ignored."""
-    return _known_secret_values_complete()[0]
+    on every tool result. Never raises; short values ignored.
 
-
-def _known_secret_values_complete() -> "tuple[list[str], bool]":
-    """``(values, complete)`` -- as :func:`_known_secret_values`, plus
-    whether every store could be read.
-
-    A caller whose verdict is a security decision needs the second half:
-    an empty list means "nothing to remove" for an absent store and "I
-    could not look" for an unreadable one, and those must not share an
-    answer. Never raises; an exception anywhere in the lookup is itself
-    an incomplete answer.
+    The single seam for the VALUES: a test that injects a credential
+    replaces this one function. Whether every store could be read is a
+    separate question, :func:`_secret_lookup_complete`.
     """
     out: list[str] = []
-    complete = True
     try:
-        from .credentials import (_WELL_KNOWN_KEYS,
-                                  held_secret_values_complete)
-        values, complete = held_secret_values_complete()
-        for val in values:
+        from .credentials import _WELL_KNOWN_KEYS, held_secret_values
+        for val in held_secret_values():
             if isinstance(val, str) and len(val) >= 12:
                 out.append(val)
         for name in _WELL_KNOWN_KEYS:
@@ -120,8 +109,29 @@ def _known_secret_values_complete() -> "tuple[list[str], bool]":
             if len(val) >= 12:
                 out.append(val)
     except Exception:
-        complete = False
-    return out, complete
+        pass
+    return out
+
+
+def _secret_lookup_complete() -> bool:
+    """Whether every credential store could be READ on this machine.
+
+    A separate question from :func:`_known_secret_values`, and
+    deliberately a separate function: an empty value list means "nothing
+    to remove" for a store that is absent and "I could not look" for one
+    that exists and cannot be read, and a caller whose verdict is a
+    security decision has to tell those apart. Keeping it apart also
+    leaves the value lookup as the single seam a test replaces -- one
+    fact, one function.
+
+    Never raises; an exception anywhere in the lookup is itself an
+    incomplete answer.
+    """
+    try:
+        from .credentials import held_secret_values_complete
+        return held_secret_values_complete()[1]
+    except Exception:
+        return False
 
 
 def outbound_secret_reason(text: str) -> Optional[str]:
@@ -149,11 +159,10 @@ def outbound_secret_reason(text: str) -> Optional[str]:
         decoded = urllib.parse.unquote_plus(raw)
     except Exception:
         decoded = raw
-    known, complete = _known_secret_values_complete()
-    for secret in known:
+    for secret in _known_secret_values():
         if secret in raw or secret in decoded:
             return "it contains a credential DELFIN holds"
-    if not complete:
+    if not _secret_lookup_complete():
         return ("a credential store exists and could not be read, so this "
                 "cannot be checked against the credentials DELFIN holds "
                 "(repair or remove ~/.delfin/credentials.json)")

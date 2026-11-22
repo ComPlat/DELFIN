@@ -33,12 +33,10 @@ TEXT = f"RuntimeError: auth failed for token {KEY}"
 def lookup_raises(monkeypatch):
     """The held-credential lookup raises.
 
-    A shape the product cannot actually produce -- both lookups swallow
+    A shape the product cannot actually produce -- the lookup swallows
     everything -- which is why the store-level tests at the end of this
     file exist. Kept because the certified form must also survive a caller
-    that hands it a broken lookup, and both spellings are patched: the
-    lenient one that scrub_secrets uses and the complete one the certified
-    form uses.
+    that hands it a broken lookup.
     """
     import delfin.agent.web_tools as web_tools
 
@@ -46,7 +44,6 @@ def lookup_raises(monkeypatch):
         raise RuntimeError("keyring is locked")
 
     monkeypatch.setattr(web_tools, "_known_secret_values", boom)
-    monkeypatch.setattr(web_tools, "_known_secret_values_complete", boom)
 
 
 @pytest.fixture
@@ -115,7 +112,7 @@ def test_the_certified_form_never_returns_the_text_it_could_not_scrub():
     import pytest as _pytest
     mp = _pytest.MonkeyPatch()
     try:
-        mp.setattr(web_tools, "_known_secret_values_complete", boom)
+        mp.setattr(web_tools, "_known_secret_values", boom)
         cases.append(output_guard.scrub_secrets_certified(TEXT))
         mp.undo()
         cases.append(output_guard.scrub_secrets_certified(
@@ -198,8 +195,6 @@ def test_a_held_credential_is_still_removed_on_the_normal_path(monkeypatch):
     """The fix must not cost the function it protects."""
     import delfin.agent.web_tools as web_tools
     monkeypatch.setattr(web_tools, "_known_secret_values", lambda: (KEY,))
-    monkeypatch.setattr(web_tools, "_known_secret_values_complete",
-                        lambda: ((KEY,), True))
     scrubbed, certified = output_guard.scrub_secrets_certified(TEXT)
     assert KEY not in scrubbed and "[redacted:credential]" in scrubbed
     assert certified is True
