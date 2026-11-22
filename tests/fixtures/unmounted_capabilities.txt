@@ -22,14 +22,28 @@ nowhere	request_swarm_pause	delfin/agent/swarm/lead.py:110
 nowhere	set_for_workspace_words	delfin/agent/workspace_profiles.py:220
 test-only	_bypass_failure_asks	delfin/agent/api_client.py:14120
 test-only	_disabled_keyring_factory	delfin/agent/credentials.py:360
+# _locator_value (cited_retrieval.py:218) DELETED 2026-11-22: zero callers
+# anywhere, including its own module -- check_answer_citations reads the
+# locator dicts from locator_for directly (cited_retrieval.py:287-291) and
+# never normalises to (kind, value). The whole cited_retrieval module has
+# no product import yet; the deletion needs no second answer because the
+# job it did is inline dict access in its own module.
 test-only	_load_md_presets	delfin/agent/subagents.py:1606
-test-only	_locator_value	delfin/agent/cited_retrieval.py:218
 test-only	_scoped_test_cmd_for_edits	delfin/agent/api_client.py:13237
 test-only	build_fixtures	delfin/agent/pack/benchmark/setup/w17_data_fixtures.py:22
 test-only	bwrap_substitution	delfin/agent/shared_tmp.py:248
 test-only	category_names	delfin/agent/compaction_quality.py:169
 test-only	check_ordering	delfin/agent/prompt_head.py:95
 test-only	enforce_quota	delfin/agent/shared_tmp.py:307
+# for_files (verify_recipe.py:327) KEPT as test-only 2026-11-22, measured:
+# zero product callers. The product consumers of verify_recipe hold a
+# recipe but never a changed-file list -- prompt_loader.py:1002-1003 calls
+# discover+render, evidence.py:203 calls discover -- so narrowing a recipe
+# to changed files (for_files) is unreachable by construction today.
+# Deciding WHICH consumer would gain a changed-file list is a design
+# decision, not a repair; wiring one arbitrarily would mount a call on a
+# path that runs but does not need it. Revisit if a consumer starts
+# holding both a recipe and a diff.
 test-only	for_files	delfin/agent/verify_recipe.py:327
 test-only	hostile_reach	delfin/agent/prompt_head.py:144
 test-only	is_safe	delfin/agent/readonly_pipeline.py:371
