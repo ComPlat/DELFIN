@@ -598,6 +598,52 @@ def _turn_checkpoint_path(session_id: str) -> Path:
     return _SESSIONS_DIR / f"{session_id}.turn.json"
 
 
+#: The supervisor's liveness record. It lives in the sessions directory on
+#: purpose: that directory is what a login node and a compute node both
+#: reach, so `delfin-agent durable status` on one can read what the service
+#: on the other wrote. It is NOT a session.
+SUPERVISOR_HEARTBEAT_FILE = "supervisor_heartbeat.json"
+
+#: Every file in the sessions directory that is not a stored session. The
+#: list lives with the DIRECTORY rather than with each writer, because the
+#: readers are what must skip them -- five of them enumerate this directory
+#: and four carried their own copy of the answer (two carried none at all),
+#: which is how the heartbeat record came to be listed as a saved session
+#: the moment it acquired a producer.
+_NOT_A_SESSION_NAMES = frozenset({SUPERVISOR_HEARTBEAT_FILE})
+_NOT_A_SESSION_SUFFIXES = (".turn.json",)
+
+
+def is_shared_record(path: "str | Path") -> bool:
+    """Whether a file in the sessions directory belongs to another writer.
+
+    Input: a path or name. Output: True for a record that is not this
+    directory's own content and must survive a prune.
+    """
+    return Path(path).name in _NOT_A_SESSION_NAMES
+
+
+def is_session_file(path: "str | Path") -> bool:
+    """Whether a file in the sessions directory is a stored session.
+
+    Input: a path or name. Output: True only for a session save.
+    Semantics: a mid-turn checkpoint (``<sid>.turn.json``) and the shared
+    records above live in the same directory and are not sessions.
+
+    Not the same question as "may this be pruned": a stale checkpoint is
+    garbage that ``cleanup_old_sessions`` must remove, and asking THIS
+    predicate there made the prune keep every checkpoint for good --
+    caught by test_cleanup_old_sessions_prunes_stale_checkpoints, which
+    is why the two questions are two functions.
+    """
+    name = Path(path).name
+    if not name.endswith(".json"):
+        return False
+    if is_shared_record(name):
+        return False
+    return not name.endswith(_NOT_A_SESSION_SUFFIXES)
+
+
 def _redact_checkpoint(data: dict[str, Any]) -> dict[str, Any]:
     """Run the secret redactor over every string a checkpoint carries.
 
@@ -1619,8 +1665,8 @@ def list_sessions(
 
     sessions = []
     for f in d.glob("*.json"):
-        if f.name.endswith(".turn.json"):
-            continue   # mid-turn crash checkpoint, not a session
+        if not is_session_file(f):
+            continue   # a checkpoint or a shared record, not a session
         try:
             data = json.loads(f.read_text())
             if want:
@@ -2203,6 +2249,8 @@ def cleanup_old_sessions(*, max_age_days: int = 30) -> int:
     cutoff = time.time() - max_age_days * 86_400
     removed = 0
     for f in _SESSIONS_DIR.glob("*.json"):
+        if is_shared_record(f):
+            continue   # another writer's record; a stale checkpoint IS pruned
         try:
             mtime = f.stat().st_mtime
         except OSError:

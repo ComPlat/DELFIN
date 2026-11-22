@@ -6880,15 +6880,21 @@ def build_parser() -> argparse.ArgumentParser:
     # submit from this path). Handler imported on use, like _cmd_service.
     def _cmd_durable(args):
         from delfin.agent.service.durable_host import cmd_durable
+        if (getattr(args, "durable_action", "") or "") == "plan":
+            from delfin.agent.service.durable_host import cmd_durable_plan
+            return cmd_durable_plan(args)
         return cmd_durable(args)
 
     dur = sub.add_parser(
         "durable",
         help="Durable sessions: render the SLURM job that runs the agent "
-             "service on a compute node, and read its supervisor heartbeat",
+             "service on a compute node, read its supervisor heartbeat, "
+             "and print a session's crash-recovery plan",
     )
     dur.add_argument("durable_action", nargs="?", default="status",
-                     choices=["render", "status"])
+                     choices=["render", "status", "plan"])
+    dur.add_argument("durable_session", nargs="?", default="",
+                     help="plan: the session id to judge")
     dur.add_argument("--walltime", default="12:00:00",
                      help="render: the job's walltime (hh:mm:ss)")
     dur.add_argument("--partition", default=None,
