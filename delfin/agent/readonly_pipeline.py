@@ -156,6 +156,14 @@ _PROCSUBST = re.compile(r"<\(|>\(|\$<")
 
 _GIT_WORD = re.compile(r"(?:\S*/)?git\b")
 
+# A file redirection and its target: the fd-numbered forms (``3>f``), the
+# both-streams forms (``&>f``, ``>&f`` where the word is not a number --
+# a numeric word is a stream merge and is removed before this runs) and
+# the read-write form (``<>f``). Longest spellings first, so ``&>>`` is
+# not read as ``&>`` with a target of ``>f``.
+_REDIRECT_TARGET = re.compile(
+    r"(?:&>>|&>|\d*>>|\d*>&|\d*>|<>)\s*(?P<t>[^\s;|&<>]+)")
+
 
 def _strip_quotes(s: str) -> str:
     """Remove enclosing quotes/backslashes so ``git 'log'`` reads as git."""
@@ -366,6 +374,40 @@ def _sort_flags_ok(args: list[str]) -> bool:
 def _flag_base(tok: str) -> str:
     """``--output=file`` -> ``--output`` so a value form matches its flag."""
     return tok.split("=", 1)[0]
+
+
+def sort_flags_write_or_run(segment: str) -> bool:
+    """True when a ``sort`` line carries a flag that writes a file or
+    runs a program.
+
+    Input: one shell segment. Output: the judgement the gate's own
+    deny-pattern for ``sort`` could not make, because GNU getopt accepts
+    what a pattern keyed to ``-o``/``--output`` does not see: a short
+    cluster (``-ofile``, ``-kT``), any unambiguous long-option prefix
+    (``--out=f`` for ``--output``) and ``--compress-program=PROG``, which
+    runs PROG. Judged by an allow-list of the long options that only
+    read, which is the only direction that stays correct when getopt
+    accepts an abbreviation nobody enumerated.
+
+    A segment whose command is not ``sort`` is False (nothing to judge).
+    """
+    if _command_of(segment) != "sort":
+        return False
+    words = _strip_quotes(segment).split()
+    return not _sort_flags_ok(words[1:])
+
+
+def file_redirect_targets(segment: str) -> list[str]:
+    """The paths a segment redirects INTO, as written.
+
+    Input: one shell segment. Output: one entry per file redirection --
+    ``> f``, ``>> f``, ``3> f``, ``&> f``, ``>& f``, ``<> f`` -- and
+    nothing for a stream merge (``2>&1``, ``>&2``), which writes no file.
+    The text is returned unexpanded and unresolved: whether a target lies
+    inside a permitted root is the caller's judgement, not this module's.
+    """
+    text = _STREAM_MERGE.sub(" ", _strip_quotes(segment))
+    return [m.group("t") for m in _REDIRECT_TARGET.finditer(text)]
 
 
 def is_safe(cmd: str) -> bool:
