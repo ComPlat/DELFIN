@@ -75,23 +75,24 @@ BUCKETS: list[tuple[str, re.Pattern[str], str, str]] = [
      "Sort these asks into those a rule could have decided (read-only, "
      "inside the workspace) and the rest; the rest should reach the "
      "person where they are (phone) instead of timing out."),
-     ("allowlist_miss",
-      # The gate's refusal for a command off the auto-allow list carries
-      # no " was not run: " and does not contain the word "approval": it
-      # is the sentence "blocked: '<cmd>' is not on the auto-allow list, "
-      # "..." (api_client._unisolated_fallback_verdict) or the same with
-      # the reading-alternative NOTE appended. This was the largest hand-
-      # bucketed category of the 437 denials measured in 2026-09; a
-      # pattern keyed to the older reason form put all of them under
-      # OTHER. Placed BEFORE read_before_write: the reading-hint variant
-      # of this same refusal names read_file as the ALLOWED way, and a
-      # hint must not re-bucket a refusal as a write-without-read defect.
-      re.compile(r"not on the auto-allow list|auto-allow", re.I),
-      "Command off the auto-allow list",
-      "Check that the refusal names what still works and, where a "
-      "reading form exists, says so; count repeats of one command head "
-      "in one session as a command the allow list should cover."),
-     ("guarded_location",
+    ("allowlist_miss",
+     # The gate's refusal for a command off the auto-allow list carries
+     # no " was not run: " and does not contain the word "approval": its
+     # text is "blocked: '<cmd>' is not on the auto-allow list, ..."
+     # (api_client._unisolated_fallback_verdict, api_client.py:21618),
+     # optionally with the reading-alternative NOTE appended. Verified
+     # against the product text 2026-11-22; before this bucket existed
+     # every one of those refusals fell through to OTHER, because the
+     # patterns above are keyed to an older reason form. Placed BEFORE
+     # read_before_write: the reading-hint variant of this same refusal
+     # names read_file as the ALLOWED way, and a hint must not re-bucket
+     # a refusal as a write-without-read defect.
+     re.compile(r"not on the auto-allow list|auto-allow", re.I),
+     "Command off the auto-allow list",
+     "Check that the refusal names what still works and, where a "
+     "reading form exists, says so; count repeats of one command head "
+     "in one session as a command the allow list should cover."),
+    ("guarded_location",
      re.compile(r"where approvals are answered|secret-deny|\.ssh|"
                 r"credential", re.I),
      "Touched a guarded location (approvals, secrets)",
