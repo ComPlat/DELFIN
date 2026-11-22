@@ -26,15 +26,37 @@ test-only	_load_md_presets	delfin/agent/subagents.py:1606
 test-only	_locator_value	delfin/agent/cited_retrieval.py:218
 test-only	_scoped_test_cmd_for_edits	delfin/agent/api_client.py:13237
 test-only	build_fixtures	delfin/agent/pack/benchmark/setup/w17_data_fixtures.py:22
+# bwrap_substitution: measured 2026-11-22 (wave 37, group rr1). Neither mounting
+# nor deleting is right yet. The wiring contract is tests/test_shared_tmp_wiring.py,
+# xfail(strict) with reason "operator wiring pending": the swap belongs in
+# api_client._bash_isolation_argv (delfin/agent/api_client.py:31275), which still
+# mounts --tmpfs /tmp. api_client.py is forbidden to this group (rule 13), so the
+# mount cannot be made here; deleting would orphan that contract. Decides it: the
+# operator wiring commit replacing --tmpfs /tmp with the session-dir bind.
 test-only	bwrap_substitution	delfin/agent/shared_tmp.py:248
 test-only	category_names	delfin/agent/compaction_quality.py:169
 test-only	check_ordering	delfin/agent/prompt_head.py:95
 test-only	distill_for_shipping	delfin/agent/memory_distill.py:380
+# enforce_quota: measured 2026-11-22 (wave 37, group rr1). Neither mounting nor
+# deleting is right yet. Zero product callers: the product's own session scratch
+# (api_client._session_scratch_dir, delfin/agent/api_client.py:29532) never
+# calls shared_tmp at all, and no cleanup path in delfin/ names this function.
+# Deleting would orphan the quota pin tests (tests/test_shared_tmp_cleanup.py);
+# mounting would need a product cleanup tick that does not exist (new surface,
+# rule 12). Decides it: wiring the session-end cleanup to enforce_quota, or an
+# operator decision that the product never quotas scratch.
 test-only	enforce_quota	delfin/agent/shared_tmp.py:307
 test-only	for_files	delfin/agent/verify_recipe.py:327
 test-only	hostile_reach	delfin/agent/prompt_head.py:144
 test-only	is_safe	delfin/agent/readonly_pipeline.py:371
 test-only	keyed_engines_configured	delfin/agent/web_tools.py:698
+# map_to_host: measured 2026-11-22 (wave 37, group rr1). Neither mounting nor
+# deleting is right yet. The wiring contract is tests/test_shared_tmp_wiring.py,
+# xfail(strict): the mapping belongs in api_client._execute_read_file
+# (delfin/agent/api_client.py:18215) BEFORE the read gate, so /tmp/... resolves
+# to the session dir. api_client.py is forbidden to this group (rule 13); deleting
+# would orphan the contract and the mapping rules pinned by tests/test_shared_tmp.py.
+# Decides it: the operator wiring commit in _execute_read_file.
 test-only	map_to_host	delfin/agent/shared_tmp.py:207
 test-only	pdf_xfa_data	delfin/agent/office.py:3514
 test-only	quality_report	delfin/agent/compaction_quality.py:75
