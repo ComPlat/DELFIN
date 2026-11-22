@@ -1533,6 +1533,28 @@ def _open_session(engine, args: argparse.Namespace, workspace: Path) -> bool:
             note = None
         if note:
             print(note, file=sys.stderr)
+        # Even without a crash, a resumed session may carry an OPEN step
+        # from an interrupted turn: the journal says what may or may not
+        # have run (CHECK BEFORE REPEATING). The resume is exactly where
+        # the person decides what to repeat — the step_resume_note path
+        # of cli_resume, reached here for the first time.
+        try:
+            from .cli_resume import step_resume_note
+            step_note = step_resume_note(sid)
+        except Exception:
+            step_note = None
+        if step_note:
+            print(step_note, file=sys.stderr)
+        # A resumed session is a NEW session for the diagnostics
+        # unavailability note (operator ruling 2026-10-18: the note shows
+        # ONCE PER SESSION). The flag lives in diagnostics.py and nothing
+        # reset it, so a resumed session in the same process stayed silent
+        # forever after another session had consumed the note.
+        try:
+            from . import diagnostics as _diag
+            _diag.reset_unavailability_note()
+        except Exception:
+            pass
 
     # One chain of decisions, in one order, so what was decided last
     # is what everything downstream reads:
@@ -4700,9 +4722,50 @@ def _doctor_repair(results: list) -> int:
 
 def cmd_audit(args: argparse.Namespace) -> int:
     """``delfin-agent audit verify``: 0 when every log checked is intact,
-    1 when one is not, 2 without a subcommand. Reads only."""
+    1 when one is not, 2 without a subcommand. Reads only.
+
+    ``audit last [N]`` shows the newest N records (default 20) through
+    audit_log.read_last_n — the one reader (_scan) verified them, so
+    what is shown and what 'audit verify' would report on are the same
+    bytes. Records print as compact one-liners; a tampered log is said
+    so BEFORE the records, because a list read under a false premise is
+    worse than no list.
+    """
     from . import audit_log as _al
-    if getattr(args, "audit_action", "") != "verify":
+    action = str(getattr(args, "audit_action", "") or "")
+    if action == "last":
+        log = str(getattr(args, "log", "") or "")
+        path = Path(log).expanduser() if log else None
+        try:
+            n = int(getattr(args, "count", 0) or 20)
+        except (TypeError, ValueError):
+            n = 20
+        records = _al.read_last_n(n, log_path=path)
+        # The verdict on the SAME bytes the records came from: the
+        # report's ok flag is what 'audit verify' would print for this
+        # log. A not-intact log must not present its records as trusted.
+        report = _al.verify(path) if path else None
+        if report is not None and not report.get("ok", True):
+            print("WARNING: this log is NOT intact -- the records below "
+                  "are not necessarily what was recorded. Run "
+                  "`delfin-agent audit verify` for the lines that do "
+                  "not check out.")
+        elif report is None:
+            print("(verdict on the default log: run `delfin-agent audit "
+                  "verify` for the full check)")
+        if not records:
+            print("no audit records found")
+            return 0
+        for rec in records:
+            ts = str(rec.get("ts", "") or "")[:19]
+            tool = str(rec.get("tool", "?") or "?")
+            decision = str(rec.get("decision", "") or "")
+            target = str(rec.get("path", "") or rec.get("command", "")
+                         or "")
+            sid = str(rec.get("session_id", "") or "")[:12]
+            print(f"{ts}  {tool:<14} {decision:<8} {sid:<12} {target[:70]}")
+        return 0
+    if action != "verify":
         print("usage: delfin-agent audit verify [--log PATH] [--json]",
               file=sys.stderr)
         return 2
@@ -5288,6 +5351,24 @@ def cmd_report(args: argparse.Namespace) -> int:
         print(_json.dumps(dataclasses.asdict(report), indent=2))
     else:
         print(_sr.render_terminal(report))
+        # The friction section (wave-10 patterns): where this session lost
+        # turns and time, computed from the same tool trace the report
+        # aggregates. Terminal only -- the SessionReport dataclass is a
+        # shared contract whose field list must not grow silently.
+        try:
+            frictions = _sr.friction_summary(
+                _sr._tool_entries(sid))
+            if frictions:
+                print("")
+                print("Friction (top of what was lost):")
+                for f in frictions:
+                    mag = f.get("magnitude")
+                    unit = f.get("unit") or ""
+                    cmd = str(f.get("command") or f.get("detail") or "")
+                    print(f"  {f.get('kind', '?')}: {mag} {unit} "
+                          f"— {cmd[:80]}")
+        except Exception:
+            pass
     return 0
 
 
@@ -6274,6 +6355,16 @@ def build_parser() -> argparse.ArgumentParser:
                                    "audit.log and every rotated week)")
     audit_verify.add_argument("--json", action="store_true",
                               help="Emit the reports as JSON")
+    # audit last [N] -- the newest N records through read_last_n (the
+    # one reader); the verdict on those bytes is printed first, so a
+    # tampered log is named before its records are shown.
+    audit_last = audit_sub.add_parser(
+        "last", help="Show the newest audit records (default 20; the "
+                     "log's integrity verdict is printed first)")
+    audit_last.add_argument("count", nargs="?", default=20,
+                            help="How many records (default 20)")
+    audit_last.add_argument("--log", default="",
+                            help="One log file (default: ~/.delfin/audit.log)")
     audit_p.set_defaults(func=cmd_audit)
 
     # capabilities / gate explain -- the boundary, read before a session
@@ -6578,7 +6669,7 @@ def build_parser() -> argparse.ArgumentParser:
             agent_cfg = {}
 
         interval = max(60, int(getattr(args, "interval", 0) or 0))
-        state = {"seen": {}}
+        state = {"seen": {}, "cycles_seen": set()}
         stop_seen = {}
         stop = _sa.last_stop()
         while True:
@@ -6593,6 +6684,24 @@ def build_parser() -> argparse.ArgumentParser:
                                           stop_all_seen=stop_seen)
                 for name, text in events:
                     print(f"attention: {text}", flush=True)
+            # The wait side of ops health (B4 target 1+2): who waits on
+            # whom across sessions — printed in both modes — and, in the
+            # --wait loop, ONE event per NEW mutual-wait cycle, deduped in
+            # state["cycles_seen"]. Without this the registry's waits were
+            # invisible to ops health and two sessions waiting on each
+            # other paged nobody. Best-effort: a registry failure must not
+            # break the verdict loop.
+            try:
+                for row in _sh.waits_summary():
+                    print(f"waits: {row['session']} — {row['waits']}",
+                          flush=True)
+                if getattr(args, "wait", False):
+                    from . import mutual_wait as _mw
+                    for _sid, _text in _sh.watch_cycle_events(
+                            _mw.find(_sh.wait_edges()), state, emit=True):
+                        print(f"attention: {_text}", flush=True)
+            except Exception:
+                pass
             rows = []
             for rec in records:
                 verdict = _sh.classify(rec, _t.time(), agent_cfg)

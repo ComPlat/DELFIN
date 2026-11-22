@@ -471,34 +471,6 @@ def _turn_step_key(entry: dict[str, Any]) -> "tuple[int, int] | None":
         return None
 
 
-def finished_result(session: str, *, step: int, turn: int | None = None,
-                    root: "str | Path | None" = None) -> dict[str, Any] | None:
-    """The recorded finish of one step, or None when it never finished.
-
-    With ``turn`` given (the resume path knows the turn it is resuming),
-    only the finish of that (turn, step) matches. Without it, the newest
-    finish of that step number is returned — the pre-turn-field journal
-    shape, kept for older files.
-    """
-    steps, notes = read_steps(session, root=root)
-    for entry in reversed(steps):
-        if entry.get("kind") != "finish":
-            continue
-        try:
-            if int(entry.get("step", -1)) != int(step):
-                continue
-        except (TypeError, ValueError):
-            continue
-        if turn is not None:
-            try:
-                if int(entry.get("turn", -1)) != int(turn):
-                    continue
-            except (TypeError, ValueError):
-                continue
-        return entry
-    return None
-
-
 def last_finished_step(session: str, *,
                        root: "str | Path | None" = None,
                        side_effect_only: bool = False,

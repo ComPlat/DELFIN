@@ -749,6 +749,10 @@ class AgentEngine:
         # id for those backends so tasks (and session save/load) scope per
         # session. CLI stays "" and gets its real id from the stream.
         self.session_id: str = self._fresh_session_id()
+        #: When the STORED session's heartbeat was last moved forward from
+        #: the per-tool-call tick (see _keep_presence_fresh). 0.0 means
+        #: never, so the first tool call of a session refreshes it.
+        self._last_session_heartbeat: float = 0.0
         self._sync_task_session()
         # One-shot: the open-foreign-tasks notice fires only on a session's
         # first prompt build (re-armed with the session in reset_cycle).
@@ -6546,8 +6550,41 @@ class AgentEngine:
                 return
             from . import session_presence as _presence
             _presence.touch(key)
+            self._keep_stored_heartbeat_fresh()
         except Exception:
             pass
+
+    #: The stored session's heartbeat is moved forward at most this often.
+    #: session_presence.touch keeps a limiter of its own (60 s); this one
+    #: needs its own because session_store.touch_heartbeat rewrites the
+    #: whole record, and a tool call must not cost a file rewrite.
+    _SESSION_HEARTBEAT_S = 60.0
+
+    def _keep_stored_heartbeat_fresh(self) -> None:
+        """Move the STORED session's heartbeat forward, rate-limited.
+
+        ``delfin-agent sessions`` reads ``heartbeat_at`` as "last seen"
+        (cli_resume._load_row, and again in the roster at :218). Only a
+        save moved it, so a session working through one long turn was
+        listed as last seen when the turn began -- the presence record was
+        being refreshed beside it the whole time. Two records of the same
+        fact, one of them refreshed.
+
+        Never raises: its caller swallows, and a heartbeat that cannot be
+        written is a stale "last seen", not a failed turn.
+        """
+        session = str(self.session_id or "")
+        if not session:
+            return
+        now = _time.monotonic()
+        if now - self._last_session_heartbeat < self._SESSION_HEARTBEAT_S:
+            return
+        #: Set before the write, not after: a session that is not stored
+        #: yet returns False from every call, and retrying that on every
+        #: tool call would be the rewrite this limiter exists to avoid.
+        self._last_session_heartbeat = now
+        from . import session_store as _store
+        _store.touch_heartbeat(session)
 
     def _build_user_message(
         self, text: str, images: list[str] | None,

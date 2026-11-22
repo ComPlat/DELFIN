@@ -11934,11 +11934,6 @@ def _loop_body(cmd: str) -> "list[str] | None":
     return parts or None
 
 
-def _default_kit_permissions(cwd: Optional[Path] = None) -> KitToolPermissions:
-    """Conservative defaults: workspace = cwd, mode = 'default'."""
-    return KitToolPermissions(workspace=Path(cwd or Path.cwd()))
-
-
 # ---------------------------------------------------------------------------
 # Local doc-search tools (function calling for non-CLI backends)
 # ---------------------------------------------------------------------------
