@@ -61,7 +61,6 @@ test-only	request_prcheck	delfin/agent/swarm/lead.py:159
 test-only	request_triage_answer	delfin/agent/swarm/lead.py:137
 test-only	reset_figure_ledger	delfin/agent/office.py:6098
 test-only	reset_unavailability_note	delfin/agent/diagnostics.py:222
-test-only	resolve_pending	delfin/agent/skill_usage.py:247
 test-only	resources_within	delfin/agent/pack/benchmark/accept/w20_common.py:111
 test-only	role_tool_surface_report	delfin/agent/api_client.py:12107
 test-only	scan_for_dishonest_tests	delfin/agent/verify_guard.py:3554

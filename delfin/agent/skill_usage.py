@@ -244,40 +244,6 @@ def _unresolved_in_session(rows: list[dict], name: str, sid: str) -> int:
     return max(0, started - resolved)
 
 
-def resolve_pending(name: str, outcome: str, *, detail: str = "",
-                    when: str = "") -> bool:
-    """Upgrade a pending "started" use of a skill to its real outcome.
-
-    The ledger-wide form: it looks at the newest row only. The session end
-    uses :func:`resolve_session`, which pairs by session id and is not
-    misled by another session's rows. ``outcome`` is "success", "failure"
-    or "unverified". Appends a resolution row only when the skill's most
-    recent ledger row is "started"; returns True when it resolved, False
-    when there was nothing pending. Best-effort on IO, like record_use.
-    """
-    if outcome not in _OK_OUTCOMES or outcome == "started":
-        raise ValueError(
-            f"invalid resolve outcome {outcome!r} for {name!r}: "
-            f"expected success, failure or unverified")
-    n = _valid_name(name)
-    pending = False
-    sid = ""
-    for row in reversed(_read_rows(_ledger_path(n))):
-        if row.get("skill") == n:
-            pending = row.get("outcome") == "started"
-            sid = _row_session(row)
-            break
-    if not pending:
-        return False
-    text = detail or "resolved at session end"
-    # The resolving row carries the started row's session token, so the
-    # per-session pairing (_unresolved_in_session) sees it as resolved.
-    if sid and _row_session({"detail": text}) != sid:
-        text = f"session:{sid} {text}"
-    record_use(n, outcome, detail=text, when=when)
-    return True
-
-
 def pending_for_session(session_id: str) -> list[str]:
     """Skill names with a "started" row of this session not yet resolved.
 
