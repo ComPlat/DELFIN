@@ -20,6 +20,24 @@ nowhere	_project_settings_paths	delfin/agent/hooks.py:164
 nowhere	controller_hint	delfin/agent/loop_commands.py:298
 nowhere	request_swarm_pause	delfin/agent/swarm/lead.py:110
 nowhere	set_for_workspace_words	delfin/agent/workspace_profiles.py:220
+# _bypass_failure_asks STAYS, measured 2026-11-22. The mount it was
+# written for -- extending the classifier's on_error at
+# _classifier_second_opinion so a failure on the high-risk class asks even
+# for workspace work -- would change no outcome: for every action the
+# predicate calls high-risk, _leaves_workspace already returns True one
+# line earlier, so on_error is already "ask" (or "refuse" with nobody to
+# ask). Measured over 15 bash commands spanning every branch of the
+# pattern, remote_trigger, push_notification, a session message and all
+# four _BYPASS_HIGH_RISK_WRITE_NAMES inside the workspace -- including the
+# .gitconfig case the mount was proposed for -- against the control that
+# routine actions (python3 build.py, cp, ls, git status, git commit, an
+# ordinary write) have leaves False. So the guarantee is delivered by
+# _leaves_workspace plus the deny list, the push gate and the egress scan,
+# which refuse several of them before any classifier is consulted.
+# Its job here is to PIN that: test_the_high_risk_class_is_inside_what_
+# leaves_the_workspace fails if _leaves_workspace ever stops asking for one
+# of them. Deleting it would remove the only explicit statement of the
+# class; mounting it would add a call that cannot change an answer.
 test-only	_bypass_failure_asks	delfin/agent/api_client.py:14120
 test-only	_disabled_keyring_factory	delfin/agent/credentials.py:360
 test-only	_load_md_presets	delfin/agent/subagents.py:1606
