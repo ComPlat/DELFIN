@@ -20,7 +20,11 @@ def test_a_long_smiles_wraps_in_the_table_cell():
     html = tab.rows_to_markdownish(col, rows)
     assert "overflow-wrap:anywhere" in html
     assert "word-break:break-all" in html
-    assert "white-space:nowrap" not in html.split("<tbody>")[1]
+    # the SMILES VALUE cell must wrap; the label cell keeps nowrap on
+    # purpose -- so assert on the value-cell style, not the whole body
+    body = html.split("<tbody>")[1]
+    value_cell = body.split("CCCC", 1)[0]
+    assert "white-space:normal;overflow-wrap:anywhere" in value_cell
     assert "C" * 500 in html  # nothing cut
 
 
