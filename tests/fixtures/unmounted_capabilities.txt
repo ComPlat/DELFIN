@@ -17,7 +17,6 @@
 # Measured 2026-11-20, by the functions in that test file, so the list
 # and the check cannot compute it differently.
 nowhere	controller_hint	delfin/agent/loop_commands.py:298
-nowhere	request_swarm_pause	delfin/agent/swarm/lead.py:110
 test-only	_bypass_failure_asks	delfin/agent/api_client.py:14120
 test-only	_disabled_keyring_factory	delfin/agent/credentials.py:360
 test-only	_load_md_presets	delfin/agent/subagents.py:1606
