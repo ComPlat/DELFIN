@@ -92,7 +92,12 @@ _MAX_QUERY_CHARS = 2000
 def _known_secret_values() -> list[str]:
     """The values of every credential DELFIN holds (file, keyring and
     well-known env), for an exact-match egress check and for scrub_secrets
-    on every tool result. Never raises; short values ignored."""
+    on every tool result. Never raises; short values ignored.
+
+    The single seam for the VALUES: a test that injects a credential
+    replaces this one function. Whether every store could be read is a
+    separate question, :func:`_secret_lookup_complete`.
+    """
     out: list[str] = []
     try:
         from .credentials import _WELL_KNOWN_KEYS, held_secret_values
@@ -108,6 +113,27 @@ def _known_secret_values() -> list[str]:
     return out
 
 
+def _secret_lookup_complete() -> bool:
+    """Whether every credential store could be READ on this machine.
+
+    A separate question from :func:`_known_secret_values`, and
+    deliberately a separate function: an empty value list means "nothing
+    to remove" for a store that is absent and "I could not look" for one
+    that exists and cannot be read, and a caller whose verdict is a
+    security decision has to tell those apart. Keeping it apart also
+    leaves the value lookup as the single seam a test replaces -- one
+    fact, one function.
+
+    Never raises; an exception anywhere in the lookup is itself an
+    incomplete answer.
+    """
+    try:
+        from .credentials import held_secret_values_complete
+        return held_secret_values_complete()[1]
+    except Exception:
+        return False
+
+
 def outbound_secret_reason(text: str) -> Optional[str]:
     """Why ``text`` must not leave the machine (a URL or a search query), or None.
 
@@ -118,6 +144,15 @@ def outbound_secret_reason(text: str) -> Optional[str]:
     shape the output guard redacts (API keys, tokens, private keys,
     password assignments, passwords in URLs), and a query too long to be a
     lookup.
+
+    Also refused: anything at all while a credential store EXISTS and
+    cannot be read. The exact pass is the only one that can catch a key
+    with no shape, so a store it could not read leaves this function
+    unable to say the text is free of credentials -- and this text is
+    leaving the machine, where a wrong answer cannot be taken back. A
+    store that is merely absent is a complete answer and refuses nothing.
+    The reason names the repair, because the state is abnormal and the
+    person can end it.
     """
     raw = str(text or "")
     try:
@@ -127,6 +162,10 @@ def outbound_secret_reason(text: str) -> Optional[str]:
     for secret in _known_secret_values():
         if secret in raw or secret in decoded:
             return "it contains a credential DELFIN holds"
+    if not _secret_lookup_complete():
+        return ("a credential store exists and could not be read, so this "
+                "cannot be checked against the credentials DELFIN holds "
+                "(repair or remove ~/.delfin/credentials.json)")
     try:
         from .output_guard import _redact_secrets
         findings: list = []

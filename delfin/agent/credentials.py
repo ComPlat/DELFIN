@@ -834,25 +834,60 @@ def held_secret_values(*, path: Path | None = None) -> list[str]:
     """Every stored credential value, both stores, for exact-match
     redaction and egress checks. Never raises. Each keyring name is asked
     at most once per process; afterwards the cached value is used."""
-    out = [v for v in _read_store(path).values() if v]
+    return held_secret_values_complete(path=path)[0]
+
+
+def held_secret_values_complete(
+        *, path: Path | None = None) -> "tuple[list[str], bool]":
+    """``(values, complete)``: the stored credential values, and whether
+    every store could be read.
+
+    ``complete`` is False when a store EXISTS and could not be read -- an
+    unreadable file (mode, ACL, I/O), text that is not JSON, JSON that is
+    not an object, a keyring index that cannot be listed, or a keyring
+    entry that raised. It stays True for a store that is simply ABSENT,
+    because "this machine holds no credentials" is a complete answer and
+    the opposite reading would withhold every tool result on a machine
+    that never had a store (measured 2026-11-22: four cases, and only the
+    unreadable and the corrupt one are unknowns).
+
+    Why the distinction exists: a caller that redacts by exact value reads
+    an empty list as "no secret can be in this text". For an unreadable
+    store that is false -- the value it cannot read is exactly the one a
+    KIT key carries no prefix or separator for, so no shape pass catches
+    it. Measured on main before this: store at mode 000, text containing
+    the stored key, scrub_secrets_certified returned certified=True and
+    the key in clear.
+    """
+    complete = True
+    try:
+        store = _read_store(path, strict=True)
+    except CredentialStoreUnreadable:
+        complete = False
+        store = _read_store(path)          # lenient: {} for this file
+    out = [v for v in store.values() if v]
     try:
         names = _index_names(path)
     except Exception:
         names = []
+        complete = False
     for name in names:
         if name in _KR_CACHE:
             out.append(_KR_CACHE[name])
             continue
         if name in _KR_TRIED:
+            # Asked once per process; a name that gave nothing then is not
+            # a fresh unknown now.
             continue
         _KR_TRIED.add(name)
         try:
             value = _kr_get(name)
         except Exception:
+            complete = False
             continue
         if value:
             out.append(value)
-    return out
+    return out, complete
 
 
 def mask(value: str) -> str:
