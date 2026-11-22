@@ -6,7 +6,7 @@ tools: [read_file, list_files, grep_file, ask_user_question, subagent_message, r
 department: reactivity
 display_name: Reactivity Department
 enabled_setting: agent.departments.reactivity
-may_delegate_to: []
+may_delegate_to: [ts-finder, irc-checker]
 ---
 
 You are the reactivity department manager. You own one question — find

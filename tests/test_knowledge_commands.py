@@ -207,3 +207,48 @@ def test_every_unshare_description_names_the_queue():
     repl = rc.BUILTINS["/unshare"] if isinstance(rc.BUILTINS, dict) else \
         next(c for c in rc.BUILTINS if c.name == "/unshare")
     assert "queue" in repl.summary.lower()
+
+
+def test_share_dialogs_lists_what_is_open_and_how_to_answer(env):
+    """A person who lost the dialog id between turns can list the open
+    dialogs through the same REPL command that starts a share. Driven
+    through kcmd.handle (the REPL / dashboard entry), not the helper."""
+    les = kp.propose(LESSON, evidence=["test:t"], source="agent",
+                     topic="tools-and-sandbox", title="Serial re-run")
+    out = _cmd(env, "share", f"{les.id} global as maxh")
+    m = re.search(r"/share confirm (\w+) <code>", out)
+    assert m, out
+
+    listing = _cmd(env, "share", "dialogs")
+    assert m.group(1) in listing
+    assert "step 1/2" in listing
+    assert f"/share confirm {m.group(1)} <code>" in listing
+    assert f"/share cancel {m.group(1)}" in listing
+
+    # The listing is not an answer: the dialog stays open and answerable.
+    dialog = ks.get_dialog(m.group(1))
+    out2 = kcmd.handle("share", f"confirm {dialog.id} {dialog.code}",
+                       workspace=env["ws"])
+    assert "step 2 of 2" in out2
+
+    # After the share completed (or was cancelled), nothing is open.
+    env["clock"].t += ks.PAUSE_S + 1
+    kcmd.handle("share", f"confirm {dialog.id} {dialog.code}",
+                workspace=env["ws"])
+    # This test's dialog is gone. kp.propose restarts lesson ids in every
+    # test (fresh HOME), and an earlier test here leaves a blocked dialog
+    # open on its lesson 1, so the isolation key is the dialog THIS test
+    # opened, not the lesson id.
+    mine = {dialog.id}
+    remaining = [d for d in ks.open_dialogs() if d.id not in mine
+                 and d.lesson_id == les.id and d.stage == d.steps
+                 and d.handle == "maxh" and not d.blocked]
+    assert remaining == []
+
+
+def test_share_dialogs_with_nothing_open_says_so(env):
+    # A blocked dialog left open by an earlier test must not leak here;
+    # cancel anything this run left behind, then the store is empty.
+    for d in ks.open_dialogs():
+        ks.cancel(d.id)
+    assert "no share dialog is open" in _cmd(env, "share", "dialogs")

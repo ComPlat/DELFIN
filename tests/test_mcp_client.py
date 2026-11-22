@@ -224,3 +224,28 @@ def test_malformed_namespaced_name():
     out2 = reg.call("mcp__noundsep", {})
     payload = json.loads(out2)
     assert "error" in payload
+
+
+def test_a_registry_reload_drops_this_processs_pin_verdicts(tmp_path, monkeypatch):
+    """`/mcp reload` (repl._stop_children -> mcp_client.reset_registry)
+    re-discovers the servers. The pin answers, withheld tools and
+    one-per-process notes it left behind were verdicts about the OLD
+    registry's servers; after a reload a changed description must be
+    re-checked against the person, not answered from stale state."""
+    M._PIN_ANSWERS[("k", "t", "d")] = True
+    M.PIN_WITHHELD.add("mcp__srv__tool")
+    M._PIN_NOTED.add(("pinned", "k"))
+    M._PIN_MEMORY["k"] = {"name": "srv"}
+
+    try:
+        M.reset_registry()
+        assert M._PIN_ANSWERS == {}
+        assert M.PIN_WITHHELD == set()
+        assert M._PIN_NOTED == set()
+        assert M._PIN_MEMORY == {}
+    finally:
+        # Do not leak the seeded state into other tests either way.
+        M._PIN_ANSWERS.clear()
+        M.PIN_WITHHELD.clear()
+        M._PIN_NOTED.clear()
+        M._PIN_MEMORY.clear()

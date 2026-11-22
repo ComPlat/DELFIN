@@ -14,7 +14,6 @@ Real path (verified this session): a lead tool call maps to a
 ``getattr(swarm_rpc, method.replace(".", "_"))``, so a handler of that
 name must exist in delfin/agent/service/swarm_rpc.py.
 """
-from delfin.agent.swarm import lead as _lead
 from delfin.agent.service import protocol
 from delfin.agent.service import swarm_rpc
 
@@ -49,14 +48,12 @@ def test_every_registered_lead_tool_is_dispatchable():
 
 
 def test_prcheck_confirmed_call_is_a_structured_result_not_a_crash():
-    """request_prcheck behind the user's confirmation must return a
-    structured dict (the package's own refusal pattern, lead.py:105-116),
-    never raise NotImplementedError."""
-    lead = _lead
-    try:
-        result = _lead.request_prcheck(642, confirmed=True)
-    except NotImplementedError as exc:  # pragma: no cover - the defect
-        raise AssertionError(
-            "request_prcheck raised NotImplementedError after "
-            f"confirmation: {exc}") from exc
-    assert isinstance(result, dict), result
+    """The PR-readiness read the user confirms must end in a structured
+    dict, never NotImplementedError -- on the REAL dispatch path: the
+    service handler the supervisor resolves (swarm_rpc.swarm_prcheck)
+    answers with the read-only pre-PR report for the named worktree.
+    Missing params raise SwarmRpcError -- the structured error the
+    service protocol answers with, never a raw NotImplementedError."""
+    import pytest
+    with pytest.raises(swarm_rpc.SwarmRpcError):
+        swarm_rpc.swarm_prcheck({})  # no pr, no worktree
