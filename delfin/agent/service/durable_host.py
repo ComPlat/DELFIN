@@ -36,8 +36,14 @@ from .. import session_store
 # Target 2 — supervisor heartbeat on the shared filesystem
 # --------------------------------------------------------------------------
 
-HEARTBEAT_FILE = "supervisor_heartbeat.json"
-"""Basename of the supervisor heartbeat, stored under the sessions dir."""
+HEARTBEAT_FILE = session_store.SUPERVISOR_HEARTBEAT_FILE
+"""Basename of the supervisor heartbeat, stored under the sessions dir.
+
+One definition, in the module that owns that directory: the readers which
+enumerate it have to skip this name, so the name cannot live only with the
+writer. Re-exported here because that is where the heartbeat's own
+functions and their tests look for it.
+"""
 
 FRESH_WINDOW_S = 90
 """How long a heartbeat is considered fresh (no wall-clock sleep in tests:
@@ -268,5 +274,60 @@ def cmd_durable(args) -> int:
     print(f"supervisor heartbeat: {state} "
           f"({age:.0f} s old), host {host}, pid {record.get('pid')}, "
           f"sessions: {sessions}")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# Recovery plan — what a restart may do with one session's in-flight turn
+# --------------------------------------------------------------------------
+
+def render_recovery_plan(plan) -> str:
+    """The plan as the person on the login node reads it.
+
+    One line per journaled step, verdict first: the person decides
+    whether to repeat what a crash left open, and the lines that must
+    not be repeated silently say so.
+    """
+    # Both lines name the session: a plan is read next to other plans in
+    # a log, and the ternary written inside the f-string list dropped the
+    # "session <id>" prefix on the not-in-flight branch.
+    state = (f"in-flight turn, resume at turn {plan.resume_turn}"
+             if plan.in_flight
+             else "no in-flight turn: the session resumes normally")
+    lines = [f"session {plan.session}: {state}"]
+    for d in plan.decisions:
+        name = d.verdict.name
+        extra = ""
+        if d.verdict.name == "MUST_ASK":
+            extra = (" -- a person decides: is the step's effect present?"
+                     if d.side_effecting else "")
+        lines.append(f"  turn {d.turn} step {d.step} {d.tool or '(tool)'}: "
+                     f"{name}{extra}")
+    if not plan.decisions and plan.in_flight:
+        lines.append("  (no journaled steps to judge)")
+    return "\n".join(lines)
+
+
+def cmd_durable_plan(args) -> int:
+    """``delfin-agent durable plan <session>``.
+
+    The public caller of ``durable.decide_recovery``: reads the real
+    checkpoint and step journal of one session and prints what a
+    restart may repeat, what it must not, and what a person must
+    decide. Offline: it reads and prints, it changes nothing.
+    """
+    from .. import durable
+
+    session = getattr(args, "durable_session", "") or ""
+    if not session:
+        print("delfin-agent durable plan: a session id is required",
+              file=sys.stderr)
+        return 1
+    try:
+        plan = durable.decide_recovery(session)
+    except Exception as exc:
+        print(f"delfin-agent durable plan: failed: {exc}", file=sys.stderr)
+        return 1
+    print(render_recovery_plan(plan))
     return 0
 

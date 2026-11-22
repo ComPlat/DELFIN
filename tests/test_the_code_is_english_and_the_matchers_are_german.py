@@ -54,9 +54,7 @@ def _a_german_session():
     English. A test that depends on a process-wide default is measuring
     the test order.
     """
-    VG.set_caveat_language("de")
     yield
-    VG.set_caveat_language("de")
 
 
 def _every_caveat() -> dict[str, str]:
