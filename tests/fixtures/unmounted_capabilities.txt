@@ -21,6 +21,10 @@ nowhere	controller_hint	delfin/agent/loop_commands.py:298
 nowhere	request_swarm_pause	delfin/agent/swarm/lead.py:110
 nowhere	set_for_workspace_words	delfin/agent/workspace_profiles.py:220
 test-only	_bypass_failure_asks	delfin/agent/api_client.py:14120
+# NOT removed 2026-11-22 (wave 36 r4): the suite's conftest.py:1599 swaps
+# this in as _keyring_factory so no test can touch the user's real keyring;
+# there is no production path that disables the keyring, so a mount has
+# nothing to reach and deleting it breaks the suite's isolation.
 test-only	_disabled_keyring_factory	delfin/agent/credentials.py:360
 # _locator_value (cited_retrieval.py:218) DELETED 2026-11-22: zero callers
 # anywhere, including its own module -- check_answer_citations reads the
@@ -46,11 +50,26 @@ test-only	enforce_quota	delfin/agent/shared_tmp.py:307
 # holding both a recipe and a diff.
 test-only	for_files	delfin/agent/verify_recipe.py:327
 test-only	hostile_reach	delfin/agent/prompt_head.py:144
+# NOT removed 2026-11-22 (wave 36 r4): measured against the live gate
+# (KitToolPermissions.matches_bash_auto_allow, api_client.py:11109) it is
+# NOT redundant -- the gate auto-allows 7 refusal-shaped commands is_safe
+# refuses (ls 3>f, ls >&f, ls &>f, cat <>f, sort --out=f x,
+# sort --compress-program=sh x, git reflog expire --all; probe
+# scratch/probe_gate.py, 2026-11-22). Mounting it there needs
+# api_client.py, which is forbidden to an unattended session; deleting it
+# would discard refusals the product gate still misses. Kept until an
+# attended change wires it into the gate.
 test-only	is_safe	delfin/agent/readonly_pipeline.py:371
 test-only	keyed_engines_configured	delfin/agent/web_tools.py:698
 test-only	map_to_host	delfin/agent/shared_tmp.py:207
 test-only	pdf_xfa_data	delfin/agent/office.py:3514
 test-only	quality_report	delfin/agent/compaction_quality.py:75
+# NOT removed 2026-11-22 (wave 36 r4): the product's per-turn reset is
+# begin_figure_turn (office.py:6070, driven by engine.py:3482), which opens
+# a NEW token'd scope and pops only that token -- it cannot clear an
+# existing scope on demand, and eviction (office.py:6051) only trims stale
+# scopes. No product path is equivalent to an explicit clear; the office
+# tool runs are the consumers and keep needing it between turns.
 test-only	reset_figure_ledger	delfin/agent/office.py:6098
 test-only	resources_within	delfin/agent/pack/benchmark/accept/w20_common.py:111
 test-only	role_tool_surface_report	delfin/agent/api_client.py:12107
