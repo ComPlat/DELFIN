@@ -35,6 +35,17 @@ test-only	build_fixtures	delfin/agent/pack/benchmark/setup/w17_data_fixtures.py:
 # operator wiring commit replacing --tmpfs /tmp with the session-dir bind.
 test-only	bwrap_substitution	delfin/agent/shared_tmp.py:248
 test-only	category_names	delfin/agent/compaction_quality.py:169
+# check_ordering STAYS (measured 2026-11-22, wave 37 rr2): nothing in the
+# product inspects a recorded head -- the engine turn (engine.py:3084)
+# composes via compose_sections, joins (_held_system_prompt) and sends;
+# the layer order is guaranteed at the source by construction
+# (prompt_loader.py:2050 "the composition order IS the layer order"), so a
+# product-composed head cannot violate it. The check is the suite/human
+# measurement layer over recorded rows (as the adversarial test does:
+# record the real engine rows, call the check from the test). Mounting it
+# in the engine turn would be a tautological new surface (rule 12); the
+# question that decides it is whether the product should surface an
+# ordering violation to a person -- a design decision, not a repair.
 test-only	check_ordering	delfin/agent/prompt_head.py:95
 test-only	distill_for_shipping	delfin/agent/memory_distill.py:380
 # enforce_quota: measured 2026-11-22 (wave 37, group rr1). Neither mounting nor
@@ -47,6 +58,16 @@ test-only	distill_for_shipping	delfin/agent/memory_distill.py:380
 # operator decision that the product never quotas scratch.
 test-only	enforce_quota	delfin/agent/shared_tmp.py:307
 test-only	for_files	delfin/agent/verify_recipe.py:327
+# hostile_reach STAYS (measured 2026-11-22, wave 37 rr2): the only rows in
+# a product-composed head that carry data (briefing, lessons, decomposition,
+# chemistry, repo_map -- prompt_loader.py:2234-2264) are all LAYER_VOLATILE,
+# which hostile_reach exempts (layer >= 2); the layer 0/1 rows are trusted
+# addendum files and fixed route text. Product rows therefore cannot trip
+# the check by construction -- it guards a future layer-assignment
+# regression that would reclassify data into the cacheable head. Mounting
+# it in the engine turn would be a per-turn tautology / new surface
+# (rule 12); the deciding question is whether the product should enforce
+# the invariant per turn -- a design decision, not a repair.
 test-only	hostile_reach	delfin/agent/prompt_head.py:144
 test-only	is_safe	delfin/agent/readonly_pipeline.py:371
 test-only	keyed_engines_configured	delfin/agent/web_tools.py:698
@@ -59,6 +80,19 @@ test-only	keyed_engines_configured	delfin/agent/web_tools.py:698
 # Decides it: the operator wiring commit in _execute_read_file.
 test-only	map_to_host	delfin/agent/shared_tmp.py:207
 test-only	pdf_xfa_data	delfin/agent/office.py:3514
+# quality_report STAYS (measured 2026-11-22, wave 37 rr2): the product's
+# compaction-loss answer is compare_loss (compaction_log.py:119), mounted in
+# two live places (record_compaction at compaction_log.py:78, in_turn at
+# in_turn_compaction.py:307), and it reports in working_state's four
+# categories (denials, tests, files, instructions). quality_report is a
+# second, broader seven-category keep-list with no writer on the product
+# path -- the same two-vocabularies finding as the category_names row above
+# (that row's reason lives on the wave-36-c1 branch swarm/w36-c1-l1-t2,
+# not yet merged). Wave 36 c1 already attempted and withdrew the mount:
+# in this vocabulary five of the seven categories would read as forever
+# missing, so the loss metric reports in the writer's vocabulary instead.
+# Deciding which vocabulary the product keeps is a design decision, not a
+# repair.
 test-only	quality_report	delfin/agent/compaction_quality.py:75
 test-only	recall_levels	delfin/agent/memory_distill.py:495
 test-only	reset_figure_ledger	delfin/agent/office.py:6098
