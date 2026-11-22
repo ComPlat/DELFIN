@@ -19,7 +19,6 @@
 nowhere	_project_settings_paths	delfin/agent/hooks.py:164
 nowhere	controller_hint	delfin/agent/loop_commands.py:298
 nowhere	request_swarm_pause	delfin/agent/swarm/lead.py:110
-nowhere	set_for_workspace_words	delfin/agent/workspace_profiles.py:220
 test-only	_bypass_failure_asks	delfin/agent/api_client.py:14120
 test-only	_disabled_keyring_factory	delfin/agent/credentials.py:360
 test-only	_load_md_presets	delfin/agent/subagents.py:1606
