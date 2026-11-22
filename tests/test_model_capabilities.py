@@ -703,3 +703,83 @@ def test_the_output_limit_is_not_a_context_window(monkeypatch):
     monkeypatch.setattr(mc, "_fetch_openai_models", lambda base, api_key="": [entry])
     caps = mc.resolve("blablador", "router-model-c", _ROUTER_BASE)
     assert caps.context_window != 131_072
+
+
+# --- the stored cache belongs to everyone who writes it -------------------
+
+def _stored(path):
+    return json.loads(path.read_text())["entries"]
+
+
+def test_a_save_keeps_the_rows_this_process_never_resolved(tmp_path):
+    """A save MERGES; it does not replace the store with what one process
+    happens to hold.
+
+    Measured 2026-11-21: the save wrote ``{"entries": <this process's live
+    entries>}`` over the file, so every save deleted everything the writer
+    had not itself resolved. Two sessions on one host each dropped the
+    other's rows, and from the suite side one test that resolved one
+    stubbed model left the operator's accumulated file holding nothing but
+    that fabricated record.
+    """
+    path = tmp_path / "caps_cache.json"
+    path.write_text(json.dumps({"_v": mc._CACHE_VERSION, "entries": {
+        "ANOTHER-PROCESS": {"model": "m", "provider": "kit",
+                            "context_window": 7, "source": "live",
+                            "discovered_at": time.time()}}}))
+    mc._CACHE_PATH = path          # the _isolate fixture restores it
+    mc._CACHE.clear()
+    mc._CACHE["MINE"] = mc.ModelCapabilities(
+        model="x", provider="kit", context_window=1, source="live",
+        discovered_at=time.time())
+    mc._save_disk_cache()
+    assert sorted(_stored(path)) == ["ANOTHER-PROCESS", "MINE"]
+
+
+def test_a_save_leaves_no_half_written_store(tmp_path):
+    """Through a temporary file and one rename: a reader never sees a
+    partial store, and no .tmp is left beside it."""
+    path = tmp_path / "caps_cache.json"
+    mc._CACHE_PATH = path
+    mc._CACHE.clear()
+    mc._CACHE["MINE"] = mc.ModelCapabilities(
+        model="x", provider="kit", context_window=1, source="live",
+        discovered_at=time.time())
+    mc._save_disk_cache()
+    assert list(tmp_path.glob("*.tmp")) == []
+    assert "MINE" in _stored(path)
+
+
+def test_a_store_from_an_older_schema_is_not_carried_forward(tmp_path):
+    """The other direction. A file whose version does not match holds
+    fields that may now mean something else (the v2 bump was exactly
+    that), so a save starts from this process's findings instead of
+    merging rows it cannot trust."""
+    path = tmp_path / "caps_cache.json"
+    path.write_text(json.dumps({"_v": mc._CACHE_VERSION - 1, "entries": {
+        "STALE": {"model": "m", "provider": "kit", "context_window": 7,
+                  "source": "live", "discovered_at": time.time()}}}))
+    mc._CACHE_PATH = path
+    mc._CACHE.clear()
+    mc._CACHE["MINE"] = mc.ModelCapabilities(
+        model="x", provider="kit", context_window=1, source="live",
+        discovered_at=time.time())
+    mc._save_disk_cache()
+    assert sorted(_stored(path)) == ["MINE"]
+
+
+def test_clearing_the_process_cache_keeps_the_stored_one(tmp_path):
+    """``clear_cache`` empties this process and touches no file. It used
+    to unlink the path, which on an unredirected constant is the
+    operator's accumulated store."""
+    path = tmp_path / "caps_cache.json"
+    path.write_text(json.dumps({"_v": mc._CACHE_VERSION, "entries": {
+        "KEEP": {"model": "m", "provider": "kit", "context_window": 7,
+                 "source": "live", "discovered_at": time.time()}}}))
+    mc._CACHE_PATH = path
+    mc._CACHE["MINE"] = mc.ModelCapabilities(
+        model="x", provider="kit", context_window=1, source="live",
+        discovered_at=time.time())
+    mc.clear_cache()
+    assert mc._CACHE == {}
+    assert sorted(_stored(path)) == ["KEEP"]
