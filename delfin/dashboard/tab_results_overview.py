@@ -20,6 +20,7 @@ import io as _io
 import json as _json
 import os
 import tempfile
+import uuid
 import zipfile as _zipfile
 from typing import Any, List
 
@@ -1088,7 +1089,12 @@ class ResultsOverviewPanel:
             # real HOME paths are read-only and the format build would fail
             # ("I can't find the format file pdflatex.fmt").
             env = dict(os.environ)
-            tmp_texmf = os.path.join(tempfile.gettempdir(), "delfin_texmf")
+            # A per-export texmf tree: a previous run that died mid
+            # format-build leaves a corrupt pdflatex.fmt in a shared
+            # tree, and every later export then fails instantly with
+            # "Fatal error occurred, no output PDF" (observed 2026-11-22).
+            tmp_texmf = os.path.join(
+                tempfile.gettempdir(), "delfin_texmf_" + uuid.uuid4().hex[:8])
             os.makedirs(os.path.join(tmp_texmf, "web2c"), exist_ok=True)
             for var in ("TEXMFHOME", "TEXMFVAR", "VARTEXMF"):
                 env[var] = tmp_texmf
