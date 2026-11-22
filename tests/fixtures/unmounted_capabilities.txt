@@ -50,15 +50,19 @@ test-only	enforce_quota	delfin/agent/shared_tmp.py:307
 # holding both a recipe and a diff.
 test-only	for_files	delfin/agent/verify_recipe.py:327
 test-only	hostile_reach	delfin/agent/prompt_head.py:144
-# NOT removed 2026-11-22 (wave 36 r4): measured against the live gate
+# NOT removed 2026-11-22 (wave 36 r4, re-measured independently the same
+# day): against the live gate
 # (KitToolPermissions.matches_bash_auto_allow, api_client.py:11109) it is
-# NOT redundant -- the gate auto-allows 7 refusal-shaped commands is_safe
-# refuses (ls 3>f, ls >&f, ls &>f, cat <>f, sort --out=f x,
-# sort --compress-program=sh x, git reflog expire --all; probe
-# scratch/probe_gate.py, 2026-11-22). Mounting it there needs
-# api_client.py, which is forbidden to an unattended session; deleting it
-# would discard refusals the product gate still misses. Kept until an
-# attended change wires it into the gate.
+# NOT redundant -- in default mode the gate auto-allows 8 commands is_safe
+# refuses: ls > f, ls 3>f, ls >&f, ls &>f, cat <>f, sort --out=f x,
+# sort --compress-program=sh x, git reflog expire --all. Three classes in
+# one predicate: a file write by redirection, arbitrary execution
+# (--compress-program runs its argument), and a history rewrite. Controls
+# agree on both sides: ls -la / git status / cat f / grep x f allowed,
+# rm -rf f / git push --force / curl -T refused. Mounting it needs
+# api_client.py, which the self-modification guard refuses to an
+# unattended session; deleting it would discard refusals the product gate
+# still misses. Kept until an attended change wires it into the gate.
 test-only	is_safe	delfin/agent/readonly_pipeline.py:371
 test-only	keyed_engines_configured	delfin/agent/web_tools.py:698
 test-only	map_to_host	delfin/agent/shared_tmp.py:207
