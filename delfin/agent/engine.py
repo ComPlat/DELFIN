@@ -1269,6 +1269,61 @@ class AgentEngine:
                               f"{exc}): {resolved}")
         return True, f"readable (no write access): {resolved}"
 
+    def remove_kit_read_dir(self, path) -> tuple[bool, str]:
+        """Take a read grant back: the stored list AND this session's.
+
+        The counterpart of ``add_kit_read_dir``, which writes the
+        directory to the user settings and, when KIT permissions are
+        active, adds it to ``perms.session_read_dirs``. The read gate
+        consults that tuple, not the file, so a revoke that rewrote only
+        the file would report success while the session kept reading there
+        until it ended.
+
+        Returns (ok, message). A directory that was granted in neither
+        place is reported as such: a withdrawal nobody asked for is not an
+        achievement, and answering it with a success hides a typo in the
+        path.
+        """
+        try:
+            resolved = Path(path).expanduser().resolve()
+        except Exception as exc:
+            return False, f"not a usable path: {exc}"
+        perms = self.kit_permissions
+        live = tuple(getattr(perms, "session_read_dirs", ()) or ())
+        in_session = resolved in live
+        try:
+            from . import kit_settings as _kit_settings
+            before = tuple(
+                _kit_settings.load(repo_dir=self.repo_dir).read_dirs)
+            _kit_settings.remove_read_dir(resolved)
+            after = tuple(
+                _kit_settings.load(repo_dir=self.repo_dir).read_dirs)
+        except Exception as exc:
+            return False, f"the stored settings could not be rewritten: {exc}"
+        if len(after) == len(before) and not in_session:
+            return False, f"not a granted read directory: {resolved}"
+        if in_session:
+            perms.session_read_dirs = tuple(
+                d for d in live if d != resolved)
+            self._tell_the_running_turn(
+                f"[permissions] The user just withdrew the read grant for "
+                f"{resolved}, mid-turn. It is no longer readable. Do not "
+                f"read there again; say what you cannot do without it.")
+        # Still listed after the removal? read_dirs are read from the
+        # user's file alone (kit_settings._merge lets a repository tighten,
+        # never widen), and remove_read_dir drops every entry equal to the
+        # resolved path -- so this means the stored entry is spelled
+        # differently there, e.g. written by hand as "~/data". The grant
+        # then returns on the next start, which is said rather than
+        # reported as a withdrawal that holds.
+        if str(resolved) in after:
+            return True, (
+                f"not readable for the rest of this session: {resolved}. "
+                "The stored settings still list it, under a spelling this "
+                "removal did not match, so it is granted again on the next "
+                "start; remove that entry to withdraw it for good.")
+        return True, f"no longer readable: {resolved}"
+
     def list_kit_workspace_dirs(self) -> list[str]:
         """Return all workspace roots the KIT agent may touch (as strings)."""
         perms = self.kit_permissions
@@ -1333,6 +1388,97 @@ class AgentEngine:
                     perms.bash_deny_patterns + (pattern,)
                 )
         return True, f"persisted {kind}-pattern: {pattern}"
+
+    def forget_kit_pattern(self, pattern: str, *,
+                           kind: str = "allow",
+                           scope: str = "user") -> tuple[bool, str]:
+        """Take a bash rule back: the stored settings AND this session's.
+
+        The counterpart of ``persist_kit_pattern``. That method writes the
+        rule to the settings file and applies it to the live permissions;
+        the gate matches against ``perms.bash_auto_allow_patterns`` /
+        ``bash_deny_patterns``, so a revoke that rewrote only the file
+        would leave the rule in force for the rest of the run.
+
+        A pattern DELFIN ships (``_BUILTIN_BASH_AUTO_ALLOW``) is refused
+        rather than dropped. It stands in no settings file, so nothing
+        could record its removal and the next session would apply it
+        again: a withdrawal that reports success and does not hold is
+        worse than a refusal that says why.
+
+        Returns (ok, message).
+        """
+        if kind not in {"allow", "deny"}:
+            return False, f"kind must be 'allow' or 'deny', got {kind!r}"
+        if not pattern:
+            return False, "pattern must be non-empty"
+        perms = self.kit_permissions
+        if perms is None:
+            return False, "KIT permissions are not active (provider != 'kit')."
+        attr = ("bash_auto_allow_patterns" if kind == "allow"
+                else "bash_deny_patterns")
+        live = tuple(getattr(perms, attr, ()) or ())
+        if kind == "allow":
+            from .api_client import _BUILTIN_BASH_AUTO_ALLOW
+            if pattern in _BUILTIN_BASH_AUTO_ALLOW:
+                return False, (
+                    f"{pattern!r} is a pattern DELFIN ships, not one that "
+                    "was granted here. It is in no settings file, so "
+                    "removing it would hold for this session only and come "
+                    "back on the next start. Deny it instead, which is "
+                    "recorded and outranks an auto-allow.")
+        try:
+            from . import kit_settings as _kit_settings
+            key = "allow_patterns" if kind == "allow" else "deny_patterns"
+            before = tuple(getattr(
+                _kit_settings.load(repo_dir=self.repo_dir), key))
+            _kit_settings.remove_pattern(
+                pattern, kind=kind, scope=scope, repo_dir=self.repo_dir)
+            after = tuple(getattr(
+                _kit_settings.load(repo_dir=self.repo_dir), key))
+        except Exception as exc:
+            return False, f"the stored settings could not be rewritten: {exc}"
+        if len(after) == len(before) and pattern not in live:
+            return False, f"not a granted {kind}-pattern: {pattern}"
+        # Is the rule still in force after the user-scope removal?
+        # kit_settings._merge lets a repository TIGHTEN only: the widening
+        # lists (allow_patterns, read_dirs, extra_workspace_dirs) are read
+        # from the user's file alone, so an allow rule cannot survive this.
+        # deny_patterns DO take the repository's entries, because they
+        # tighten -- so withdrawing a deny the repository also records
+        # leaves it in force, and the next start applies it again.
+        # Reporting that as a withdrawal full stop would be the half-truth
+        # this method exists to prevent.
+        still = pattern in after
+        if pattern in live:
+            setattr(perms, attr, tuple(p for p in live if p != pattern))
+            if kind == "allow":
+                self._tell_the_running_turn(
+                    f"[permissions] The user just withdrew the rule that "
+                    f"allowed {pattern!r}, mid-turn. Commands it covered "
+                    f"need a confirmation again. If you were about to run "
+                    f"one, ask for it rather than assuming it is free.")
+            else:
+                self._tell_the_running_turn(
+                    f"[permissions] The user just withdrew the rule that "
+                    f"denied {pattern!r}, mid-turn. It is no longer refused "
+                    f"outright, and the usual gate decides again.")
+        if still:
+            where = ""
+            if kind == "deny":
+                try:
+                    from . import kit_settings as _ks
+                    where = str(_ks.repo_settings_path(self.repo_dir) or "")
+                except Exception:
+                    where = ""
+            return True, (
+                f"withdrawn for this session only: {pattern} is still in "
+                "force after the removal"
+                + (f", because the deny list also takes this repository's "
+                   f"entries ({where})" if where else "")
+                + ". It applies again on the next start; remove it there to "
+                  "withdraw it for good.")
+        return True, f"withdrawn {kind}-pattern: {pattern}"
 
     def persist_kit_default_mode(self, mode: str, *,
                                  scope: str = "user") -> tuple[bool, str]:
