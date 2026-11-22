@@ -391,10 +391,20 @@ def smiles_png_bytes(smiles: str, size: int = 260, fmt: str = "png"):
     except Exception:
         coordgen_done = False
     if not coordgen_done:
-        AllChem.Compute2DCoords(
-            mol, canonOrient=True, clearConfs=True, coordMap={},
-            nFlipsPerSample=3, nSample=100, sampleSeed=42,
-            permuteDeg4Nodes=True, bondLength=1.5)
+        try:
+            AllChem.Compute2DCoords(
+                mol, canonOrient=True, clearConfs=True, coordMap={},
+                nFlipsPerSample=3, nSample=100, sampleSeed=42,
+                permuteDeg4Nodes=True, bondLength=1.5)
+        except Exception:
+            # CoordGen AND the sample-based embedder can both reject a
+            # molecule (IndexError map::at on exotic metal SMILES,
+            # reproduced on real calcs 2026-11-22); a last plain call
+            # without the sampling options usually still depicts it.
+            try:
+                AllChem.Compute2DCoords(mol)
+            except Exception:
+                return None
         try:
             from rdkit.Chem import rdDepictor
             rdDepictor.StraightenDepiction(mol)

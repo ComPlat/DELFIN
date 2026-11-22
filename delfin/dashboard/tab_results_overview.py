@@ -1067,7 +1067,15 @@ class ResultsOverviewPanel:
         self._export_status.value = (
             "<span style='color:#856404'>LaTeX-Quelltext wird "
             "erstellt ...</span>")
-        tex = self._latex_bytes().decode("utf-8")
+        try:
+            tex = self._latex_bytes().decode("utf-8")
+        except Exception as exc:  # noqa: BLE001 - one bad image/SMILES
+            # must never freeze the status line; the ZIP button stays
+            # available as a fallback export.
+            self._export_status.value = (
+                "<span style='color:#dc3545'>LaTeX source build failed: "
+                + _html.escape(repr(exc)[:300]) + "</span>")
+            return
         # PDF when pdflatex is available; else the source alone.
         self._export_status.value = (
             "<span style='color:#856404'>PDF wird kompiliert "
