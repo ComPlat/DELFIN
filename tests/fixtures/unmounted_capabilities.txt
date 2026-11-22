@@ -34,7 +34,6 @@ test-only	hostile_reach	delfin/agent/prompt_head.py:144
 test-only	is_safe	delfin/agent/readonly_pipeline.py:371
 test-only	keyed_engines_configured	delfin/agent/web_tools.py:698
 test-only	map_to_host	delfin/agent/shared_tmp.py:207
-test-only	pdf_xfa_data	delfin/agent/office.py:3514
 test-only	quality_report	delfin/agent/compaction_quality.py:75
 test-only	recall_levels	delfin/agent/memory_distill.py:495
 test-only	reset_figure_ledger	delfin/agent/office.py:6098
