@@ -71,12 +71,21 @@ def release(folder: Union[str, Path, None]) -> None:
     _MINE.discard(str(folder))
 
 
-@atexit.register
 def _release_mine() -> None:
-    """The clean way out, for the exits that get one."""
+    """The clean way out, for the exits that get one.
+
+    Registered explicitly below, not with a decorator: a decorator call
+    is invisible to the reachability scan in
+    tests/test_every_capability_has_a_caller.py, which read this
+    registration as "the suite reaches it and nothing in the product
+    does". The registration IS the product path.
+    """
     for path in list(_MINE):
         shutil.rmtree(path, ignore_errors=True)
     _MINE.clear()
+
+
+atexit.register(_release_mine)
 
 
 def sweep(prefix: str, base: Union[str, Path, None] = None) -> List[Path]:

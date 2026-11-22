@@ -266,11 +266,6 @@ def descendants_of(root_pid: int) -> set[int]:
     return live
 
 
-def count_descendants(root_pid: int) -> int:
-    """Number of live (non-zombie) descendants, root excluded."""
-    return len(descendants_of(root_pid))
-
-
 def _rss_mb(pid: int) -> float:
     # statm field 2 (0-based index 1) is resident pages, in pages.
     try:
