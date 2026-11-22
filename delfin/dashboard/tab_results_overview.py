@@ -1073,6 +1073,7 @@ class ResultsOverviewPanel:
             "<span style='color:#856404'>PDF wird kompiliert "
             "(pdflatex) ...</span>")
         pdf = None
+        pdf_err = ""
         try:
             import subprocess
             # pdflatex needs writable TeX-MF variables; on this cluster the
@@ -1101,10 +1102,28 @@ class ResultsOverviewPanel:
                     if proc.returncode == 0 and os.path.exists(pdf_path):
                         with open(pdf_path, "rb") as fh:
                             pdf = fh.read()
-                except (OSError, subprocess.TimeoutExpired):
+                except (OSError, subprocess.TimeoutExpired) as exc:
                     pdf = None
-        except Exception:  # noqa: BLE001 - pdflatex optional
+                    pdf_err = repr(exc)
+                # Diagnose the silent failure path: without the last
+                # log lines the status shows only "unavailable" and the
+                # real cause (format build, missing binary, LaTeX error)
+                # stays invisible.
+                if pdf is None:
+                    log = os.path.join(td, "doc.log")
+                    if os.path.exists(log):
+                        with open(log, "r", encoding="utf-8",
+                                  errors="replace") as fh:
+                            tail = fh.read().splitlines()[-6:]
+                            pdf_err = " | ".join(tail)
+                    elif pdf_err:
+                        pdf_err = f"pdflatex failed: {pdf_err}"
+                    else:
+                        pdf_err = ("pdflatex produced no log (binary "
+                                   "missing or not executable?)")
+        except Exception as exc:  # noqa: BLE001 - pdflatex optional
             pdf = None
+            pdf_err = repr(exc)
         # PDF only: the editable source ships in the LaTeX-ZIP button
         # (results.tex + all referenced images, consistent names).
         if pdf:
@@ -1114,8 +1133,9 @@ class ResultsOverviewPanel:
                                pdf, "application/pdf")
         else:
             self._export_status.value = (
-                "<span style='color:#dc3545'>pdflatex unavailable - "
-                "use the LaTeX-ZIP (tex + images) button instead.</span>")
+                "<span style='color:#dc3545'>pdflatex failed - use the "
+                "LaTeX-ZIP (tex + images) button instead. Cause: "
+                + _html.escape(pdf_err[-300:]) + "</span>")
         self._latex_source = tex
 
     def _render(self) -> None:
