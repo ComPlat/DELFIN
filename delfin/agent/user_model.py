@@ -59,7 +59,8 @@ class UserModelMovedAside(Exception):
     may choose to ignore it. Mirrors ``memory_store.MemoryStoreMovedAside``.
     """
 
-# Rough token estimate, matching memory_nudge.estimated_tokens.
+# Rough token estimate: an English/code mix runs about four characters
+# per token.
 _CHARS_PER_TOKEN = 4
 
 # One entry is one short thing the user said about themselves. A long
