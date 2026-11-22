@@ -267,9 +267,13 @@ def scrub_secrets_certified(
 
     Not certified means one of:
 
-    * the held-credential lookup raised, so NO exact value was removed --
-      the worst case, because a KIT key carries no prefix and no
-      separator, so no shape pass can catch it;
+    * a credential store could not be READ, so the exact values it holds
+      are unknown and none of them was removed -- the worst case, because
+      a KIT key carries no prefix and no separator, so no shape pass can
+      catch it. A store that is merely ABSENT is not this case: holding no
+      credentials is a complete answer, and treating it as a failure would
+      withhold every tool result on a machine that never had a store;
+    * the held-credential lookup raised;
     * the exact-replace loop raised part way, leaving the text HALF
       scrubbed; or
     * a shape pass raised, leaving a whole class of secret unexamined.
@@ -287,8 +291,8 @@ def scrub_secrets_certified(
     certified = True
     if exact_values is None:
         try:
-            from .web_tools import _known_secret_values
-            exact_values = _known_secret_values()
+            from .web_tools import _known_secret_values_complete
+            exact_values, certified = _known_secret_values_complete()
         except Exception:
             exact_values = ()
             certified = False

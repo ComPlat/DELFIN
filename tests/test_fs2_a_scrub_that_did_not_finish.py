@@ -31,14 +31,47 @@ TEXT = f"RuntimeError: auth failed for token {KEY}"
 
 @pytest.fixture
 def lookup_raises(monkeypatch):
-    """The held-credential lookup raises, as it does when the keyring is
-    locked or the credential file is unreadable."""
+    """The held-credential lookup raises.
+
+    A shape the product cannot actually produce -- both lookups swallow
+    everything -- which is why the store-level tests at the end of this
+    file exist. Kept because the certified form must also survive a caller
+    that hands it a broken lookup, and both spellings are patched: the
+    lenient one that scrub_secrets uses and the complete one the certified
+    form uses.
+    """
     import delfin.agent.web_tools as web_tools
 
-    def boom():
+    def boom(*_a, **_k):
         raise RuntimeError("keyring is locked")
 
     monkeypatch.setattr(web_tools, "_known_secret_values", boom)
+    monkeypatch.setattr(web_tools, "_known_secret_values_complete", boom)
+
+
+@pytest.fixture
+def store(tmp_path, monkeypatch):
+    """A credential store of this test's own, holding KEY.
+
+    Nothing here reads or writes the real store: ``_DEFAULT_PATH`` is
+    redirected and HOME with it.
+    """
+    from delfin.agent import credentials as cred
+    import json as _json
+    h = tmp_path / "home"
+    (h / ".delfin").mkdir(parents=True)
+    path = h / ".delfin" / "credentials.json"
+    path.write_text(_json.dumps({"KIT_API_KEY": KEY}), encoding="utf-8")
+    monkeypatch.setenv("HOME", str(h))
+    monkeypatch.setattr(cred, "_DEFAULT_PATH", path)
+    monkeypatch.setattr(cred, "_index_names", lambda *_a, **_k: [])
+    cred.reset_keyring_state()
+    yield path
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    cred.reset_keyring_state()
 
 
 def test_the_shape_passes_cannot_catch_a_key_with_no_shape():
@@ -72,7 +105,7 @@ def test_the_certified_form_never_returns_the_text_it_could_not_scrub():
         def replace(self, *a, **k):
             raise RuntimeError("replace failed part way")
 
-    def boom():
+    def boom(*a, **k):
         raise RuntimeError("keyring is locked")
 
     def boom_pattern(*a, **k):
@@ -82,7 +115,7 @@ def test_the_certified_form_never_returns_the_text_it_could_not_scrub():
     import pytest as _pytest
     mp = _pytest.MonkeyPatch()
     try:
-        mp.setattr(web_tools, "_known_secret_values", boom)
+        mp.setattr(web_tools, "_known_secret_values_complete", boom)
         cases.append(output_guard.scrub_secrets_certified(TEXT))
         mp.undo()
         cases.append(output_guard.scrub_secrets_certified(
@@ -165,7 +198,78 @@ def test_a_held_credential_is_still_removed_on_the_normal_path(monkeypatch):
     """The fix must not cost the function it protects."""
     import delfin.agent.web_tools as web_tools
     monkeypatch.setattr(web_tools, "_known_secret_values", lambda: (KEY,))
+    monkeypatch.setattr(web_tools, "_known_secret_values_complete",
+                        lambda: ((KEY,), True))
     scrubbed, certified = output_guard.scrub_secrets_certified(TEXT)
     assert KEY not in scrubbed and "[redacted:credential]" in scrubbed
     assert certified is True
     assert bug_watcher.printable_error(TEXT).startswith("RuntimeError: (mess")
+
+
+# -- the store itself, not the function that reads it -------------------------
+#
+# Everything above makes a LOOKUP raise. Measured on a compute node on
+# 2026-11-22 (operator-A) and reproduced here: the product cannot produce
+# that shape -- _known_secret_values swallows everything and
+# credentials.held_secret_values does too -- so the branch those tests
+# cover never fired in the field. What the field has instead is a store
+# that cannot be READ: mode, an ACL on a shared filesystem, a half-written
+# file. The lookup then returns NO values, and an empty list used to read
+# as "no secret can be in this text".
+
+def test_a_store_that_cannot_be_read_is_not_certified(store):
+    """The leak this closes: store at mode 000, the key in clear."""
+    store.chmod(0o000)
+    if store.read_bytes() if store.stat().st_mode & 0o400 else False:
+        pytest.skip("running as a user that ignores the mode (root)")
+    value, certified = output_guard.scrub_secrets_certified(TEXT)
+    assert certified is False, (
+        "an unreadable store certified the scrub; measured on main before "
+        "this: certified True and the stored key in clear")
+    assert value == output_guard.WITHHELD
+    assert KEY not in value
+
+
+def test_a_store_that_is_not_json_is_not_certified(store):
+    store.write_text("{not json", encoding="utf-8")
+    value, certified = output_guard.scrub_secrets_certified(TEXT)
+    assert certified is False
+    assert KEY not in value
+
+
+def test_a_store_that_is_absent_is_still_certified(store):
+    """The control, and the reason the fix is not "empty means failure".
+
+    A machine that never had a store holds no credentials, which is a
+    complete answer. Reading it as a failure would withhold every tool
+    result there -- the FS1 cost that the certified form exists to avoid.
+    """
+    store.unlink()
+    value, certified = output_guard.scrub_secrets_certified(TEXT)
+    assert certified is True, (
+        "an absent store is not an unreadable one; withholding here would "
+        "blank every tool result on a machine without credentials")
+    assert value == TEXT   # nothing held, so nothing to remove
+
+
+def test_the_store_is_read_and_the_key_removed_when_it_is_readable(store):
+    """The other control: the same store, intact."""
+    value, certified = output_guard.scrub_secrets_certified(TEXT)
+    assert certified is True
+    assert KEY not in value and "[redacted:credential]" in value
+
+
+def test_the_values_and_the_completeness_are_one_answer(store):
+    """The signal itself, at the level that owns it."""
+    from delfin.agent import credentials as cred
+    values, complete = cred.held_secret_values_complete()
+    assert values == [KEY] and complete is True
+    store.chmod(0o000)
+    if not (store.stat().st_mode & 0o400):
+        values, complete = cred.held_secret_values_complete()
+        assert values == [] and complete is False, (
+            "an unreadable store reported a complete empty answer")
+    store.chmod(0o600)
+    store.write_text("[]", encoding="utf-8")       # JSON, but not an object
+    values, complete = cred.held_secret_values_complete()
+    assert complete is False, "a store that is not an object is unknown"

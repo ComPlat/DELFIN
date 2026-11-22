@@ -93,10 +93,26 @@ def _known_secret_values() -> list[str]:
     """The values of every credential DELFIN holds (file, keyring and
     well-known env), for an exact-match egress check and for scrub_secrets
     on every tool result. Never raises; short values ignored."""
+    return _known_secret_values_complete()[0]
+
+
+def _known_secret_values_complete() -> "tuple[list[str], bool]":
+    """``(values, complete)`` -- as :func:`_known_secret_values`, plus
+    whether every store could be read.
+
+    A caller whose verdict is a security decision needs the second half:
+    an empty list means "nothing to remove" for an absent store and "I
+    could not look" for an unreadable one, and those must not share an
+    answer. Never raises; an exception anywhere in the lookup is itself
+    an incomplete answer.
+    """
     out: list[str] = []
+    complete = True
     try:
-        from .credentials import _WELL_KNOWN_KEYS, held_secret_values
-        for val in held_secret_values():
+        from .credentials import (_WELL_KNOWN_KEYS,
+                                  held_secret_values_complete)
+        values, complete = held_secret_values_complete()
+        for val in values:
             if isinstance(val, str) and len(val) >= 12:
                 out.append(val)
         for name in _WELL_KNOWN_KEYS:
@@ -104,8 +120,8 @@ def _known_secret_values() -> list[str]:
             if len(val) >= 12:
                 out.append(val)
     except Exception:
-        pass
-    return out
+        complete = False
+    return out, complete
 
 
 def outbound_secret_reason(text: str) -> Optional[str]:
