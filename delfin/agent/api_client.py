@@ -11120,6 +11120,13 @@ class KitToolPermissions:
         # of the outer program the way an arbitrary substitution's can.
         # Exactly that form is judged as the number it yields; any other
         # substitution stays with the confirm gate.
+        # A write that leaves the workspace is the person's decision,
+        # whatever else the command is: judged over the WHOLE command
+        # (a `cd` moves what a relative target means) and before the
+        # loop and here-document rules below, so a redirect inside a
+        # loop body is covered too.
+        if self._write_leaves_the_workspace(cmd):
+            return False
         cmd = _SAFE_LINE_LOOKUP_RE.sub("1", cmd)
         # A loop, before the split: `for f in *.out; do grep ERROR "$f";
         # done` breaks at its own semicolons into "for f in *.out", "do
@@ -11165,11 +11172,70 @@ class KitToolPermissions:
                 return False
         return all(self._segment_auto_allowed(s) for s in segments)
 
+    def _write_leaves_the_workspace(self, cmd: str) -> bool:
+        """True when a file redirection in *cmd* writes outside every
+        workspace root, with a `cd` in the same command taken into
+        account.
+
+        Input: the whole command, because a redirect target is relative
+        to the cwd and `cd .. && ls > escaped.txt` moves it: measured
+        2026-11-22, that line ran unasked in every posture, including the
+        one with nobody to ask. Output: the judgement for the auto-allow
+        list, which then sends the command to the person.
+
+        A redirect INSIDE the workspace stays free -- that is the
+        documented policy of matches_bash_auto_allow, the write carries
+        no content and the cage confines it. A stream merge (`2>&1`) is
+        no file write and is not a target. The device sinks (/dev/null,
+        /dev/stdout, /dev/stderr) write no file either and are exempt by
+        name: `ls > /dev/null` is the most common redirect an agent
+        writes, and keeping it free is what makes this rule affordable.
+
+        Conservative where it cannot resolve: a `cd` with no single
+        literal argument (`cd -`, `cd $D`, `cd a b`) makes the cwd
+        unknown, so every later redirect in that command is treated as
+        leaving the workspace.
+        """
+        from . import readonly_pipeline as _rop
+        base = Path(self.workspace)
+        for seg in _split_shell_segments(cmd) or [cmd]:
+            words = seg.split()
+            if words and words[0] == "cd":
+                rest = [w for w in words[1:] if not w.startswith("-")]
+                if len(rest) != 1:
+                    return True
+                try:
+                    tgt = Path(rest[0].strip("'\"")).expanduser()
+                    base = (tgt if tgt.is_absolute()
+                            else base / tgt).resolve(strict=False)
+                except Exception:
+                    return True
+                continue
+            for target in _rop.file_redirect_targets(seg):
+                if target in ("/dev/null", "/dev/stdout", "/dev/stderr"):
+                    continue
+                try:
+                    p = Path(target).expanduser()
+                    p = (p if p.is_absolute()
+                         else base / p).resolve(strict=False)
+                except Exception:
+                    return True
+                if self.find_root_for(p) is None:
+                    return True
+        return False
+
     def _changes_outside_the_workspace(self, cmd: str) -> bool:
         """chmod of a path, or pytest --basetemp, that lands outside every
         workspace root (red team LA: `chmod 000 /etc/hosts`, `chmod 600
         ../../f`, `pytest --basetemp=/elsewhere`). A path that cannot be
-        parsed counts as outside -- it goes to the confirm gate."""
+        parsed counts as outside -- it goes to the confirm gate.
+
+        Redirection targets are NOT judged here, although they are paths
+        too: a target is relative to the cwd, and a `cd` in an earlier
+        segment of the same command moves it, which one segment cannot
+        see. They are judged once, over the whole command, in
+        _write_leaves_the_workspace.
+        """
         try:
             words = shlex.split(cmd)
         except ValueError:
@@ -11626,8 +11692,14 @@ def _sed_script_writes(cmd: str) -> bool:
 
 
 #: Options that make a reading program write a file or run a program.
+#: ``sort`` is NOT in this table: a deny-pattern cannot judge it. GNU
+#: getopt accepts any unambiguous long-option prefix, so ``--out=f``
+#: writes a file although the pattern looked for ``--output``, and
+#: ``--compress-program=PROG`` runs PROG although no pattern named it.
+#: Both ran unasked at the gate until 2026-11-22; the allow-list
+#: judgement lives in readonly_pipeline.sort_flags_write_or_run and is
+#: consulted in _reader_writes_or_runs below.
 _READER_ESCAPES = (
-    (r"^\s*sort\b", re.compile(r"(?:^|\s)(?:-o\S*|--output\b|-\w*o\b)")),
     (r"^\s*find\b", re.compile(
         r"(?:^|\s)-(?:fprint0?|fprintf|fls|exec|execdir|ok|okdir|delete)\b")),
     (r"^\s*tree\b", re.compile(r"(?:^|\s)(?:-o\b|--output\b)")),
@@ -11685,6 +11757,13 @@ def _reader_writes_or_runs(cmd: str) -> bool:
         # runs that word as a program.
         return any(not (w.startswith("-") or "=" in w) for w in rest) or \
             any(w in ("-S", "--split-string") for w in rest)
+    if first == "sort":
+        # An allow-list, because a deny-list cannot see an abbreviation
+        # getopt accepts (readonly_pipeline knows the read-only long
+        # options; everything else, --out=f and --compress-program=sh
+        # included, goes to the confirm gate).
+        from . import readonly_pipeline as _rop
+        return _rop.sort_flags_write_or_run(stripped)
     if first == "sed":
         return (_sed_loads_a_script_file(stripped)
                 or _sed_script_writes(stripped))
