@@ -7,35 +7,13 @@ runs a program.
 Both answer questions the gate could not answer from its own patterns,
 and both live here rather than in the gate so that one module owns the
 reading of a shell segment. The gate's use of them is measured in
-tests/test_a_write_that_leaves_the_workspace_is_asked_about.py.
+tests/test_a_flag_that_runs_a_program_is_not_a_reading_command.py.
 """
 from __future__ import annotations
 
 import pytest
 
 from delfin.agent import readonly_pipeline
-
-
-@pytest.mark.parametrize("cmd,targets", [
-    ("ls > f", ["f"]),
-    ("ls >> log", ["log"]),
-    ("ls 3>f", ["f"]),
-    ("ls 2> err.txt", ["err.txt"]),
-    ("ls >&f", ["f"]),
-    ("ls &>f", ["f"]),
-    ("ls &>> f", ["f"]),
-    ("cat <>f", ["f"]),
-    ("echo x > ~/.bashrc", ["~/.bashrc"]),
-    ("ls > a.txt 2> b.txt", ["a.txt", "b.txt"]),
-    # a stream merge writes no file
-    ("grep x f 2>&1 | tail -5", []),
-    ("ls >&2", []),
-    ("ls -la", []),
-])
-def test_a_stream_merge_is_not_a_file_redirect(cmd, targets):
-    """Every spelling that opens a FILE is a target; the forms that only
-    rewire the process's own streams are not."""
-    assert readonly_pipeline.file_redirect_targets(cmd) == targets, cmd
 
 
 @pytest.mark.parametrize("cmd,writes", [

@@ -156,15 +156,6 @@ _PROCSUBST = re.compile(r"<\(|>\(|\$<")
 
 _GIT_WORD = re.compile(r"(?:\S*/)?git\b")
 
-# A file redirection and its target: the fd-numbered forms (``3>f``), the
-# both-streams forms (``&>f``, ``>&f`` where the word is not a number --
-# a numeric word is a stream merge and is removed before this runs) and
-# the read-write form (``<>f``). Longest spellings first, so ``&>>`` is
-# not read as ``&>`` with a target of ``>f``.
-_REDIRECT_TARGET = re.compile(
-    r"(?:&>>|&>|\d*>>|\d*>&|\d*>|<>)\s*(?P<t>[^\s;|&<>]+)")
-
-
 def _strip_quotes(s: str) -> str:
     """Remove enclosing quotes/backslashes so ``git 'log'`` reads as git."""
     out = []
@@ -395,19 +386,6 @@ def sort_flags_write_or_run(segment: str) -> bool:
         return False
     words = _strip_quotes(segment).split()
     return not _sort_flags_ok(words[1:])
-
-
-def file_redirect_targets(segment: str) -> list[str]:
-    """The paths a segment redirects INTO, as written.
-
-    Input: one shell segment. Output: one entry per file redirection --
-    ``> f``, ``>> f``, ``3> f``, ``&> f``, ``>& f``, ``<> f`` -- and
-    nothing for a stream merge (``2>&1``, ``>&2``), which writes no file.
-    The text is returned unexpanded and unresolved: whether a target lies
-    inside a permitted root is the caller's judgement, not this module's.
-    """
-    text = _STREAM_MERGE.sub(" ", _strip_quotes(segment))
-    return [m.group("t") for m in _REDIRECT_TARGET.finditer(text)]
 
 
 def is_safe(cmd: str) -> bool:
