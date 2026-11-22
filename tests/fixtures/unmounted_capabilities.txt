@@ -19,8 +19,14 @@
 nowhere	_project_settings_paths	delfin/agent/hooks.py:164
 nowhere	controller_hint	delfin/agent/loop_commands.py:298
 nowhere	request_swarm_pause	delfin/agent/swarm/lead.py:110
-nowhere	set_for_workspace_words	delfin/agent/workspace_profiles.py:220
 test-only	_bypass_failure_asks	delfin/agent/api_client.py:14120
+# _disabled_keyring_factory stays test-only, measured 2026-11-22: the
+# conftest autouse fixture swaps it in (tests/conftest.py:1599) so no test
+# touches the real keyring, and _keyring_factory is only ever bound to
+# _default_keyring_factory (delfin/agent/credentials.py:400) -- no
+# production path disables the keyring. Mounting one would be a new
+# capability; what would decide a delete is a product need to run
+# keyless, which does not exist.
 test-only	_disabled_keyring_factory	delfin/agent/credentials.py:360
 test-only	_load_md_presets	delfin/agent/subagents.py:1606
 test-only	_locator_value	delfin/agent/cited_retrieval.py:218
