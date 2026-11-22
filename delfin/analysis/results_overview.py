@@ -1850,6 +1850,22 @@ def rss_plot_pdf_bytes(calc_dir: str) -> Optional[bytes]:
     return buf.getvalue()
 
 
+def coordinates_page_lines(calc_dir: str) -> Optional[List[str]]:
+    """Initial coordinates as text lines (symbol x y z per atom).
+
+    Plain numeric text (no LaTeX markup): the caller runs it through
+    \\texttt / verbatim so ORCA can re-read it directly.  None when no
+    initial.xyz parses.
+    """
+    atoms = _parse_xyz(calc_dir)
+    if not atoms:
+        return None
+    lines = []
+    for sym, x, y, z in atoms:
+        lines.append(f"{sym:<3s} {x:>14.8f} {y:>14.8f} {z:>14.8f}")
+    return lines
+
+
 def format_value(value: Any) -> str:
     """One table cell: value or a dash for "not computed"."""
     if value is None:

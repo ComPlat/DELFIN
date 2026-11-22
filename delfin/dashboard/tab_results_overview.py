@@ -30,7 +30,7 @@ except ImportError:  # pragma: no cover
     HAS_WIDGETS = False
 
 from delfin.analysis.results_overview import (
-    METRICS, build_table, format_value, formula_to_latex, get_smiles, initial_xyz_png_bytes, list_calculations, list_rss_pngs, molecular_formula, optimized_3d_png_bytes, rss_plot_pdf_bytes, smiles_png_bytes, sort_table)
+    METRICS, build_table, coordinates_page_lines, format_value, formula_to_latex, get_smiles, initial_xyz_png_bytes, list_calculations, list_rss_pngs, molecular_formula, optimized_3d_png_bytes, rss_plot_pdf_bytes, smiles_png_bytes, sort_table)
 
 
 def RO_CARD_H(title: str, hint: str = "") -> str:
@@ -165,6 +165,11 @@ class ResultsOverviewPanel:
             description="Show hydrogen atoms in 3D image",
             indent=False,
         )
+        self._show_details = widgets.Checkbox(
+            value=False,
+            description="Append SMILES + coordinates page",
+            indent=False,
+        )
         self._show_h.observe(self._on_png_opts_change, names="value")
         self._latex_btn = widgets.Button(description="LaTeX \u2192 PDF")
         # Gallery controls: relative scan only, size in percent of the
@@ -251,6 +256,7 @@ class ResultsOverviewPanel:
             self._show_3d,
             self._show_3d_opt,
             self._show_h,
+            self._show_details,
             self._pngs,
             self._export_buffer,
             self._buffer_box,
@@ -1028,6 +1034,24 @@ class ResultsOverviewPanel:
                              + shown + r" \\")
             lines.append(r"\bottomrule")
             lines.append(r"\end{longtable}")
+            # Optional follow-up page: SMILES and the initial
+            # coordinates, both machine-readable text (verbatim).
+            if getattr(self, "_show_details", None) \
+                    and self._show_details.value:
+                lines.append(r"\newpage")
+                lines.append(r"\begin{center}\textbf{"
+                             + head_latex + r" --- details}\end{center}")
+                lines.append(r"\par\bigskip")
+                if smiles:
+                    lines.append(r"\textbf{SMILES:}\\")
+                    lines.append(r"\begin{quote}\texttt{"
+                                 + self._tex_escape(smiles) + r"}\end{quote}")
+                coords = coordinates_page_lines(row["path"])
+                if coords:
+                    lines.append(r"\textbf{Initial coordinates (initial.xyz):}\\")
+                    lines.append(r"\begin{verbatim}")
+                    lines.extend(coords)
+                    lines.append(r"\end{verbatim}")
             lines.append(r"\newpage")
         lines.append(r"\end{document}")
         # Store the LaTeX text under .tex key so the handler can also
