@@ -286,6 +286,39 @@ def get_smiles(calc_dir: str):
     return _smiles_from_3d(calc_dir)
 
 
+def _parse_smiles_keep_metals(smiles: str):
+    """Parse a SMILES keeping metal atoms even when sanitizing fails.
+
+    Plain ``MolFromSmiles`` returns None for exotic metal complexes
+    ([Fe](C)(C)(pyridine) etc.); the fallback parses without
+    sanitizing and then applies the sanitization steps a depiction
+    needs, without the kekulization/aromaticity pass that rejects
+    open-shell metal graphs (same pattern as the agent-chat cards,
+    tab_agent._parse_smiles_keep_metals).  None only when even the
+    raw graph cannot be read.
+    """
+    try:
+        from rdkit import Chem
+    except ImportError:
+        return None
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is not None:
+        return mol
+    raw = Chem.MolFromSmiles(smiles, sanitize=False)
+    if raw is None:
+        return None
+    try:
+        Chem.SanitizeMol(
+            raw,
+            sanitizeOps=(Chem.SanitizeFlags.SANITIZE_ALL
+                         ^ Chem.SanitizeFlags.SANITIZE_KEKULIZE
+                         ^ Chem.SanitizeFlags.SANITIZE_SETAROMATICITY
+                         ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES))
+        return raw
+    except Exception:
+        return raw  # depiction tolerates an unsanitized graph
+
+
 def smiles_svg_bytes(smiles: str, size: int = 260):
     """Column-2 drawing as VECTOR SVG, drawn exactly like the calc's
     SMILES.png (delfin_docx_report.py: RemoveHs, Normalizer, CoordGen
@@ -295,18 +328,24 @@ def smiles_svg_bytes(smiles: str, size: int = 260):
     try:
         from rdkit import Chem
         from rdkit.Chem import AllChem
-        from rdkit.Chem.Draw import rdMolDraw2D, rdMolDraw2DDrawer
+        from rdkit.Chem.Draw import rdMolDraw2D
     except ImportError:
         return None
     try:
         from rdkit.Chem import rdCoordGen
     except ImportError:
         rdCoordGen = None
-    mol = Chem.MolFromSmiles(smiles)
+    mol = _parse_smiles_keep_metals(smiles)
     if mol is None:
         return None
     try:
-        mol = Chem.RemoveHs(mol, updateExplicitCount=True)
+        # RemoveHs/Normalizer need a fully sanitized mol; a raw metal
+        # graph (sanitized without kekulize) must skip them instead of
+        # killing the whole draw.
+        try:
+            mol = Chem.RemoveHs(mol, updateExplicitCount=True)
+        except Exception:
+            pass
         try:
             from rdkit.Chem.MolStandardize import rdMolStandardize
             mol = rdMolStandardize.Normalizer().normalize(mol)
@@ -354,7 +393,7 @@ def smiles_png_bytes(smiles: str, size: int = 260, fmt: str = "png"):
         from rdkit.Chem.Draw import rdMolDraw2D
     except ImportError:
         return None
-    mol = Chem.MolFromSmiles(smiles)
+    mol = _parse_smiles_keep_metals(smiles)
     if mol is None:
         return None
     if fmt == "png":
@@ -1605,7 +1644,7 @@ def optimized_3d_png_bytes(calc_dir: str, size: int = 320, show_h=False,
         bonds = [(remap[i], remap[j]) for i, j in bonds
                  if i in keepset and j in keepset]
     return _render_ball_stick(sym, rotated, bonds, size,
-                              atom_scale=0.55, bond_lw=3.2)
+                              atom_scale=0.55, bond_lw=3.2, fmt=fmt)
 
 
 def rss_metrics(calc_dir: str) -> Dict[str, Any]:

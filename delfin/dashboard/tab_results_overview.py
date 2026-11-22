@@ -80,7 +80,9 @@ def rows_to_markdownish(columns: List[dict], rows: List[dict],
         stripe = "#f8fafc" if i % 2 else "transparent"
         cells = "".join(
             f"<td style='padding:8px 12px;border-bottom:1px solid "
-            f"#e2e8f0;color:#334155;white-space:nowrap'>"
+            f"#e2e8f0;color:#334155;white-space:normal;"
+            f"overflow-wrap:anywhere;word-break:break-all;"
+            f"max-width:420px'>"
             f"{_html.escape(format_value(row['values'].get(col['id'])))}</td>"
             for col in columns
         )
@@ -583,21 +585,14 @@ class ResultsOverviewPanel:
             row_height = 100
             # Column 2: 2D structure drawing.
             if want_2d and smiles:
-                # Prefer the calculation's own SMILES.png (the file
-                # the earlier dashboards shipped); fall back to a
-                # freshly drawn one.
-                _smp = _os.path.join(row["path"], "SMILES.png")
-                if not _os.path.exists(_smp):
-                    try:
-                        _gen = smiles_png_bytes(smiles)
-                        if _gen:
-                            with open(_smp, "wb") as _fh:
-                                _fh.write(_gen)
-                    except OSError:
-                        pass
-                png = (open(_smp, "rb").read()
-                       if _os.path.exists(_smp)
-                       else smiles_png_bytes(smiles))
+                # Draw freshly from the (metal-keeping) SMILES: the on-disk
+                # SMILES.png of older runs was rendered from a metal-stripped
+                # SMILES, so preferring it is exactly what hid the metal.
+                # The file is only the last fallback when the fresh draw fails.
+                _smp = os.path.join(row["path"], "SMILES.png")
+                png = smiles_png_bytes(smiles)
+                if not png and os.path.exists(_smp):
+                    png = open(_smp, "rb").read()
                 if png:
                     img = XLImage(_io.BytesIO(png))
                     img.width = img.height = 130
