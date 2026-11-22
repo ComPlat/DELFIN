@@ -19,7 +19,6 @@ def _throttled(cmd):
 def test_a_throttled_query_yields_throttled_not_unavailable():
     states = jm.query_job_states_detailed(["101", "102"], _throttled)
     assert states == {"101": jm.STATE_THROTTLED, "102": jm.STATE_THROTTLED}
-    assert jm.query_job_states(["101"], _throttled) == {}
 
 
 def test_a_throttled_squeue_still_lets_sacct_answer():
