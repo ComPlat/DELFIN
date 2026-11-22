@@ -18,8 +18,6 @@
 # and the check cannot compute it differently.
 nowhere	_project_settings_paths	delfin/agent/hooks.py:164
 nowhere	controller_hint	delfin/agent/loop_commands.py:298
-nowhere	estimated_tokens	delfin/agent/memory_nudge.py:147
-nowhere	load_shared_profile	delfin/agent/provider_profile.py:381
 nowhere	request_swarm_pause	delfin/agent/swarm/lead.py:110
 nowhere	set_for_workspace_words	delfin/agent/workspace_profiles.py:220
 test-only	_bypass_failure_asks	delfin/agent/api_client.py:14120
@@ -39,11 +37,9 @@ test-only	is_safe	delfin/agent/readonly_pipeline.py:371
 test-only	keyed_engines_configured	delfin/agent/web_tools.py:698
 test-only	map_to_host	delfin/agent/shared_tmp.py:207
 test-only	pdf_xfa_data	delfin/agent/office.py:3514
-test-only	prompt_block	delfin/agent/user_model.py:655
 test-only	quality_report	delfin/agent/compaction_quality.py:75
 test-only	recall_levels	delfin/agent/memory_distill.py:495
 test-only	reset_figure_ledger	delfin/agent/office.py:6098
-test-only	resolve_pending	delfin/agent/skill_usage.py:247
 test-only	resources_within	delfin/agent/pack/benchmark/accept/w20_common.py:111
 test-only	role_tool_surface_report	delfin/agent/api_client.py:12107
 test-only	stable_prefix_len	delfin/agent/prompt_head.py:44
