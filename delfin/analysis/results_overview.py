@@ -204,11 +204,14 @@ def _smiles_from_3d(calc_dir: str):
     keep = [i for i, s in enumerate(sym) if s not in _SMILES_METALS]
     if not keep:
         return None
-    # Metal-bound S (thiolate/thiol): give the stripped fragment the real
-    # anionic form up front.  Without it RDKit's charge sweep settles on
-    # a first-valid charge that paints the thiolate S as a quinoid C=S
-    # (measured on 11-14_11: charge -2 won the sweep and drew C(=S); with
-    # [S-] seeded, the sulfonate/thiolate lone pairs stay on S).
+    # Metal-bound O/N/S donors (thiolate, carboxylate O-, phenolate,
+    # iminolate): give the stripped fragment the real anionic form up
+    # front.  Without it RDKit's charge sweep settles on a first-valid
+    # charge that paints the donor as a quinoid C=O / C=S / C=N and the
+    # negative charge elsewhere (measured on 11-14_11 and 139-193_140:
+    # with the seed, the lone pair stays on the donor).  A metal-bound
+    # O/N counts only when it is NOT water (2 H) and not a plain amine
+    # (H on the donor): those are neutral ligands.
     pos = _np.array([[a[1], a[2], a[3]] for a in atoms])
     nb3d = {}
     cov3d = [_XYZ_COVALENT.get(s, _XYZ_COVALENT_DEFAULT) for s in sym]
@@ -218,15 +221,32 @@ def _smiles_from_3d(calc_dir: str):
             if d <= 1.25 * (cov3d[i] + cov3d[j]):
                 nb3d.setdefault(i, []).append(j)
                 nb3d.setdefault(j, []).append(i)
-    n_thiolate = sum(
-        1 for n, i in enumerate(keep)
-        if sym[i] == "S" and any(sym[x] in _SMILES_METALS
-                                 for x in nb3d.get(i, ())))
+
+    def _is_chelate_donor(i):
+        if sym[i] not in ("O", "S", "N"):
+            return False
+        nbs = nb3d.get(i, ())
+        if not any(sym[x] in _SMILES_METALS for x in nbs):
+            return False
+        n_h = sum(1 for x in nbs if sym[x] == "H")
+        if n_h:
+            return False  # water / amine / thiol: neutral ligands
+        n_c = sum(1 for x in nbs if sym[x] == "C")
+        if sym[i] == "N":
+            # A coordinated imine N (M + 2 C, no H) is a NEUTRAL donor
+            # via its lone pair - seeding N- would break the mapping.
+            # Only an iminolate (M + 1 C + 1 other heavy) is anionic.
+            return n_c == 1 and len(nbs) == 2
+        if sym[i] == "O":
+            # carboxylate/phenolate: M + C (+ optionally one more heavy)
+            return n_c >= 1
+        return True  # thiolate S
+
+    n_thiolate = sum(1 for n, i in enumerate(keep) if _is_chelate_donor(i))
     rw = Chem.RWMol()
     for n, i in enumerate(keep):
         atom = Chem.Atom(sym[i])
-        if (sym[i] == "S"
-                and any(sym[x] in _SMILES_METALS for x in nb3d.get(i, ()))):
+        if _is_chelate_donor(i):
             atom.SetFormalCharge(-1)
         rw.AddAtom(atom)
     mol = rw.GetMol()
@@ -1793,6 +1813,41 @@ def list_rss_pngs(calc_dir: str) -> List[Dict[str, str]]:
         os.path.relpath(p, calc_dir) for p in glob.glob(pattern)
     )
     return [{"rel": rel, "abs": os.path.join(calc_dir, rel)} for rel in rels]
+
+
+def rss_plot_pdf_bytes(calc_dir: str) -> Optional[bytes]:
+    """Vector RSS plot from ``scan.relaxscanact.dat`` (PDF bytes).
+
+    The scan PNGs in the calc dir are raster; the LaTeX export embeds
+    this redrawn vector variant instead (crisp at any zoom).  Falls
+    back to None when no scan data exists or the distances are not a
+    simple scan (then the caller keeps the raster PNG).
+    """
+    points = parse_rss_dat(calc_dir)
+    if len(points) < 2:
+        return None
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return None
+    dist = [p[0] for p in points]
+    e0 = points[0][1]
+    conv = 2625.499639479947  # hartree -> kJ/mol
+    rel = [(e - e0) * conv for _, e in points]
+    fig, ax = plt.subplots(figsize=(6.4, 4.0), dpi=100)
+    ax.plot(dist, rel, "o-", color="#1f77b4", markersize=3.5)
+    ax.set_xlabel("Scan coordinate [Å]")
+    ax.set_ylabel("ΔE [kJ/mol], rel. to first point")
+    ax.set_title("Relaxed Surface Scan")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    from io import BytesIO
+    buf = BytesIO()
+    fig.savefig(buf, format="pdf")
+    plt.close(fig)
+    return buf.getvalue()
 
 
 def format_value(value: Any) -> str:

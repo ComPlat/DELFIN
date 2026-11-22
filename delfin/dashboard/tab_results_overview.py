@@ -30,7 +30,7 @@ except ImportError:  # pragma: no cover
     HAS_WIDGETS = False
 
 from delfin.analysis.results_overview import (
-    METRICS, build_table, format_value, formula_to_latex, get_smiles, initial_xyz_png_bytes, list_calculations, list_rss_pngs, molecular_formula, optimized_3d_png_bytes, smiles_png_bytes, sort_table)
+    METRICS, build_table, format_value, formula_to_latex, get_smiles, initial_xyz_png_bytes, list_calculations, list_rss_pngs, molecular_formula, optimized_3d_png_bytes, rss_plot_pdf_bytes, smiles_png_bytes, sort_table)
 
 
 def RO_CARD_H(title: str, hint: str = "") -> str:
@@ -948,22 +948,18 @@ class ResultsOverviewPanel:
             width = {1: 0.9, 2: 0.45, 3: 0.30}.get(n_struct, 0.22)
             struct_blocks = []
             if want_2d and smiles:
-                # The calc's own SMILES.png, unchanged (raster): the
-                # redrawn vector variant is dropped - user request.
-                # Older calcs have no SMILES.png on disk: generate it
-                # once from the DELFIN_Data.json SMILES so the same
-                # file exists for later runs (user request 2026-11-21).
-                _smp = os.path.join(row["path"], "SMILES.png")
-                if not os.path.exists(_smp):
-                    try:
-                        _gen = smiles_png_bytes(smiles)
-                        if _gen:
-                            with open(_smp, "wb") as _fh:
-                                _fh.write(_gen)
-                    except OSError:
-                        pass
-                png = (open(_smp, "rb").read()
-                       if os.path.exists(_smp) else None)
+                # Vector 2D in the PDF: the calc's own SMILES.png stays
+                # the on-disk raster for later runs, but the LaTeX export
+                # embeds the redrawn PDF variant (crisp at any zoom).
+                # Fall back to the raster file when the vector draw
+                # fails (RDKit absent or unparseable SMILES).
+                _vec = smiles_png_bytes(smiles, fmt="pdf")
+                if _vec:
+                    png = _vec
+                else:
+                    _smp = os.path.join(row["path"], "SMILES.png")
+                    png = (open(_smp, "rb").read()
+                           if os.path.exists(_smp) else None)
                 if png:
                     struct_blocks.append(
                         rf"\includegraphics[width={width}\textwidth]"
@@ -997,10 +993,16 @@ class ResultsOverviewPanel:
             ]
             if rel_only:
                 try:
-                    with open(rel_only[0]["abs"], "rb") as fh:
-                        scan_png = fh.read(8 * 1024 * 1024)
-                    scan_png = self._downscale_png_bytes(
-                        scan_png, target_px=1400)
+                    # Vector variant first (redrawn from the .dat, crisp
+                    # at any zoom); the raster PNG is the fallback when
+                    # no scan data can be parsed.
+                    _vec = rss_plot_pdf_bytes(row["path"])
+                    if _vec is not None:
+                        scan_png = _vec
+                    else:
+                        with open(rel_only[0]["abs"], "rb") as fh:
+                            scan_png = self._downscale_png_bytes(
+                                fh.read(8 * 1024 * 1024), target_px=1400)
                     path = _add_image(scan_png, row["label"], "rss")
                     lines.append(
                         r"\begin{center}"
