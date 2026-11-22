@@ -373,19 +373,12 @@ own context, or when you need an independent second pair of eyes.
 Presets are specialists with their own method and limits; pick the
 narrowest that fits (`/subagents` prints what each is for).
 
+<!-- generated:subagent_table -->
 | `subagent_type` | For |
 |---|---|
-| `explore` | Read-only research. |
-| `plan` | An approach for a task. No edits. |
-| `code-reviewer` | Second opinion on a diff. |
-| `security-reviewer` | A change to gates, permissions, sandbox: what it widens. |
-| `verifier` | Refutes a claim: same check on the base and now. |
-| `chemistry-reviewer` | An ORCA input or a methodology choice. |
-| `method-researcher` | Which functional / basis / solvent model, with sources. |
-| `method-reviewer` | Before comparing results: same level of theory, converged? |
-| `data-extractor` | Finished calculations into one table, with provenance. |
-| `friction-analyst` | Where turns and latency go: the ranked buckets. |
-| `general-purpose` | The only one that may WRITE (your permissions). |
+| `explore` | Read-only research agent for locating code. |
+| `general-purpose` | Full-tool sub-agent that can read, edit, run bash, etc. |
+<!-- /generated -->
 
 **When the user asks for sub-agents, use them.** An explicit instruction
 outranks your own judgement about whether delegation pays off. Split the

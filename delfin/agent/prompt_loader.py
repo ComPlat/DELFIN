@@ -1515,9 +1515,54 @@ class PromptLoader:
         return "\n\n".join(parts)
 
     def load_role_prompt(self, role_id: str) -> str:
-        """Load agents/{role_id}.md, with its workspace blocks selected."""
-        return self._select_workspace_blocks(
-            self._cached_read(self.agent_dir / "agents" / f"{role_id}.md"))
+        """Load agents/{role_id}.md, with its workspace blocks selected
+        and its generated blocks filled."""
+        return self._fill_generated_blocks(self._select_workspace_blocks(
+            self._cached_read(self.agent_dir / "agents" / f"{role_id}.md")))
+
+    # ------- Generated blocks (one list, one renderer) --------------------
+
+    # ``<!-- generated:NAME -->`` ... ``<!-- /generated -->`` holds text
+    # this loader RENDERS from the code that owns the list, so the prompt
+    # cannot carry a stale copy of it. Measured 2026-11-22: the
+    # subagent_type table in agents/solo_agent.md was a hand-maintained
+    # copy of the preset registry and had drifted -- the enum offered 13
+    # specialist roles, the table named 7 of them, and the six without a
+    # cue were never chosen once in 79,056 tool calls. A list that two
+    # places state is a list that drifts.
+    #
+    # Whatever stands between the markers is REPLACED, so the file may
+    # keep a readable sample for anyone reading the pack on disk. A name
+    # nobody owns leaves the block untouched: a prompt that keeps a stale
+    # section is better than a prompt with a hole where a section was.
+    _GENERATED_RE = re.compile(
+        r"^<!--\s*generated:([a-z_]+)\s*-->[ \t]*\n(.*?)"
+        r"^<!--\s*/generated\s*-->[ \t]*\n",
+        re.MULTILINE | re.DOTALL,
+    )
+
+    @staticmethod
+    def _generated_block(name: str) -> "str | None":
+        """The text for one generated block, or None if nobody owns it."""
+        if name == "subagent_table":
+            from . import subagents as _sa
+            return _sa.decision_table()
+        return None
+
+    def _fill_generated_blocks(self, text: str) -> str:
+        if not text or "<!-- generated:" not in text:
+            return text
+
+        def _sub(match):
+            try:
+                rendered = self._generated_block(match.group(1))
+            except Exception:
+                rendered = None
+            if rendered is None:
+                return match.group(0)
+            return rendered.rstrip("\n") + "\n"
+
+        return self._GENERATED_RE.sub(_sub, text)
 
     # ------- Workspace blocks (DELFIN context, language stack) ------------
 
