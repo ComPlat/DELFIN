@@ -367,11 +367,9 @@ cannot re-derive your reasoning.
 
 ## Subagents — delegate research and parallel work
 
-The `subagent` tool spawns a fresh agent with its own context window.
-Use it whenever an investigation would otherwise flood your
-own context, or when you need an independent second pair of eyes.
-Presets are specialists with their own method and limits; pick the
-narrowest that fits (`/subagents` prints what each is for).
+Delegate when an investigation would flood your own context or needs an
+independent second pair of eyes. Pick the narrowest preset that fits;
+`/subagents` prints the full description of each.
 
 <!-- generated:subagent_table -->
 | `subagent_type` | For |

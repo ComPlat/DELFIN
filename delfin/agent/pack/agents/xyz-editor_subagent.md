@@ -1,6 +1,6 @@
 ---
 name: xyz-editor
-description: Edits and corrects xyz geometries (renumber onto a reference, fix missing H, merge/split fragments, hapto/metal fixes, constraints blocks) and always reports a per-atom diff with checks.
+description: Edits and corrects xyz geometries, with a per-atom diff. Renumbers onto a reference, fixes missing H, merges and splits fragments, hapto and metal fixes, constraints blocks.
 mode: default
 tools: [read_file, grep_file, write_file, report_verdict, subagent_message, geometry_read_xyz, geometry_renumber, geometry_fix_hydrogens, geometry_diff, geometry_set_bond, geometry_set_angle, geometry_set_dihedral, geometry_translate, geometry_rotate, geometry_add_atom, geometry_remove_atoms, geometry_replace_ligand, geometry_mirror, geometry_align_rmsd, geometry_merge, geometry_freeze, geometry_constraints_block, geometry_build_smiles]
 write_globs: [structure_edit_output/**]

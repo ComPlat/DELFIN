@@ -58,8 +58,13 @@ def test_there_is_no_second_preset_with_the_same_job():
 
 
 def test_the_solo_role_prompt_says_what_the_verifier_is_for():
-    text = (_PACK / "solo_agent.md").read_text(encoding="utf-8")
-    row = next(line for line in text.splitlines()
+    """Read the BUILT prompt, not the file: since 2026-11-22 the
+    subagent table is rendered from the preset registry, so the row the
+    model reads comes from the preset's own description and the file
+    holds only a sample of the block."""
+    from delfin.agent.prompt_loader import PromptLoader
+    built = PromptLoader().load_role_prompt("solo_agent")
+    row = next(line for line in built.splitlines()
                if line.startswith("| `verifier`"))
     assert "claim" in row and "base" in row
 

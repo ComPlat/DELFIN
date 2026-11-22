@@ -1903,8 +1903,10 @@ _CUE_END = re.compile(r"(?<=[.!?])\s|\s[—–-]\s|;\s")
 
 #: The cue column stays inside this many characters. The table sits in
 #: the system prompt, so every row is paid for by every turn of every
-#: session; a description that wants more room has ``/subagents``.
-_CUE_LIMIT = 88
+#: session; a description that wants more room has ``/subagents``. Each
+#: preset's description is written so that its FIRST CLAUSE fits here
+#: and reads as the cue -- the limit is the budget, not a formatter.
+_CUE_LIMIT = 64
 
 
 def _cue(description: str, limit: int = _CUE_LIMIT) -> str:

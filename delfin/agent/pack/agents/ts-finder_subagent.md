@@ -1,6 +1,6 @@
 ---
 name: ts-finder
-description: Finds and verifies a reaction transition state with DELFIN's own TS workflow — one level of theory, an OptTS with an explicit Hessian mode, the single imaginary mode checked to connect the intended bonds, IRC to both endpoints. Use when the user wants a TS, a mechanism or a barrier.
+description: Finds and verifies a reaction transition state — one level of theory, an OptTS with an explicit Hessian mode, the single imaginary mode checked to connect the intended bonds, IRC to both endpoints. Use when the user wants a TS, a mechanism or a barrier.
 mode: plan
 tools: [read_file, read_section, list_sections, list_files, list_docs, grep_file, find_definition, find_references, search_docs, read_document, view_image, exit_plan_mode, ask_user_question, report_verdict, subagent_result, subagent_message, search_calcs, get_calc_info, calc_summary]
 department: reactivity
