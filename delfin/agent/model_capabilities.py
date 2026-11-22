@@ -880,11 +880,40 @@ def _load_disk_cache() -> None:
 
 
 def _save_disk_cache() -> None:
+    """Add this process's live findings to the stored cache.
+
+    It MERGES. The first version wrote ``{"entries": <this process's live
+    entries>}`` over the file, which made every save a deletion of
+    everything the writer had not itself resolved: two sessions on one
+    host each dropped the other's rows, and one process that had resolved
+    a single model left a store holding that one model. Measured
+    2026-11-21 from the suite side -- a test resolving one stubbed model
+    left the operator's accumulated file holding nothing but its own
+    fabricated record.
+
+    Written through a temporary file and one rename, so a reader never
+    sees a half-written store and a crash mid-write cannot empty it.
+    """
     try:
         _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        entries = {k: v.__dict__ for k, v in _CACHE.items() if v.source == "live"}
+        entries: dict = {}
+        try:
+            stored = json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
+            if isinstance(stored, dict) and stored.get("_v") == _CACHE_VERSION:
+                kept = stored.get("entries")
+                if isinstance(kept, dict):
+                    entries.update(kept)
+        except Exception:
+            #: No readable store, or one from an older schema whose fields
+            #: may now mean something else: start from this process's
+            #: findings rather than carry rows that cannot be trusted.
+            entries = {}
+        entries.update({k: v.__dict__ for k, v in _CACHE.items()
+                        if v.source == "live"})
         out = {"_v": _CACHE_VERSION, "entries": entries}
-        _CACHE_PATH.write_text(json.dumps(out), encoding="utf-8")
+        tmp = _CACHE_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(out), encoding="utf-8")
+        tmp.replace(_CACHE_PATH)
     except Exception:
         pass
 
@@ -893,12 +922,31 @@ _disk_loaded = False
 
 
 def clear_cache() -> None:
-    """Drop all cached capabilities (process + best-effort disk)."""
+    """Drop the cached capabilities of THIS process.
+
+    Input: nothing. Output: nothing; the process cache is empty after.
+    Semantics: the stored cache file is not touched.
+
+    Why the file is left alone. ``_CACHE_PATH`` is listed in
+    ``state_paths.USER_STATE_REAL_HOME``: it is deliberately the
+    operator's real ``~/.delfin`` file, because a run legitimately reads
+    what earlier runs learned about the models. That list's own rule says
+    a constant on it which starts writing belongs in the redirected sink
+    table instead -- and an ``unlink`` of it is not a cleared cache but a
+    loss. Measured 2026-11-21: a suite run removed the operator's
+    accumulated cache through this function, whose only caller anywhere
+    was a test that had not redirected the path. Every model's window
+    then has to be read from the endpoint again, and a wave whose
+    admission gate reads the window is refused while the endpoint is
+    unreachable.
+
+    So removing it is not a capability of this module at all -- it had no
+    product caller, and the one test that called it needed only an empty
+    cache for the next resolve to reach the wire, which redirecting the
+    path gives it. A caller that really wants a file gone removes the
+    file it redirected the constant to.
+    """
     _CACHE.clear()
-    try:
-        _CACHE_PATH.unlink()
-    except Exception:
-        pass
 
 
 # ---------------------------------------------------------------------------

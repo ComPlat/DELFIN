@@ -162,3 +162,95 @@ def test_the_measured_case_is_in_a_table():
         (m, a) for m, a, _ in state_paths.USER_STATE_RESOLVERS
     }, "terminal_confirm._PENDING_DIR is not in any table -- the measured "
     "incident (2026-09-21) returns with the next suite run"
+
+
+# --- the other half: a real-home constant must not be DESTROYED -----------
+#
+# The table above answers "is this path accounted for?". It does not ask
+# what the module DOES with it, and the two questions came apart on
+# 2026-11-21: model_capabilities._CACHE_PATH is on USER_STATE_REAL_HOME as
+# "read-mostly ... a redirect would hide the real cache from a run that
+# reads it", and the module called `_CACHE_PATH.unlink()`. A suite run
+# removed the operator's accumulated cache through it -- the only caller
+# anywhere was a test that had not redirected the path.
+#
+# USER_STATE_REAL_HOME states the rule itself ("a constant on this list
+# that starts WRITING as a matter of course belongs in USER_STATE_SINKS
+# instead"); nothing checked it. Removal is the half that cannot be
+# undone, so it is the half checked here.
+
+_DESTRUCTIVE_METHODS = ("unlink", "rmdir")
+
+
+def _destructive_calls_on(attr: str, tree: ast.AST) -> list[str]:
+    """``attr.unlink()`` / ``attr.rmdir()`` / ``rmtree(attr)`` in *tree*.
+
+    Matched on the NAME the table names, so a path derived from it (a
+    leaf, which has its own table entry) is not this check's business.
+    """
+    out = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            if (func.attr in _DESTRUCTIVE_METHODS
+                    and isinstance(func.value, ast.Name)
+                    and func.value.id == attr):
+                out.append(f"{attr}.{func.attr}() at line {node.lineno}")
+            elif func.attr == "rmtree":
+                for arg in node.args:
+                    if isinstance(arg, ast.Name) and arg.id == attr:
+                        out.append(f"rmtree({attr}) at line {node.lineno}")
+    return out
+
+
+def test_no_real_home_constant_is_removed_by_the_product():
+    for mod_name, attr, _reason in state_paths.USER_STATE_REAL_HOME:
+        path = _PKG_ROOT.parent / (mod_name.replace(".", "/") + ".py")
+        assert path.is_file(), f"{mod_name} has no file at {path}"
+        hits = _destructive_calls_on(attr, ast.parse(path.read_text()))
+        assert not hits, (
+            f"{mod_name}.{attr} points at the operator's real ~/.delfin "
+            f"and the module removes it: {'; '.join(hits)}. A read-mostly "
+            "store is not a cache to drop: either the removal becomes "
+            "opt-in (a parameter the caller asks for), or the constant "
+            "belongs in USER_STATE_SINKS where the suite redirects it.")
+
+
+def test_the_removal_check_sees_a_planted_unlink():
+    """The guard fires, not just passes -- the measured shape, verbatim."""
+    tree = ast.parse(
+        "def clear_cache():\n"
+        "    try:\n"
+        "        _CACHE_PATH.unlink()\n"
+        "    except Exception:\n"
+        "        pass\n")
+    assert _destructive_calls_on("_CACHE_PATH", tree)
+    # And the two ways it must stay quiet: another name, and a read.
+    assert not _destructive_calls_on("_OTHER_PATH", tree)
+    assert not _destructive_calls_on(
+        "_CACHE_PATH", ast.parse("_CACHE_PATH.read_text()\n"))
+
+
+def test_the_measured_case_keeps_the_file_it_used_to_delete():
+    """The entry this half exists for, driven rather than read: clearing
+    the model-capability cache leaves the stored file where it is.
+
+    The path is redirected into tmp_path, so this test cannot repeat the
+    incident it is about.
+    """
+    import json
+
+    from delfin.agent import model_capabilities as mc
+
+    with pytest.MonkeyPatch.context() as mp, \
+            __import__("tempfile").TemporaryDirectory() as tmp:
+        stored = Path(tmp) / "model_capabilities_cache.json"
+        stored.write_text(json.dumps({"_v": mc._CACHE_VERSION,
+                                      "entries": {}}))
+        mp.setattr(mc, "_CACHE_PATH", stored)
+        mc.clear_cache()
+        assert stored.is_file(), (
+            "clear_cache removed the stored cache; on an unredirected "
+            "path that is the operator's accumulated file")

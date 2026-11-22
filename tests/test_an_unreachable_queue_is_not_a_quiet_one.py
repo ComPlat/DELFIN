@@ -102,11 +102,17 @@ def test_one_aged_out_id_does_not_drop_the_whole_batch():
 
 
 def test_the_narrow_view_still_only_returns_placed_jobs():
-    """The old signature keeps its old meaning for callers that branch on it."""
-    states = JM.query_job_states(
+    """The narrow view's meaning lives on in the DETAILED reader: the ids
+    the scheduler could not place read as UNAVAILABLE/THROTTLED there,
+    which is exactly what every consumer (check_once, slurm_tests.result,
+    cli_jobs.collect_job_rows) must branch on."""
+    states = JM.query_job_states_detailed(
         ["111", "222"], _run(squeue="111 RUNNING\n", sacct=""))
 
-    assert states == {"111": "RUNNING"}
+    assert states["111"] == "RUNNING"
+    # A job squeue did not place and sacct does not know: unknown, not
+    # placed -- the "" the narrow view used to filter out.
+    assert states["222"] == ""
 
 
 # ---------------------------------------------------------------------------
