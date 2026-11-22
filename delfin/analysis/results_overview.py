@@ -201,6 +201,47 @@ def _smiles_from_3d(calc_dir: str):
     if not atoms:
         return None
     sym = [a[0] for a in atoms]
+    # --- metal-KEPT derivation (preferred) --------------------------------
+    # Metals are real atoms of the complex; stripping them (the old
+    # behaviour) drew a 2D skeleton without the coordination metal and
+    # produced floating chloride fragments.  The metal is added with
+    # NoImplicit, its coordination bonds as DATIVE, then connectivity
+    # detection runs on the whole graph.  Falls back to the stripped
+    # variant below when this fails.
+    try:
+        pos_all = _np.array([[a[1], a[2], a[3]] for a in atoms])
+        cov_all = [_XYZ_COVALENT.get(s, _XYZ_COVALENT_DEFAULT) for s in sym]
+        nb_all = {}
+        for _i in range(len(sym)):
+            for _j in range(_i + 1, len(sym)):
+                _d = float(_np.linalg.norm(pos_all[_i] - pos_all[_j]))
+                if _d <= 1.25 * (cov_all[_i] + cov_all[_j]):
+                    nb_all.setdefault(_i, []).append(_j)
+                    nb_all.setdefault(_j, []).append(_i)
+        rw_m = Chem.RWMol()
+        for s in sym:
+            atom_m = Chem.Atom(s)
+            if s in _SMILES_METALS:
+                atom_m.SetNoImplicit(True)
+            rw_m.AddAtom(atom_m)
+        conf_m = Chem.Conformer(len(sym))
+        for i, (x, y, z) in enumerate(
+                [[a[1], a[2], a[3]] for a in atoms]):
+            conf_m.SetAtomPosition(i, (float(x), float(y), float(z)))
+        rw_m.AddConformer(conf_m)
+        for mi in [i for i, s in enumerate(sym) if s in _SMILES_METALS]:
+            for j in nb_all.get(mi, ()):
+                if sym[j] != "H":
+                    rw_m.AddBond(mi, j, Chem.BondType.DATIVE)
+        rdDetermineBonds.DetermineConnectivity(rw_m, useHueckel=False)
+        Chem.SanitizeMol(
+            rw_m,
+            Chem.SanitizeFlags.SANITIZE_ALL
+            ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES)
+        return Chem.MolToSmiles(rw_m, kekuleSmiles=True)
+    except Exception:
+        pass  # exotic metal cases: fall through to the stripped variant
+    # --- metal-stripped derivation (fallback) -----------------------------
     keep = [i for i, s in enumerate(sym) if s not in _SMILES_METALS]
     if not keep:
         return None

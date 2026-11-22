@@ -1039,8 +1039,13 @@ class ResultsOverviewPanel:
                 lines.append(r"\par\bigskip")
                 if smiles:
                     lines.append(r"\textbf{SMILES:}\\")
-                    lines.append(r"\begin{quote}\texttt{"
-                                 + self._tex_escape(smiles) + r"}\end{quote}")
+                    # \texttt never breaks a line: a long SMILES runs off
+                    # the page. \seqsplit breaks anywhere; the babel-safe
+                    # package set is already loaded by the export preamble.
+                    wrapped = r"\\ ".join(self._tex_escape(smiles[i:i+60])
+                                          for i in range(0, len(smiles), 60))
+                    lines.append(r"\begin{quote}\texttt{" + wrapped
+                                 + r"}\end{quote}")
                 coords = coordinates_page_lines(row["path"])
                 if coords:
                     lines.append(r"\textbf{Initial coordinates (initial.xyz):}\\")
