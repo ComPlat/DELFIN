@@ -266,7 +266,9 @@ def _fitness_note(client, name: str) -> str:
         from . import model_capabilities as mc
         provider = str(getattr(client, "provider", "")
                        or getattr(client, "_provider", "") or "")
-        caps = mc.resolve(provider, name, str(getattr(client, "_base_url", "") or ""))
+        caps = mc.resolve(
+            provider, name, str(getattr(client, "_base_url", "") or ""),
+            api_key=str(getattr(client, "_api_key", "") or ""))
         warn = mc.agent_fitness(provider, name, caps)
     except Exception:
         return ""
@@ -327,8 +329,83 @@ def _permission_rules_view(ctx) -> str:
         return f"permission rules could not be read: {exc}"
 
 
+def _granted_view(ctx) -> str:
+    """What this installation granted, and how to take each kind back.
+
+    The stored entries, because those are the ones a withdrawal can
+    record; a directory opened for this session only is listed as such,
+    so nobody looks for it in the file. Before this view the granted
+    rules were invisible: `/permissions` and `/permissions rules` render
+    the permission-rules file, which is a different mechanism, while an
+    "always allow" click writes allow_patterns into the KIT settings.
+    """
+    try:
+        from . import kit_settings as _kit_settings
+        stored = _kit_settings.load(repo_dir=getattr(ctx, "workspace", None))
+    except Exception as exc:
+        return f"granted entries could not be read: {exc}"
+    lines: list[str] = []
+    rows = (
+        ("allow rules", stored.allow_patterns,
+         "/permissions forget <pattern>"),
+        ("deny rules", stored.deny_patterns,
+         "/permissions forget deny <pattern>"),
+        ("readable directories", stored.read_dirs,
+         "/permissions unread <dir>"),
+        ("workspace roots", stored.extra_workspace_dirs, None),
+    )
+    for label, values, how in rows:
+        if not values:
+            continue
+        lines.append(f"{label}:")
+        lines.extend(f"  {v}" for v in values)
+        if how:
+            lines.append(f"  take one back with: {how}")
+    perms = getattr(ctx.engine, "kit_permissions", None)
+    session_only = [str(d) for d in getattr(perms, "session_read_dirs", ())
+                    or () if str(d) not in set(stored.read_dirs)]
+    if session_only:
+        lines.append("readable for this session only (nothing stored):")
+        lines.extend(f"  {d}" for d in session_only)
+    if not lines:
+        return "nothing was granted beyond what DELFIN ships."
+    return "\n".join(lines)
+
+
 def _permissions(ctx, args: str) -> CommandResult:
     name = args.strip()
+    # The withdrawal words are read BEFORE anything else: every other
+    # non-empty argument is taken as a mode name and handed to
+    # set_kit_permission_mode, so `forget` would otherwise be answered
+    # with "could not switch: unknown mode".
+    word, _, rest = name.partition(" ")
+    rest = rest.strip()
+    if word == "granted":
+        return CommandResult(output=_granted_view(ctx))
+    if word in ("forget", "unread"):
+        engine = getattr(ctx, "engine", None)
+        if engine is None:
+            return CommandResult(output=(
+                "no engine on this surface, so nothing can be withdrawn "
+                "here."))
+        if not rest:
+            return CommandResult(output=(
+                "name what to withdraw: /permissions forget <pattern>, "
+                "/permissions forget deny <pattern>, or "
+                "/permissions unread <dir>.\n" + _granted_view(ctx)))
+        try:
+            if word == "unread":
+                ok, msg = engine.remove_kit_read_dir(rest)
+            else:
+                kind = "allow"
+                target = rest
+                first, _, tail = rest.partition(" ")
+                if first == "deny" and tail.strip():
+                    kind, target = "deny", tail.strip()
+                ok, msg = engine.forget_kit_pattern(target, kind=kind)
+        except Exception as exc:
+            return CommandResult(output=f"could not withdraw: {exc}")
+        return CommandResult(output=msg if ok else f"not withdrawn: {msg}")
     try:
         from . import managed_policy as _mp
         # The managed rules are listed with the user's by the rules view;
@@ -341,7 +418,7 @@ def _permissions(ctx, args: str) -> CommandResult:
         return CommandResult(output="\n".join(
             [f"approval is {_mode(ctx.engine) or '(no gate)'} — "
              "/permissions plan|default|acceptEdits, or Shift+Tab"]
-            + managed + [_permission_rules_view(ctx)]))
+            + managed + [_permission_rules_view(ctx), _granted_view(ctx)]))
     if name == "rules":
         return CommandResult(output="\n".join(
             managed + [_permission_rules_view(ctx)]))
@@ -2205,8 +2282,9 @@ BUILTINS: dict[str, ReplCommand] = {
         ReplCommand("/model", "setup", "Show or switch the model", _model, True),
         ReplCommand("/mode", "setup", "Show or switch the agent mode",
                     _mode_cmd, True),
-        ReplCommand("/permissions", "setup", "Approval posture and "
-                    "permission rules", _permissions, True),
+        ReplCommand("/permissions", "setup", "Approval posture, permission "
+                    "rules, and what was granted (forget|unread takes one "
+                    "back)", _permissions, True),
         ReplCommand("/effort", "setup", "Show or set reasoning effort",
                     _effort, True),
         ReplCommand("/doctor", "setup", "Check the setup", _doctor),

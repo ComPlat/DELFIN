@@ -9,12 +9,20 @@ Phase 1 is READ-ONLY tools only. Every rule tested here:
   not silently;
 - the allow-list is enforced PER CALL: one connection may not smuggle a
   second, different call through after a first allowed one;
-- results are size-capped before they reach the program;
-- a runaway program is killed by the wall-clock limit.
+- results are size-capped before they reach the program.
+
+Every case enters at ``RpcServer.handle_payload``, the request path the
+product's serve loop (``serve_one``) calls. There is no second request entry
+and no in-module program launcher: a program is started by the bash tool,
+which owns the cage, the wall-clock ceiling and the output truncation.
+
+The wall-clock limit and the stdout cap are therefore not tested here: the
+launcher that owned them locally (``run_program``) is gone, and
+``test_cm1_the_bash_route_runs_a_program.py`` holds the bash route to the
+ceiling it inherits. Kept from the branch this file was merged with, because
+a reader of this file needs to know where that coverage went.
 """
 import json
-
-import pytest
 
 from delfin.agent import code_mode
 
@@ -53,39 +61,46 @@ class _FakeExecutor:
         return json.dumps({"error": "Unknown tool: %s" % name})
 
 
+def _server(ex, permissions=None):
+    """The one request path: what the product's serve loop calls."""
+    return code_mode.RpcServer(ex, permissions=permissions)
+
+
+def _payload(server, request):
+    """Send one request through the server and decode its reply."""
+    return json.loads(server.handle_payload(json.dumps(request)))
+
+
 def test_read_only_call_reaches_the_executor_and_returns():
     ex = _FakeExecutor()
-    result = code_mode.serve_request(
-        {"tool": "get_calc_info", "arguments": {"calc_id": "c1"}},
-        ex, permissions=None)
+    reply = _payload(_server(ex), {"tool": "get_calc_info",
+                                   "arguments": {"calc_id": "c1"}})
     assert ex.calls == [("get_calc_info", {"calc_id": "c1"})]
-    assert json.loads(result)["energy"] == -1.0
+    assert reply["result"]["energy"] == -1.0
 
 
 def test_write_tool_refused_and_names_the_direct_route():
     ex = _FakeExecutor()
-    result = json.loads(code_mode.serve_request(
-        {"tool": "write_file", "arguments": {"path": "x", "content": "y"}},
-        ex, permissions=None))
-    assert "error" in result
+    reply = _payload(_server(ex), {"tool": "write_file",
+                                   "arguments": {"path": "x", "content": "y"}})
+    assert "error" in reply
     assert ex.calls == []  # never dispatched
-    assert "write_file" in result["error"]
+    assert "write_file" in reply["error"]
 
 
 def test_submit_tool_refused_by_name():
     ex = _FakeExecutor()
-    result = json.loads(code_mode.serve_request(
-        {"tool": "submit_calculation", "arguments": {"folder": "f"}},
-        ex, permissions=None))
-    assert "error" in result
+    reply = _payload(_server(ex), {"tool": "submit_calculation",
+                                   "arguments": {"folder": "f"}})
+    assert "error" in reply
     assert ex.calls == []
 
 
 def test_gate_refusal_surfaces_as_error_not_silence():
     ex = _FakeExecutor()
-    result = json.loads(code_mode.serve_request(
-        {"tool": "nonexistent_tool", "arguments": {}}, ex, permissions=None))
-    assert "error" in result
+    reply = _payload(_server(ex), {"tool": "nonexistent_tool",
+                                   "arguments": {}})
+    assert "error" in reply
 
 
 def test_allow_list_is_enforced_per_call():
@@ -108,20 +123,12 @@ def test_result_is_size_capped(tmp_path):
             return json.dumps(
                 {"blob": "x" * (code_mode.MAX_RESULT_BYTES + 1000)})
 
-    result = json.loads(code_mode.serve_request(
-        {"tool": "get_calc_info", "arguments": {}}, _BigExecutor(),
-        permissions=None))
-    assert "error" in result
-    assert "truncated" in result["error"]
-    assert len(json.dumps(result)) < code_mode.MAX_RESULT_BYTES
-    assert "xxx" not in json.dumps(result)
-
-
-def test_runaway_program_hits_the_time_limit(tmp_path):
-    prog = tmp_path / "loop.py"
-    prog.write_text("while True:\n    pass\n")
-    with pytest.raises(code_mode.ProgramTimeout):
-        code_mode.run_program(str(prog), timeout_s=2.0)
+    reply = _payload(_server(_BigExecutor()), {"tool": "get_calc_info",
+                                               "arguments": {}})
+    assert "error" in reply
+    assert "truncated" in reply["error"]
+    assert len(json.dumps(reply)) < code_mode.MAX_RESULT_BYTES
+    assert "xxx" not in json.dumps(reply)
 
 
 def test_program_without_rpc_env_gets_no_client():

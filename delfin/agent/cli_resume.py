@@ -26,6 +26,7 @@ from typing import Any
 
 from . import proc_identity
 from . import step_journal
+from . import session_store
 from .session_store import _SESSIONS_DIR  # location only; never mutated here
 
 
@@ -39,8 +40,8 @@ def _iter_session_files(sessions_dir: Path) -> list[Path]:
         return []
     files = []
     for f in sessions_dir.glob("*.json"):
-        if f.name.endswith(".turn.json"):
-            continue  # mid-turn crash checkpoint, not a session
+        if not session_store.is_session_file(f):
+            continue  # a checkpoint or a shared record, not a session
         files.append(f)
     return files
 
@@ -299,16 +300,3 @@ def step_resume_note(session_id: str) -> "str | None":
     finished step, which must NOT be repeated) when there is one.
     """
     return step_journal.render_resume_note(session_id)
-
-
-def replay_step(session_id: str, step: int, turn: int | None = None) -> "dict | None":
-    """The recorded record of a FINISHED step, or None.
-
-    The resume path hands this back instead of re-running the tool:
-    the step already ran once, and its recorded (secret-scrubbed)
-    result is what the engine would have seen. ``turn`` narrows the
-    match to that turn when given (step numbers restart each turn).
-    Returns ``None`` for an unknown step or a session with no journal —
-    never raises.
-    """
-    return step_journal.finished_result(session_id, step=step, turn=turn)

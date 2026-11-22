@@ -248,6 +248,10 @@ def precheck(argv: list[str]) -> int:
 
     changed = changed_files(args.diff)
     pins = select_pins(changed)
+    # A deleted test file is still in the diff, but pytest cannot run it. A
+    # branch that legitimately removes a test would otherwise fail precheck on
+    # "file or directory not found" rather than on anything it measured.
+    pins = {p for p in pins if (REPO / p).is_file()}
     print(f"changed files: {len(changed)}; pin test files: {len(pins)}")
 
     failures: list[str] = []

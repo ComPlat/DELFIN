@@ -27,7 +27,7 @@ sub-agent, and compares tokens, wall time, tool calls and correctness.
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
+
 from typing import Any
 
 from . import subagents as _sa
@@ -161,7 +161,7 @@ def run_pilot_subagent(*, subagent_type: str, description: str, prompt: str,
             subagent_type=subagent_type, description=description,
             final_text="", error=f"delegate failed: {exc}")
     finally:
-        slot.claimed = False
+        reap_slot(slot)
 
 
 def child_runner(parent_perms: Any, slot: Any, runner: Any = None) -> Any:
@@ -520,30 +520,23 @@ def _engine_factory_builder(default_task: Any) -> Any:
             raise RuntimeError(
                 "explore arm: engine has no subagent_runner binding; "
                 "the pilot setting cannot be installed on this backend")
-        with _PilotSlot() as slot:
-            def _runner(_slot=slot, **kw):
+        # pilot_slot(), not _PilotSlot() inline: the module's own slot
+        # vocabulary, so the reaper that belongs to it releases the slot
+        # around every call. The slot outlives this function: it is the
+        # session's channel, claimed and reaped per call by the runner
+        # below, so it is not entered as a context manager here. The
+        # with-statement it replaces exited at build time, releasing a
+        # slot no call had taken; a manual __enter__ without its __exit__
+        # breaks as soon as __enter__ does any work.
+        slot = pilot_slot()
+
+        def _runner(_slot=slot, **kw):
+            try:
                 return run_pilot_subagent(_pilot_slot=_slot, **kw)
-            perms.subagent_runner = _runner
+            finally:
+                reap_slot(_slot)
+        perms.subagent_runner = _runner
         return engine
-    return build
-
-
-def _fake_engine_factory_builder(arm: str) -> Any:
-    """--dry-run: a factory that returns an engine-shaped fake whose
-    permissions carry the pilot wiring — the arms are exercised, no
-    model is called."""
-    def build(model, backend, provider, mode, task_class="",
-              permission_mode=""):
-        perms = SimpleNamespace(subagent_runner=None, mode=mode,
-                                workspace=None)
-        if arm == "explore":
-            slot = _PilotSlot()
-            def _fake_runner(_slot=slot, **kw):
-                return run_pilot_subagent(_pilot_slot=_slot, **kw)
-            perms.subagent_runner = _fake_runner
-        return SimpleNamespace(kit_permissions=perms, cost_usd=0.0,
-                               token_usage=None, messages=[],
-                               run_budget_usd=0.0, run_budget_s=0.0)
     return build
 
 

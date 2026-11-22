@@ -67,8 +67,37 @@ from pathlib import Path
 
 _DEFAULT_PATH = Path.home() / ".delfin" / "credentials.json"
 
-# Names the agent stack knows how to consume.  Used by ``list_credentials``
-# to surface env-var-sourced keys even when nothing is on disk.
+# Names the agent stack knows how to consume. This list has TWO consumers
+# and the second one is a security boundary:
+#
+#   1. ``list_credentials``, to surface env-var-sourced keys even when
+#      nothing is on disk -- what the list was written for;
+#   2. ``web_tools._known_secret_values``, which is the exact-value source
+#      for ``output_guard.scrub_secrets`` (every tool result before it
+#      enters the transcript) and for ``outbound_secret_reason`` (a URL or
+#      a search query before it leaves the machine).
+#
+# A credential in the ``~/.delfin`` store is covered whatever its name,
+# because ``held_secret_values`` enumerates the store. A credential supplied
+# through the ENVIRONMENT is covered only if its name is listed here --
+# ``_known_secret_values`` reads ``os.environ`` for these names and no
+# others. Measured 2026-11-21 before this change: with the value in the
+# environment, KIT_TOOLBOX_API_KEY, ANTHROPIC_API_KEY and GH_TOKEN were
+# scrubbed from a tool result and refused egress, while
+# BRAVE_SEARCH_API_KEY, GOOGLE_CSE_API_KEY, SEMANTIC_SCHOLAR_API_KEY and
+# OPENALEX_API_KEY were neither -- all four read by the product through
+# ``web_tools._credential`` / ``scholarly_sources._credential``, and all
+# four documented as "env var or ~/.delfin credential file", i.e. offered
+# as equivalent routes while only one of them was protected.
+#
+# So the rule, and ``test_every_credential_name_the_product_reads.py``
+# holds it: a name the product reads as a credential belongs here. The test
+# derives the names from the call sites, so a provider added tomorrow fails
+# a test instead of leaking quietly.
+#
+# Not listed, deliberately: GOOGLE_CSE_CX, which is a search-engine
+# identifier rather than a secret. Scrubbing it would redact an ordinary
+# id out of tool results for no gain.
 _WELL_KNOWN_KEYS: tuple[str, ...] = (
     "KIT_TOOLBOX_API_KEY",
     "OPENAI_API_KEY",
@@ -77,6 +106,12 @@ _WELL_KNOWN_KEYS: tuple[str, ...] = (
     # A GitHub token opens the repository this agent pushes to.
     "GITHUB_TOKEN",
     "GH_TOKEN",
+    # Search and literature providers, read through the modules' own
+    # ``_credential`` helper.
+    "BRAVE_SEARCH_API_KEY",
+    "GOOGLE_CSE_API_KEY",
+    "SEMANTIC_SCHOLAR_API_KEY",
+    "OPENALEX_API_KEY",
 )
 
 
@@ -799,25 +834,60 @@ def held_secret_values(*, path: Path | None = None) -> list[str]:
     """Every stored credential value, both stores, for exact-match
     redaction and egress checks. Never raises. Each keyring name is asked
     at most once per process; afterwards the cached value is used."""
-    out = [v for v in _read_store(path).values() if v]
+    return held_secret_values_complete(path=path)[0]
+
+
+def held_secret_values_complete(
+        *, path: Path | None = None) -> "tuple[list[str], bool]":
+    """``(values, complete)``: the stored credential values, and whether
+    every store could be read.
+
+    ``complete`` is False when a store EXISTS and could not be read -- an
+    unreadable file (mode, ACL, I/O), text that is not JSON, JSON that is
+    not an object, a keyring index that cannot be listed, or a keyring
+    entry that raised. It stays True for a store that is simply ABSENT,
+    because "this machine holds no credentials" is a complete answer and
+    the opposite reading would withhold every tool result on a machine
+    that never had a store (measured 2026-11-22: four cases, and only the
+    unreadable and the corrupt one are unknowns).
+
+    Why the distinction exists: a caller that redacts by exact value reads
+    an empty list as "no secret can be in this text". For an unreadable
+    store that is false -- the value it cannot read is exactly the one a
+    KIT key carries no prefix or separator for, so no shape pass catches
+    it. Measured on main before this: store at mode 000, text containing
+    the stored key, scrub_secrets_certified returned certified=True and
+    the key in clear.
+    """
+    complete = True
+    try:
+        store = _read_store(path, strict=True)
+    except CredentialStoreUnreadable:
+        complete = False
+        store = _read_store(path)          # lenient: {} for this file
+    out = [v for v in store.values() if v]
     try:
         names = _index_names(path)
     except Exception:
         names = []
+        complete = False
     for name in names:
         if name in _KR_CACHE:
             out.append(_KR_CACHE[name])
             continue
         if name in _KR_TRIED:
+            # Asked once per process; a name that gave nothing then is not
+            # a fresh unknown now.
             continue
         _KR_TRIED.add(name)
         try:
             value = _kr_get(name)
         except Exception:
+            complete = False
             continue
         if value:
             out.append(value)
-    return out
+    return out, complete
 
 
 def mask(value: str) -> str:

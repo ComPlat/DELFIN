@@ -293,6 +293,16 @@ def _apply_run_budget(engine, args: argparse.Namespace) -> None:
         turns = 0
     if turns > 0:
         engine.run_budget_turns = turns
+    # The token ceiling, which unlike the USD one is measurable whatever
+    # the model costs. A flag is what makes the refusal's resume hint
+    # true: a run stopped on this dimension has to be resumable by
+    # raising the dial that stopped it.
+    try:
+        tokens = int(getattr(args, "max_run_tokens", 0) or 0)
+    except (TypeError, ValueError):
+        tokens = 0
+    if tokens > 0:
+        engine.run_budget_tokens = tokens
 
     # `--max-turns` bounds the tool ROUNDS inside one turn, which is a
     # different dimension from the two above: a session can be cheap and
@@ -1523,6 +1533,28 @@ def _open_session(engine, args: argparse.Namespace, workspace: Path) -> bool:
             note = None
         if note:
             print(note, file=sys.stderr)
+        # Even without a crash, a resumed session may carry an OPEN step
+        # from an interrupted turn: the journal says what may or may not
+        # have run (CHECK BEFORE REPEATING). The resume is exactly where
+        # the person decides what to repeat — the step_resume_note path
+        # of cli_resume, reached here for the first time.
+        try:
+            from .cli_resume import step_resume_note
+            step_note = step_resume_note(sid)
+        except Exception:
+            step_note = None
+        if step_note:
+            print(step_note, file=sys.stderr)
+        # A resumed session is a NEW session for the diagnostics
+        # unavailability note (operator ruling 2026-10-18: the note shows
+        # ONCE PER SESSION). The flag lives in diagnostics.py and nothing
+        # reset it, so a resumed session in the same process stayed silent
+        # forever after another session had consumed the note.
+        try:
+            from . import diagnostics as _diag
+            _diag.reset_unavailability_note()
+        except Exception:
+            pass
 
     # One chain of decisions, in one order, so what was decided last
     # is what everything downstream reads:
@@ -1836,6 +1868,12 @@ def _usd_ceiling_measurable(engine) -> bool:
     (``_unmeasured_budget_block``); asked here it can be said BEFORE the
     money is spent, which is the only moment the user can still pick a
     dimension that is measurable.
+
+    The dimension this line points at is the TOKEN ceiling, not the wall
+    clock it used to offer. A wall clock is measurable but bounds the
+    wrong thing: the three field sessions that proved this warning
+    insufficient ran 27 M, 124 M and 363 M input tokens, and the broken
+    one's last turn alone carried 1,031,096 of them in 10.7 minutes.
     """
     model = str(getattr(getattr(engine, "client", None), "model", "") or "")
     provider = str(getattr(engine, "provider", "") or "")
@@ -2018,6 +2056,16 @@ def _bounds_in_force(engine) -> list[str]:
         secs = 0.0
     if secs > 0:
         parts.append(f"{int(secs)}s of wall clock")
+    # The token ceiling is ON by default, so it belongs on the line that
+    # says what bounds this run: a bound the user cannot see is a bound
+    # they will meet as a surprise.
+    try:
+        tok_cap = int(engine._run_budget_tokens())
+    except Exception:
+        tok_cap = 0
+    if tok_cap > 0:
+        from .budget_ledger import format_tokens as _ft
+        parts.append(f"{_ft(tok_cap)} tokens for the session")
     if parts:
         lines.append("bounds     " + " · ".join(parts))
 
@@ -2072,8 +2120,28 @@ def _bounding_notices(args: argparse.Namespace, engine) -> list[str]:
         line = (f"budget     ${usd:.2f} REQUESTED but not enforceable — "
                 f"{model} has no published rate, so spend cannot be "
                 f"measured and the ceiling can never fire")
-        line += ("; the wall-clock ceiling IS in force"
-                 if secs > 0 else " (--max-run-seconds is measurable)")
+        # What to offer instead. It used to be the wall clock, which is
+        # measurable but does not bound GROWTH: a field session's last
+        # turn bought 1,031,096 input tokens in 10.7 minutes, so a time
+        # ceiling generous enough to let the work finish is no ceiling on
+        # the size of the context being paid for. The token ceiling binds
+        # the dimension that actually grew, and it is on by default.
+        try:
+            tok_cap = int(engine._run_budget_tokens())
+        except Exception:
+            tok_cap = 0
+        if tok_cap > 0:
+            from .budget_ledger import format_tokens as _ft
+            line += ("; the token ceiling IS in force "
+                     f"({_ft(tok_cap)} tokens, agent.run_budget_tokens)")
+            if secs > 0:
+                line += " alongside the wall clock"
+        else:
+            line += ("; set agent.run_budget_tokens (--max-run-tokens) for "
+                     "a ceiling that is measurable on every model"
+                     + ("; the wall-clock ceiling IS in force, but a wall "
+                        "clock does not bound token growth" if secs > 0
+                        else ""))
         notes.append(line)
 
     # Tool lists the constructed client did not take. Asked of the client
@@ -4654,9 +4722,50 @@ def _doctor_repair(results: list) -> int:
 
 def cmd_audit(args: argparse.Namespace) -> int:
     """``delfin-agent audit verify``: 0 when every log checked is intact,
-    1 when one is not, 2 without a subcommand. Reads only."""
+    1 when one is not, 2 without a subcommand. Reads only.
+
+    ``audit last [N]`` shows the newest N records (default 20) through
+    audit_log.read_last_n — the one reader (_scan) verified them, so
+    what is shown and what 'audit verify' would report on are the same
+    bytes. Records print as compact one-liners; a tampered log is said
+    so BEFORE the records, because a list read under a false premise is
+    worse than no list.
+    """
     from . import audit_log as _al
-    if getattr(args, "audit_action", "") != "verify":
+    action = str(getattr(args, "audit_action", "") or "")
+    if action == "last":
+        log = str(getattr(args, "log", "") or "")
+        path = Path(log).expanduser() if log else None
+        try:
+            n = int(getattr(args, "count", 0) or 20)
+        except (TypeError, ValueError):
+            n = 20
+        records = _al.read_last_n(n, log_path=path)
+        # The verdict on the SAME bytes the records came from: the
+        # report's ok flag is what 'audit verify' would print for this
+        # log. A not-intact log must not present its records as trusted.
+        report = _al.verify(path) if path else None
+        if report is not None and not report.get("ok", True):
+            print("WARNING: this log is NOT intact -- the records below "
+                  "are not necessarily what was recorded. Run "
+                  "`delfin-agent audit verify` for the lines that do "
+                  "not check out.")
+        elif report is None:
+            print("(verdict on the default log: run `delfin-agent audit "
+                  "verify` for the full check)")
+        if not records:
+            print("no audit records found")
+            return 0
+        for rec in records:
+            ts = str(rec.get("ts", "") or "")[:19]
+            tool = str(rec.get("tool", "?") or "?")
+            decision = str(rec.get("decision", "") or "")
+            target = str(rec.get("path", "") or rec.get("command", "")
+                         or "")
+            sid = str(rec.get("session_id", "") or "")[:12]
+            print(f"{ts}  {tool:<14} {decision:<8} {sid:<12} {target[:70]}")
+        return 0
+    if action != "verify":
         print("usage: delfin-agent audit verify [--log PATH] [--json]",
               file=sys.stderr)
         return 2
@@ -5152,6 +5261,48 @@ def cmd_friction(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_prompt_size(args: argparse.Namespace) -> int:
+    """What the composed system prompt costs, per section.
+
+    Input: the same arguments ``build_system_prompt`` takes, fixed here
+    to the solo role in the current directory. Output: the text table
+    ``format_prompt_size_report`` renders, on stdout; exit 0.
+
+    Why this command exists: the report dict was computed by
+    ``PromptLoader.prompt_size_report`` and rendered by
+    ``format_prompt_size_report``, but only the suite reached the
+    renderer -- a person tuning the prompt head had to read Python to
+    learn where the 15k tokens live.
+    """
+    from .prompt_loader import PromptLoader, format_prompt_size_report
+
+    role = (getattr(args, "role", "") or "").strip() or "solo_agent"
+    mode = (getattr(args, "mode", "") or "").strip() or "solo"
+    # Default repo_dir: the shipped pack, exactly what the engine's
+    # loader sees (AgentEngine never passes pack_dir). repo_dir=cwd is
+    # the test/override path and expects pack/ inside it.
+    loader = PromptLoader()
+    # An unknown role composes an empty prompt without complaint, which
+    # would print a table of zeros that reads as a measurement. The
+    # role prompt file is the registry: a role exists exactly when its
+    # agents/<role>.md does.
+    if not (loader.agent_dir / "agents" / f"{role}.md").is_file():
+        print(f"ERROR: unknown role {role!r} -- no "
+              f"agents/{role}.md in the pack", file=sys.stderr)
+        return 2
+    try:
+        report = loader.prompt_size_report(
+            role_id=role, mode_id=mode,
+            task_text="prompt size report",
+            permission_mode="default",
+        )
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(format_prompt_size_report(report))
+    return 0
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     """What one agent session actually did: tools, files, commands,
     tests, denials, cost. `--json` prints the SessionReport itself,
@@ -5200,6 +5351,24 @@ def cmd_report(args: argparse.Namespace) -> int:
         print(_json.dumps(dataclasses.asdict(report), indent=2))
     else:
         print(_sr.render_terminal(report))
+        # The friction section (wave-10 patterns): where this session lost
+        # turns and time, computed from the same tool trace the report
+        # aggregates. Terminal only -- the SessionReport dataclass is a
+        # shared contract whose field list must not grow silently.
+        try:
+            frictions = _sr.friction_summary(
+                _sr._tool_entries(sid))
+            if frictions:
+                print("")
+                print("Friction (top of what was lost):")
+                for f in frictions:
+                    mag = f.get("magnitude")
+                    unit = f.get("unit") or ""
+                    cmd = str(f.get("command") or f.get("detail") or "")
+                    print(f"  {f.get('kind', '?')}: {mag} {unit} "
+                          f"— {cmd[:80]}")
+        except Exception:
+            pass
     return 0
 
 
@@ -5486,6 +5655,12 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Turn ceiling for this session (0: the "
                            "configured one; an unattended run without one: "
                            "agent.unattended_budget, 200)")
+    chat.add_argument("--max-run-tokens", type=int, default=0,
+                      dest="max_run_tokens", metavar="N",
+                      help="Token ceiling for this session — the dimension "
+                           "that is measurable on every model, and the one "
+                           "that bounds context growth (0: "
+                           "agent.run_budget_tokens, default 200 M)")
     # The consumer existed without the producer: ReplOptions.color has been
     # read as getattr(args, "color", "auto") since the first version, and no
     # parser ever declared the flag — so the one setting that decides
@@ -6180,6 +6355,16 @@ def build_parser() -> argparse.ArgumentParser:
                                    "audit.log and every rotated week)")
     audit_verify.add_argument("--json", action="store_true",
                               help="Emit the reports as JSON")
+    # audit last [N] -- the newest N records through read_last_n (the
+    # one reader); the verdict on those bytes is printed first, so a
+    # tampered log is named before its records are shown.
+    audit_last = audit_sub.add_parser(
+        "last", help="Show the newest audit records (default 20; the "
+                     "log's integrity verdict is printed first)")
+    audit_last.add_argument("count", nargs="?", default=20,
+                            help="How many records (default 20)")
+    audit_last.add_argument("--log", default="",
+                            help="One log file (default: ~/.delfin/audit.log)")
     audit_p.set_defaults(func=cmd_audit)
 
     # capabilities / gate explain -- the boundary, read before a session
@@ -6233,6 +6418,19 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Print the SessionReport as JSON instead of "
                              "the terminal rendering")
     report.set_defaults(func=cmd_report)
+
+    # prompt-size — where the tokens of the system prompt live
+    psize = sub.add_parser(
+        "prompt-size",
+        help="Per-section chars/estimated tokens of the composed system "
+             "prompt, split into the cacheable stable prefix and the "
+             "per-turn volatile tail",
+    )
+    psize.add_argument("--role", default="solo_agent",
+                       help="Role id to compose for (default: solo_agent)")
+    psize.add_argument("--mode", default="solo",
+                       help="Mode id to compose for (default: solo)")
+    psize.set_defaults(func=cmd_prompt_size)
 
     # friction — ranked refusals, slow turns and silent exits, with tasks
     fric = sub.add_parser(
@@ -6314,7 +6512,8 @@ def build_parser() -> argparse.ArgumentParser:
                             "nondeterminism and block")
     cmp_p.add_argument("--prereg", default="",
                        help="The pre-registration file; reported whether it "
-                            "predates the first stamp")
+                            "predates the first stamp and whether its "
+                            "content registers an experiment")
     cmp_p.add_argument("--allow-shared-switches", action="store_true",
                        help="Accept behaviour variables set identically in "
                             "both arms")
@@ -6470,7 +6669,7 @@ def build_parser() -> argparse.ArgumentParser:
             agent_cfg = {}
 
         interval = max(60, int(getattr(args, "interval", 0) or 0))
-        state = {"seen": {}}
+        state = {"seen": {}, "cycles_seen": set()}
         stop_seen = {}
         stop = _sa.last_stop()
         while True:
@@ -6485,6 +6684,24 @@ def build_parser() -> argparse.ArgumentParser:
                                           stop_all_seen=stop_seen)
                 for name, text in events:
                     print(f"attention: {text}", flush=True)
+            # The wait side of ops health (B4 target 1+2): who waits on
+            # whom across sessions — printed in both modes — and, in the
+            # --wait loop, ONE event per NEW mutual-wait cycle, deduped in
+            # state["cycles_seen"]. Without this the registry's waits were
+            # invisible to ops health and two sessions waiting on each
+            # other paged nobody. Best-effort: a registry failure must not
+            # break the verdict loop.
+            try:
+                for row in _sh.waits_summary():
+                    print(f"waits: {row['session']} — {row['waits']}",
+                          flush=True)
+                if getattr(args, "wait", False):
+                    from . import mutual_wait as _mw
+                    for _sid, _text in _sh.watch_cycle_events(
+                            _mw.find(_sh.wait_edges()), state, emit=True):
+                        print(f"attention: {_text}", flush=True)
+            except Exception:
+                pass
             rows = []
             for rec in records:
                 verdict = _sh.classify(rec, _t.time(), agent_cfg)
@@ -6772,15 +6989,21 @@ def build_parser() -> argparse.ArgumentParser:
     # submit from this path). Handler imported on use, like _cmd_service.
     def _cmd_durable(args):
         from delfin.agent.service.durable_host import cmd_durable
+        if (getattr(args, "durable_action", "") or "") == "plan":
+            from delfin.agent.service.durable_host import cmd_durable_plan
+            return cmd_durable_plan(args)
         return cmd_durable(args)
 
     dur = sub.add_parser(
         "durable",
         help="Durable sessions: render the SLURM job that runs the agent "
-             "service on a compute node, and read its supervisor heartbeat",
+             "service on a compute node, read its supervisor heartbeat, "
+             "and print a session's crash-recovery plan",
     )
     dur.add_argument("durable_action", nargs="?", default="status",
-                     choices=["render", "status"])
+                     choices=["render", "status", "plan"])
+    dur.add_argument("durable_session", nargs="?", default="",
+                     help="plan: the session id to judge")
     dur.add_argument("--walltime", default="12:00:00",
                      help="render: the job's walltime (hh:mm:ss)")
     dur.add_argument("--partition", default=None,

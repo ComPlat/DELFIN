@@ -13,11 +13,9 @@ Two asymmetries are probed here:
   so raises on a bad spec instead of returning the same structured
   refusal. The user's first contact with start must not be a crash.
 
-- request_triage_answer(confirmed=True) calls triage.triage_answer which
-  RAISES TriageError for an item that is not on the auto-answer list (an
-  escalation). The lead promised every answer it gives is gated and
-  fails closed -- but the failure must be a structured refusal, not an
-  exception propagating into the tool call.
+- request_triage_answer's fail-closed behaviour is now pinned on the
+  real dispatch path (swarm_rpc.swarm_triage_answer); see
+  test_triage_answer_confirmed_never_raises_on_an_escalation.
 """
 
 from delfin.agent.swarm import lead
@@ -48,9 +46,13 @@ def test_start_confirmed_and_unconfirmed_fail_the_same_way():
 def test_triage_answer_confirmed_never_raises_on_an_escalation():
     """Answering an escalation on the user's behalf must fail closed
     with a structured refusal, not leak TriageError into the tool
-    call."""
+    call. The real dispatch path is the service handler the supervisor
+    resolves (swarm_rpc.swarm_triage_answer); it fails closed with a
+    SwarmRpcError naming the escalation."""
+    import pytest
+    from delfin.agent.service import swarm_rpc
     item = {"id": "q1", "kind": "push_request", "from": "builder-core",
             "member": "builder-core"}
-    result = lead.request_triage_answer(item, answer="no", confirmed=True)
-    assert isinstance(result, dict)
-    assert result.get("action") in ("refused", "ask_user", "escalate")
+    with pytest.raises(swarm_rpc.SwarmRpcError) as excinfo:
+        swarm_rpc.swarm_triage_answer({"item": item, "answer": "no"})
+    assert str(excinfo.value)

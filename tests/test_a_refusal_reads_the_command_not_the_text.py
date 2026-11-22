@@ -11,9 +11,27 @@ Driven on 2026-09-17 by three sessions building a feature together:
   calculations" and to "COPY it into calc or agent_workspace": the refusal
   was right, the reason and the advice were not.
 """
+import subprocess
+from pathlib import Path
+
 import pytest
 
 from delfin.agent.api_client import KitToolPermissions, _read_only_reason
+
+
+def _checkout(path: Path) -> Path:
+    """A directory git itself calls a checkout.
+
+    ``(path / ".git").mkdir()`` is not one: git answers "not a git
+    repository" for an empty ``.git``, and a stray empty one on a
+    workstation (measured: ``/tmp/.git``) made every path beneath it read as
+    a checkout. The predicate under test reads the layout, so the stand-in
+    has to have it.
+    """
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=str(path), check=True,
+                   capture_output=True)
+    return path
 
 
 @pytest.fixture
@@ -42,8 +60,7 @@ def test_the_word_inside_a_string_is_not_a_command(perms, cmd):
 
 
 def test_a_repository_checkout_says_so_and_not_calc(tmp_path):
-    repo = tmp_path / "repo"
-    (repo / ".git").mkdir(parents=True)
+    repo = _checkout(tmp_path / "repo")
     worktree = tmp_path / "wt"
     worktree.mkdir()
     perms = KitToolPermissions(workspace=str(worktree))
@@ -62,7 +79,6 @@ def test_a_path_that_is_no_repository_keeps_the_archive_wording(tmp_path):
 
 
 def test_the_workspace_itself_is_not_called_a_foreign_checkout(tmp_path):
-    ws = tmp_path / "ws"
-    (ws / ".git").mkdir(parents=True)
+    ws = _checkout(tmp_path / "ws")
     perms = KitToolPermissions(workspace=str(ws))
     assert "repository checkout" not in _read_only_reason(ws / "f.py", perms)

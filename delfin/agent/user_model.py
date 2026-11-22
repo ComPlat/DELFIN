@@ -59,7 +59,8 @@ class UserModelMovedAside(Exception):
     may choose to ignore it. Mirrors ``memory_store.MemoryStoreMovedAside``.
     """
 
-# Rough token estimate, matching memory_nudge.estimated_tokens.
+# Rough token estimate: an English/code mix runs about four characters
+# per token.
 _CHARS_PER_TOKEN = 4
 
 # One entry is one short thing the user said about themselves. A long
@@ -650,11 +651,6 @@ def session_block(frozen: tuple | None = None, max_tokens: int = 200,
         return "", frozen
     return _render([(f, v) for f, v in frozen
                     if (f, v.casefold()) in held]), frozen
-
-
-def prompt_block(max_tokens: int = 200) -> str:
-    """The block a new session loads, or "" (off, empty, unreadable)."""
-    return session_block(None, max_tokens=max_tokens)[0]
 
 
 def note_typed_message(text: str, *, path: Path | str | None = None) -> bool:

@@ -84,7 +84,14 @@ terminal session (grants, isolation flags, posture, session restore,
 `default`, a one-shot run asking for bypass without `--unattended` exits
 with status 2 instead of doing less than it was asked. Settings, hooks and
 MCP servers that come from a checked-out repository are ignored until the
-directory is trusted (`/trust`).
+directory is trusted (`/trust`). A test configuration is not on that list
+and cannot be: pytest executes the workspace's own conftest file before it
+collects anything, and the verification run at the end of an editing turn
+(`agent.auto_verify`, default `smart`) starts pytest in the workspace
+without asking. That run therefore goes into the same cage as the
+`run_tests` tool, and where this host can cage nothing it is not started
+at all -- the syntax check, which compiles without importing, is then the
+whole verification and the turn says so.
 
 The CLI backend runs its own tools, outside DELFIN's process, and DELFIN's
 gate hook (`cli_gate`) decides every one of them before it runs. A Bash call
@@ -1145,6 +1152,33 @@ users fall back to the unkeyed form, which they report as unverified.
 
 ## Residual risks
 
+- **A log read is verified, but a log read long after the fact is verified
+  against what is on disk then.** Every reader of the audit log goes through
+  one scan, which returns the records and the `verify` verdict on the same
+  bytes, so the answer "what did you change" (the changes report, reached by
+  the changes tool and by `/changes`) never quotes records from a log it has
+  not checked. When a quoted log is not intact the rendered answer says
+  `NOT INTACT: <file>` on its first line, above the changes; a log edited,
+  cut or emptied outside DELFIN would otherwise answer with whatever the
+  tampering left in it. What this does not do: the verdict is recomputed per
+  read, so it says the log is intact NOW, not that it always was — a reader
+  who wants history has to keep the earlier reports, and a process holding
+  the account key can write a chain that verifies. The one gap accepted as
+  not tampering is a write in flight: the line is written before its head
+  file, so a log slightly longer than its head is allowed only when the
+  extra bytes continue the chain; anything else stays a problem.
+
+- **A workspace's test configuration runs, inside the cage.** The
+  verification run at the end of an editing turn, and the `run_tests` tool,
+  both execute the workspace's conftest file and its pytest plugins: that
+  is what running a project's tests means. Nobody is asked, because the
+  verification run is not a tool call. What bounds it is the cage -- writes
+  confined to the session's roots, `/` read-only, a fresh `/tmp`,
+  credential paths under `$HOME` masked, the network through the egress
+  proxy -- and, on a host that can cage nothing, that the run does not
+  happen. What is left: code from a checked-out repository runs with the
+  cage's reach, which includes reading the workspace and whatever the
+  egress rules allow. `/trust` does not cover it.
 - **Text-based checks without isolation.** On a host in the "None" row, and
   for any command run with `--no-isolate`, the only thing between a command
   and the filesystem is the gate's reading of its text. A command that builds

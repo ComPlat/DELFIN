@@ -664,6 +664,17 @@ class AgentEngine:
         self._non_billing_turns: int = 0
         self._unpriced_turns: int = 0
         self._unmeasured_budget_notice_shown: bool = False
+        # The same question for the dimension that replaced the price,
+        # because answering it with a 0 is the defect being fixed: a
+        # productive turn whose provider returned no input-token count
+        # adds +0 to token_usage, which the token fraction cannot tell
+        # from a short turn. 19 of 3,040 productive turns recorded on
+        # this host are such turns. _untokened_provider names who.
+        self._measured_token_turns: int = 0
+        self._untokened_turns: int = 0
+        self._untokened_provider: str = ""
+        self._last_turn_token_state: str = ""
+        self._unmeasured_token_notice_shown: bool = False
         # Budget notices already raised in the durable attention inbox,
         # by level. The prompt block below reaches the MODEL and the
         # per-turn breaker writes to the CHAT STREAM, so a run that hit
@@ -738,6 +749,10 @@ class AgentEngine:
         # id for those backends so tasks (and session save/load) scope per
         # session. CLI stays "" and gets its real id from the stream.
         self.session_id: str = self._fresh_session_id()
+        #: When the STORED session's heartbeat was last moved forward from
+        #: the per-tool-call tick (see _keep_presence_fresh). 0.0 means
+        #: never, so the first tool call of a session refreshes it.
+        self._last_session_heartbeat: float = 0.0
         self._sync_task_session()
         # One-shot: the open-foreign-tasks notice fires only on a session's
         # first prompt build (re-armed with the session in reset_cycle).
@@ -1258,6 +1273,61 @@ class AgentEngine:
                               f"{exc}): {resolved}")
         return True, f"readable (no write access): {resolved}"
 
+    def remove_kit_read_dir(self, path) -> tuple[bool, str]:
+        """Take a read grant back: the stored list AND this session's.
+
+        The counterpart of ``add_kit_read_dir``, which writes the
+        directory to the user settings and, when KIT permissions are
+        active, adds it to ``perms.session_read_dirs``. The read gate
+        consults that tuple, not the file, so a revoke that rewrote only
+        the file would report success while the session kept reading there
+        until it ended.
+
+        Returns (ok, message). A directory that was granted in neither
+        place is reported as such: a withdrawal nobody asked for is not an
+        achievement, and answering it with a success hides a typo in the
+        path.
+        """
+        try:
+            resolved = Path(path).expanduser().resolve()
+        except Exception as exc:
+            return False, f"not a usable path: {exc}"
+        perms = self.kit_permissions
+        live = tuple(getattr(perms, "session_read_dirs", ()) or ())
+        in_session = resolved in live
+        try:
+            from . import kit_settings as _kit_settings
+            before = tuple(
+                _kit_settings.load(repo_dir=self.repo_dir).read_dirs)
+            _kit_settings.remove_read_dir(resolved)
+            after = tuple(
+                _kit_settings.load(repo_dir=self.repo_dir).read_dirs)
+        except Exception as exc:
+            return False, f"the stored settings could not be rewritten: {exc}"
+        if len(after) == len(before) and not in_session:
+            return False, f"not a granted read directory: {resolved}"
+        if in_session:
+            perms.session_read_dirs = tuple(
+                d for d in live if d != resolved)
+            self._tell_the_running_turn(
+                f"[permissions] The user just withdrew the read grant for "
+                f"{resolved}, mid-turn. It is no longer readable. Do not "
+                f"read there again; say what you cannot do without it.")
+        # Still listed after the removal? read_dirs are read from the
+        # user's file alone (kit_settings._merge lets a repository tighten,
+        # never widen), and remove_read_dir drops every entry equal to the
+        # resolved path -- so this means the stored entry is spelled
+        # differently there, e.g. written by hand as "~/data". The grant
+        # then returns on the next start, which is said rather than
+        # reported as a withdrawal that holds.
+        if str(resolved) in after:
+            return True, (
+                f"not readable for the rest of this session: {resolved}. "
+                "The stored settings still list it, under a spelling this "
+                "removal did not match, so it is granted again on the next "
+                "start; remove that entry to withdraw it for good.")
+        return True, f"no longer readable: {resolved}"
+
     def list_kit_workspace_dirs(self) -> list[str]:
         """Return all workspace roots the KIT agent may touch (as strings)."""
         perms = self.kit_permissions
@@ -1322,6 +1392,97 @@ class AgentEngine:
                     perms.bash_deny_patterns + (pattern,)
                 )
         return True, f"persisted {kind}-pattern: {pattern}"
+
+    def forget_kit_pattern(self, pattern: str, *,
+                           kind: str = "allow",
+                           scope: str = "user") -> tuple[bool, str]:
+        """Take a bash rule back: the stored settings AND this session's.
+
+        The counterpart of ``persist_kit_pattern``. That method writes the
+        rule to the settings file and applies it to the live permissions;
+        the gate matches against ``perms.bash_auto_allow_patterns`` /
+        ``bash_deny_patterns``, so a revoke that rewrote only the file
+        would leave the rule in force for the rest of the run.
+
+        A pattern DELFIN ships (``_BUILTIN_BASH_AUTO_ALLOW``) is refused
+        rather than dropped. It stands in no settings file, so nothing
+        could record its removal and the next session would apply it
+        again: a withdrawal that reports success and does not hold is
+        worse than a refusal that says why.
+
+        Returns (ok, message).
+        """
+        if kind not in {"allow", "deny"}:
+            return False, f"kind must be 'allow' or 'deny', got {kind!r}"
+        if not pattern:
+            return False, "pattern must be non-empty"
+        perms = self.kit_permissions
+        if perms is None:
+            return False, "KIT permissions are not active (provider != 'kit')."
+        attr = ("bash_auto_allow_patterns" if kind == "allow"
+                else "bash_deny_patterns")
+        live = tuple(getattr(perms, attr, ()) or ())
+        if kind == "allow":
+            from .api_client import _BUILTIN_BASH_AUTO_ALLOW
+            if pattern in _BUILTIN_BASH_AUTO_ALLOW:
+                return False, (
+                    f"{pattern!r} is a pattern DELFIN ships, not one that "
+                    "was granted here. It is in no settings file, so "
+                    "removing it would hold for this session only and come "
+                    "back on the next start. Deny it instead, which is "
+                    "recorded and outranks an auto-allow.")
+        try:
+            from . import kit_settings as _kit_settings
+            key = "allow_patterns" if kind == "allow" else "deny_patterns"
+            before = tuple(getattr(
+                _kit_settings.load(repo_dir=self.repo_dir), key))
+            _kit_settings.remove_pattern(
+                pattern, kind=kind, scope=scope, repo_dir=self.repo_dir)
+            after = tuple(getattr(
+                _kit_settings.load(repo_dir=self.repo_dir), key))
+        except Exception as exc:
+            return False, f"the stored settings could not be rewritten: {exc}"
+        if len(after) == len(before) and pattern not in live:
+            return False, f"not a granted {kind}-pattern: {pattern}"
+        # Is the rule still in force after the user-scope removal?
+        # kit_settings._merge lets a repository TIGHTEN only: the widening
+        # lists (allow_patterns, read_dirs, extra_workspace_dirs) are read
+        # from the user's file alone, so an allow rule cannot survive this.
+        # deny_patterns DO take the repository's entries, because they
+        # tighten -- so withdrawing a deny the repository also records
+        # leaves it in force, and the next start applies it again.
+        # Reporting that as a withdrawal full stop would be the half-truth
+        # this method exists to prevent.
+        still = pattern in after
+        if pattern in live:
+            setattr(perms, attr, tuple(p for p in live if p != pattern))
+            if kind == "allow":
+                self._tell_the_running_turn(
+                    f"[permissions] The user just withdrew the rule that "
+                    f"allowed {pattern!r}, mid-turn. Commands it covered "
+                    f"need a confirmation again. If you were about to run "
+                    f"one, ask for it rather than assuming it is free.")
+            else:
+                self._tell_the_running_turn(
+                    f"[permissions] The user just withdrew the rule that "
+                    f"denied {pattern!r}, mid-turn. It is no longer refused "
+                    f"outright, and the usual gate decides again.")
+        if still:
+            where = ""
+            if kind == "deny":
+                try:
+                    from . import kit_settings as _ks
+                    where = str(_ks.repo_settings_path(self.repo_dir) or "")
+                except Exception:
+                    where = ""
+            return True, (
+                f"withdrawn for this session only: {pattern} is still in "
+                "force after the removal"
+                + (f", because the deny list also takes this repository's "
+                   f"entries ({where})" if where else "")
+                + ". It applies again on the next start; remove it there to "
+                  "withdraw it for good.")
+        return True, f"withdrawn {kind}-pattern: {pattern}"
 
     def persist_kit_default_mode(self, mode: str, *,
                                  scope: str = "user") -> tuple[bool, str]:
@@ -3623,6 +3784,15 @@ class AgentEngine:
                 getattr(self, "_cost_cap_value", 0.0) or 0.0)
         except Exception:
             pass
+        # ...and the per-turn INPUT-TOKEN breaker, the one dimension the
+        # cap above cannot express: on a model with no published rate
+        # _estimate_cost returns 0.0 on every round, so the dollar
+        # comparison passes however many tokens the turn carries.
+        try:
+            self.client.turn_token_cap = lambda: int(
+                getattr(self, "_token_cap_value", 0) or 0)
+        except Exception:
+            pass
         # ...and the RUN's wall-clock and spend ceilings, for the same
         # reason one level up: the gate above runs before a turn, and a
         # one-turn unattended run is a single turn of many rounds.
@@ -3727,6 +3897,35 @@ class AgentEngine:
         self._turn_start_cost = self.cost_usd
         self._cost_cap_hit = False
         self._cost_cap_value = self._cost_hard_cap()   # read once per turn
+        # The same snapshot for the dimension that is always measurable.
+        # The cost breaker above is inert on every model with no
+        # published rate -- _estimate_cost hands it 0.0 for ever -- so
+        # the pair exists for the breaker that is not.
+        try:
+            self._turn_start_input_tokens = int(
+                self.token_usage.get("input", 0) or 0)
+            self._turn_start_output_tokens = int(
+                self.token_usage.get("output", 0) or 0)
+        except Exception:
+            self._turn_start_input_tokens = 0
+            self._turn_start_output_tokens = 0
+        self._token_cap_hit = False
+        self._token_cap_value = self._token_hard_cap()  # read once per turn
+        # The model behind this turn's commits. Set here because this is the
+        # thread that runs the turn's tool calls and the trailer is carried
+        # in a context variable, and set per TURN rather than once per
+        # session because a successor switch changes the model mid-run: the
+        # trailer then names the model that actually produced the diff.
+        # Until this line existed, nothing in the product called the setter
+        # at all -- the whole rewrite path was unreachable and no commit
+        # ever carried the line (its own tests set the variable themselves,
+        # so they passed throughout).
+        try:
+            from .api_client import set_commit_trailer_model
+            set_commit_trailer_model(
+                str(getattr(self.client, "model", "") or ""))
+        except Exception:
+            pass
         # The live phase both indicators read (activity.py). Begun here,
         # immediately before the try whose finally ends it, so no exit
         # path leaves a surface showing a turn that is over.
@@ -4353,6 +4552,26 @@ class AgentEngine:
             try:
                 self._note_turn_price_state(
                     float(self.cost_usd) - float(self._turn_start_cost))
+            except Exception:
+                pass
+            # ...and whether its SIZE could be measured. Same delta
+            # arithmetic over the same counter turn_metrics is written
+            # from (token_usage["input"]), so there is no second counter
+            # to drift: the dashboard's row and this gate read one
+            # number. ``produced`` keeps a 400 from the endpoint out of
+            # the unmeasured count -- such a turn measured nothing
+            # because nothing happened in it.
+            try:
+                _tok_delta = (int(self.token_usage.get("input", 0) or 0)
+                              - int(getattr(self, "_turn_start_input_tokens",
+                                            0) or 0))
+                self._note_turn_token_state(
+                    _tok_delta,
+                    produced=bool(
+                        chunks
+                        or int(self.token_usage.get("output", 0) or 0)
+                        > int(getattr(self, "_turn_start_output_tokens", 0)
+                              or 0)))
             except Exception:
                 pass
             # Turn is over (normally or with a surfaced error) — the
@@ -6331,8 +6550,41 @@ class AgentEngine:
                 return
             from . import session_presence as _presence
             _presence.touch(key)
+            self._keep_stored_heartbeat_fresh()
         except Exception:
             pass
+
+    #: The stored session's heartbeat is moved forward at most this often.
+    #: session_presence.touch keeps a limiter of its own (60 s); this one
+    #: needs its own because session_store.touch_heartbeat rewrites the
+    #: whole record, and a tool call must not cost a file rewrite.
+    _SESSION_HEARTBEAT_S = 60.0
+
+    def _keep_stored_heartbeat_fresh(self) -> None:
+        """Move the STORED session's heartbeat forward, rate-limited.
+
+        ``delfin-agent sessions`` reads ``heartbeat_at`` as "last seen"
+        (cli_resume._load_row, and again in the roster at :218). Only a
+        save moved it, so a session working through one long turn was
+        listed as last seen when the turn began -- the presence record was
+        being refreshed beside it the whole time. Two records of the same
+        fact, one of them refreshed.
+
+        Never raises: its caller swallows, and a heartbeat that cannot be
+        written is a stale "last seen", not a failed turn.
+        """
+        session = str(self.session_id or "")
+        if not session:
+            return
+        now = _time.monotonic()
+        if now - self._last_session_heartbeat < self._SESSION_HEARTBEAT_S:
+            return
+        #: Set before the write, not after: a session that is not stored
+        #: yet returns False from every call, and retrying that on every
+        #: tool call would be the rewrite this limiter exists to avoid.
+        self._last_session_heartbeat = now
+        from . import session_store as _store
+        _store.touch_heartbeat(session)
 
     def _build_user_message(
         self, text: str, images: list[str] | None,
@@ -7976,20 +8228,25 @@ class AgentEngine:
         the scheduler daemon per entry) overrides the settings values."""
         return self._budget_ledger()._run_budget()
 
-    def _run_ceiling_hit(self, spent_this_turn: float = 0.0) -> str:
+    def _run_ceiling_hit(self, spent_this_turn: float = 0.0,
+                         tokens_this_turn: int = 0) -> str:
         """The run ceiling a RUNNING turn has reached, or "".
 
         Input: what the running turn has spent so far (the client's
-        estimate; ``cost_usd`` holds the finished turns). Output: the
-        stop reason the turn ends with -- ``run_budget_s`` once the wall
-        clock since ``_run_started_at`` reaches ``run_budget_s``,
-        ``run_budget_usd`` once finished plus running spend reaches
-        ``run_budget_usd`` -- else "". The turn ceiling is not checked
+        estimate; ``cost_usd`` holds the finished turns) and the tokens
+        it has carried so far (``token_usage`` is only updated when the
+        turn ends). Output: the stop reason the turn ends with --
+        ``run_budget_s`` once the wall clock since ``_run_started_at``
+        reaches ``run_budget_s``, ``run_budget_usd`` once finished plus
+        running spend reaches ``run_budget_usd``,
+        ``run_budget_tokens`` once finished plus running tokens reach the
+        token ceiling -- else "". The turn ceiling is not checked
         here: it counts finished turns, which do not change mid-turn.
         Consulted by the client between tool rounds (``run_ceiling``);
         the 110 % gate before a turn stays. Never raises.
         """
-        return self._budget_ledger()._run_ceiling_hit(spent_this_turn)
+        return self._budget_ledger()._run_ceiling_hit(
+            spent_this_turn, tokens_this_turn)
 
     def _run_budget_turns(self) -> int:
         """Turn ceiling for this run — 0 disables it.
@@ -8095,8 +8352,52 @@ class AgentEngine:
         A quota-funded or locally served run is NOT this case: its zero is
         a measurement, its ceiling holds, and calling it unmeasured would
         be a false statement in the other direction.
+
+        False in a second case the token dimension made checkable: an
+        exact ``cost_usd`` of 0.00 after a material number of tokens. A
+        backend's reported spend outranks the rate card, which is right
+        for a subscription's real $0.00 and wrong for the identical 0.00
+        a backend reports when it observed nothing. See
+        ``BudgetLedger._usd_budget_enforced``.
         """
         return self._budget_ledger()._usd_budget_enforced()
+
+    def _usd_zero_is_unexplained(self) -> bool:
+        """Whether this run's $0.00 is the unexplained kind: no unpriced
+        turn, no non-billing provider, and a material token count behind
+        it. See ``BudgetLedger._usd_zero_is_unexplained``."""
+        return self._budget_ledger()._usd_zero_is_unexplained()
+
+    def _note_turn_token_state(self, input_delta: int = 0,
+                               produced: bool = True) -> None:
+        """Count the turn that just ran by whether its input size was
+        reported at all — the token twin of
+        :meth:`_note_turn_price_state`. See
+        ``BudgetLedger._note_turn_token_state``."""
+        self._budget_ledger()._note_turn_token_state(input_delta, produced)
+
+    def _token_budget_enforced(self) -> bool:
+        """Whether the configured token ceiling actually bounds this run.
+
+        False when a token ceiling is in force and at least one
+        productive turn reported no input count: that turn added 0 to the
+        sum the fraction is taken over, so the fraction undercounts the
+        run by an unknown amount. Exactly the shape of
+        :meth:`_usd_budget_enforced`, because an unavailable figure read
+        as zero is the same defect whichever dimension it is in.
+        """
+        return self._budget_ledger()._token_budget_enforced()
+
+    def _unmeasured_token_block(self) -> str:
+        """Say ONCE that the token ceiling is only partly measured, and
+        which provider left the count out."""
+        return self._budget_ledger()._unmeasured_token_block()
+
+    def _token_hard_cap(self) -> int:
+        """Per-turn input-token circuit-breaker in tokens, or 0. The twin
+        of :meth:`_cost_hard_cap`, which cannot fire on an unpriced
+        model. See ``BudgetLedger._token_hard_cap``."""
+        return self._budget_ledger()._token_hard_cap()
 
     def _unmeasured_budget_block(self) -> str:
         """Say ONCE that no monetary ceiling is in force, and what is.
@@ -8510,6 +8811,19 @@ class AgentEngine:
         _SessionField(
             "_unpriced_turns", "unpriced_turns", "state",
             lambda v: int(v or 0), lambda v: int(v or 0), lambda: 0),
+        # The token dimension's two counters, carried for exactly the
+        # reason above one level down: a resume that dropped them would
+        # restore a token total covering only the turns whose size was
+        # reported and hand it to the gates as if it covered the run.
+        _SessionField(
+            "_measured_token_turns", "measured_token_turns", "state",
+            lambda v: int(v or 0), lambda v: int(v or 0), lambda: 0),
+        _SessionField(
+            "_untokened_turns", "untokened_turns", "state",
+            lambda v: int(v or 0), lambda v: int(v or 0), lambda: 0),
+        _SessionField(
+            "_untokened_provider", "untokened_provider", "state",
+            lambda v: str(v or ""), lambda v: str(v or ""), lambda: ""),
         _SessionField(
             "_project_dir", "project_dir", "state",
             lambda v: str(v or ""), lambda v: str(v or ""), lambda: ""),

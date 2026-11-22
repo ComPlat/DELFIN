@@ -835,6 +835,13 @@ _JOB_WAKE_INTERVAL_S = 120.0
 # How often the Background panel re-reads what is running. Local files only.
 _BACKGROUND_REFRESH_S = 10.0
 
+# While a tab "waits" on a held conversation, its OWN bounded timer polls
+# the holder every 10 s (the same period as the Background panel's
+# _BACKGROUND_REFRESH_S — reusing the constant, not the tick: the
+# background tick is wired only when an engine exists, and a refused tab
+# has none). When the lock is gone, the tab opens the conversation itself.
+# One session_lock_holder read per tick, and only while a refusal stands —
+# no cost for any other tab.
 # After Stop, how often the stop is sent again until the turn's thread has
 # ended. One stop can miss: a turn that is still starting clears the flag,
 # and a request blocked on its first byte only notices a closed transport.
@@ -4895,6 +4902,37 @@ _ARCHIVE_UNASSIGNED_HEADER = "__unassigned__"
 _ARCHIVE_UNASSIGNED_LABEL = "── older, unassigned ──"
 
 
+def subagent_type_label(subagent_type) -> str:
+    """The text a person reads for one sub-agent type.
+
+    Input: a sub-agent type as it is stored and compared everywhere --
+    a ``SUBAGENT_PRESETS`` key, ``subagent_type`` in a call dict,
+    ``type`` in the running register. Output: the preset's
+    ``display_name`` when it declares a non-empty one, else the type
+    itself.
+
+    Display only. Dict keys, lookups, comparisons and anything written
+    to a store keep the type, which is what lets a label be renamed
+    without breaking a reference.
+
+    Total: it never raises and never drops a value. A type with no
+    preset in the registry -- a record written before a preset was
+    removed, a department a setting switched off, a type from another
+    installation -- comes back unchanged, so an old call still renders
+    under the name it ran as. The registry is read through a local
+    import because this module reaches the sub-agent layer lazily
+    everywhere else.
+    """
+    name = str(subagent_type if subagent_type is not None else "")
+    try:
+        from delfin.agent.subagents import SUBAGENT_PRESETS
+        preset = SUBAGENT_PRESETS.get(name)
+        label = str(getattr(preset, "display_name", "") or "").strip()
+    except Exception:
+        return name
+    return label or name
+
+
 def archive_rows(running, finished, unassigned=()) -> list[tuple[str, str]]:
     """``(label, sa_id)`` rows for the finished-delegate archive, newest first.
 
@@ -4929,8 +4967,10 @@ def archive_rows(running, finished, unassigned=()) -> list[tuple[str, str]]:
             sa_id = str((rec or {}).get("sa_id") or "")
             if not sa_id or sa_id in (running or {}):
                 continue
-            label = ("✅" if not rec.get("error") else "❌") + " " + str(
-                rec.get("subagent_type", "?"))[:16]
+            # The row's TEXT carries the label; its value stays the sa_id,
+            # which is what the pick handler and the session store use.
+            label = ("✅" if not rec.get("error") else "❌") + " " + (
+                subagent_type_label(rec.get("subagent_type", "?"))[:16])
             desc = str(rec.get("description", ""))[:48].strip()
             if desc:
                 label += " · " + desc
@@ -7501,7 +7541,8 @@ def _render_subagent_pane_html(calls: list[dict]) -> str:
             glyph, color = "↻", "#3b82f6"
         else:
             glyph, color = "✓", "#10b981"
-        sub_type = _html.escape(str(call.get("subagent_type") or "agent"))
+        sub_type = _html.escape(
+            subagent_type_label(call.get("subagent_type") or "agent"))
         desc = _html.escape(str(call.get("description") or "")[:80])
         prompt_preview = _html.escape(
             str(call.get("prompt") or "")[:200].replace("\n", " ").strip()
@@ -7648,7 +7689,10 @@ def _render_delegate_card_html(call: dict, now: float | None = None) -> str:
     if not isinstance(call, dict):
         return ""
     sa_id = _html.escape(str(call.get("sa_id") or ""))
-    sub_type = _html.escape(str(call.get("subagent_type") or "agent"))
+    # The card's type chip is text, not a handle: Open and Stop reach the
+    # run through sa_id, so the chip may carry the label.
+    sub_type = _html.escape(
+        subagent_type_label(call.get("subagent_type") or "agent"))
     desc = _html.escape(str(call.get("description") or "")[:120])
     model = _html.escape(str(call.get("model") or "")[:60])
     state = _delegate_state_for(call.get("status"))
@@ -10000,8 +10044,11 @@ def create_tab(ctx):
             running = read_running(session=_owner)
             entries = [("💬 Main", "main", "")]
             for sid, sa in running.items():
-                entries.append(("🟡 " + str(sa.get("type", "?"))[:16], sid,
-                                str(sa.get("description", ""))[:48]))
+                # Chip text is the label; the chip's VALUE stays sid, which
+                # is what the view switch and ``_view_agent`` are keyed by.
+                entries.append(("🟡 " + subagent_type_label(
+                    sa.get("type", "?"))[:16], sid,
+                    str(sa.get("description", ""))[:48]))
             # No session-start cutoff. Hiding earlier runs was what made a
             # finished delegate "disappear": the saved session was still on
             # disk and nothing in the UI could reach it.
@@ -12135,6 +12182,15 @@ def create_tab(ctx):
 
     def _auto_save_session():
         """Save the current session state to disk."""
+        # A tab that is closing must not write: shutdown(save=False) cancels
+        # the timers, but Timer.cancel() cannot stop a callback already
+        # running, and a turn worker finishing after the close saved the
+        # session anyway -- a file nobody is looking at, and a writer lock
+        # left held by this process for the next opener (measured: after a
+        # test tab was closed, its session file appeared AFTER the test
+        # ended, operator green run of pair v3, 2026-11-21).
+        if state.get("_closed"):
+            return
         engine = state["engine"]
         if not engine:
             return
@@ -12277,11 +12333,35 @@ def create_tab(ctx):
             if _holder:
                 _where = (f" on {_holder['host']}" if _holder.get("elsewhere")
                           else "")
+                # The refusal REMEMBERS WHAT it refused. Left with nothing,
+                # the tab held no session and the next line typed started a
+                # brand-new, empty one -- silently, while the person believed
+                # they wrote into the held conversation (seen 17.11.2026).
+                state["_held_refused"] = {
+                    "session_id": session_id,
+                    "pid": _holder.get("pid"),
+                    "host": _holder.get("host"),
+                }
                 _append_system_message(
                     f"This conversation is held by a live session "
                     f"(pid {_holder['pid']}{_where}) and was not opened — two "
                     f"writers would overwrite each other's turns. Close it "
-                    f"there, or start a new session from it.")
+                    f"there, or reply with one of:\n"
+                    f"• \u201cStart a new session from it\u201d — opens a new "
+                    f"session that starts from the held one's history.\n"
+                    f"• \u201cWait\u201d — the tab keeps watching; when the "
+                    f"holder ends, this tab opens the conversation itself.\n"
+                    f"Your text stays in the input box; nothing is sent "
+                    f"until you choose.")
+                # The watch starts WITH the refusal, not only after a
+                # "Wait": if the holder ends while the person is reading,
+                # the tab opens the conversation on its own — the thing
+                # they asked for in the first place. Choosing "Wait" later
+                # just re-arms the same poller (it cancels its
+                # predecessor). The poller checks state["_closed"] before
+                # any write, so a closed tab is never touched.
+                state.setdefault("_held_wait_ticks", 0)
+                _held_wait_rearm()
                 return
         try:
             from delfin.agent.session_store import load_session
@@ -12291,6 +12371,11 @@ def create_tab(ctx):
         if not data:
             _append_system_message(f"Session not found: {session_id[:12]}...")
             return
+        # A session actually opened: any refused state from an earlier try
+        # is obsolete (the same conversation, or the person chose another).
+        # The poller's next tick then finds no refusal and does nothing.
+        state.pop("_held_refused", None)
+        state.pop("_held_wait_ticks", None)
 
         # Restore the saved mode. The multi-agent pipeline modes are retired
         # and "plan" is a permission profile now — map any of them (plus the
@@ -12375,7 +12460,6 @@ def create_tab(ctx):
         state["chat_messages"] = data.get("chat_messages", [])
         state["_cycle_history"] = data.get("cycle_history", [])
         state["_mode_manual_override"] = True
-        state["active_session_id"] = session_id
         try:
             kp = getattr(engine, "kit_permissions", None)
             if kp is not None:
@@ -12534,6 +12618,15 @@ def create_tab(ctx):
         title = data.get("title", "")[:50] or session_id[:12]
         _record_cycle_event("session", "Session restored", title)
         _append_system_message(f"Session restored: {title}")
+        # The tab is "on" this conversation only when the restore is
+        # COMPLETE: chat restored, rendered, and the person told. Setting
+        # active_session_id any earlier opened a window (measured on the
+        # operator's node, green run of pair v4: s4's wait test read the
+        # chat mid-restore and saw it EMPTY) where the tab already claimed
+        # the conversation while the chat was still wiped -- an autosave
+        # tick in that window would have written a half-restored state
+        # under the new id.
+        state["active_session_id"] = session_id
         # The transcript and the model's history are two records in one
         # file. When the second is empty while the first holds turns, the
         # chat shows a conversation the model does not have -- say so, or
@@ -14127,7 +14220,8 @@ def create_tab(ctx):
         run = read_running().get(sa_id)
         if run:
             head = ("<div style='color:#b45309; margin-bottom:4px;'>🟡 <b>"
-                    + _h.escape(str(run.get("type", "?"))) + "</b> "
+                    + _h.escape(subagent_type_label(
+                        run.get("type", "?"))) + "</b> "
                     + _h.escape(str(run.get("description", ""))[:80])
                     + " · running</div>")
             body = []
@@ -14145,7 +14239,8 @@ def create_tab(ctx):
         ok = not sess.get("error")
         head = ("<div style='color:" + ("#2e7d32" if ok else "#c62828")
                 + "; margin-bottom:4px;'>" + ("✅" if ok else "❌") + " <b>"
-                + _h.escape(str(sess.get("subagent_type", "?"))) + "</b> "
+                + _h.escape(subagent_type_label(
+                    sess.get("subagent_type", "?"))) + "</b> "
                 + _h.escape(str(sess.get("description", ""))[:80])
                 + " · finished</div>")
         body = []
@@ -17086,6 +17181,9 @@ def create_tab(ctx):
                 return True
             lines = ["Subagent presets (use via the `subagent` tool):"]
             for p in presets:
+                # Deliberately the name, not the label: this column is the
+                # value a caller passes as ``subagent_type``, so the listing
+                # has to print what the tool accepts.
                 name = p.get("subagent_type") or p.get("name") or "?"
                 desc = p.get("description") or ""
                 lines.append(f"  {name:<18} {desc}")
@@ -17102,9 +17200,13 @@ def create_tab(ctx):
                 for f in finished:
                     age_min = max(0, int((_now - float(f.get("finished_at") or 0)) / 60))
                     flag = " ⚠" if f.get("error") else ""
+                    # sa_id is the handle the resume takes; the type column
+                    # is read, not typed, so it carries the label.
+                    kind = subagent_type_label(
+                        f.get("subagent_type", "?"))[:16]
                     lines.append(
                         f"  {f.get('sa_id', '?'):<10} "
-                        f"{f.get('subagent_type', '?'):<16} "
+                        f"{kind:<16} "
                         f"{(f.get('description') or '')[:48]:<48} "
                         f"{age_min} min ago{flag}"
                     )
@@ -21440,9 +21542,200 @@ def create_tab(ctx):
 
     # -- main event handlers -----------------------------------------------
 
+    def _held_wait_poll():
+        """A refused tab: poll the holder of the refused conversation. When
+        the holder lets go AND the tab is still open, the conversation
+        opens HERE — no send is needed, and the person's text stays in the
+        input box. One lock read per tick, only while a refusal stands.
+
+        This is its OWN bounded timer, not the Background panel's tick:
+        the background tick lives inside _wire_phase5_callbacks and is
+        only started once an engine is wired — a refused tab has NO
+        engine, so no timer of that kind ever exists (reviewer F6,
+        measured). _held_wait_rearm is the one place that arms this
+        poll; the rearm itself is what a still-held tick calls.
+        The timer stops when the state clears, when the tab closes
+        (state["_closed"], checked BEFORE any write — a timer must never
+        outlive its tab), or after a bounded number of ticks."""
+        _refused = state.get("_held_refused")
+        # Closed tab: no writes, no reads through the store. The timer dies.
+        if state.get("_closed"):
+            return
+        if not _refused:
+            return
+        _sid = str(_refused.get("session_id") or "")
+        if not _sid:
+            state.pop("_held_refused", None)
+            return
+        state["_held_wait_ticks"] = int(state.get("_held_wait_ticks", 0)) + 1
+        if state["_held_wait_ticks"] > 180:      # 180 * 10 s = 30 min, bounded
+            state.pop("_held_refused", None)
+            _append_system_message(
+                "Stopped watching the held conversation after 30 minutes — "
+                "open it again from the session list when it is free.")
+            return
+        try:
+            from delfin.agent.session_store import session_lock_holder
+            _holder = session_lock_holder(_sid)
+        except Exception as exc:
+            # Not a bare pass: a failing poll must be SEEN, or "Wait"
+            # silently never opens the conversation (QS amendment; the
+            # fail-silent class FS1 is fixing this wave). The wait ends,
+            # visibly, and the person opens the session themselves.
+            state.pop("_held_refused", None)
+            state.pop("_held_wait_ticks", None)
+            _append_system_message(
+                f"Stopped waiting on the held conversation: polling the "
+                f"session lock failed ({exc}). Open it again from the "
+                "session list when it is free.")
+            return
+        if _holder:
+            # The holder is still alive: keep the timer, open nothing.
+            _held_wait_rearm()
+            return
+        # The holder is gone, and the tab is open: the refused state is
+        # obsolete before the open, so the open cannot refuse itself
+        # against its own record.
+        # Re-check _closed IMMEDIATELY before the write (operator finding
+        # at 01:00): _shutdown_tab sets _closed and cancels the timer, but
+        # Timer.cancel() cannot stop a callback already running, so a poll
+        # in flight could otherwise reach _load_saved_session after the
+        # tab closed and write a session nobody is looking at
+        # (_SESSIONS_DIR is module-level).
+        state.pop("_held_refused", None)
+        state.pop("_held_wait_ticks", None)
+        if state.get("_closed"):
+            return
+        try:
+            _load_saved_session(_sid)
+        except BaseException as _exc:
+            # See the comment on the success line below; a failed restore is
+            # named, then re-raised (the thread dies either way, but the
+            # person sees why the chat stayed empty).
+            _append_system_message(
+                f"The holder of the held conversation ended and this tab "
+                f"tried to open it by itself, but the restore failed "
+                f"({_exc}). Open it again from the session list.")
+            raise
+        # _load_saved_session replaces the chat history with the restored
+        # conversation, so the earlier "Waiting" line is gone from the
+        # screen. The person must still be able to see WHY this tab opened
+        # by itself: one line after the restore, in the same callback as the
+        # open (a line appended BEFORE the restore was wiped with the
+        # history; and when the restore raises mid-way, between wiping the
+        # chat and its own first system line, the chat would stay EMPTY and
+        # the failure would die unseen inside the Timer thread -- measured
+        # on the operator's node, green run of pair v3). If the restore
+        # failed, the line above says so instead of pretending the
+        # conversation is open.
+        _append_system_message(
+            "The holder ended while this tab was waiting on the held "
+            "conversation — it opened here by itself.")
+
+    def _held_wait_rearm():
+        """Re-arm the refused-tab poller. Runs inside _held_wait_poll and
+        when 'Wait' is chosen; _held_wait_poll itself checks _closed first,
+        so a re-armed timer on a closed tab does nothing and dies. Same
+        self-arming shape as _tick_wait (:14604): cancel the predecessor
+        before starting the next, so ticks cannot pile up."""
+        import threading as _threading_held
+        _prev = state.get("_held_wait_timer")
+        if _prev is not None:
+            try:
+                _prev.cancel()
+            except Exception:
+                pass
+        try:
+            _held = _threading_held.Timer(
+                _BACKGROUND_REFRESH_S, _held_wait_poll)
+            _held.daemon = True
+            _held.start()
+            state["_held_wait_timer"] = _held
+        except Exception as exc:
+            # Not a bare pass: a wait whose timer cannot be armed must be
+            # SEEN (QS amendment, fail-silent class), not silently dead.
+            state.pop("_held_refused", None)
+            state.pop("_held_wait_ticks", None)
+            _append_system_message(
+                f"Cannot keep waiting on the held conversation: the watch "
+                f"timer failed ({exc}). Open it again from the session "
+                "list when it is free.")
+
     def _on_send(button):
         user_text = input_textarea.value.strip()
         if not user_text:
+            return
+        # A refusal is standing (the held conversation was never opened).
+        # The send must NOT mint a new session behind the person's back:
+        # their text stays in the box and one line names the two choices.
+        # The guard sits before EVERY input wipe below (shell path, steer,
+        # queue, ask-answer, cycle-complete, the ordinary send) — it must
+        # stay above all of them, or the box would be wiped with nothing
+        # sent (reviewer R3). Never anchor this with absolute line
+        # numbers: they move with every insertion; name the sites by
+        # order instead.
+        _refused = state.get("_held_refused")
+        _CHOICES = ("Start a new session from it", "Wait")
+        # The choice is its OWN variable, never a rewrite of user_text: what
+        # feeds the user model is the text as typed, and
+        # tests/test_zz_l4_the_user_model_is_a_description.py
+        # (test_only_the_send_button_feeds_the_model) holds that
+        # structurally by rejecting any assignment to user_text before the
+        # send guard. EXACT match of the whole trimmed message,
+        # case-insensitive (user_text was stripped at the top) -- QS
+        # condition 1: a sentence that CONTAINS a choice label must not fire.
+        _choice = ""
+        if _refused:
+            for _label in _CHOICES:
+                if user_text.lower() == _label.lower():
+                    _choice = _label
+                    break
+        if _refused and not _choice:
+            _append_system_message(
+                "This conversation is held by a live session (pid "
+                f"{_refused.get('pid', '?')}) and was not opened. Reply with "
+                "\u201cStart a new session from it\u201d or \u201cWait\u201d "
+                "— your text stays in the input box.")
+            return
+        if _choice == "Start a new session from it":
+            _held_sid = str(_refused.get("session_id") or "")
+            state.pop("_held_refused", None)
+            try:
+                from delfin.agent.session_store import fork_session
+                new_sid = fork_session(_held_sid)
+            except Exception as exc:
+                state["_held_refused"] = _refused
+                _append_system_message(f"Fork failed: {exc}")
+                return
+            if not new_sid:
+                state["_held_refused"] = _refused
+                _append_system_message(
+                    f"Could not fork session '{_held_sid[:12]}...'.")
+                return
+            _refresh_session_dropdown()
+            session_dropdown.value = new_sid
+            _load_saved_session(new_sid)
+            _append_system_message(
+                f"Started a new session from the held one "
+                f"('{_held_sid[:8]}…' → '{new_sid}') with \u201cStart a new "
+                f"session from it\u201d; the held session is unchanged. "
+                "Your text was kept in the input box.")
+            return
+        if _choice == "Wait":
+            # The refused state STAYS: the poller watches the holder and
+            # opens the conversation when it lets go. Nothing is sent; the
+            # text stays in the box.
+            _append_system_message(
+                "Waiting — when the holder of this conversation ends, this "
+                "tab opens it. Your text stays in the input box.")
+            # Its OWN bounded poller, not _background_tick: that tick lives
+            # inside _wire_phase5_callbacks and only exists once an engine
+            # is wired — a refused tab has NO engine, so no timer of that
+            # kind exists (reviewer F6, measured). The poller checks
+            # state["_closed"] before any write, so it cannot outlive the
+            # tab (QS condition 2).
+            state.setdefault("_held_wait_ticks", 0)
+            _held_wait_rearm()
             return
         # `!cmd`: the terminal's shell escape, on this surface too. It
         # runs through the agent's own gate (deny-list, secret scan,
@@ -22336,7 +22629,8 @@ def create_tab(ctx):
                         # Keep the inline tool message for chat-history continuity
                         _append_tool_message(
                             f'<span class="tool-name">Agent</span>  '
-                            f'<span class="tool-param">[{_e(sub_type)}] {_e(desc)}</span>'
+                            f'<span class="tool-param">'
+                            f'[{_e(subagent_type_label(sub_type))}] {_e(desc)}</span>'
                             + (f'\n  {_e(prompt)}...' if prompt else '')
                         )
 
@@ -24698,6 +24992,8 @@ def create_tab(ctx):
         state.pop("_follow_up", None)
         state["_cycle_history"] = []
         state["_mode_manual_override"] = False
+        # A new session: a refusal from the old one no longer applies.
+        state.pop("_held_refused", None)
         _set_active_gate()
         state["message_queue"].clear()
         state["session_start_time"] = None
@@ -25199,8 +25495,9 @@ def create_tab(ctx):
         # Find the enclosing git repo by walking up.
         repo_root = None
         cur = fpath if fpath.is_dir() else fpath.parent
+        from delfin.agent import safe_git as _sg
         while True:
-            if (cur / ".git").exists():
+            if _sg.is_checkout(cur):
                 repo_root = cur
                 break
             if cur == cur.parent:
@@ -25887,7 +26184,7 @@ def create_tab(ctx):
         except Exception:
             pass
         for key in ("_job_wake_timer", "_background_timer", "_stale_timer",
-                    "_stale_kill_timer"):
+                    "_stale_kill_timer", "_held_wait_timer"):
             timer = state.get(key)
             try:
                 if timer is not None:

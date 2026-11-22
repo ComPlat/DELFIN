@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -230,22 +229,6 @@ def _latin_hypercube_points(space_size: int, n: int,
     return sorted({int(s * space_size) for s in sample})[:n]
 
 
-def _seed_indices(remaining: Sequence, n: int) -> list:
-    """Deterministic seed design over the REMAINING candidates.
-
-    ``remaining`` is the candidate list after blocking observations and
-    failures.  The fixed-seed LHS design is generated ONCE over that
-    list — so with ``n=1`` per round, the next round gets the NEXT
-    design point instead of re-drawing the same first point (a fixed
-    seed with n=1 would otherwise re-propose the same candidate until
-    the budget burns on one index).  Already-visited positions are
-    consumed: the design state lives in the caller, not here.
-    """
-    design = _latin_hypercube_points(len(remaining),
-                                     min(n, len(remaining)))
-    return [remaining[p] for p in design]
-
-
 def _gp_surrogate(x: np.ndarray, y: np.ndarray):
     from sklearn.gaussian_process import GaussianProcessRegressor
     from sklearn.gaussian_process.kernels import Matern, WhiteKernel
@@ -321,37 +304,6 @@ def select_next(space: Sequence, observations: dict,
 # ---------------------------------------------------------------------------
 # the loop itself
 # ---------------------------------------------------------------------------
-
-
-def _xtb_binary_env() -> Optional[dict]:
-    """PATH prefix carrying DELFIN's resolved xtb binary, if any.
-
-    DELFIN resolves xtb through ``qm_runtime.find_tool_executable`` (see
-    ``delfin/agent/doctor.py:_check_binaries``), but the native adapter
-    ``delfin/tools/adapters/xtb_native.py:_run_xtb`` gates on
-    ``shutil.which("xtb")`` only.  On nodes where xtb lives under
-    ``~/.delfin/qm_tools`` and is NOT on PATH, the campaign therefore
-    adds the resolved binary's directory to the child env's PATH —
-    without touching the adapter.
-    """
-    try:
-        from delfin import qm_runtime
-    except Exception:
-        return None
-    try:
-        path = qm_runtime.find_tool_executable("xtb")
-    except Exception:
-        return None
-    if not path:
-        return None
-    parent = str(Path(path).parent)
-    env = dict(os.environ)
-    existing = env.get("PATH", "")
-    if parent in existing.split(os.pathsep):
-        return None
-    env["PATH"] = parent + os.pathsep + existing
-    return env
-
 
 def _evaluate_with_xtb(geom_xyz: str, work_dir: str | Path,
                        *, charge: int = 0, mult: int = 1,

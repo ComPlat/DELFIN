@@ -56,9 +56,13 @@ def test_a_new_session_reads_what_the_user_said_about_themselves():
     assert "grants no permission" in prompt
 
 
+def _block(max_tokens: int = 200) -> str:
+    return UM.session_block(None, max_tokens=max_tokens)[0]
+
+
 def test_an_empty_model_adds_nothing_to_the_prompt():
     _store()
-    assert UM.prompt_block() == ""
+    assert _block() == ""
     assert "user model" not in _prompt()
 
 
@@ -77,7 +81,7 @@ def test_forgetting_takes_the_entry_out_of_the_next_prompt():
 def test_switched_off_it_neither_reads_nor_writes(monkeypatch):
     _write({"role": [_entry("I am a computational chemist")]})
     monkeypatch.setenv("DELFIN_USER_MODEL", "off")
-    assert UM.prompt_block() == ""
+    assert _block() == ""
     assert "computational chemist" not in _prompt()
     assert not UM.note_typed_message("I prefer pytest")
     monkeypatch.delenv("DELFIN_USER_MODEL")
@@ -88,7 +92,7 @@ def test_the_block_stays_under_its_own_ceiling():
     _store()
     for i in range(40):
         UM.note_typed_message(f"I prefer option number {i} " + "x" * 120)
-    block = UM.prompt_block(max_tokens=200)
+    block = _block(max_tokens=200)
     assert block and UM.estimate_tokens(block) <= 200
     # the newest is what survives the ceiling, not the oldest
     assert "option number 39" in block
@@ -117,7 +121,7 @@ def test_the_block_stays_under_its_own_ceiling():
 def test_what_is_not_one_short_line_about_the_user_is_not_kept(text):
     _store()
     assert not UM.note_typed_message(text)
-    assert UM.prompt_block() == ""
+    assert _block() == ""
 
 
 @pytest.mark.parametrize("text,field", [
@@ -161,7 +165,7 @@ def test_a_hand_written_file_cannot_carry_what_typing_could_not():
     assert [e["value"] for e in entries["role"]] == [
         "I am a computational chemist"]
     assert set(entries) == set(UM.FIELDS)
-    block = UM.prompt_block()
+    block = _block()
     assert "SYSTEM" not in block and "push" not in block
     assert "bypass" not in block and "tool speaking" not in block
     assert block.count("\n- ") == 1
@@ -174,14 +178,14 @@ def test_a_link_a_pipe_or_an_oversize_file_is_no_user_model(tmp_path):
     real.write_text(json.dumps(
         {"schema": 1, "fields": {"role": [_entry("I am a chemist")]}}))
     path.symlink_to(real)
-    assert UM.prompt_block() == ""
+    assert _block() == ""
     path.unlink()
     os.mkfifo(path)
-    assert UM.prompt_block() == ""        # and it returned at all
+    assert _block() == ""        # and it returned at all
     path.unlink()
     path.write_text(json.dumps({"schema": 1, "fields": {"role": [
         _entry("I am a chemist")]}, "pad": "x" * (UM.MAX_FILE_BYTES + 1)}))
-    assert UM.prompt_block() == ""
+    assert _block() == ""
 
 
 def test_the_panel_can_add_nothing_typing_could_not():

@@ -230,7 +230,7 @@ def _session_ids_on_disk() -> list[str]:
     try:
         for entry in d.iterdir():
             name = entry.name
-            if not name.endswith(".json") or name.endswith(".turn.json"):
+            if not session_store.is_session_file(name):
                 continue
             sid = name[:-len(".json")]
             if _valid_session_id(sid) and _is_regular_file(entry):
@@ -316,24 +316,31 @@ def _scrub(text: str) -> str:
         from .memory_store import _without_secrets
         return _without_secrets(text)
     except Exception:
-        return text
+        # _without_secrets itself fails closed now; this guard keeps the
+        # import/lookup path from ever leaking on an unexpected error.
+        return "[redaction failed -- text withheld]"
 
 
-def _source_state(session_id: str):
+def _source_state(session_id: str, con: "sqlite3.Connection | None" = None):
     """The recorded (mtime, size) of a session's source documents, as a
     ``{kind: (mtime, size)}`` dict -- or None when nothing is indexed.
 
     ``kind`` is ``"session"`` or ``"archive"`` (the stat pair in the row's
-    id is a detail of change detection, not part of the interface).
+    id is a detail of change detection, not part of the interface). With
+    *con* given it reads through that open connection, so the incremental
+    check in ``_index_session_locked`` asks the SAME query it changes
+    detection is decided by -- one reader, not two that can drift.
     """
     try:
-        con = _open_index()
+        close = con is None
+        con = _open_index() if con is None else con
         try:
             rows = con.execute(
                 "SELECT kind, mtime, size FROM sources WHERE session_id = ?",
                 (session_id,)).fetchall()
         finally:
-            con.close()
+            if close:
+                con.close()
     except sqlite3.Error:
         return None
     if not rows:
@@ -369,10 +376,10 @@ def _index_session_locked(session_id: str) -> bool:
     con = _open_index()
     try:
         con.execute("BEGIN")
-        known = {
-            row[0]: (float(row[1]), int(row[2])) for row in con.execute(
-                "SELECT kind, mtime, size FROM sources WHERE session_id = ?",
-                (session_id,)).fetchall()}
+        # The recorded stat state through the one reader (_source_state),
+        # not a second copy of its query: change detection and whatever
+        # inspects it must ask the same question.
+        known = _source_state(session_id, con) or {}
         changed = False
         for doc_id, created, title, text in docs:
             kind, _, _ = doc_id.partition(":")
@@ -392,7 +399,7 @@ def _index_session_locked(session_id: str) -> bool:
                     "INSERT INTO documents "
                     "(session_id, created_at, title, text) "
                     "VALUES (?, ?, ?, ?)",
-                    (session_id, created2, title2, _scrub(text2)))
+                    (session_id, created2, _scrub(title2), _scrub(text2)))
                 kind2, _, _ = doc_id2.partition(":")
                 m2 = float(doc_id2.split(":")[1])
                 s2 = int(doc_id2.split(":")[2])

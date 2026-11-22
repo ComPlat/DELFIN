@@ -46,6 +46,12 @@ Semantics, in the order the checks run:
   identical content in both arms, or no item changed at all, the state is
   ``null_test_suspected``. Content is the record with volatile fields
   (time, duration, pid, host, ...) removed.
+* Pre-registration: when a ``--prereg`` file predates the first arm stamp,
+  its content is run through the real pre-registration gate of
+  ``delfin.agent.experiment`` (``pre_register``); a file whose content
+  registers no experiment is reported not written down, with the module's
+  own refusal reason, instead of as a pre-registration. The verdict feeds
+  the report line only, never the state or the exit code.
 * Never-worse terms, any single case blocks (``blocked``), each listed:
   ok -> not ok, a defect field that rose on an item, a quality value that
   fell on an item, and items whose content differs between two runs of
@@ -701,6 +707,44 @@ def _sample(keys: list, rows: dict, changed: set, k: int) -> list:
     return out
 
 
+def _prereg_verdict(p: Path) -> str:
+    """Verdict for a prereg file that predates the first arm stamp.
+
+    Input: path of the prereg file (a JSON object with the fields of a
+    pre-registration: id, hypothesis, switch, why_chain, expectation,
+    reading, pool_size). Output: the one-line verdict for the report.
+    Semantics: the file's content is run through the real pre-registration
+    gate of ``delfin.agent.experiment`` -- a file that exists before the
+    stamp is not written down until it registers an experiment (hypothesis,
+    why-chain, switch, expected effect and reading all present). A refusal
+    is reported as ``not_written_down: <the module's own refusal reason>``;
+    an accepted file is ``before_measurement``. The verdict feeds only the
+    report line, never the state or the exit code. The mtime check that
+    calls this stays upstream: it catches a file written after the first
+    stamp, which a content check cannot. Rejected alternative: trust file
+    existence plus mtime only, which reads an empty or incomplete file as
+    a pre-registration.
+    """
+    from delfin.agent import experiment as _exp
+    try:
+        data = json.loads(p.read_text("utf-8"))
+    except (OSError, ValueError) as e:
+        return f"not_written_down: unreadable file ({type(e).__name__})"
+    if not isinstance(data, dict):
+        return "not_written_down: the file is not a JSON object"
+    draft = _exp.Experiment(id=str(data.get("id", "")),
+                            hypothesis=str(data.get("hypothesis", "")),
+                            why_chain=list(data.get("why_chain", [])),
+                            switch=str(data.get("switch", "")))
+    try:
+        _exp.pre_register(draft, expectation=str(data.get("expectation", "")),
+                          reading=str(data.get("reading", "")),
+                          pool_size=str(data.get("pool_size", "")))
+    except _exp.ExperimentError as e:
+        return f"not_written_down: {e}"
+    return "before_measurement"
+
+
 def compare(records_a: Sequence[dict], records_b: Sequence[dict], *,
             stamp_a: Optional[Mapping] = None,
             stamp_b: Optional[Mapping] = None,
@@ -767,7 +811,7 @@ def compare(records_a: Sequence[dict], records_b: Sequence[dict], *,
             elif p.stat().st_mtime > first:
                 out["prereg"] = "written_after_the_first_arm_was_stamped"
             else:
-                out["prereg"] = "before_measurement"
+                out["prereg"] = _prereg_verdict(p)
     if out["state"] == "skewed_pair":
         out["comparison"] = "none: not one population under one instrument"
         return out

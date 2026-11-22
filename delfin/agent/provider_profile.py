@@ -378,12 +378,6 @@ def _find_relevant_playbook(
     return key, playbook, module_name
 
 
-def load_shared_profile(path: Path | None = None) -> dict[str, Any]:
-    """Load the shared DELFIN baseline profile."""
-    data = _read_all(path or _DEFAULT_PATH)
-    return _load_shared_profile_from_data(data)
-
-
 def load_provider_profile(
     provider: str,
     path: Path | None = None,

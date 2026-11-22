@@ -5,7 +5,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from delfin.agent.api_client import _run_auto_verify, _resolve_auto_verify
+from delfin.agent.api_client import (
+    KitToolPermissions, _run_auto_verify, _resolve_auto_verify,
+)
+
+
+def _perms(workspace):
+    """The permission bundle auto-verify needs to run anything.
+
+    The verification run goes into the same cage as the ``run_tests`` tool,
+    and the cage comes from the permissions. A call without them verifies
+    the syntax and skips the test run, which is what the product does on a
+    host that can confine nothing -- so a test that wants the run to happen
+    has to hand over a bundle.
+    """
+    return KitToolPermissions(workspace=workspace, mode="bypassPermissions",
+                              confirm_callback=None)
 
 
 def test_syntax_check_flags_broken_python(tmp_path):
@@ -29,12 +44,13 @@ def test_off_and_missing_file_are_safe(tmp_path):
 def test_command_mode_reports_failure(tmp_path):
     # A command that exits non-zero must surface as a problem.
     out = _run_auto_verify([], "command", "python -c \"import sys; sys.exit(3)\"",
-                           tmp_path)
+                           tmp_path, perms=_perms(tmp_path))
     assert "failed (exit 3)" in out
 
 
 def test_command_mode_clean_on_success(tmp_path):
-    assert _run_auto_verify([], "command", "python -c \"pass\"", tmp_path) == ""
+    assert _run_auto_verify([], "command", "python -c \"pass\"", tmp_path,
+                            perms=_perms(tmp_path)) == ""
 
 
 def test_default_mode_is_smart():
@@ -58,7 +74,8 @@ def test_smart_runs_tests_and_flags_failure(tmp_path):
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_mod.py").write_text(
         "from mod import val\ndef test_val():\n    assert val() == 2\n")
-    out = _run_auto_verify([str(tmp_path / "mod.py")], "smart", "", tmp_path)
+    out = _run_auto_verify([str(tmp_path / "mod.py")], "smart", "", tmp_path,
+                           perms=_perms(tmp_path))
     assert out and "failed" in out
 
 
@@ -67,20 +84,23 @@ def test_smart_clean_when_tests_pass(tmp_path):
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_mod.py").write_text(
         "from mod import val\ndef test_val():\n    assert val() == 2\n")
-    assert _run_auto_verify([str(tmp_path / "mod.py")], "smart", "", tmp_path) == ""
+    assert _run_auto_verify([str(tmp_path / "mod.py")], "smart", "", tmp_path,
+                            perms=_perms(tmp_path)) == ""
 
 
 def test_smart_syntax_error_short_circuits(tmp_path):
     bad = tmp_path / "bad.py"
     bad.write_text("def f(:\n  return 1\n")
-    out = _run_auto_verify([str(bad)], "smart", "", tmp_path)
+    out = _run_auto_verify([str(bad)], "smart", "", tmp_path,
+                           perms=_perms(tmp_path))
     assert out and ("SyntaxError" in out or "invalid syntax" in out)
 
 
 def test_smart_no_tests_is_syntax_only(tmp_path):
     ok = tmp_path / "ok.py"
     ok.write_text("def f():\n    return 1\n")
-    assert _run_auto_verify([str(ok)], "smart", "", tmp_path) == ""
+    assert _run_auto_verify([str(ok)], "smart", "", tmp_path,
+                            perms=_perms(tmp_path)) == ""
 
 
 # The wiring used to be asserted as five substrings of api_client.py,
@@ -287,7 +307,7 @@ def test_auto_verify_scopes_to_edited_package(tmp_path):
     (junk / "test_broken.py").write_text("import does_not_exist_xyz_42\n")
 
     prob = _run_auto_verify([str(pkg / "sheet" / "m.py")], "smart", "",
-                            str(tmp_path))
+                            str(tmp_path), perms=_perms(tmp_path))
     assert prob == "", f"clean package falsely flagged: {prob[:200]}"
 
 
@@ -299,7 +319,7 @@ def test_auto_verify_still_catches_failure_inside_the_package(tmp_path):
     (pkg / "tests" / "test_x.py").write_text(
         "def test_x():\n    assert 1 == 2\n")
     prob = _run_auto_verify([str(pkg / "tests" / "test_x.py")], "smart", "",
-                            str(tmp_path))
+                            str(tmp_path), perms=_perms(tmp_path))
     assert prob != ""
 
 
@@ -323,14 +343,14 @@ def test_the_tests_covering_the_edit_run_instead_of_the_suite(tmp_path, monkeypa
     ws = _ws_with_matching_test(tmp_path)
     calls = []
 
-    def fake_run(cmd, workspace, timeout):
+    def fake_run(cmd, workspace, timeout, perms=None):
         calls.append(cmd)
         return f"`{cmd}` failed (exit 1):\nboom", False
 
     monkeypatch.setattr(A, "_run_test_command", fake_run)
     status: dict = {}
     prob = A._run_auto_verify([str(ws / "mod.py")], "smart", "", str(ws),
-                              status=status)
+                              status=status, perms=_perms(ws))
     assert "failed" in prob
     assert status.get("scoped") is True
     assert len(calls) == 1 and "test_mod.py" in calls[0]
@@ -346,11 +366,12 @@ def test_a_suite_that_timed_out_is_not_started_again(tmp_path, monkeypatch):
     (tmp_path / "tests" / "test_other.py").write_text(
         "def test_other():\n    assert True\n")
     monkeypatch.setattr(A, "_run_test_command",
-                        lambda cmd, workspace, timeout: ("", True))
+                        lambda cmd, workspace, timeout, perms=None: ("", True))
     try:
         status: dict = {}
         assert A._run_auto_verify([str(tmp_path / "lonely.py")], "smart", "",
-                                  str(tmp_path), status=status) == ""
+                                  str(tmp_path), status=status,
+                                  perms=_perms(tmp_path)) == ""
         assert status.get("skipped") is True
         assert status.get("timed_out") is True
         assert str(tmp_path) in A._SLOW_TEST_WS
@@ -378,7 +399,8 @@ def test_a_packages_own_tests_dir_is_not_the_projects_suite(tmp_path):
 
     status: dict = {}
     prob = _run_auto_verify([str(pkg / "ui" / "view.py")], "smart", "",
-                            str(tmp_path), status=status)
+                            str(tmp_path), status=status,
+                            perms=_perms(tmp_path))
     assert prob == "", prob[:300]
     assert "test_view.py" in status.get("command", "")
     assert "test_old.py" not in status.get("command", "")
@@ -394,7 +416,8 @@ def test_a_red_suite_no_test_of_the_edit_is_part_of_forces_no_fix(tmp_path):
         "def test_keys():\n    assert {'IP'} == {'IP', 'IP_eV'}\n")
     status: dict = {}
     prob = _run_auto_verify([str(tmp_path / "lonely.py")], "smart", "",
-                            str(tmp_path), status=status)
+                            str(tmp_path), status=status,
+                            perms=_perms(tmp_path))
     assert prob == ""
     assert status.get("skipped") is True
     assert status.get("unrelated_failure") is True
@@ -438,11 +461,11 @@ def test_blacklisted_workspace_runs_scoped_not_silent_clean(tmp_path, monkeypatc
     A._SLOW_TEST_WS.add(str(ws))
     monkeypatch.setattr(
         A, "_run_test_command",
-        lambda cmd, workspace, timeout: (f"`{cmd}` failed (exit 1):\nred", False))
+        lambda cmd, workspace, timeout, perms=None: (f"`{cmd}` failed (exit 1):\nred", False))
     try:
         status: dict = {}
         prob = A._run_auto_verify([str(ws / "mod.py")], "smart", "", str(ws),
-                                  status=status)
+                                  status=status, perms=_perms(ws))
         assert prob != ""                     # the old behaviour returned ""
         assert status.get("scoped") is True
     finally:
@@ -459,7 +482,8 @@ def test_blacklisted_workspace_without_scoped_match_reports_skip(tmp_path):
     try:
         status: dict = {}
         prob = A._run_auto_verify([str(tmp_path / "lonely.py")], "smart", "",
-                                  str(tmp_path), status=status)
+                                  str(tmp_path), status=status,
+                                  perms=_perms(tmp_path))
         assert prob == ""
         assert status.get("skipped") is True  # visible, not silent
     finally:
@@ -472,7 +496,7 @@ def test_no_test_suite_reports_skip_status(tmp_path):
     ok.write_text("def f():\n    return 1\n")
     status: dict = {}
     assert A._run_auto_verify([str(ok)], "smart", "", str(tmp_path),
-                              status=status) == ""
+                              status=status, perms=_perms(tmp_path)) == ""
     assert status.get("skipped") is True
     assert "no test suite" in status.get("reason", "")
 

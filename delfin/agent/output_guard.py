@@ -180,12 +180,23 @@ _SECRET_CHECKS: list[tuple[re.Pattern, str, int, bool]] = [
 ]
 
 
-def _redact_secrets(text: str, findings: list) -> str:
+def _redact_secrets(text: str, findings: list,
+                    *, failed: "list[str] | None" = None) -> str:
+    """Every shape pass over ``text``. A pass that raises is skipped.
+
+    ``failed`` (optional): the ``kind`` of each pass that raised is
+    appended to it. Without it the result is indistinguishable from a
+    complete scan, so a caller whose decision must be fail-closed cannot
+    tell a clean text from one whose scan did not finish. Default None
+    keeps the behaviour byte for byte.
+    """
     for pattern, kind, group, validate in _SECRET_CHECKS:
         try:
             text = _redact(text, pattern, kind, findings,
                            group=group, validate=validate)
         except Exception:
+            if failed is not None:
+                failed.append(kind)
             continue
     return text
 
@@ -236,6 +247,82 @@ def scrub_secrets(text: str, *, exact_only: bool = False,
         return _redact_secrets(text, [])
     except Exception:
         return text
+
+
+WITHHELD = "[redaction could not be certified -- text withheld]"
+
+
+def scrub_secrets_certified(
+        text: str, *, exact_only: bool = False,
+        exact_values: "list[str] | tuple[()] | None" = None,
+) -> "tuple[str, bool]":
+    """Scrubbed text for a caller whose verdict is a SECURITY decision.
+
+    Input: as :func:`scrub_secrets`. Output: ``(value, certified)`` --
+    either ``(scrubbed, True)``, or ``(WITHHELD, False)`` when any pass
+    did not run to completion. The text itself is never returned
+    unscrubbed: a flag beside the raw value only helps a caller that
+    reads it, and the FS1 invariant is that no function hands back the
+    text it was scrubbing when the scrub failed.
+
+    Not certified means one of:
+
+    * a credential store could not be READ, so the exact values it holds
+      are unknown and none of them was removed -- the worst case, because
+      a KIT key carries no prefix and no separator, so no shape pass can
+      catch it. A store that is merely ABSENT is not this case: holding no
+      credentials is a complete answer, and treating it as a failure would
+      withhold every tool result on a machine that never had a store;
+    * the held-credential lookup raised;
+    * the exact-replace loop raised part way, leaving the text HALF
+      scrubbed; or
+    * a shape pass raised, leaving a whole class of secret unexamined.
+
+    Why this stands beside :func:`scrub_secrets` instead of replacing it:
+    that function promises never to raise and to return the input when
+    scrubbing fails, and callers that merely PASS content on depend on
+    it -- withholding every tool result while a keyring is locked would
+    end an unattended run. A caller whose verdict decides whether a value
+    is printed cannot use "unchanged", because unchanged means both "no
+    secret present" and "the scan never finished". Those callers ask here.
+    """
+    if not text:
+        return text, True
+    certified = True
+    if exact_values is None:
+        try:
+            from .web_tools import (_known_secret_values,
+                                    _secret_lookup_complete)
+            exact_values = _known_secret_values()
+            certified = _secret_lookup_complete()
+        except Exception:
+            exact_values = ()
+            certified = False
+    scrubbed = scrub_secrets(text, exact_only=exact_only,
+                             exact_values=exact_values)
+    if not certified:
+        return WITHHELD, False
+    # The exact pass and the shape passes are both idempotent, so running
+    # them once more over the already-scrubbed text reports whether they
+    # COMPLETE without changing the answer. That is the only way to learn
+    # it without a second copy of the redaction logic, and two copies of a
+    # scrubber drift.
+    try:
+        for secret in sorted(set(exact_values), key=len, reverse=True):
+            if secret in scrubbed:
+                raise RuntimeError("an exact value survived the pass")
+    except Exception:
+        return WITHHELD, False
+    if exact_only:
+        return scrubbed, True
+    failed: list[str] = []
+    try:
+        _redact_secrets(scrubbed, [], failed=failed)
+    except Exception:
+        return WITHHELD, False
+    if failed:
+        return WITHHELD, False
+    return scrubbed, True
 
 
 # ---------------------------------------------------------------------------

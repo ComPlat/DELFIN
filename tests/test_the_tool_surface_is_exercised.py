@@ -13,21 +13,28 @@ without doing one of the two turns this file red. That is the mechanism;
 the exercises underneath are what give it something to point at.
 
 The exercises judge the world, never the wording: a file's bytes, a
-returned URL, an exit status. Anything that needs the network is marked
-and skipped when it is unreachable, because a red run caused by a
-firewall teaches people to ignore red runs.
+returned URL, an exit status. Anything that needs the network asks for it
+through the ``net_backend`` fixture and is skipped when it is unreachable,
+because a red run caused by a firewall teaches people to ignore red runs.
+The question is asked when a test needs it, never at import: a module-level
+probe answers it during collection, which makes the list of tests depend on
+the network.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
+import sys
 import tempfile
+import textwrap
 from pathlib import Path
 
 import pytest
 
+from conftest import child_env
 from delfin.agent import api_client
 from delfin.agent.api_client import KitToolPermissions, _doc_executor
 
@@ -307,22 +314,128 @@ def test_the_environment_can_be_described(box, perms):
 # The network half — the exact place the three-week outage lived
 # ---------------------------------------------------------------------------
 
-def _network_reachable() -> bool:
+@pytest.fixture()
+def net_backend():
+    """Skip the caller unless the search backend is reachable from here.
+
+    ASKED HERE, NOT AT IMPORT. This was a module-level ``skipif`` whose
+    condition opened a socket while the file was imported -- which is
+    during COLLECTION. Every ``--collect-only``, on CI, on a developer's
+    machine and inside a cage asked the network what to collect; the test
+    set then depended on whether the answer came back, which makes a green
+    run unattributable. A listing has no business touching egress.
+
+    THE SUITE'S OWN REFUSAL IS NOT A FIREWALL. The session guard
+    (tests/external_agent_guard.py) refuses every non-loopback connect and
+    raises ``ExternalAgentTripwire``, a ``PermissionError`` -- an
+    ``OSError``. A plain ``except OSError`` therefore reports the guard's
+    deliberate refusal as an unreachable host, and would keep the three
+    network tests silently skipped even where the network works. The
+    refusal is drained from the guard's record (so it is not charged to
+    this test at teardown) and named in the skip reason.
+
+    ``pytest.skip`` raises ``Skipped``, which derives from
+    ``BaseException`` rather than ``Exception``, so it is not caught by
+    the ``except OSError`` and cannot be turned into a silent pass.
+    """
     import socket
+
+    import external_agent_guard as guard
+
     try:
         socket.create_connection(("duckduckgo.com", 443), timeout=5).close()
-        return True
-    except OSError:
-        return False
+    except OSError as exc:
+        refused = [t for t in guard.take_trips() if "network connection" in t]
+        if refused:
+            pytest.skip("the suite's egress guard refused the reachability "
+                        f"probe ({refused[0]}); that does not mean the "
+                        "backend is down")
+        pytest.skip(f"no route to the search backend "
+                    f"({type(exc).__name__}: {exc}); a firewall must not "
+                    "read as a bug")
 
 
-needs_net = pytest.mark.skipif(
-    not _network_reachable(),
-    reason="no route to the search backend; a firewall must not read as a bug")
+def test_the_network_question_is_not_asked_while_tests_are_listed(tmp_path):
+    """Collecting this file must not reach for the network.
+
+    The guard does not fail a collection-time refusal -- it records it
+    against "(after the last test)" and prints it in the terminal summary.
+    That is exactly how the module-level probe survived for so long: every
+    collection asked the network what to collect, and nothing went red. So
+    the oracle here is not "no failure"; it is the guard's own signal, an
+    audit hook on ``socket.getaddrinfo``/``socket.connect``, which fires
+    whether the connect is refused, allowed or unresolvable. It therefore
+    measures the same thing on CI, on a machine behind a firewall and on
+    one whose resolver is down.
+
+    Driven in a CHILD pytest (the pattern of
+    tests/test_the_suite_reaches_no_external_agent.py) so the count is a
+    whole collection of this file in a fresh process, with this checkout's
+    conftest and therefore the real guard installed. The plugin is loaded
+    with ``-p``, which happens before any conftest or module is imported,
+    so the hook sees the collection it is measuring.
+
+    The collected tests are asserted too: a change that silently stopped
+    collecting the network tests would leave the hook equally silent, and
+    would "pass" a test that only looked for the absence of a socket.
+    """
+    plugin = tmp_path / "net_audit_plugin.py"
+    report = tmp_path / "events.json"
+    plugin.write_text(textwrap.dedent('''\
+        import json
+        import os
+        import sys
 
 
-@needs_net
-def test_web_search_returns_results_not_just_an_absence(box, perms):
+        EVENTS = []
+
+
+        def _hook(event, args):
+            if event in ("socket.getaddrinfo", "socket.connect"):
+                EVENTS.append(event)
+
+
+        sys.addaudithook(_hook)
+
+
+        def pytest_sessionfinish(session, exitstatus):
+            with open(os.environ["NET_AUDIT_REPORT"], "w",
+                      encoding="utf-8") as fh:
+                json.dump({"events": EVENTS,
+                           "ids": [item.name for item in session.items]}, fh)
+        '''))
+    target = Path(__file__).resolve()
+    env = child_env(tmp_path)
+    env["NET_AUDIT_REPORT"] = str(report)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(target.parent.parent), str(tmp_path)]
+        + [p for p in env.get("PYTHONPATH", "").split(os.pathsep) if p])
+    r = subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "net_audit_plugin",
+         "--collect-only", "-q", "-p", "no:cacheprovider",
+         "-p", "no:randomly", "-o", "addopts=", "--rootdir",
+         str(target.parent.parent), str(target)],
+        cwd=str(target.parent.parent), env=env,
+        capture_output=True, text=True, timeout=300)
+    out = r.stdout + r.stderr
+    assert report.exists(), f"the child collection did not finish:\n{out}"
+    seen = json.loads(report.read_text(encoding="utf-8"))
+    # A fix that stopped collecting the network tests would silence the
+    # socket count for the wrong reason, so they are named one by one.
+    for name in ("test_web_search_returns_results_not_just_an_absence",
+                 "test_search_results_arrive_marked_untrusted",
+                 "test_web_fetch_retrieves_and_fences_a_page"):
+        assert name in seen["ids"], (
+            f"{name} is no longer collected, so a silent socket count "
+            f"would prove nothing:\n{out}")
+    assert seen["events"] == [], (
+        "collecting this file opened the network "
+        f"({seen['events']}); the reachability question belongs in a "
+        f"fixture, where a test asks it, not at import:\n{out}")
+
+
+def test_web_search_returns_results_not_just_an_absence(box, perms,
+                                                       net_backend):
     """The assertion the outage needed: a URL, not "the tool answered".
 
     A refusal is a legitimate outcome here (the backend rate-limits), so
@@ -342,8 +455,7 @@ def test_web_search_returns_results_not_just_an_absence(box, perms):
         "what a blocked backend must never look like")
 
 
-@needs_net
-def test_search_results_arrive_marked_untrusted(box, perms):
+def test_search_results_arrive_marked_untrusted(box, perms, net_backend):
     """Results carry the fence. An anti-bot refusal is not a result.
 
     DuckDuckGo answers a share of requests with HTTP 202 — a challenge,
@@ -396,8 +508,7 @@ def test_a_fetched_page_arrives_as_text_inside_the_fence(box, perms,
     assert raw.lstrip().startswith("[UNTRUSTED"), raw[:120]
 
 
-@needs_net
-def test_web_fetch_retrieves_and_fences_a_page(box, perms):
+def test_web_fetch_retrieves_and_fences_a_page(box, perms, net_backend):
     """The real transport, where the page is reachable.
 
     example.com is a third party's server: it answered HTTP 503 during a

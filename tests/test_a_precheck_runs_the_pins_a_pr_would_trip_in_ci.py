@@ -20,6 +20,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import delfin.dev_precheck as dev_precheck
 from delfin.dev_precheck import (
     PROTOCOL_PIN,
     changed_files,
@@ -93,6 +94,55 @@ def test_select_pins_is_a_union_over_several_changed_paths():
 def test_changed_files_reads_the_branch_diff():
     files = changed_files("HEAD")
     assert isinstance(files, list)
+
+
+def test_a_deleted_test_file_does_not_fail_the_precheck(tmp_path):
+    """A branch may legitimately remove a test file.
+
+    ``git diff --name-only`` lists the deleted path, and ``select_pins`` adds
+    every ``tests/*.py`` it sees, so precheck used to hand pytest a file that
+    no longer exists and report "file or directory not found" as a pin
+    failure. Nothing was measured by that; the branch is failed for editing
+    the test suite, which is the one thing a change must be free to do.
+
+    Driven through ``precheck`` itself, not ``select_pins``: the pure function
+    still reports what the diff named, which is the useful answer for a
+    caller. The filter belongs where the file is about to be run.
+    """
+    deleted = "tests/test_a_file_this_branch_deleted.py"
+    surviving = "tests/test_cm1_public_entry_parity.py"
+    assert not (REPO / deleted).exists()
+    assert (REPO / surviving).is_file()
+
+    calls: list[list[str]] = []
+
+    def _fake_run(argv, **kwargs):
+        calls.append(argv)
+
+        class _Done:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _Done()
+
+    real_changed, real_run = dev_precheck.changed_files, dev_precheck.subprocess.run
+    dev_precheck.changed_files = lambda *a, **k: [deleted, surviving]
+    dev_precheck.subprocess.run = _fake_run
+    try:
+        code = dev_precheck.precheck(["--skip-ruff"])
+    finally:
+        dev_precheck.changed_files, dev_precheck.subprocess.run = real_changed, real_run
+
+    assert code == 0, "a deleted test file must not fail the precheck"
+    assert calls, "precheck ran no pytest at all"
+    pytest_args = [arg for argv in calls if "pytest" in argv for arg in argv]
+    assert surviving in pytest_args, (
+        f"the file that still exists must still be run: {calls}"
+    )
+    assert not any(deleted in arg for arg in pytest_args), (
+        f"precheck handed pytest the deleted file: {calls}"
+    )
 
 
 def test_the_python_protocol_generator_matches_the_committed_generated_ts():

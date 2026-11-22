@@ -76,10 +76,6 @@ def _threshold_int(value, default, minimum):
     return int(f)
 
 
-def _now_minus(now, seconds):
-    return now - seconds
-
-
 def classify(record, now, settings):
     """One verdict for one session record.
 
@@ -189,28 +185,40 @@ def _emit(session_id: str, text: str) -> None:
                              title=text)
 
 
-def waits_summary() -> list[dict]:
-    """Every session key that holds registered waits, with what it waits
-    for — the wait side of ops health (target 1: the registry's
-    on_whom/for_what reach the display; the cli's health rows and this
-    table together show who waits on whom)."""
+def wait_edges() -> list[dict]:
+    """Every registered wait of every session key, raw.
+
+    The one scan the wait side of ops health builds on: ``waits_summary``
+    renders these rows, and the cli's health loop feeds them through
+    ``mutual_wait.find`` -> ``watch_cycle_events``. A key with no waits
+    contributes nothing; a broken registry row is skipped, never raised.
+    """
     from . import wait_registry, state_paths
 
-    rows = []
+    out = []
     for path in sorted((state_paths.workspace_state_dir("")
                         ).glob("waits_*.json")):
         stem = path.stem[len("waits_"):]
         if stem == "_default":
             continue
-        waits = wait_registry.SessionWaits(stem).list()
-        if not waits:
-            continue
+        for w in wait_registry.SessionWaits(stem).list():
+            if isinstance(w, dict):
+                w.setdefault("session", stem)
+                out.append(w)
+    return out
+
+
+def waits_summary() -> list[dict]:
+    """Every session key that holds registered waits, with what it waits
+    for — the wait side of ops health (target 1: the registry's
+    on_whom/for_what reach the display; the cli's health rows and this
+    table together show who waits on whom)."""
+    rows = []
+    for w in wait_edges():
         rows.append({
-            "session": stem,
-            "waits": "; ".join(
-                (str(w.get("on_whom") or "?") + ": "
-                 + (str(w.get("for_what")) or str(w.get("value"))))
-                for w in waits),
+            "session": str(w.get("session") or "?"),
+            "waits": (str(w.get("on_whom") or "?") + ": "
+                      + (str(w.get("for_what")) or str(w.get("value")))),
         })
     return rows
 

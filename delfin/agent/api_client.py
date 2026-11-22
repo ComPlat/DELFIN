@@ -5906,7 +5906,7 @@ def _read_only_reason(resolved, perms) -> str:
         path = Path(resolved)
         workspace = Path(getattr(perms, "workspace", "") or ".")
         for parent in (path, *path.parents):
-            if (parent / ".git").exists():
+            if safe_git.is_checkout(parent):
                 if parent != workspace:
                     return (f"the repository checkout at {parent}, which is "
                             "not your workspace — work inside your own "
@@ -6383,10 +6383,22 @@ def _gh_alias_or_extension(cmd: str, cwd) -> Optional[tuple]:
 #
 # The push gate before it (push grants, the git role) is unchanged.
 
+#: ``[ \t]`` and not ``\s``: ``\s`` includes a newline, so a line break
+#: separated tokens exactly like a space and a TWO-LINE command parsed as
+#: one push. Measured on 2026-11-21: ``git push origin topic\nmain`` was
+#: accepted for the uncaged route and ran as ``git push origin topic main``
+#: -- the second line became a refspec, so a branch nobody asked for was
+#: pushed, and that line was itself neither run nor refused. The permission
+#: gate upstream had judged the two-line text. No arbitrary command came
+#: through (``rm -rf /tmp/x`` is refused by the flag allowlist), but an
+#: unrequested publish did, and publishing is the irreversible class.
+#:
+#: ``_github_pr_plan`` already refuses "\n" and "\r" outright; this is the
+#: same refusal expressed in the token separator, where the cause is.
 _PLAIN_PUSH_RE = re.compile(
-    r"^\s*git\s+push((?:\s+[A-Za-z0-9._/:@^~-]+)*)"
-    r"(\s+2>&1)?"
-    r"(?:\s*\|\s*(tail|head)\s+(?:-n\s*)?-?(\d+))?\s*$")
+    r"^[ \t]*git[ \t]+push((?:[ \t]+[A-Za-z0-9._/:@^~-]+)*)"
+    r"([ \t]+2>&1)?"
+    r"(?:[ \t]*\|[ \t]*(tail|head)[ \t]+(?:-n[ \t]*)?-?(\d+))?[ \t]*$")
 _PLAIN_PUSH_FLAGS = frozenset({
     "-u", "--set-upstream", "-q", "--quiet", "-v", "--verbose",
     "--porcelain", "-n", "--dry-run", "--tags", "--follow-tags", "--atomic",
@@ -9045,6 +9057,74 @@ def _rule_answers(perms, site: str, name: str, target=None) -> Optional[str]:
     return rule.text
 
 
+def known_tool_names(
+    tools: Optional[list[dict[str, Any]]] = None
+) -> frozenset[str]:
+    """Every name that IS a tool of this product, as one derivation.
+
+    Input: optionally a catalogue to read instead of the advertised one
+    (the tests pass a small list). Output: the names, bare and -- for the
+    ops server -- also namespaced.
+
+    Why it exists: two judges answered "is this a real tool name" from two
+    different sets, and neither was a superset of the other, so they
+    disagreed in BOTH directions. Measured 2026-11-20: the nine swarm lead
+    names passed ``unknown_tool_names`` and were refused by the preset
+    validator as "not a known tool", while the ops server's real
+    ``geometry_build_smiles`` / ``geometry_read_xyz`` /
+    ``geometry_add_hydrogens`` were reported as MISSPELT by a judge reading
+    the doc catalogue alone -- the catalogue carries none of the server's
+    102 ``tool_*`` functions.
+
+    The union, each part with the reason it belongs:
+
+    * the advertised catalogue -- what the model is offered;
+    * ``_ALWAYS_ALLOWED_TOOLS`` -- reachable whatever the session allows;
+    * ``_SWARM_LEAD_TOOL_NAMES`` -- dispatched through the swarm service
+      surface rather than the catalogue;
+    * ``_WRITE_TOOL_NAMES`` and ``_DELFIN_ONLY_TOOL_NAMES`` -- real tools a
+      preset may list;
+    * the ops server's ``tool_*`` functions, derived from the module so one
+      it registers later stays known automatically. EVERY ``tool_*``, not
+      only ``tool_geometry_*``: measured, the server defines 102 and the
+      geometry prefix derives 19, so 83 real tools would stay unknown.
+
+    ``mcp__`` names from other servers are NOT here: those are discovered
+    inside a turn, so at startup there is nothing to check them against
+    and a guess would be a false alarm. Callers skip them instead.
+    """
+    # Read from the module that defines it rather than from this module's
+    # own binding: that binding is made further down the file, so a caller
+    # reached during import -- which is what a preset validator is -- gets
+    # a NameError from the module-level name and the right list from here.
+    if tools is None:
+        from .tool_catalog import _DOC_TOOLS_OPENAI as catalogue
+    else:
+        catalogue = tools
+    names: set[str] = set()
+    for t in catalogue:
+        n = str(t.get("name")
+                or (t.get("function") or {}).get("name") or "")
+        if n:
+            names.add(n)
+    names |= set(_ALWAYS_ALLOWED_TOOLS)
+    names |= set(_SWARM_LEAD_TOOL_NAMES)
+    names |= set(_WRITE_TOOL_NAMES)
+    names |= set(_DELFIN_ONLY_TOOL_NAMES)
+    try:
+        from delfin.ops_server import server as _ops_server
+        for _n in dir(_ops_server):
+            if _n.startswith("tool_"):
+                base = _n[len("tool_"):]
+                names.add(base)
+                names.add(f"mcp__delfin-ops__{base}")
+    except Exception:
+        # The server is optional; without it the ops names stay unknown,
+        # which is the same answer this function gave before it existed.
+        pass
+    return frozenset(names)
+
+
 def unknown_tool_names(
     names: Any, tools: Optional[list[dict[str, Any]]] = None
 ) -> list[str]:
@@ -9059,13 +9139,10 @@ def unknown_tool_names(
     the turn, so at startup there is nothing to check them against and a
     guess would be a false alarm.
     """
-    catalogue = _DOC_TOOLS_OPENAI if tools is None else tools
-    known = {t.get("function", {}).get("name", "") for t in catalogue}
-    known |= set(_ALWAYS_ALLOWED_TOOLS)
-    # The swarm lead tools are dispatched through the swarm service
-    # surface, not the catalogue; a preset listing one is correct, not
-    # a typo.
-    known |= set(_SWARM_LEAD_TOOL_NAMES)
+    # The one derivation, shared with the preset validator: this judge
+    # used to read the catalogue plus the always-allowed and swarm-lead
+    # names only, which called the ops server's real tools misspelt.
+    known = known_tool_names(tools)
     return sorted(
         n for n in _normalise_tool_names(names)
         if not n.startswith("mcp__") and n not in known
@@ -9253,6 +9330,16 @@ _DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
     ".npmrc", "**/.npmrc", ".pypirc", "**/.pypirc", ".pgpass", "**/.pgpass",
     ".kube/**", "**/.kube/**", ".docker/config.json", "**/.docker/config.json",
     ".envrc", "**/.envrc", "*.env", "**/*.env",
+    # Two home secrets that sandbox.home_secret_paths masks in the cage and
+    # that nothing denied at the tool level, so the cage mask was their only
+    # layer -- and that mask is emitted only when the path already exists
+    # when the argv is built. Measured 2026-11-21: of 31 secret paths, a
+    # fresh HOME got ONE mask, and reading the unmasked file inside the cage
+    # succeeded. The other 29 are denied here as well (approval_codes,
+    # trust_store, messenger_sessions, messenger_pairing, user_schedules,
+    # credentials*), which is why these two are the ones added.
+    ".claude", ".claude/**", "**/.claude/**",
+    ".local/share/delfin-messenger/**", "**/delfin-messenger/**",
     # Common SSH private-key names even outside a .ssh/ directory.
     "id_rsa", "id_rsa.*", "id_dsa", "id_ecdsa", "id_ed25519",
     "**/id_rsa", "**/id_dsa", "**/id_ecdsa", "**/id_ed25519",
@@ -9755,7 +9842,41 @@ def _commit_trailer_value() -> str:
         email = (
             (DEFAULT_SETTINGS.get("agent") or {})
             .get("commit_coauthor_email", "") or "")
-    return f"Co-Authored-By: DELFIN-Agent ({model}) <{email}>"
+    line = f"Co-Authored-By: DELFIN-Agent ({model}) <{email}>"
+    label = _agent_label()
+    return f"{line}\nAgent: {label}" if label else line
+
+
+#: Characters a swarm label may carry into a commit message. Everything
+#: else is dropped, so an environment variable cannot write a second
+#: trailer, a newline or shell metacharacters into the message.
+_LABEL_OK = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    " ._/-@+")
+
+
+def _agent_label() -> str:
+    """Which run produced the commit, from ``DELFIN_AGENT_LABEL``, or "".
+
+    Input: the environment variable, set by whatever started this agent
+    (the swarm writes "<wave>/<id> via <provider>"). Output: one line's
+    worth of it, at most 120 characters, restricted to ``_LABEL_OK``.
+
+    Why it is sanitised rather than passed through: the value lands in a
+    commit message, which is text other tools parse. A newline in it would
+    end the trailer block and let the rest be read as a trailer of its own,
+    and a label is not a place from which to write one.
+
+    Why an environment variable at all: the model is DELFIN's own
+    knowledge, but which agent of which wave is the orchestrator's, and
+    the orchestrator is not part of this repository. The variable is the
+    seam. Absent, the trailer is the co-author line alone, exactly as
+    before.
+    """
+    import os as _os
+    raw = str(_os.environ.get("DELFIN_AGENT_LABEL", "") or "")
+    kept = "".join(c for c in raw.split("\n")[0] if c in _LABEL_OK).strip()
+    return kept[:120]
 
 
 def _commit_trailer_rewrite(cmd: str) -> str:
@@ -9836,6 +9957,17 @@ def _rewrite_segments_for_trailer(cmd: str, trailer: str) -> str:
         start = i
         while i < n and cmd[i] not in " \t\n;|&'\"\\":
             i += 1
+        if i == start:
+            # A breaking character that no branch above consumes, so no
+            # word begins here and the offset would never move: a lone
+            # `&` (the redirect in `2>&1`, or a background `&`, neither of
+            # which is the `&&` the branch above takes) or a `\` with
+            # nothing left to escape. Stepping over it ends the word
+            # instead of the walk; `2>&1` is then read as the two words
+            # `2>` and `1`, which changes nothing for _commit_sub_pos,
+            # since it reads the LEADING tokens of a segment.
+            i += 1
+            continue
         seg_words.append(start)
     pos = _commit_sub_pos(cmd, seg_words)
     if pos is not None:
@@ -11802,11 +11934,6 @@ def _loop_body(cmd: str) -> "list[str] | None":
     return parts or None
 
 
-def _default_kit_permissions(cwd: Optional[Path] = None) -> KitToolPermissions:
-    """Conservative defaults: workspace = cwd, mode = 'default'."""
-    return KitToolPermissions(workspace=Path(cwd or Path.cwd()))
-
-
 # ---------------------------------------------------------------------------
 # Local doc-search tools (function calling for non-CLI backends)
 # ---------------------------------------------------------------------------
@@ -13213,10 +13340,54 @@ def _scoped_test_cmd_for_edits(edited_paths: list, scope) -> str:
     return "python -m pytest -x -q " + " ".join(shlex.quote(f) for f in files)
 
 
-def _run_test_command(command: str, workspace, timeout: float) -> tuple[str, bool]:
-    """Run a verification command. Returns (problem_summary, timed_out)."""
+def _auto_verify_confinement(perms) -> str:
+    """What holds auto-verify's command on this host: the kind, or "".
+
+    Auto-verify runs pytest in the workspace, and pytest executes the
+    workspace's own ``conftest.py`` before it collects anything. The
+    workspace therefore decides what code runs, and nobody is asked:
+    auto-verify is not a tool call, so no gate and no dialog sees it. A
+    ``conftest.py`` gets there two ways that need nothing exotic -- an
+    instruction smuggled into fetched text asks for one (a file write is
+    not asked about under ``acceptEdits``), or a cloned repository brings
+    one along, and ``/trust`` covers hooks, settings and MCP servers but
+    not pytest's configuration.
+
+    Input: the session's permissions. Output: ``_bash_isolation_decision``'s
+    kind where it confines filesystem writes ("bwrap", "landlock",
+    "seatbelt"), else "". Never raises: a decision that cannot be read
+    counts as unconfined, which is the cautious direction.
+    """
+    if perms is None:
+        return ""
     try:
-        r = subprocess.run(command, shell=True, cwd=str(workspace),
+        kind, _mode = _bash_isolation_decision(perms)
+    except Exception:
+        return ""
+    return kind if kind in ("bwrap", "landlock", "seatbelt") else ""
+
+
+def _run_test_command(command: str, workspace, timeout: float,
+                      perms=None) -> tuple[str, bool]:
+    """Run a verification command. Returns (problem_summary, timed_out).
+
+    The command runs in the cage the explicit ``run_tests`` tool uses
+    (``_test_run_argv`` -> ``_bash_isolation_argv``): the session's roots
+    are writable, ``/`` is read-only, ``/tmp`` is fresh and the credential
+    paths under ``$HOME`` are masked. It used to be a plain
+    ``subprocess.run(..., shell=True)``; measured against that, a
+    ``conftest.py`` in the workspace wrote a file outside the workspace
+    and the write landed.
+
+    Without a confinement the command is not run at all -- the caller
+    (``_run_auto_verify``) decides that once and says so in its status, so
+    an unverified turn reads as unverified instead of as clean.
+    """
+    if not _auto_verify_confinement(perms):
+        return "", False
+    try:
+        argv = _bash_isolation_argv(command, str(workspace), perms)
+        r = subprocess.run(argv, cwd=str(workspace),
                            capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return "", True
@@ -13278,7 +13449,8 @@ def _scoped_test_dir(edited_paths: list, workspace) -> Optional[Path]:
 
 
 def _run_auto_verify(edited_paths: list, mode: str, command: str,
-                     workspace, status: Optional[dict] = None) -> str:
+                     workspace, status: Optional[dict] = None,
+                     perms=None) -> str:
     """Verify code the agent just edited. Returns a short problem summary when
     something is wrong (→ force a fix round), or "" when clean. Never raises —
     verification failing closed would be worse than not verifying.
@@ -13293,17 +13465,35 @@ def _run_auto_verify(edited_paths: list, mode: str, command: str,
     that forces a fix round.
 
     ``status`` (optional dict) is filled with how verification actually ran:
-    ``skipped``/``reason``/``command``/``scoped``/``timed_out`` — so the
-    caller can SAY when a turn went unverified instead of returning ""
+    ``skipped``/``reason``/``command``/``scoped``/``timed_out``/``cage`` — so
+    the caller can SAY when a turn went unverified instead of returning ""
     (which reads as "verified clean") in silence.
+
+    ``perms`` carries the cage every run of workspace code goes into
+    (``_run_test_command``). Without one -- no permission bundle, or a host
+    where nothing confines filesystem writes -- the syntax check still
+    runs, because ``py_compile`` does not import the file and so runs no
+    workspace code, and the test run is skipped with its reason. That is
+    the one degradation here: a host that can cage nothing keeps verifying
+    what can be verified safely instead of either going silent or running
+    the workspace's ``conftest.py`` unconfined.
     """
     st = status if isinstance(status, dict) else {}
     try:
         if mode == "off":
             return ""
+        cage = _auto_verify_confinement(perms)
+        st["cage"] = cage or "none"
+        no_cage = ("no filesystem isolation available for the test run "
+                   "(the workspace's own conftest.py would run outside a "
+                   "cage); syntax check only")
+        if not cage and mode == "command":
+            st["skipped"] = True
+            st["reason"] = no_cage
+            return ""
         if mode == "command" and command:
             st["command"] = command
-            prob, timed_out = _run_test_command(command, workspace, 180)
+            prob, timed_out = _run_test_command(command, workspace, 180, perms)
             if timed_out:
                 st["skipped"] = True
                 st["timed_out"] = True
@@ -13322,6 +13512,12 @@ def _run_auto_verify(edited_paths: list, mode: str, command: str,
             if not edited_paths:
                 st["command"] = "file check (artifact_check)"
                 return ""
+            if not cage:
+                # The syntax check above is the whole verification here: it
+                # compiles, it does not import, so no workspace code ran.
+                st["skipped"] = True
+                st["reason"] = no_cage
+                return ""
             # smart: syntax clean → the tests that cover the edit; the whole
             # suite only when no test does (bounded + adaptive).
             ws_key = str(workspace)
@@ -13339,7 +13535,7 @@ def _run_auto_verify(edited_paths: list, mode: str, command: str,
                 st["command"] = cmd
                 st["scoped"] = True
                 prob, timed_out = _run_test_command(
-                    cmd, scope, _RELATED_TEST_TIMEOUT_S)
+                    cmd, scope, _RELATED_TEST_TIMEOUT_S, perms)
                 if timed_out:
                     st["skipped"] = True
                     st["timed_out"] = True
@@ -13361,7 +13557,7 @@ def _run_auto_verify(edited_paths: list, mode: str, command: str,
                 st["reason"] = "no test suite detected (syntax check only)"
                 return ""
             st["command"] = cmd
-            prob, timed_out = _run_test_command(cmd, scope, 60)
+            prob, timed_out = _run_test_command(cmd, scope, 60, perms)
             if timed_out:
                 # Full suite too slow: never re-run it per turn.
                 _SLOW_TEST_WS.add(ws_key)
@@ -14162,6 +14358,23 @@ def bind_agent_workspace(
         return None
     perms.agent_workspace_dir = resolved
     return resolved
+
+
+#: Token budget for one verdict. Measured on a compute node 2026-11-20:
+#: at 120 one call in three ended ``finish_reason="length"`` with empty
+#: content, because on a session whose own model carries a reasoning
+#: channel the reasoning consumed all 120 tokens before a verdict was
+#: written. At 600 three of three answered in 1.3-1.7 s with completions of
+#: 98-169 tokens, so the budget is the fix and the headroom is real rather
+#: than guessed. An empty reply was read as "no verdict", which latched the
+#: gate into reporting the watcher as down -- see _CLASSIFIER_RETRY_TOKENS.
+_CLASSIFIER_MAX_TOKENS = 600
+
+#: One retry, at double the budget, for the one shape that is recoverable:
+#: truncated before a verdict. Not for an error and not for a refusal --
+#: those are answers. One retry only, because a verdict costs a request
+#: against the endpoint's daily count.
+_CLASSIFIER_RETRY_TOKENS = 1200
 
 
 def _classifier_timeout_s() -> float:
@@ -16042,6 +16255,62 @@ VIEW_IMAGE_NOTE = (
     "describe / use what you SEE. The user sees it only in the dashboard "
     "chat, where it appears as a card; in the terminal UI or a messenger "
     "they do not see it unless you send it there.")
+
+
+_IO2_REFUSE_TEMPLATE = (
+    "hpc_io_check refused: the sbatch script would load the shared Lustre "
+    "file system. {text} Fix the script and submit again.")
+
+
+def _io2_sbatch_gate_verdict(cmd: str):
+    """The IO2 Lustre check for a bash command, shared by BOTH bash routes.
+    Called by :meth:`_DocToolExecutor._execute_bash` (foreground) and by
+    :meth:`_DocToolExecutor._execute_bash_background`, so the two cannot
+    drift: a walking submit typed into either tool reaches neither sbatch
+    nor the background job registry.
+
+    Input: the command text. Output: ``(may_run, error_json, warn_note)``
+    where ``may_run`` False means do not run anything, ``error_json`` is
+    the payload written as the tool result for a refusal, and
+    ``warn_note`` is the message to attach when the command runs ("" when
+    there is nothing to say).
+
+    Semantics, unchanged from the foreground hook:
+    - ``refuse`` -> the command must not run; the finding text is the
+      result, under the same ``{error, code: io_check_refused}`` shape the
+      dashboard and ``cluster_submit`` use.
+    - ``warn`` -> the command runs and the warning is attached.
+    - ``allow`` -> untouched.
+
+    A crash in the checker must not take the bash tool down, and must not
+    refuse an ordinary command (a bug in a checker is not a permission
+    decision). It fails CLOSED only where the command can submit: an
+    ``sbatch``-bearing command is refused with the checker's error, and
+    anything else runs with the error noted so it stays visible.
+    """
+    try:
+        from delfin import hpc_io_check as _io2_check
+        verdict, text, may_run = _io2_check.sbatch_gate(cmd,
+                                                        env=dict(os.environ))
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        if "sbatch" in cmd:
+            return False, json.dumps({
+                "error": (
+                    "hpc_io_check refused: the check itself failed "
+                    f"({exc.__class__.__name__}: {exc}); run the sbatch "
+                    "through the dashboard submit tab or cluster_submit, "
+                    "where the check is wired, or ask the person."),
+                "code": "io_check_refused",
+            }), ""
+        return True, None, (
+            "hpc_io_check could not run "
+            f"({exc.__class__.__name__}: {exc}); the command ran unchecked.")
+    if not may_run:
+        return False, json.dumps({"error": text,
+                                  "code": "io_check_refused"}), ""
+    if verdict == "warn" and text:
+        return True, None, text
+    return True, None, ""
 
 
 class _DocToolExecutor:
@@ -25054,6 +25323,15 @@ class _DocToolExecutor:
         # cwd cannot be told apart from another workspace's.
         self._last_run_cwd = str(run_cwd)
 
+        # IO2 (wave 33): an sbatch command typed into THIS tool is checked
+        # by the same Lustre metadata rule the dashboard backend and
+        # cluster_submit apply. One shared helper with the background route
+        # (Finding 4: the two used to differ by a whole route).
+        _io2_may_run, _io2_error, _io2_warn_note = _io2_sbatch_gate_verdict(
+            cmd)
+        if not _io2_may_run:
+            return _io2_error
+
         # Every gate of this tool has run by here. `gate explain` stops,
         # carrying the argv the command would have been started with:
         # a host that cannot isolate a locked session answers with a
@@ -25359,6 +25637,10 @@ class _DocToolExecutor:
             "description": description,
             "cwd": self._display_path(run_cwd, perms) or ".",
         }
+        # IO2: a warn finding rides in the result so the model sees it (the
+        # command ran; the warning must not be silent).
+        if _io2_warn_note:
+            payload["notes"] = [_io2_warn_note]
         if _push is None and _pr is None:
             # The bubblewrap argv, also where the overlay helper started
             # it: the helper execs bwrap, so bwrap's own failure reads the
@@ -25541,6 +25823,15 @@ class _DocToolExecutor:
         # cwd cannot be told apart from another workspace's.
         self._last_run_cwd = str(run_cwd)
 
+        # IO2 (wave 33, Finding 4): the SAME check as the foreground route.
+        # Before this, a walking sbatch typed into `bash_background` started
+        # a job that ran sbatch unchecked -- the foreground route refused
+        # the identical command. One shared helper, so the two routes cannot
+        # drift again.
+        _io2_may_run, _io2_error, _bg_warn_note = _io2_sbatch_gate_verdict(cmd)
+        if not _io2_may_run:
+            return _io2_error
+
         # The same work already running in this session: hand back that
         # job instead of starting a second copy. Measured 2026-10-19: one
         # session started eight `python3 -m http.server` jobs to show a
@@ -25596,6 +25887,9 @@ class _DocToolExecutor:
             "cwd": self._display_path(run_cwd, perms) or ".",
             "timeout_s": timeout_s,
             **({"url": _url} if (_url := _served_url_of(cmd)) else {}),
+            # IO2: a warn finding rides in the result of the BACKGROUND
+            # route too, so a warning is never silent on one route only.
+            **({"notes": [_bg_warn_note]} if _bg_warn_note else {}),
             "hint": (
                 f"Use bash_status({job.job_id!r}) and "
                 f"bash_output({job.job_id!r}) to monitor; "
@@ -32536,16 +32830,46 @@ class OpenAIClient(_BaseClient):
         # an embedding layer): same semantics as the probe.
         return bool(getattr(self, "_stop_requested", False))
 
-    def _run_ceiling_reached(self, spent: float) -> str:
-        """The run ceiling (``run_budget_s`` / ``run_budget_usd``) the
-        engine says this turn has reached, or "". ``spent``: this turn's
-        estimated spend so far. A client without the probe, or a probe
-        that raises, reports none. Never raises."""
+    def _turn_token_cap(self) -> int:
+        """This turn's input-token ceiling, or 0 for none.
+
+        The twin of :meth:`_turn_cost_cap` and installed beside it. It
+        exists because the cost cap is unenforceable on most of the ids
+        the model picker ships: ``_estimate_cost`` has no rate for them
+        and returns 0.0, so ``_spent >= _cap`` is False on every round
+        however much context the turn carries. A token count comes back
+        from the provider with the answer.
+        """
+        probe = getattr(self, "turn_token_cap", None)
+        if probe is None:
+            return 0
+        try:
+            return max(0, int(probe() or 0))
+        except Exception:
+            return 0
+
+    def _run_ceiling_reached(self, spent: float, tokens: int = 0) -> str:
+        """The run ceiling (``run_budget_s`` / ``run_budget_usd`` /
+        ``run_budget_tokens``) the engine says this turn has reached, or
+        "". ``spent``: this turn's estimated spend so far. ``tokens``:
+        the tokens it has carried so far, which the engine's own counter
+        does not hold until the turn ends. A client without the probe, or
+        a probe that raises, reports none. Never raises.
+
+        ``tokens`` is passed positionally to a probe that accepts it and
+        omitted for one that does not, so an engine or test double built
+        against the one-argument signature keeps working.
+        """
         probe = getattr(self, "run_ceiling", None)
         if probe is None:
             return ""
         try:
-            return str(probe(float(spent or 0.0)) or "")
+            return str(probe(float(spent or 0.0), int(tokens or 0)) or "")
+        except TypeError:
+            try:
+                return str(probe(float(spent or 0.0)) or "")
+            except Exception:
+                return ""
         except Exception:
             return ""
 
@@ -32803,8 +33127,40 @@ class OpenAIClient(_BaseClient):
         except Exception:
             return ""
 
+    def _classifier_once(
+        self, prompt: str, wire: str, budget: int,
+    ) -> tuple[str, bool]:
+        """One request. Returns (verdict text, truncated-before-a-verdict).
+
+        ``truncated`` is true only for the recoverable shape: no content and
+        the model stopped because it ran out of room. A refusal and an error
+        are answers and are not retried.
+        """
+        resp = self.client.with_options(
+            timeout=_classifier_timeout_s(), max_retries=0,
+        ).chat.completions.create(
+            model=wire or self.model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=budget, stream=False)
+        choice = resp.choices[0]
+        text = str(getattr(choice.message, "content", "") or "")
+        reason = str(getattr(choice, "finish_reason", "") or "")
+        return text, (not text.strip() and reason == "length")
+
     def _classifier_complete(self, prompt: str, model: str) -> str:
-        """One short, tool-less completion for the action classifier."""
+        """One short, tool-less completion for the action classifier.
+
+        Input: the classifier prompt and the configured model. Output: the
+        verdict text, or "" when the model produced none.
+
+        Semantics: a session on a backend other than KIT asks its OWN model,
+        and that model may carry a reasoning channel which spends the token
+        budget before any verdict is written. That case -- empty content with
+        ``finish_reason="length"`` -- is truncation, not an unreachable
+        model, so it is retried once at a larger budget instead of being
+        returned as the empty reply that latches the gate into reporting the
+        watcher as down. Any other empty reply is returned as it is.
+        """
         wire = str(model or "")
         if wire.startswith("kit.") and getattr(self, "_provider", "") != "kit":
             # The configured classifier model lives on the KIT proxy; a
@@ -32814,14 +33170,16 @@ class OpenAIClient(_BaseClient):
         t0 = time.monotonic()
         outcome = "error"
         try:
-            resp = self.client.with_options(
-                timeout=_classifier_timeout_s(), max_retries=0,
-            ).chat.completions.create(
-                model=wire or self.model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=120, stream=False)
-            outcome = "verdict"
-            return str(resp.choices[0].message.content or "")
+            text, truncated = self._classifier_once(
+                prompt, wire, _CLASSIFIER_MAX_TOKENS)
+            if truncated:
+                outcome = "truncated"
+                text, still = self._classifier_once(
+                    prompt, wire, _CLASSIFIER_RETRY_TOKENS)
+                outcome = "truncated_twice" if still else "verdict_after_retry"
+            else:
+                outcome = "verdict"
+            return text
         finally:
             # A request against the endpoint's quota like the turn's own:
             # written beside them, marked, so the count can be split by what
@@ -33784,12 +34142,34 @@ class OpenAIClient(_BaseClient):
                         cost_usd=_spent, cached_tokens=_total_cached,
                         stop_reason="cost_cap")
                     return
-            # The RUN's ceilings (wall clock, spend), between rounds: a
-            # one-turn unattended run never reaches the gate the engine
-            # applies before a turn. The work so far is kept, and the end
-            # of the turn saves the session as for any other stop.
+            # The same ceiling in the dimension that is always measured.
+            # Checked here and not only on the terminal event for the
+            # reason above, and separately from the cost cap because the
+            # cost cap reads 0.00 for ever on an unpriced model: 1,696
+            # tool calls of one field session went past a $50 cap that
+            # was never above 0.
+            _tok_cap = self._turn_token_cap()
+            if _tok_cap > 0 and _total_in >= _tok_cap:
+                yield StreamEvent(type="notice", text=(
+                    f"\n🛑 This turn reached its input-token ceiling "
+                    f"({_total_in:,} of {_tok_cap:,} input tokens) and was "
+                    "stopped. The work done so far is kept — raise "
+                    "agent.token_hard_limit_in or send 'continue' to go "
+                    "on.\n"))
+                yield StreamEvent(
+                    type="message_delta",
+                    input_tokens=_total_in, output_tokens=_total_out,
+                    cost_usd=self._estimate_cost(_total_in, _total_out),
+                    cached_tokens=_total_cached,
+                    stop_reason="token_cap")
+                return
+            # The RUN's ceilings (wall clock, spend, tokens), between
+            # rounds: a one-turn unattended run never reaches the gate the
+            # engine applies before a turn. The work so far is kept, and
+            # the end of the turn saves the session as for any other stop.
             _ceiling = self._run_ceiling_reached(
-                self._estimate_cost(_total_in, _total_out))
+                self._estimate_cost(_total_in, _total_out),
+                _total_in + _total_out)
             if _ceiling:
                 _setting = f"agent.{_ceiling}"
                 yield StreamEvent(type="notice", text=(
@@ -34195,11 +34575,13 @@ class OpenAIClient(_BaseClient):
                                     stop_reason="stopped")
                                 return
                             _ceiling_hit = self._run_ceiling_reached(
-                                self._estimate_cost(_total_in, _total_out))
+                                self._estimate_cost(_total_in, _total_out),
+                                _total_in + _total_out)
                             if _ceiling_hit:
                                 yield StreamEvent(type="notice", text=(
-                                    "\n🛑 The run's wall-clock budget is "
-                                    "shorter than the quota reset: this "
+                                    f"\n🛑 The run's ceiling "
+                                    f"(agent.{_ceiling_hit}) is reached "
+                                    "before the quota resets: this "
                                     "turn stops here and the run starts "
                                     "no new work. Nothing was lost; the "
                                     "next run continues.\n"))
@@ -35755,7 +36137,7 @@ class OpenAIClient(_BaseClient):
                 _problems = _run_auto_verify(
                     list(_edited_py), _av_mode, _av_cmd,
                     getattr(self._permissions, "workspace", "."),
-                    status=_av_status)
+                    status=_av_status, perms=self._permissions)
                 _last_verify_problem = _problems
                 # Evidence ledger: auto-verify runs AND skips are recorded —
                 # a skipped verification must never read as a green one.

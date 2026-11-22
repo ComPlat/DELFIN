@@ -29,9 +29,6 @@ from typing import Any, Optional
 NUDGE_TOOL_CALLS = 12
 NUDGE_CHARS = 4000
 
-# Rough chars-per-token estimate (English/code mix, the usual 4:1).
-_CHARS_PER_TOKEN = 4
-
 _NUDGE_TEXT = (
     "[DELFIN note] An automatic system note, not the user speaking: a "
     "stretch of work has passed since anything was kept. Is anything "
@@ -142,11 +139,6 @@ def maybe_nudge(
     state.chars_since_nudge = 0
     state.nudged_this_turn = True
     return compose_nudge(store=None)
-
-
-def estimated_tokens(chars: int) -> int:
-    """Rough token estimate for a produced-text length."""
-    return max(0, int(chars)) // _CHARS_PER_TOKEN
 
 
 def _enabled(settings: Optional[dict[str, Any]]) -> bool:

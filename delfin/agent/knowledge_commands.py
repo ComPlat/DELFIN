@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from . import knowledge as kn
+from . import safe_git
 from . import knowledge_private as kp
 from . import knowledge_share as ks
 
@@ -214,12 +215,32 @@ def _share(words, *, workspace, ask=None, say=None, **_):
     if not words:
         return ("usage: /share <id> [project|global] [scope=always|"
                 "delfin-development] [topic=<topic>] [as <handle>] "
-                "[release=<snippet>]")
+                "[release=<snippet>]  |  /share dialogs")
     if words[0] == "confirm":
         return _confirm_words(words)
     if words[0] == "cancel":
         return "cancelled" if len(words) > 1 and ks.cancel(words[1]) \
             else "no such dialog"
+    if words[0] == "dialogs":
+        # The dialogs this process is still waiting on, with the command
+        # that answers each. A person who lost the dialog id between
+        # turns -- the ask prompt scrolled away, the session restarted --
+        # can list what is open here instead of letting every dialog
+        # expire unheard.
+        dialogs = ks.open_dialogs()
+        if not dialogs:
+            return "no share dialog is open"
+        from .session_messages import _plain
+        lines = []
+        for d in dialogs:
+            blocked = " (blocked by the check; reword and start again)" \
+                if d.blocked else ""
+            lines.append(f"  {d.id}  {d.kind} {d.mode} "
+                         f"step {d.stage}/{d.steps}{blocked}")
+            lines.append(f"    {_plain(d.title)[:70]}")
+            lines.append(f"    answer with: /share confirm {d.id} <code>"
+                         f"   (or /share cancel {d.id})")
+        return "\n".join(lines)
     les = kp.get(words[0])
     if les is None:
         raise KeyError(f"no lesson {words[0]} (/memory private)")
@@ -244,7 +265,7 @@ def _share(words, *, workspace, ask=None, say=None, **_):
         i += 1
     if not layer:
         layer = les.prepared_layer or (
-            "project" if (kn.repo_root_of(workspace) / ".git").exists()
+            "project" if safe_git.is_checkout(kn.repo_root_of(workspace))
             and not kn.is_delfin_repo(workspace) else "global")
     d = ks.start_share(les.id, layer, workspace=workspace, scope=scope,
                        topic=topic, handle=handle, releasable=release,
