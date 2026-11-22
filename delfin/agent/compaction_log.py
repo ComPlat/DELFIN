@@ -20,9 +20,6 @@ import time
 from pathlib import Path
 
 from .state_paths import ensure_dir, open_append, state_root
-from .compaction_quality import category_names  # noqa: F401  (re-export:
-# the keep-list categories the funnel's report carries; consumers name it
-# here, on the module they already read the compaction record from)
 
 #: Resolved at import time so the suite can redirect it
 #: (``USER_STATE_SINKS`` in state_paths.py) — see the sink table's header
@@ -107,14 +104,18 @@ def record_compaction(
         pass
     line = json.dumps(record, ensure_ascii=False)
     if len(line) > _MAX_RECORD_CHARS:
-        record["note"] = ""
-        # The keep-list report is the newest, largest field: on an over-long
-        # record it is reduced to counts before the note is, mirroring how
-        # the other bounded fields shed names first.
+        # The keep-list report is the newest and largest field, and its
+        # names are reconstructible from the archived transcript; the note
+        # is written once and nowhere else. So the report sheds its names
+        # first, the record is measured again, and the note is dropped only
+        # if that was not enough.
         record["keep_list_loss"] = {
-            name: {"kept": v["kept"], "lost_count": len(v["lost"]) }
+            name: {"kept": v["kept"], "lost_count": len(v["lost"])}
             for name, v in record.get("keep_list_loss", {}).items()
         }
+        line = json.dumps(record, ensure_ascii=False)
+    if len(line) > _MAX_RECORD_CHARS:
+        record["note"] = ""
         line = json.dumps(record, ensure_ascii=False)
     try:
         with open_append(_log_path(session_id or "")) as fh:

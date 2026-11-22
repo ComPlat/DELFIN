@@ -25,6 +25,16 @@ test-only	_locator_value	delfin/agent/cited_retrieval.py:218
 test-only	_scoped_test_cmd_for_edits	delfin/agent/api_client.py:13237
 test-only	build_fixtures	delfin/agent/pack/benchmark/setup/w17_data_fixtures.py:22
 test-only	bwrap_substitution	delfin/agent/shared_tmp.py:248
+# category_names STAYS, and the reason is the measure's own weak spot: this
+# test counts any mention of a name, so `from .compaction_quality import
+# category_names` in the funnel module would close the row without anything
+# in the product ever calling it. It would read as reached and be no more
+# reached than before. The product gets the seven category names from the
+# report's own keys (record_compaction writes them as it receives them), so
+# there is nothing here for a product caller to want. Mounting it needs a
+# consumer that iterates the categories in a fixed order -- a renderer or
+# the long-run metric -- which is its own change, not a line in an import.
+test-only	category_names	delfin/agent/compaction_quality.py:169
 test-only	distill_for_shipping	delfin/agent/memory_distill.py:380
 test-only	enforce_quota	delfin/agent/shared_tmp.py:307
 test-only	for_files	delfin/agent/verify_recipe.py:327
