@@ -177,3 +177,39 @@ def test_nitro_o_carries_no_h_label():
                      if (x == o and sym[y] == "H")
                      or (y == o and sym[x] == "H")]
                 assert not h, f"nitro O {o} carries an H (class E)"
+
+
+def test_nitro_formal_charges_rendered():
+    """27-50_42 nitro must render as N+ / O- / (=O): the label pass
+    derives formal charges from valence + REAL proton count, never an
+    invented H (user report: "HO-N=O" on nitro, both with and without
+    a stored SMILES)."""
+    sym, bonds, _ = _orders_for(42)
+    import numpy as np
+    from delfin.analysis import results_overview as ro
+    atoms = ro._parse_xyz("/pfs/data6/home/ka/ka_ibcs/ka_xn0397/calc/27-50_42")
+    pts = np.array([[a[1], a[2], a[3]] for a in atoms])
+    rot = ro._rotate_inertia(sym, pts)
+    cov = [ro._XYZ_COVALENT.get(s, ro._XYZ_COVALENT_DEFAULT) for s in sym]
+    bonds = ro._detect_bonds(sym, cov, rot)
+    from delfin.analysis._smiles_orders import smiles_bond_orders
+    bo = smiles_bond_orders(sym, bonds,
+                            "/pfs/data6/home/ka/ka_ibcs/ka_xn0397/calc/27-50_42")
+    assert bo, "3D-SMILES orders must be wired (ac67dac0b)"
+    dbl = {p for p, o in bo.items() if o >= 2}
+    nitro_n = next(i for i, s in enumerate(sym) if s == "N"
+                   and sum(1 for a, b in bonds
+                           if (a == i and sym[b] == "O")
+                           or (b == i and sym[a] == "O")) == 2)
+    os_ = [b if a == nitro_n else a for a, b in bonds
+           if (a == nitro_n and sym[b] == "O")
+           or (b == nitro_n and sym[a] == "O")]
+    on_dbl = [o for o in os_ if tuple(sorted((nitro_n, o))) in dbl]
+    no_dbl = [o for o in os_ if o not in on_dbl]
+    assert len(on_dbl) == 1 and len(no_dbl) == 1, \
+        f"nitro must draw N=O and N-O, got dbl {on_dbl} single {no_dbl}"
+    # single-bonded O has no real H -> label is "O-", never "OH"
+    o_neg = no_dbl[0]
+    has_h = any(o_neg in (a, b) and sym[b if a == o_neg else a] == "H"
+                for a, b in bonds)
+    assert not has_h, "nitro single-bonded O carries a structural H"

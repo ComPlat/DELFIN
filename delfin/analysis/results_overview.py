@@ -1361,6 +1361,29 @@ def _render_skeleton(sym, rotated, bonds, size,
         s = sym[idx]
         if s == "H":
             continue  # heteroatom protons were kept by the caller; C-H are gone
+        # Formal charges from valence + REAL proton count (never an
+        # invented H): nitro (N+ with one =O and one -O), carboxylate
+        # / phenolate / sulfonate anions (-O), N-oxide, pyridinium-N.
+        # O without a real proton never gains an H label (classes E/F).
+        _nbidx = [b if a == idx else a for a, b in bonds if idx in (a, b)]
+        _h_here = sum(1 for k in _nbidx if sym[k] == "H")
+        _ord_here = [bond_orders.get((min(idx, k), max(idx, k)), 1)
+                     for k in _nbidx if sym[k] != "H"]
+        _vsum = sum(_ord_here) + _h_here
+        _deg_heavy = len(_ord_here)
+        if s == "N" and _deg_heavy == 3 and sum(1 for o in _ord_here
+                                                if o >= 2) == 1 \
+                and any(sym[k] == "O" and bond_orders.get(
+                    (min(idx, k), max(idx, k)), 1) == 1
+                        and not any(k in (a, b) and sym[b if a == k else a]
+                                    == "H" for a, b in bonds)
+                        for k in _nbidx):
+            s = "N+"
+        elif s == "O" and _deg_heavy == 1 and _h_here == 0:
+            _o_on_dbl = any(_ord_here[i] >= 2 for i in range(len(_ord_here))) \
+                if _ord_here else False
+            if not _o_on_dbl:
+                s = "O-"
         if s == "O" and _degree[idx] <= 1:
             # A carbonyl O (double bond to its only neighbour) must
             # NOT be labeled OH - only a single-bonded hydroxyl O
