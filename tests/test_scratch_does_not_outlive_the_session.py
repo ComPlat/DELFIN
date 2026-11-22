@@ -29,9 +29,11 @@ from __future__ import annotations
 import json
 import os
 import socket
+from pathlib import Path
 
 import pytest
 
+from conftest import child_env
 from delfin.agent import scratch
 
 
@@ -201,3 +203,51 @@ def test_the_editors_topology_folder_is_stamped(tmp_path, monkeypatch):
     folder = part._gfn_topology_dir(water)
     assert (folder / scratch.OWNER_NAME).is_file(), (
         "the editor's own folder is the one that left 1071 copies in /tmp")
+
+
+# -- the exit handler runs when the interpreter exits, not only when asked --
+
+def test_a_clean_exit_releases_what_this_process_made(tmp_path):
+    """The product path for ``_release_mine`` is interpreter exit.
+
+    A child process makes stamped scratch directories and exits
+    normally (code 0, no signal, no sweep call); the parent then looks
+    at the base directory. Drives the real atexit path end to end --
+    the handler is registered in the module that owns the folders, and
+    the registration runs in whatever process imports it. Calling the
+    handler directly (the pre-existing test above) proves the handler
+    works; only an actual exit proves the registration reached it.
+    """
+    import subprocess
+    import sys
+
+    base = tmp_path / "scratch-base"
+    base.mkdir()
+    probe = tmp_path / "make_and_exit.py"
+    probe.write_text(
+        "import sys\n"
+        "from pathlib import Path\n"
+        "sys.path.insert(0, %r)\n"
+        "from delfin.agent import scratch\n"
+        "a = scratch.owned_dir(%r, base=Path(%r))\n"
+        "b = scratch.owned_dir(%r, base=Path(%r))\n"
+        # The existence proof must be INSIDE the child: the handler being
+        # tested removes the folders at exit, so the parent cannot see
+        # them afterwards. A missing folder here means the probe broke,
+        # not that the handler ran.
+        "assert a.is_dir() and b.is_dir(), 'owned_dir made nothing'\n"
+        "print(a.name + '\\n' + b.name)\n" % (
+            str(Path.cwd()), PREFIX, str(base), PREFIX, str(base)),
+        encoding="utf-8")
+    r = subprocess.run([sys.executable, str(probe)],
+                       capture_output=True, text=True, timeout=120,
+                       env=child_env(tmp_path), cwd=str(tmp_path))
+    assert r.returncode == 0, r.stderr[-500:]
+    made = [base / name for name in r.stdout.split()]
+    assert len(made) == 2, (
+        "the child did not report two folders -- the probe is broken, "
+        "not the handler")
+    for folder in made:
+        assert not folder.exists(), (
+            f"{folder.name} survived a clean exit: the exit handler is "
+            "not registered where the product imports it")

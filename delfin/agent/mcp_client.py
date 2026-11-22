@@ -1614,7 +1614,14 @@ def reset_registry(workspace: Path | None = None) -> None:
 
     Used by ``/mcp reload`` and by tests. Shutdown happens after the lock
     is released: it terminates subprocesses and waits on them, which is
-    not work to hold a lock across."""
+    not work to hold a lock across.
+
+    A reload also drops this process's pin decisions (answers, in-memory
+    pins, withheld tools, one-per-process notes): they are verdicts about
+    the servers the OLD registry described. After a reload the servers are
+    discovered again, so a changed description is re-checked against the
+    person instead of being answered from a stale in-memory verdict."""
+    forget_pin_decisions()
     with _REGISTRY_LOCK:
         if workspace is None:
             stopping = list(_REGISTRIES.values())

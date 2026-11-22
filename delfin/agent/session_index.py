@@ -230,7 +230,7 @@ def _session_ids_on_disk() -> list[str]:
     try:
         for entry in d.iterdir():
             name = entry.name
-            if not name.endswith(".json") or name.endswith(".turn.json"):
+            if not session_store.is_session_file(name):
                 continue
             sid = name[:-len(".json")]
             if _valid_session_id(sid) and _is_regular_file(entry):
