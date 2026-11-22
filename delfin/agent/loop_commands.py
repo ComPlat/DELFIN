@@ -293,11 +293,3 @@ def _loop(args, ctl, engine, workspace, ask, say) -> tuple[str, str]:
             return "; ".join(spec.errors), ""
         return ctl.start_loop(spec, engine), ""
     return "usage: " + LOOP_USAGE, ""
-
-
-def controller_hint(ctl: Any) -> str:
-    """The status line, or "" -- for a surface's mode line."""
-    try:
-        return ctl.status_line() if ctl is not None else ""
-    except Exception:
-        return ""
