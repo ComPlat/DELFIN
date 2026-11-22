@@ -680,7 +680,12 @@ def initial_xyz_png_bytes(calc_dir: str, size: int = 320, show_h=True,
                 vec = numpy.array([1.0, 0.0])
             else:
                 vec = d / dist
-            shift = 0.5 * (min_sep - dist)
+            # The separation must cover the label WIDTHS, not the bare
+            # point distance: "OH2" next to "Fe" needs more room than
+            # two single-char labels (315-334_324, 371-394_382).
+            pair_sep = min_sep * (1.0 + 0.25 * (len(sym_vis[a])
+                                                + len(sym_vis[b]) - 2))
+            shift = 0.5 * (pair_sep - dist)
             rotated[a][0] -= vec[0] * shift
             rotated[a][1] -= vec[1] * shift
             rotated[b][0] += vec[0] * shift
