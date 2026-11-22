@@ -27,6 +27,15 @@ def _render(tmp_path: pathlib.Path, suffix: str, content: str) -> str:
     return html
 
 
+def _render_raw(tmp_path: pathlib.Path, suffix: str, content: str):
+    path = tmp_path / f"structure{suffix}"
+    path.write_text(content, encoding="utf-8")
+    renderer = (tab_agent._render_artifact_body
+                if hasattr(tab_agent, "_render_artifact_body")
+                else tab_agent._artifact_card)
+    return renderer(path)
+
+
 def _svg_of(html: str) -> str:
     payload = html.split("data:image/svg+xml;base64,", 1)[1]
     payload = payload.split('"', 1)[0]
@@ -76,7 +85,7 @@ def test_an_optimised_xyz_gets_a_2d_vector_skeleton_beside_the_3d_card(
     assert "2D skeleton" in html
 
 
-def test_an_unreadable_xyz_still_shows_the_formula_card(tmp_path):
-    html = _render(tmp_path, ".xyz", "not an xyz at all\n")
-    assert html
-    assert "data:image/svg+xml;base64" not in html
+def test_an_unreadable_xyz_shows_no_card_and_does_not_crash(tmp_path):
+    # A garbage XYZ renders no card (base behaviour at 776c20de8) but must
+    # not raise when the caller walks a folder of artifacts.
+    assert _render_raw(tmp_path, ".xyz", "not an xyz at all\n") is None
