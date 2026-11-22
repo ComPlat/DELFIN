@@ -50,19 +50,40 @@ test-only	enforce_quota	delfin/agent/shared_tmp.py:307
 # holding both a recipe and a diff.
 test-only	for_files	delfin/agent/verify_recipe.py:327
 test-only	hostile_reach	delfin/agent/prompt_head.py:144
-# NOT removed 2026-11-22 (wave 36 r4, re-measured independently the same
-# day): against the live gate
-# (KitToolPermissions.matches_bash_auto_allow, api_client.py:11109) it is
-# NOT redundant -- in default mode the gate auto-allows 8 commands is_safe
-# refuses: ls > f, ls 3>f, ls >&f, ls &>f, cat <>f, sort --out=f x,
-# sort --compress-program=sh x, git reflog expire --all. Three classes in
-# one predicate: a file write by redirection, arbitrary execution
-# (--compress-program runs its argument), and a history rewrite. Controls
-# agree on both sides: ls -la / git status / cat f / grep x f allowed,
-# rm -rf f / git push --force / curl -T refused. Mounting it needs
-# api_client.py, which the self-modification guard refuses to an
-# unattended session; deleting it would discard refusals the product gate
-# still misses. Kept until an attended change wires it into the gate.
+# NOT removed 2026-11-22 (wave 36 r4, then re-measured at the GATE, not
+# at the predicate): is_safe is not redundant, but the predicate numbers
+# r4 reported overstate what the product does, and both measurements are
+# recorded here because the difference between them is the lesson.
+#
+# At the predicate (KitToolPermissions.matches_bash_auto_allow,
+# api_client.py:11109), default mode: 8 commands are auto-allowed that
+# is_safe refuses -- ls > f, ls 3>f, ls >&f, ls &>f, cat <>f,
+# sort --out=f x, sort --compress-program=sh x, git reflog expire --all.
+#
+# At the gate (_run_permission_gate, the entry a bash call really takes,
+# which consults the predicate only after the deny list, the secret scan,
+# the approval guard, the irreversibility rule and unrestorable.refusal):
+# git reflog expire --expire=now --all ASKS, and echo x >
+# ~/.ssh/authorized_keys is refused outright (secret-deny). What runs
+# unasked is the redirect family inside the workspace -- which is
+# deliberate policy, documented in matches_bash_auto_allow itself, and
+# confined by the cage -- plus two classes that are not:
+#   * a redirect whose TARGET is outside the workspace
+#     (echo x > ~/.bashrc, ls > /tmp/elsewhere.txt, ls > ../escape.txt:
+#     RUN, no question; _changes_outside_the_workspace does not read
+#     redirection targets at all),
+#   * a flag that runs a program (sort --compress-program=sh x and the
+#     space form: RUN, no question).
+# Controls at the gate: ls -la, git status, cat f, grep x f, grep -r,
+# python3 --version, pytest all RUN; rm -rf f and git push --force are
+# refused by deny-pattern; curl -T asks.
+#
+# So a blanket veto on is_safe would be wrong: at the predicate it also
+# refuses grep -r, sed -n, awk, find, python3 --version, pytest, mkdir
+# and touch, which the list grants on purpose. The repair is the two
+# classes above, in api_client.py, which the self-modification guard
+# refuses to an unattended session. Kept until that attended change
+# lands; deleting the row would discard a judgement the gate still needs.
 test-only	is_safe	delfin/agent/readonly_pipeline.py:371
 test-only	keyed_engines_configured	delfin/agent/web_tools.py:698
 test-only	map_to_host	delfin/agent/shared_tmp.py:207
