@@ -173,6 +173,15 @@ def grade_run(ev, *, max_cores: Optional[int] = 2,
             problems.append(
                 "at least one step's output did not end normally "
                 "(no ORCA TERMINATED NORMALLY banner)")
+        # The core budget the caller handed in. Both sides of this
+        # function's history added a check here and neither replaces the
+        # other: a run inside its budget whose calculations never
+        # finished is as unacceptable as a finished run that took eight
+        # cores when it was given two.
+        if not resources_within(ev, max_cores=max_cores):
+            problems.append(
+                "requested resources exceed the task's core budget "
+                f"({max_cores} cores)")
     from delfin.agent import run_evidence as _re
     con = _re.contract(ev, expected_steps=expected_steps,
                        egress_events=egress_events)
