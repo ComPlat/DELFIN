@@ -455,7 +455,13 @@ def smiles_png_bytes(smiles: str, size: int = 260, fmt: str = "png"):
     # 1e-4, fallback Compute2DCoords + StraightenDepiction), only the
     # RENDERER differs: the same coordinates go into the colored
     # matplotlib vector renderer (SVG-style look, vector PDF bytes).
-    mol = Chem.RemoveHs(mol, updateExplicitCount=True)
+    try:
+        mol = Chem.RemoveHs(mol, updateExplicitCount=True)
+    except Exception:
+        # A metal-kept SMILES can carry an over-valent N (dative bonds
+        # count as ordinary valence); RemoveHs refuses. Keep the Hs
+        # rather than losing the whole picture.
+        pass
     try:
         from rdkit.Chem.MolStandardize import rdMolStandardize
         mol = rdMolStandardize.Normalizer().normalize(mol)
