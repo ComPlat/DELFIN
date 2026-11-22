@@ -131,7 +131,6 @@ def test_smiles_orders_wired_for_old_calcs():
     3D-derived SMILES, so the pyridine rings show 3 doubles."""
     sym, bonds, sbo = _orders_for(36)
     assert sbo, "smiles_bond_orders returned None - 3D SMILES not wired"
-    ro_mod = _orders_for.__globals__["__import__"]  # noqa: F841 (lint)
     from delfin.analysis import results_overview as ro
     r6 = [r for r in ro._find_rings(sym, bonds)
           if len(r) == 6 and sum(1 for k in r if sym[k] == "N") == 1]
@@ -147,15 +146,18 @@ def test_amid_diimine_ring_matches_smiles():
     (2 C=C) and BOTH exocyclic imine C=N; no dropped SMILES edge."""
     sym, bonds, sbo = _orders_for(45)
     assert sbo
-    # count transferred doubles = number of doubles in the kekule SMILES
     from delfin.analysis import _smiles_orders as so
     atoms_s, orders_s = so._kekule_orders(so._load_smiles(
         f"/pfs/data6/home/ka/ka_ibcs/ka_xn0397/calc/27-50_45"))
+    # like-for-like on unique PAIRS: smiles_bond_orders stores each
+    # double in both index orderings, so counting entries would double
+    # the number.  The transfer is an isomorphism on heavy atoms, so
+    # every SMILES double must land as one drawn pair.
     n_s = sum(1 for v in orders_s.values() if v == 2)
-    n_x = sum(1 for v in sbo.values() if v == 2)
+    n_x = len({tuple(sorted(p)) for p, v in sbo.items() if v == 2})
     assert n_x == n_s, (
-        f"transferred {n_x} doubles, SMILES has {n_s} - an edge was "
-        f"dropped in the transfer (class B regression)")
+        f"transferred {n_x} unique double pairs, SMILES has {n_s} - "
+        f"an edge was dropped in the transfer (class B regression)")
 
 
 def test_nitro_o_carries_no_h_label():
