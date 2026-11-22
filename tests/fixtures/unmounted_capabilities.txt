@@ -52,7 +52,6 @@ test-only	map_to_host	delfin/agent/shared_tmp.py:207
 test-only	open_dialogs	delfin/agent/knowledge_share.py:399
 test-only	pdf_xfa_data	delfin/agent/office.py:3514
 test-only	pilot_slot	delfin/agent/explore_pilot.py:79
-test-only	prompt_block	delfin/agent/user_model.py:655
 test-only	quality_report	delfin/agent/compaction_quality.py:75
 test-only	query_job_states	delfin/agent/job_monitor.py:369
 test-only	read_last_n	delfin/agent/audit_log.py:695

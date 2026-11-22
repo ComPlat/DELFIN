@@ -652,11 +652,6 @@ def session_block(frozen: tuple | None = None, max_tokens: int = 200,
                     if (f, v.casefold()) in held]), frozen
 
 
-def prompt_block(max_tokens: int = 200) -> str:
-    """The block a new session loads, or "" (off, empty, unreadable)."""
-    return session_block(None, max_tokens=max_tokens)[0]
-
-
 def note_typed_message(text: str, *, path: Path | str | None = None) -> bool:
     """Take in one message a PERSON typed; True when the model changed.
 
