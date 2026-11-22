@@ -1031,24 +1031,6 @@ def _html_escape(s: str) -> str:
     )
 
 
-def _suggest_bash_pattern(cmd: str) -> str:
-    """Pick a sensible 'remember' substring (session allowlist).
-
-    Examples:
-      'pytest -xvs tests/foo.py'  -> 'pytest'
-      'git commit -m "x"'         -> 'git commit'
-      'python3 -m delfin.cli x'   -> 'python3 -m delfin.cli'
-    """
-    parts = cmd.strip().split()
-    if not parts:
-        return ""
-    if parts[0] in ("git", "uv", "pip", "conda", "npm", "yarn", "cargo") and len(parts) >= 2:
-        return f"{parts[0]} {parts[1]}"
-    if parts[0] in ("python", "python3") and len(parts) >= 3 and parts[1] == "-m":
-        return f"{parts[0]} -m {parts[2]}"
-    return parts[0]
-
-
 def _is_protected_path(path_arg: str) -> bool:
     """True if ``path_arg`` is one of the self-mod-guarded core files.
 
