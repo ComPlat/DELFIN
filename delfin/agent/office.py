@@ -4135,9 +4135,12 @@ def pdf_form_fields(path: Any) -> dict:
     xfa = _has_xfa(reader)
     dynamic = xfa and _is_dynamic_xfa(reader)
     xfa_values: list[dict] = []
+    packet_names: list[str] = []
     if xfa:
         try:
-            xfa_values = _xfa_values(_xfa_packets(reader))
+            packets = _xfa_packets(reader)
+            packet_names = sorted(packets)
+            xfa_values = _xfa_values(packets)
         except Exception:
             xfa_values = []
     if not fields and not xfa_values:
@@ -4170,7 +4173,8 @@ def pdf_form_fields(path: Any) -> dict:
         notes.append(
             "no values could be read from the XFA dataset — the form is "
             "either empty or stores its data in a packet this reader does "
-            "not understand.")
+            "not understand (packets present: "
+            + (", ".join(packet_names) or "none") + ").")
     return {
         "path": str(p),
         "fields": fields,

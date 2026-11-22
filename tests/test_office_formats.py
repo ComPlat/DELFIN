@@ -641,6 +641,10 @@ def test_an_xfa_array_that_is_not_name_stream_pairs_does_not_crash(ws):
     assert listing["xfa"] is True
     assert listing["xfa_values"] == []
     assert any("no values could be read" in n.lower() for n in listing["notes"])
+    # Which packets the reader DID find: the diagnostic that tells an empty
+    # form apart from one whose data sits in a packet layout this reader
+    # does not parse. An unnamed single stream is keyed packet0.
+    assert any("packets present: packet0" in n for n in listing["notes"])
 
 
 def test_read_pdf_reports_that_an_xfa_form_holds_readable_values(ws):
