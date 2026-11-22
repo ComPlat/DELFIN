@@ -76,7 +76,6 @@ test-only	for_files	delfin/agent/verify_recipe.py:327
 # the invariant per turn -- a design decision, not a repair.
 test-only	hostile_reach	delfin/agent/prompt_head.py:144
 test-only	is_safe	delfin/agent/readonly_pipeline.py:371
-test-only	keyed_engines_configured	delfin/agent/web_tools.py:698
 # map_to_host: measured 2026-11-22 (wave 37, group rr1). Neither mounting nor
 # deleting is right yet. The wiring contract is tests/test_shared_tmp_wiring.py,
 # xfail(strict): the mapping belongs in api_client._execute_read_file

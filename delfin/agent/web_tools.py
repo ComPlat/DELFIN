@@ -747,7 +747,10 @@ def keyed_engines_configured() -> list[str]:
 def _keyed_search(query: str, max_results: int, timeout_s: int) -> tuple[list[dict], str, str]:
     """(hits, source, error) from the first keyed engine that answers."""
     error = ""
+    configured = keyed_engines_configured()
     for name, fn in _KEYED_ENGINES:
+        if name not in configured:
+            continue
         try:
             hits = fn(query, max_results, timeout_s)
         except Exception as exc:
