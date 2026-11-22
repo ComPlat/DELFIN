@@ -19,15 +19,28 @@ DELFIN_DATA_NAME = "DELFIN_Data.json"
 
 
 def _load_smiles(calc_dir):
-    """SMILES string from DELFIN_Data.json ``input.smiles``, or None."""
+    """SMILES string for ``calc_dir``: the stored ``input.smiles``
+    first, else the 3D-derived SMILES (results_overview.get_smiles).
+
+    Old calcs carry no stored SMILES; the 3D derivation (commit
+    a93c844dc) covers them.  Without the fallback they fell through to
+    the geometric heuristic and lost ring doubles (classes A/B, user
+    report 2026-11-22 on 27-50_36..50).
+    """
     path = os.path.join(calc_dir, DELFIN_DATA_NAME)
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
-        return None
+        data = {}
     value = (data.get("input") or {}).get("smiles") or ""
-    return str(value) or None
+    if value:
+        return str(value)
+    try:
+        from delfin.analysis.results_overview import get_smiles
+        return get_smiles(calc_dir)
+    except Exception:
+        return None
 
 
 def _kekule_orders(smiles):

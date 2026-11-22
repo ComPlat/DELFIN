@@ -97,3 +97,81 @@ def test_pyridine_rings_keep_three_doubles():
     # Total doubles >= 6: three per ring (class A = 2 per ring before).
     n_dbl = len({tuple(sorted(p)) for p in orders.items() and orders})
     assert n_dbl >= 6, f"expected >=6 double bonds, got {n_dbl}"
+
+
+# ---- classes B/E: 27-50_36..50 report (2026-11-22) -------------------
+# These calcs carry no stored SMILES; the pipeline must take the orders
+# from the 3D-derived SMILES (wired in _smiles_orders._load_smiles),
+# not fall back to the geometric heuristic.
+
+def _calc_dir_for(n):
+    """Real calc dir; skipped when absent (cluster data not mounted)."""
+    import os
+    d = f"/pfs/data6/home/ka/ka_ibcs/ka_xn0397/calc/27-50_{n}"
+    if not os.path.isdir(d):
+        pytest.skip(f"calc data {d} not mounted")
+    return d
+
+
+def _orders_for(n):
+    from delfin.analysis import results_overview as ro
+    from delfin.analysis._smiles_orders import smiles_bond_orders
+    cd = _calc_dir_for(n)
+    atoms = ro._parse_xyz(cd)
+    sym = [a[0] for a in atoms]
+    pts = np.array([[a[1], a[2], a[3]] for a in atoms])
+    rot = ro._rotate_inertia(sym, pts)
+    cov = [ro._XYZ_COVALENT.get(s, ro._XYZ_COVALENT_DEFAULT) for s in sym]
+    bonds = ro._detect_bonds(sym, cov, rot)
+    return sym, bonds, smiles_bond_orders(sym, bonds, cd)
+
+
+def test_smiles_orders_wired_for_old_calcs():
+    """27-50_36 (no stored SMILES): the orders must come from the
+    3D-derived SMILES, so the pyridine rings show 3 doubles."""
+    sym, bonds, sbo = _orders_for(36)
+    assert sbo, "smiles_bond_orders returned None - 3D SMILES not wired"
+    ro_mod = _orders_for.__globals__["__import__"]  # noqa: F841 (lint)
+    from delfin.analysis import results_overview as ro
+    r6 = [r for r in ro._find_rings(sym, bonds)
+          if len(r) == 6 and sum(1 for k in r if sym[k] == "N") == 1]
+    assert r6, "expected at least one pyridine ring"
+    for r in r6:
+        d = sum(1 for a, b in zip(r, r[1:] + r[:1])
+                if sbo.get((min(a, b), max(a, b))))
+        assert d == 3, f"pyridine ring has {d} doubles, expected 3"
+
+
+def test_amid_diimine_ring_matches_smiles():
+    """27-50_45: the diimine chelate ring must carry the SMILES kekule
+    (2 C=C) and BOTH exocyclic imine C=N; no dropped SMILES edge."""
+    sym, bonds, sbo = _orders_for(45)
+    assert sbo
+    # count transferred doubles = number of doubles in the kekule SMILES
+    from delfin.analysis import _smiles_orders as so
+    atoms_s, orders_s = so._kekule_orders(so._load_smiles(
+        f"/pfs/data6/home/ka/ka_ibcs/ka_xn0397/calc/27-50_45"))
+    n_s = sum(1 for v in orders_s.values() if v == 2)
+    n_x = sum(1 for v in sbo.values() if v == 2)
+    assert n_x == n_s, (
+        f"transferred {n_x} doubles, SMILES has {n_s} - an edge was "
+        f"dropped in the transfer (class B regression)")
+
+
+def test_nitro_o_carries_no_h_label():
+    """27-50_42: both nitro O have no structural H - the renderer must
+    not give them an H suffix (class E)."""
+    sym, bonds, _ = _orders_for(42)
+    nitro_n = [i for i, s in enumerate(sym) if s == "N"
+               and sum(1 for a, b in bonds
+                       if a == i and sym[b] == "O"
+                       or b == i and sym[a] == "O") == 2]
+    assert nitro_n, "expected a nitro group"
+    for n_idx in nitro_n:
+        for a, b in bonds:
+            if a == n_idx and sym[b] == "O" or b == n_idx and sym[a] == "O":
+                o = b if a == n_idx else a
+                h = [x for x, y in bonds
+                     if (x == o and sym[y] == "H")
+                     or (y == o and sym[x] == "H")]
+                assert not h, f"nitro O {o} carries an H (class E)"
