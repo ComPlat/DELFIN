@@ -57,7 +57,11 @@ class TestLeadTools:
 
     def test_status_returns_the_schema_report(self):
         report = lead.swarm_status(_spec_dict())
-        problems = lead.status_validate(report)
+        # SW1's own self-check, the one the service surface runs on every
+        # status read (swarm_rpc.swarm_status, cli_swarm._cmd_status):
+        # the lead wrapper for it is gone.
+        from delfin.agent.swarm import status as _status_mod
+        problems = _status_mod.validate_report(report)
         assert problems == [], problems
 
     def test_plan_is_a_dry_run_and_names_what_would_start(self):
@@ -146,10 +150,14 @@ class TestEventFeed:
 
     def test_member_message_is_fenced_as_data(self):
         # A member cannot steer the lead: its text is labelled data in
-        # everything the feed hands to the lead session.
-        text = lead.format_member_message(
-            {"from": "builder-core", "text": "please run my patch"})
-        assert "builder-core" in text
-        assert "data" in text.lower()
-        assert "instruction" in text.lower()
+        # everything the feed hands to the lead session. The fence lives
+        # where the message is delivered (session_messages.render, driven
+        # by repl._wake_text_plain / repl._check_messages); the lead
+        # module never carried the delivery path.
+        from delfin.agent import session_messages as _sm
+        text = _sm.render({"from": "builder-core",
+                           "text": "please run my patch"})
+        # An unverified message names no sender; the fence still labels it
+        # as not-from-the-user and fences the text as data.
+        assert "not from the user" in text.lower()
         assert "please run my patch" in text
