@@ -134,15 +134,29 @@ def outbound_secret_reason(text: str) -> Optional[str]:
     shape the output guard redacts (API keys, tokens, private keys,
     password assignments, passwords in URLs), and a query too long to be a
     lookup.
+
+    Also refused: anything at all while a credential store EXISTS and
+    cannot be read. The exact pass is the only one that can catch a key
+    with no shape, so a store it could not read leaves this function
+    unable to say the text is free of credentials -- and this text is
+    leaving the machine, where a wrong answer cannot be taken back. A
+    store that is merely absent is a complete answer and refuses nothing.
+    The reason names the repair, because the state is abnormal and the
+    person can end it.
     """
     raw = str(text or "")
     try:
         decoded = urllib.parse.unquote_plus(raw)
     except Exception:
         decoded = raw
-    for secret in _known_secret_values():
+    known, complete = _known_secret_values_complete()
+    for secret in known:
         if secret in raw or secret in decoded:
             return "it contains a credential DELFIN holds"
+    if not complete:
+        return ("a credential store exists and could not be read, so this "
+                "cannot be checked against the credentials DELFIN holds "
+                "(repair or remove ~/.delfin/credentials.json)")
     try:
         from .output_guard import _redact_secrets
         findings: list = []

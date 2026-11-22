@@ -273,3 +273,34 @@ def test_the_values_and_the_completeness_are_one_answer(store):
     store.write_text("[]", encoding="utf-8")       # JSON, but not an object
     values, complete = cred.held_secret_values_complete()
     assert complete is False, "a store that is not an object is unknown"
+
+
+# -- the same unknown, on the way OUT ----------------------------------------
+
+def test_an_unreadable_store_refuses_an_outbound_text(store):
+    """web_tools.outbound_secret_reason guards a URL or a search query.
+
+    Its exact pass is the only one that can catch a key with no shape, so
+    a store it could not read leaves it unable to say the text is free of
+    credentials -- and the text is leaving the machine, where a wrong
+    answer cannot be taken back.
+    """
+    from delfin.agent import web_tools
+    assert web_tools.outbound_secret_reason("https://example.org/?q=plot") \
+        is None, "an intact store refuses an ordinary query"
+    assert web_tools.outbound_secret_reason(f"https://x/?k={KEY}") is not None
+    store.chmod(0o000)
+    if store.stat().st_mode & 0o400:
+        pytest.skip("running as a user that ignores the mode (root)")
+    reason = web_tools.outbound_secret_reason("https://example.org/?q=plot")
+    assert reason and "could not be read" in reason, (
+        f"an unreadable store let an unchecked text leave: {reason!r}")
+    assert "credentials.json" in reason, "the reason names the repair"
+
+
+def test_an_absent_store_refuses_nothing_on_the_way_out(store):
+    """The control: no store is a complete answer, not an unknown."""
+    from delfin.agent import web_tools
+    store.unlink()
+    assert web_tools.outbound_secret_reason(
+        "https://example.org/?q=plot") is None
