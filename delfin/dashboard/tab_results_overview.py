@@ -851,6 +851,7 @@ class ResultsOverviewPanel:
     def _tex_escape(cls, text: str) -> str:
         return str(text).translate(cls._TEX_ESCAPE)
 
+    @staticmethod
     def _downscale_png_bytes(png: bytes, target_px: int = 1400) -> bytes:
         """Shrink an embedded PNG so the PDF stays printable-sized.
 
