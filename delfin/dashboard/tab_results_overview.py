@@ -89,7 +89,7 @@ def rows_to_markdownish(columns: List[dict], rows: List[dict],
         name = _html.escape(row["label"])
         from delfin.analysis.results_overview import (
             molecular_formula, formula_to_html)
-        formula = molecular_formula(row["path"])
+        formula = molecular_formula(row.get("path"))
         if formula:
             name += (" ("
                      + formula_to_html(formula) + ")")

@@ -16,7 +16,7 @@ from delfin.dashboard import tab_results_overview as tab
 
 def test_a_long_smiles_wraps_in_the_table_cell():
     col = [{"id": "smiles", "label": "SMILES"}]
-    rows = [{"label": "c", "values": {"smiles": "C" * 500}}]
+    rows = [{"label": "c", "path": None, "values": {"smiles": "C" * 500}}]
     html = tab.rows_to_markdownish(col, rows)
     assert "overflow-wrap:anywhere" in html
     assert "word-break:break-all" in html
