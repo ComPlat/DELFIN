@@ -999,7 +999,7 @@ class ResultsOverviewPanel:
                 try:
                     with open(rel_only[0]["abs"], "rb") as fh:
                         scan_png = fh.read(8 * 1024 * 1024)
-                    scan_png = _downscale_png_bytes(
+                    scan_png = self._downscale_png_bytes(
                         scan_png, target_px=1400)
                     path = _add_image(scan_png, row["label"], "rss")
                     lines.append(
