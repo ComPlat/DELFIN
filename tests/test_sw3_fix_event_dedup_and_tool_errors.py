@@ -11,14 +11,13 @@ F1 -- event loss in LeadEventFeed. The dedup key pinned
      so a retry of the SAME event dedups while a DISTINCT fact delivers.
 
 F2 -- error contract. A lead tool must return a structured dict, never
-     raise. Two escapes:
-     - ``request_triage_answer`` lets SW1's ``TriageError`` (an
-       escalation) propagate out of the tool instead of returning a
-       structured refusal;
-     - ``request_swarm_start`` calls ``plan_launch`` on its unconfirmed
-       branch, so a bad spec raises ``SpecError`` instead of returning the
-       safe dry-run/ask verdict. The unconfirmed branch is supposed to
-       never crash -- it is the "present the plan and ask" path.
+     raise. ``request_swarm_start`` calls ``plan_launch`` on its
+     unconfirmed branch, so a bad spec raises ``SpecError`` instead of
+     returning the safe dry-run/ask verdict. The unconfirmed branch is
+     supposed to never crash -- it is the "present the plan and ask"
+     path. (The triage-answer half of this contract is now pinned on the
+     service handler the dispatch really resolves:
+     swarm_rpc.swarm_triage_answer.)
 """
 
 from __future__ import annotations
@@ -102,8 +101,12 @@ class TestLeadToolsNeverRaise:
     """A lead tool returns a structured dict, never a traceback."""
 
     def test_triage_answer_refuses_an_escalation_as_data(self):
-        # An escalation item must come back as a structured refusal, not
-        # as SW1's TriageError escaping the tool.
+        # An escalation item must fail closed on the REAL dispatch path:
+        # the service handler the supervisor resolves (swarm_rpc.swarm
+        # _triage_answer), which raises SwarmRpcError for an item that is
+        # not auto-answerable -- never an SW1 TriageError escaping raw.
+        import pytest as _pytest
+        from delfin.agent.service import swarm_rpc as _rpc
         escalation = {
             "id": "a1",
             "kind": "session_message",
@@ -111,18 +114,15 @@ class TestLeadToolsNeverRaise:
             "member": "core-builder",
             "roster": ["core-builder"],  # the swarm's member identities
         }
-        result = lead.request_triage_answer(escalation, answer="nope",
-                                            confirmed=True)
-        assert isinstance(result, dict), result
-        assert result.get("answered") is False
-        assert "action" in result
-        assert "refused" in result
-        assert result["refused"]  # the reason names it goes to the user
+        with _pytest.raises(_rpc.SwarmRpcError) as excinfo:
+            _rpc.swarm_triage_answer({"item": escalation, "answer": "nope"})
+        assert str(excinfo.value)  # the reason names it goes to the user
 
-    def test_triage_answer_unconfirmed_is_a_refusal(self):
-        result = lead.request_triage_answer({"id": "x"}, answer="y")
-        assert result["action"] == "ask_user"
-        assert result.get("answered") is False
+    def test_triage_answer_needs_an_item(self):
+        # The service handler validates the params the protocol declares.
+        from delfin.agent.service import swarm_rpc as _rpc
+        with pytest.raises(_rpc.SwarmRpcError):
+            _rpc.swarm_triage_answer({})
 
     def test_swarm_start_with_bad_spec_unconfirmed_returns_refusal(self):
         # The unconfirmed path must never crash on a bad spec: it is the
@@ -140,6 +140,7 @@ class TestLeadToolsNeverRaise:
         # triage_answer (the real path), not a local re-implementation.
         # classify reads 'from', requires the member in the roster, and
         # auto-answers a test_output read by its own member.
+        from delfin.agent.service import swarm_rpc as _rpc
         auto = {
             "id": "a2",
             "kind": "test_output",
@@ -147,6 +148,5 @@ class TestLeadToolsNeverRaise:
             "member": "core-builder",
             "roster": ["core-builder"],
         }
-        result = lead.request_triage_answer(auto, answer="ok",
-                                            confirmed=True)
+        result = _rpc.swarm_triage_answer({"item": auto, "answer": "ok"})
         assert result.get("answered") is True, result

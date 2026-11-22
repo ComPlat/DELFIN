@@ -189,10 +189,17 @@ def test_the_probe_budget_clears_the_measured_response_time():
 
 # --- one fetch answers both questions ----------------------------------
 
-def test_the_capability_probe_records_the_roster(monkeypatch):
+def test_the_capability_probe_records_the_roster(monkeypatch, tmp_path):
     """The roster question and the window question are answered by the
     same HTTP response, and the window question runs on every preflight.
-    Asking the wire twice for one answer is what the recording avoids."""
+    Asking the wire twice for one answer is what the recording avoids.
+
+    The disk cache is redirected into tmp_path, as the isolation fixture
+    of test_model_capabilities.py does. Without it this test cleared the
+    process cache by UNLINKING the operator's real
+    ~/.delfin/model_capabilities_cache.json -- measured 2026-11-21, the
+    file was gone after a suite run -- and it needed the file gone only
+    so that the resolve below would reach the wire."""
     import json
     from io import BytesIO
 
@@ -215,6 +222,8 @@ def test_the_capability_probe_records_the_roster(monkeypatch):
         return _Resp(json.dumps(payload).encode())
 
     monkeypatch.setattr(mc.urllib.request, "urlopen", _urlopen)
+    monkeypatch.setattr(mc, "_CACHE_PATH", tmp_path / "caps_cache.json")
+    monkeypatch.setattr(mc, "_disk_loaded", True)   # skip the disk load
     mc._SERVED_CACHE.clear()
     mc.clear_cache()
 

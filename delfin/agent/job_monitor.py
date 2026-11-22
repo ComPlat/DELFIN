@@ -366,19 +366,6 @@ def query_job_states_detailed(
     return result
 
 
-def query_job_states(
-    job_ids: list[str],
-    run_fn: Callable[[list[str]], Optional[str]] = _default_run,
-) -> dict[str, str]:
-    """{job_id: STATE} for the ids the scheduler could actually place.
-
-    The narrow view, for callers that only branch on a known state. Use
-    :func:`query_job_states_detailed` to tell "not known" from "not asked".
-    """
-    return {j: s for j, s in query_job_states_detailed(job_ids, run_fn).items()
-            if s and s not in (STATE_UNAVAILABLE, STATE_THROTTLED)}
-
-
 def scan_error_signatures(folder: str, max_bytes: int = 65536) -> list[str]:
     """Tail .err/.out/.log files in ``folder`` and label known signatures."""
     found: list[str] = []
