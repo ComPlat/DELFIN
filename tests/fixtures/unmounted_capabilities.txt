@@ -21,7 +21,6 @@ nowhere	_project_settings_paths	delfin/agent/hooks.py:164
 nowhere	_suggest_bash_pattern	delfin/agent/kit_confirm.py:1034
 nowhere	controller_hint	delfin/agent/loop_commands.py:298
 nowhere	estimated_tokens	delfin/agent/memory_nudge.py:147
-nowhere	load_shared_profile	delfin/agent/provider_profile.py:381
 nowhere	remove_pattern	delfin/agent/kit_settings.py:378
 nowhere	remove_read_dir	delfin/agent/kit_settings.py:342
 nowhere	request_swarm_pause	delfin/agent/swarm/lead.py:110
