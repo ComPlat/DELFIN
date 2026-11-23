@@ -102,20 +102,6 @@ def request_swarm_start(spec: dict[str, Any], *,
                 "refused": str(exc)}
 
 
-def request_swarm_pause(resume: bool = False, *,
-                        confirmed: bool = False) -> dict[str, Any]:
-    """Pause/resume: SW1 ships no verb, so this is a structured refusal
-    -- never a crash, never an invented side effect (SW2a precedent)."""
-    verb = "resume" if resume else "pause"
-    if confirmed is not True:
-        return {"action": "ask_user", "available": False,
-                "refused": f"{verb} would change member states; the user "
-                "must decide"}
-    return {"action": "refused", "available": False,
-            "refused": f"SW1 ships no {verb} verb; the lead renders the "
-            f"{verb} action only when SW1 grows it"}
-
-
 def swarm_message(member: str, text: str, *, from_key: str = "lead") -> dict:
     """Send a plain partner message to one member (read-only in the
     permission sense: it goes through session_messages, not a shell)."""
