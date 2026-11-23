@@ -3511,45 +3511,6 @@ def _xfa_values(packets: dict[str, bytes]) -> list[dict]:
     return out[:MAX_XFA_VALUES]
 
 
-def pdf_xfa_data(path: Any) -> dict:
-    """The values stored in an XFA form's dataset, so they can be read.
-
-    Reading is all this offers. Writing the dataset back would mean
-    rewriting an XML the form's own script layer validates, and a form
-    that opens with the right numbers in the wrong places is exactly the
-    outcome a refusal is worth more than.
-    """
-    p = _resolve(path)
-    if document_kind(p) != "pdf":
-        raise OfficeError(f"{p.name} is not a PDF")
-    reader = _pdf_reader(p)
-    if not _has_xfa(reader):
-        raise OfficeError(
-            f"{p.name} is not an XFA form — list its fields instead")
-    packets = _xfa_packets(reader)
-    values = _xfa_values(packets)
-    notes: list[str] = []
-    if not values:
-        notes.append(
-            "the XFA packets carry no filled-in dataset: either the form is "
-            "empty or its data sits in a packet this reader does not "
-            "understand (packets present: "
-            + (", ".join(sorted(packets)) or "none") + ")")
-    if len(values) == MAX_XFA_VALUES:
-        notes.append(
-            f"only the first {MAX_XFA_VALUES} values are listed")
-    notes.append(
-        "these values were read from the form's XML dataset, not from "
-        "AcroForm fields. They cannot be written back here.")
-    return {
-        "path": str(p),
-        "packets": sorted(packets),
-        "dynamic": _is_dynamic_xfa(reader),
-        "values": values,
-        "notes": notes,
-    }
-
-
 # ---------------------------------------------------------------------------
 # Scanned pages
 # ---------------------------------------------------------------------------
@@ -4174,9 +4135,12 @@ def pdf_form_fields(path: Any) -> dict:
     xfa = _has_xfa(reader)
     dynamic = xfa and _is_dynamic_xfa(reader)
     xfa_values: list[dict] = []
+    packet_names: list[str] = []
     if xfa:
         try:
-            xfa_values = _xfa_values(_xfa_packets(reader))
+            packets = _xfa_packets(reader)
+            packet_names = sorted(packets)
+            xfa_values = _xfa_values(packets)
         except Exception:
             xfa_values = []
     if not fields and not xfa_values:
@@ -4209,7 +4173,8 @@ def pdf_form_fields(path: Any) -> dict:
         notes.append(
             "no values could be read from the XFA dataset — the form is "
             "either empty or stores its data in a packet this reader does "
-            "not understand.")
+            "not understand (packets present: "
+            + (", ".join(packet_names) or "none") + ").")
     return {
         "path": str(p),
         "fields": fields,

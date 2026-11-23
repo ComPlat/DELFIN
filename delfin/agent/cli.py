@@ -632,9 +632,34 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
     out_after = int((getattr(engine, "token_usage", {}) or {}).get("output", 0))
     # The internal "did a tool follow the last text" flag rides on the
     # engine, not the returned dict (whose keys are pinned to TURN_KEYS).
+    #
+    # The flag is maintained by the two callbacks, so it only sees text
+    # that was STREAMED. This function accepts a second shape as well --
+    # the answer as the return value of stream_response, which is what
+    # the line below falls back to ("full_text or the chunks") -- and for
+    # that shape the flag still held whatever the last tool call left on
+    # it. A turn that called tools and then closed on a returned
+    # announcement therefore read as "ended ON a tool round" and got no
+    # continuation: precisely the failure the continuation exists for,
+    # unreachable for any backend that does not stream its final answer.
+    #
+    # Measured 2026-11-23, one scripted turn delivered both ways: two
+    # tool calls, then "… Let me get the CPU count a different way and
+    # write the ORCA input files." Streamed, the flag reads False and the
+    # continuation fires; returned, it read True and the continuation was
+    # blocked.
+    #
+    # Returned text that was never streamed is the turn's last output, so
+    # it closes the turn. Text that merely repeats what was streamed is
+    # the engine handing back its own accumulation and decides nothing --
+    # there the callbacks keep the answer.
+    _streamed = "".join(chunks).strip()
+    _closed_on_returned_text = bool(
+        (full_text or "").strip() and (full_text or "").strip() != _streamed)
     try:
         setattr(engine, "_tools_after_last_text",
-                bool(_nonlocal["tools_after_last_text"]))
+                bool(_nonlocal["tools_after_last_text"])
+                and not _closed_on_returned_text)
     except (AttributeError, TypeError):
         pass
 

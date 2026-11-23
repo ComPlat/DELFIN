@@ -336,3 +336,57 @@ def test_the_engine_names_the_agent_workspace_it_was_given(tmp_path):
                             provider="kit", model="kit.x", mode="solo",
                             agent_workspace_dir=str(aw))
     assert eng.kit_permissions.agent_workspace_dir == aw
+
+
+def test_the_high_risk_class_is_inside_what_leaves_the_workspace(tmp_path):
+    """The pin, and the reason _bypass_failure_asks is not mounted.
+
+    Extending the classifier's on_error with this predicate would change
+    no outcome: every action it calls high-risk already has
+    _leaves_workspace True one line earlier, so on_error is already "ask"
+    -- or "refuse" where nobody can be asked. Measured 2026-11-22 over the
+    whole class. What this test does is keep that true: if
+    _leaves_workspace ever stops asking for one of these, the guarantee
+    the class states disappears, and the failure lands here instead of in
+    a session.
+
+    The control is in the second half: routine actions must have
+    leaves False, or the first half would hold for an empty reason.
+    """
+    ws = tmp_path / "wt"
+    ws.mkdir()
+    perms = A.KitToolPermissions(workspace=ws.resolve(),
+                                 mode="bypassPermissions")
+    high_risk = [
+        {"tool": "bash", "command": c} for c in (
+            "rm -rf build", "rm -f notes.md", "find . -name '*.log' -delete",
+            "git reset --hard HEAD~3", "git checkout -- notes.md",
+            "git clean -fd", "git stash drop", "git tag -d v1",
+            "git branch -D topic", "git update-ref -d refs/heads/x",
+            "gh pr create -t x -b y", "gh api /user",
+            "rsync -a build/ other/", "git gc --prune=now",
+            "git reflog expire --expire=now --all")
+    ] + [
+        {"tool": "remote_trigger", "target": "host-b"},
+        {"tool": "push_notification", "title": "x"},
+    ] + [
+        {"tool": "write_file", "path": str(ws / name), "content": "x"}
+        for name in sorted(A._BYPASS_HIGH_RISK_WRITE_NAMES)
+    ]
+    for action in high_risk:
+        assert A._bypass_failure_asks(action), action
+        assert A._leaves_workspace(perms, action, True), (
+            "an action the high-risk class names no longer counts as "
+            f"leaving the workspace, so a classifier failure allows it: "
+            f"{action}")
+
+    routine = [{"tool": "bash", "command": c} for c in (
+        "python3 build.py", "cp notes.md reports/notes.md", "ls -la",
+        "git status", "git commit -m x")]
+    routine.append({"tool": "write_file", "path": str(ws / "notes.md"),
+                    "content": "x"})
+    for action in routine:
+        assert not A._bypass_failure_asks(action), action
+        assert not A._leaves_workspace(perms, action, True), (
+            f"a routine action counts as leaving the workspace, so the "
+            f"assertion above holds for an empty reason: {action}")

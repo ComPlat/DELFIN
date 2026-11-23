@@ -1603,52 +1603,6 @@ def _parse_preset_model(value: object) -> str:
     return tier if tier in ("parent", "cheap") else ""
 
 
-def _load_md_presets() -> dict[str, SubagentPreset]:
-    """Discover ``*_subagent.md`` presets with YAML frontmatter.
-
-    Frontmatter fields accepted: ``name`` (required, kebab-case),
-    ``description``, ``mode``, ``tools``. The body of the markdown file becomes
-    the sub-agent's system_prompt. Built-in presets keep precedence —
-    user-supplied files can extend but not silently override unless the
-    user explicitly drops a file under ``~/.delfin/subagents/``.
-
-    The frontmatter parser is reused from ``delfin.agent.skills``.
-    """
-    try:
-        from .skills import _parse_frontmatter
-    except Exception:
-        return {}
-    discovered: dict[str, SubagentPreset] = {}
-    for d in _md_preset_search_dirs():
-        if not d.is_dir():
-            continue
-        try:
-            paths = sorted(d.glob("*_subagent.md"))
-        except OSError:
-            continue
-        for p in paths:
-            try:
-                text = p.read_text(encoding="utf-8")
-            except OSError:
-                continue
-            meta, body = _parse_frontmatter(text)
-            name = (meta.get("name") or p.stem.replace("_subagent", "")).strip()
-            if not name:
-                continue
-            description = (meta.get("description") or "").strip()
-            mode = (meta.get("mode") or "default").strip() or "default"
-            system_prompt = body.strip() or description or name
-            discovered[name] = SubagentPreset(
-                name=name,
-                description=description or f"Custom subagent '{name}'",
-                system_prompt=system_prompt,
-                mode=mode,
-                tools=_parse_preset_tools(meta.get("tools")),
-                model=_parse_preset_model(meta.get("model")),
-            )
-    return discovered
-
-
 #: Problems that do NOT keep a preset out of the registry.
 #:
 #: The distinction is what a problem makes the preset: UNSAFE or

@@ -596,8 +596,10 @@ def test_xfa_values_can_be_read_out_of_the_dataset(ws):
 
 
 def test_xfa_values_are_found_in_a_single_stream_form_too(ws):
+    """The values come out of a single-stream XDP too -- via the field
+    listing that the product's read_document(fields=true) dispatches to."""
     path = _xfa_pdf(ws / "einzel.pdf", dynamic=False, single_stream=True)
-    assert office.pdf_xfa_data(path)["values"]
+    assert office.pdf_form_fields(path)["xfa_values"]
 
 
 def test_a_dynamic_xfa_form_is_recognised_and_refused_for_filling(ws):
@@ -639,6 +641,10 @@ def test_an_xfa_array_that_is_not_name_stream_pairs_does_not_crash(ws):
     assert listing["xfa"] is True
     assert listing["xfa_values"] == []
     assert any("no values could be read" in n.lower() for n in listing["notes"])
+    # Which packets the reader DID find: the diagnostic that tells an empty
+    # form apart from one whose data sits in a packet layout this reader
+    # does not parse. An unnamed single stream is keyed packet0.
+    assert any("packets present: packet0" in n for n in listing["notes"])
 
 
 def test_read_pdf_reports_that_an_xfa_form_holds_readable_values(ws):
@@ -648,14 +654,16 @@ def test_read_pdf_reports_that_an_xfa_form_holds_readable_values(ws):
     assert "fields=true" in note
 
 
-def test_pdf_xfa_data_refuses_a_document_that_is_not_an_xfa_form(ws):
+def test_pdf_form_fields_refuses_a_document_that_is_not_an_xfa_form(ws):
+    """Not-XFA is answered in the listing (xfa=False), not with a hard
+    error -- pdf_xfa_data's hard refusal left with its dead wrapper."""
     writer = pypdf.PdfWriter()
     writer.add_blank_page(width=200, height=200)
     path = ws / "schlicht.pdf"
     with path.open("wb") as fh:
         writer.write(fh)
-    with pytest.raises(office.OfficeError):
-        office.pdf_xfa_data(path)
+    listing = office.pdf_form_fields(path)
+    assert listing["xfa"] is False
 
 
 # ---------------------------------------------------------------------------

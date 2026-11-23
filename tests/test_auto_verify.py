@@ -501,6 +501,38 @@ def test_no_test_suite_reports_skip_status(tmp_path):
     assert "no test suite" in status.get("reason", "")
 
 
+def test_the_turn_path_builds_its_scoped_command_with_that_function(
+        tmp_path, monkeypatch):
+    """The mount: _run_auto_verify does not re-inline the command.
+
+    The same expression stood twice -- once in this helper and once inline
+    in _run_auto_verify, which was the only place that ran. Two copies of
+    one answer drift, and the inline one is the one a reader never finds.
+    The output cannot show the difference, because both copies build the
+    same string; what shows it is whether the turn path CALLS the helper.
+    Red on the inline version (no call recorded), green on the mount.
+    """
+    from delfin.agent import api_client as A
+    ws = _ws_with_matching_test(tmp_path)
+    real = A._scoped_test_cmd_for_edits
+    calls: list = []
+
+    def recording(edited_paths, scope):
+        out = real(edited_paths, scope)
+        calls.append((list(edited_paths), str(scope), out))
+        return out
+
+    monkeypatch.setattr(A, "_scoped_test_cmd_for_edits", recording)
+    status: dict = {}
+    A._run_auto_verify([str(ws / "mod.py")], "smart", "", str(ws),
+                       status=status, perms=_perms(tmp_path))
+    assert calls, ("the turn path built its own pytest command instead of "
+                   "calling _scoped_test_cmd_for_edits")
+    assert status.get("scoped") is True, status
+    assert status.get("command") == calls[-1][2], (status, calls)
+    assert "test_mod.py" in status.get("command", ""), status
+
+
 def test_scoped_cmd_resolves_conventional_test_files(tmp_path):
     from delfin.agent.api_client import _scoped_test_cmd_for_edits
     ws = _ws_with_matching_test(tmp_path)

@@ -734,16 +734,6 @@ def _brave_search(query: str, max_results: int, timeout_s: int) -> list[dict]:
 _KEYED_ENGINES = (("google", _google_cse_search), ("brave", _brave_search))
 
 
-def keyed_engines_configured() -> list[str]:
-    """Which keyed engines have a key here, by name."""
-    out = []
-    if _credential("GOOGLE_CSE_API_KEY") and _credential("GOOGLE_CSE_CX"):
-        out.append("google")
-    if _credential("BRAVE_SEARCH_API_KEY"):
-        out.append("brave")
-    return out
-
-
 def _keyed_search(query: str, max_results: int, timeout_s: int) -> tuple[list[dict], str, str]:
     """(hits, source, error) from the first keyed engine that answers."""
     error = ""

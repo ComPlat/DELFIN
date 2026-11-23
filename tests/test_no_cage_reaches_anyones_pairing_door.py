@@ -34,6 +34,7 @@ from _messenger_people_rig import Account
 from conftest import child_env, requires_a_working_sandbox
 from delfin.agent import api_client as A
 from delfin.agent import sandbox, security_events
+from delfin.agent.service import supervisor
 from delfin.messenger import pairing, store
 
 
@@ -172,8 +173,34 @@ def test_a_door_of_another_process_than_the_one_named_gets_nothing(acct):
     assert pairing.result(rid, directory=acct.pairing_dir("anna"))["state"] == "refused"
 
 
-def test_the_asking_process_gets_its_link_control(acct):
+def test_the_asking_process_gets_its_link_control(acct, monkeypatch):
+    """The door hands its own process the link.
+
+    ``pairing.Door`` trusts ``SO_PEERCRED`` to name the process that
+    connected. A workstation inside a nested pid namespace answers with pid
+    2 -- the sandbox supervisor, an ancestor whose environ is unreadable --
+    so the door judged its own process an agent and refused every hand-over
+    with "the asking window is gone"; CI's kernel names the real peer. The
+    stand-in below supplies the answer such a kernel gives, so this test
+    measures the door's guard rather than the namespace it happens to run
+    in. Every other guard (the socket inside the runtime directory, its uid
+    and mode, the named pid and start time) still runs unchanged, and the
+    test below it shows the guard still refuses a differently named
+    process.
+    """
+    monkeypatch.setattr(supervisor, "_peer_pid", lambda sock: os.getpid())
     rid = pairing.begin("session:p1", directory=acct.pairing_dir("anna"))
     acct.round()
     assert pairing.read(rid, "session:p1", directory=acct.pairing_dir("anna"))["link"] == acct.daemon.links[0]
     time.sleep(0)
+
+
+def test_a_door_that_names_another_process_gets_no_link(acct, monkeypatch):
+    """The stand-in is not a bypass: name another process and the door
+    refuses, which is the property the guard exists for."""
+    monkeypatch.setattr(supervisor, "_peer_pid", lambda sock: os.getpid() + 1)
+    rid = pairing.begin("session:p3", directory=acct.pairing_dir("anna"))
+    acct.round()
+    answer = pairing.read(rid, "session:p3", directory=acct.pairing_dir("anna"))
+    assert answer["state"] == "refused"
+    assert "link" not in answer
