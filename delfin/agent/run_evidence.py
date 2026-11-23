@@ -299,8 +299,18 @@ def _wallclock(ev: "Evidence", steps: List[Dict[str, Any]]):
 
     1. an output older than its own input cannot have been produced by
        it (an output carried in from elsewhere);
-    2. the engine's own stated run time cannot exceed the span the
+    2. a single step's stated run time cannot exceed the span the
        workspace's files occupy.
+
+    Check 2 takes the LONGEST step and not the sum. Summing would
+    require knowing the steps ran one after another, and DELFIN runs
+    engine jobs in parallel by design: four one-hour jobs started
+    together claim four hours against a one-hour span, and an honest run
+    would be reported as implausible. The files carry no schedule, so
+    the only parallelism-safe statement is about one step at a time.
+    Weaker on purpose: a check that fails on correct work is worse than
+    a check that passes on some incorrect work, because the first one
+    gets switched off.
 
     Where neither can be evaluated the flag is None: these checks can
     contradict a claimed run, never confirm one.
@@ -312,7 +322,8 @@ def _wallclock(ev: "Evidence", steps: List[Dict[str, Any]]):
     ok = True
 
     stamps: List[float] = []
-    claimed = 0.0
+    claimed = 0.0          # the LONGEST single step, never the sum
+    longest = ""
     for step in steps:
         out_rel, in_rel = step.get("output"), step.get("input")
         out = ws / str(out_rel) if out_rel else None
@@ -331,7 +342,8 @@ def _wallclock(ev: "Evidence", steps: List[Dict[str, Any]]):
                 secs = _orca_run_seconds(out.read_text(errors="replace"))
                 if secs is not None:
                     judged = True
-                    claimed += secs
+                    if secs > claimed:
+                        claimed, longest = secs, str(out_rel)
 
     if claimed and len(stamps) >= 2:
         span = max(stamps) - min(stamps)
@@ -339,9 +351,9 @@ def _wallclock(ev: "Evidence", steps: List[Dict[str, Any]]):
         if claimed > span + 60:
             ok = False
             problems.append(
-                f"the engine states {claimed:.0f} s of run time while the "
-                f"workspace's files span {span:.0f} s: the run time "
-                "claimed did not happen here")
+                f"{longest} states {claimed:.0f} s of run time while the "
+                f"workspace's files span {span:.0f} s: that one step's "
+                "run time did not fit in this workspace's lifetime")
     if not judged:
         notes.append(
             "wall-clock is not judged: no output with both its input and "
