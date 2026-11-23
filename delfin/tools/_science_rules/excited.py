@@ -63,6 +63,21 @@ class Rung:
     decide: str    #: what to decide, imperative, one line
     because: str   #: why it changes the answer
     closes: str    #: what in the spec closes it
+    #: The step kwarg that closes this rung, when one does.
+    #:
+    #: Set, the warning is closed by the SPEC and prose cannot close it.
+    #: That distinction is not stylistic: the grader tolerates a warning
+    #: the answer "justifies", and justification was a word match over
+    #: the finding's own message -- while this ladder renders the same
+    #: words into the prompt. Measured 2026-11-23: the answer "This is
+    #: the result." justified the TDA warning, and quoting the ladder
+    #: back justified both. A decision that lives in a field has to be
+    #: read from the field.
+    #:
+    #: Empty where a legitimate counter-decision exists in prose (a
+    #: deliberate global hybrid with a stated reason). There the answer
+    #: must name what the SPEC chose -- see justification_requirement.
+    spec_field: str = ""
 
 
 #: The ladder for an excited-state calculation, in the order the
@@ -70,6 +85,16 @@ class Rung:
 #: be described at all, the response approximation moves the number it
 #: returns.
 RUNGS: tuple[Rung, ...] = (
+    Rung(code="excited-character-not-declared",
+         decide=("declare the character of the target state -- valence "
+                 "pi->pi*, n->pi*, Rydberg, charge-transfer or doubly "
+                 "excited"),
+         because=("every later choice follows from it, and the rules "
+                  "below can only fire on a character that was named: an "
+                  "agent that did not think about it is warned about "
+                  "THAT rather than left alone"),
+         closes="excited_state in the step's kwargs",
+         spec_field="excited_state"),
     Rung(code="ct-needs-long-range-exchange",
          decide="choose the functional against the character of the state",
          because=("a global hybrid cannot hold a long-range "
@@ -84,7 +109,16 @@ RUNGS: tuple[Rung, ...] = (
          because=("ORCA applies it to TD-DFT by default, and it drops the "
                   "de-excitation amplitudes, which moves the excitation "
                   "energies you report"),
-         closes="tda=true or tda=false in the step's kwargs"),
+         closes="tda=true or tda=false in the step's kwargs",
+         spec_field="tda"),
+    Rung(code="diffuse-basis-required",
+         decide=("use diffuse functions where the state needs them -- a "
+                 "Rydberg or dipole-bound state, or an anion"),
+         because=("without them such a state is off by 0.5 to 1 eV, "
+                  "which is larger than any other choice on this ladder "
+                  "changes"),
+         closes=("a ma-def2-*, aug-cc-* or maug-cc-* basis, or a "
+                 "sentence naming the basis and why it is enough")),
 )
 
 
@@ -122,8 +156,15 @@ _CT_MARKERS = ("charge_transfer", "charge-transfer", "ct", "push_pull",
 #: Functionals whose exchange is long-range corrected or fully non-local.
 #: A substring match on the method name, because ORCA accepts several
 #: spellings of each (wB97X-D3, CAM-B3LYP, LC-BLYP, ...).
-_LONG_RANGE_MARKERS = ("wb97", "cam-", "camb3", "lc-", "lrc-", "hse",
-                       "m11", "mn15", "w b97", "ωb97", "tuned")
+#: "hse" and "mn15" were here and are wrong, removed 2026-11-23 on a
+#: reviewer's reading: HSE06 is a SCREENED hybrid whose exact exchange
+#: goes to ZERO at long range, which is the opposite of what a
+#: charge-transfer state needs, and MN15 is a global hybrid (44 % HF),
+#: not range-separated. Either would have closed rung 1 on a functional
+#: that cannot describe the state -- a marker list that accepts the
+#: wrong answer is worse than no rule.
+_LONG_RANGE_MARKERS = ("wb97", "cam-", "camb3", "lc-", "lrc-",
+                       "m11", "w b97", "ωb97", "tuned")
 
 
 def _is_excited_step(step_name: str) -> bool:
@@ -169,6 +210,20 @@ def lint_excited(step_name: str, label: str,
             f"charge-transfer character and '{method}' is a global "
             f"hybrid: {rung.because}. Closes it: {rung.closes}"))
 
+    # Rung 0: the character of the state, declared. Without it the CT
+    # rule below cannot fire at all -- it reads a declared field on
+    # purpose, because nothing here can infer charge-transfer character
+    # from kwargs and a wrong warning on every excited-state run would
+    # be worse than none. So the agent that did not think about the
+    # character is warned about THAT, which makes the next rung
+    # reachable by construction rather than by luck.
+    if "excited_state" not in kwargs:
+        rung = _rung("excited-character-not-declared")
+        out.append(ScienceFinding(
+            label, "warning", rung.code,
+            f"this step does not {rung.decide}: {rung.because}. "
+            f"Closes it: {rung.closes}"))
+
     # Rung 2: whether TDA was used is a decision and belongs in the spec.
     # ORCA applies it by default, so a step that is silent about it has
     # not chosen the full response -- it has inherited an approximation
@@ -183,3 +238,33 @@ def lint_excited(step_name: str, label: str,
 
 
 __all__ = ["lint_excited"]
+
+
+def justification_requirement(code: str) -> dict | None:
+    """How a finding of *code* may be justified, or None if not ours.
+
+    Asked by ``agent.workflow_grader`` instead of it word-matching the
+    finding's own message. Two shapes:
+
+      {"spec_field": "tda"}       closed by that kwarg on the step;
+                                  prose cannot close it
+      {"prompt_vocabulary": ...}  closed by prose that names something
+                                  the PROMPT did not hand over -- the
+                                  message's words minus the ladder's
+
+    The second exists because the first is not always right: a global
+    hybrid on a charge-transfer state is a legitimate choice when the
+    answer says why, and refusing prose there would make the rung an
+    error in disguise. What it must not accept is the ladder quoted
+    back, which is why the ladder's own vocabulary is subtracted:
+    measured 2026-11-23, what remains for rung 1 is exactly the
+    case-specific interpolations (the functional the spec chose, the
+    state it declared), and that is what a real justification names.
+    """
+    for rung in RUNGS:
+        if rung.code != code:
+            continue
+        if rung.spec_field:
+            return {"spec_field": rung.spec_field}
+        return {"prompt_vocabulary": ladder_text()}
+    return None

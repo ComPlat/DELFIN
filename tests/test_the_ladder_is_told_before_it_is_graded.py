@@ -52,16 +52,42 @@ def test_every_rung_is_in_the_prompt_the_model_reads():
         assert rung.closes in built, f"{rung.code} does not say what closes it"
 
 
-def test_every_rung_is_enforced_by_a_real_lint_rule():
+#: One spec per rung that MAKES IT FIRE. Written out rather than derived
+#: so that adding a rung forces whoever adds it to say what triggers it:
+#: a rung with no triggering case is advice, and the test below is the
+#: only thing that can tell the two apart.
+_TRIGGERS = {
+    "excited-character-not-declared": {
+        "method": "PBE0", "basis": "def2-TZVP"},
+    "ct-needs-long-range-exchange": {
+        "method": "PBE0", "basis": "def2-TZVP",
+        "excited_state": "charge_transfer", "tda": True},
+    "tda-not-stated": {
+        "method": "wB97X-D4", "basis": "def2-TZVP",
+        "excited_state": "valence"},
+    "diffuse-basis-required": {
+        "method": "wB97X-D4", "basis": "def2-TZVP",
+        "excited_state": "rydberg", "tda": True},
+}
+
+
+def test_every_rung_has_a_case_that_makes_it_fire():
     """The other direction: a rung in the prompt that nothing checks is
-    advice, and advice drifts out of date silently."""
-    spec = {"steps": [{"step": "orca_tddft", "label": "s", "kwargs": {
-        "charge": 0, "mult": 1, "method": "PBE0", "basis": "def2-TZVP",
-        "excited_state": "charge_transfer"}}]}
-    fired = set(_rules(spec))
-    assert {r.code for r in excited.RUNGS} <= fired, (
-        "declared but not enforced: "
-        f"{sorted({r.code for r in excited.RUNGS} - fired)}")
+    advice, and advice drifts out of date silently.
+
+    Each rung gets the spec that triggers it rather than one shared
+    spec -- a shared spec passed while `diffuse-basis-required` could
+    not fire on it at all, which would have read as enforcement.
+    """
+    missing = [r.code for r in excited.RUNGS if r.code not in _TRIGGERS]
+    assert not missing, f"no triggering case declared for: {missing}"
+    for rung in excited.RUNGS:
+        kwargs = {"charge": 0, "mult": 1, **_TRIGGERS[rung.code]}
+        spec = {"steps": [{"step": "orca_tddft", "label": "s",
+                           "kwargs": kwargs}]}
+        assert rung.code in set(_rules(spec)), (
+            f"{rung.code} is declared and does not fire on its own "
+            "triggering case")
 
 
 def test_a_rung_added_at_runtime_reaches_the_prompt(monkeypatch):
