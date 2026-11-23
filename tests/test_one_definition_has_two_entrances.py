@@ -87,8 +87,17 @@ def test_a_role_with_its_own_file_is_unaffected(loader):
     """The fallback is a fallback: a pack file still wins."""
     body = loader.load_role_prompt("solo_agent")
     assert body.strip()
-    assert "resolve_spec" not in body, (
+    # A marker only the PRESET body carries. `resolve_spec` stopped
+    # being one: the solo prompt names it in the decision-tree row that
+    # sends a calculation through resolve_spec -> run_application, so a
+    # test asserting its absence began asserting that the row is gone.
+    # The preset's own front-matter sentence is the marker now, and it
+    # cannot appear in a pack file because pack files have no preset
+    # front matter.
+    assert "ASK FIRST" not in body, (
         "solo_agent must still get its own prompt, not a preset's")
+    assert body.lstrip().startswith("#"), (
+        "the pack file opens with its own heading")
 
 
 def test_role_exists_answers_for_both_sources(loader):

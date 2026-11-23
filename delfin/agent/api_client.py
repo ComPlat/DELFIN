@@ -7936,13 +7936,51 @@ def _skill_listing(skills: list) -> str:
             f"name; a miss lists the full catalogue"
             if remaining_after else "")
         if parts and used + cost + len(notice) > _SKILL_LISTING_CHARS:
-            # This entry does not fit. The remainder counts it: names
-            # listed + announced remainder == total, always.
+            # This entry does not fit WITH ITS DESCRIPTION. The rest are
+            # named anyway, without one.
+            #
+            # MEASURED, and this is why: the entries are taken in order,
+            # so the ceiling used to decide by ALPHABET which skills the
+            # model could see at all -- 21 of 49 described and the other
+            # 28 reduced to a count. The folded-front-matter fix made
+            # every description real text instead of ">-", which made
+            # them longer, which pushed `git-errors` out of the listing
+            # entirely: a fix to the metadata made a skill invisible.
+            #
+            # A name is about 12 characters against a described entry's
+            # 80, so naming the remainder costs a fraction of describing
+            # it and removes the alphabet from the decision. Which skill
+            # APPLIES to a turn is answered by skill_pointers, not by
+            # this listing; this only has to make sure nothing is
+            # unnameable.
+            # Give back described entries ONE AT A TIME until the
+            # remaining names fit beside them, so the budget buys as
+            # many descriptions as it can while every skill is still
+            # named. Dropping all the descriptions at once would name
+            # 67 and describe none, and a bare name is a weak cue: the
+            # measured vocabulary of `casscf-setup` by title alone was
+            # {casscf, setup}, while the line under its heading says
+            # "CASSCF/NEVPT2 ... justified active space".
+            kept = list(parts)
+            while True:
+                named = [s.name for s in skills[len(kept):]]
+                tail = ("; also: " + ", ".join(named)) if named else ""
+                body = "; ".join(kept)
+                if len(body) + len(tail) <= _SKILL_LISTING_CHARS:
+                    return body + tail
+                if not kept:
+                    break
+                kept.pop()
+            # Not even the bare names fit. Then names only, which at
+            # least leaves nothing unnameable.
+            all_names = "; ".join(s.name for s in skills)
+            if len(all_names) <= _SKILL_LISTING_CHARS:
+                return all_names
+            # And only then the count, which is the old behaviour and
+            # now the last resort rather than the first.
             remainder = n - len(parts)
             cut = (f"; {remainder} more — call the skill tool with a "
                    f"name; a miss lists the full catalogue")
-            # The notice must fit too. If it does not, un-list entries
-            # until it does — never drop a skill silently to make room.
             while parts and len("; ".join(parts)) + len(cut) > \
                     _SKILL_LISTING_CHARS:
                 parts.pop()
@@ -8309,6 +8347,108 @@ _WRITE_TOOL_NAMES: frozenset[str] = frozenset({
     "make_plot",
 })
 
+#: The roles that hold the WHOLE tool surface, with the reason beside
+#: each. ``_role_allowlist`` returns None for a role it cannot derive a
+#: list for, and ``_tool_denied_for_role`` reads None as ALLOW -- which
+#: is correct for a generalist and silent for an omission. Measured: of
+#: the five routes the manifest offers, three resolved to None, and one
+#: of those three (``research_agent``) was a role whose own prompt names
+#: a bounded set of readers and searchers. Nothing had decided that; a
+#: missing front-matter key had.
+#:
+#: A route that resolves to None and is not named here is a test
+#: failure, so a mode added later cannot arrive unrestricted by
+#: omission. See
+#: tests/test_a_route_without_a_list_allows_everything.py.
+_ROLES_WITHOUT_A_TOOL_LIMIT: dict[str, str] = {
+    "solo_agent":
+        "the generalist: it is the whole product in one role and holds "
+        "the whole surface by design, bounded by the permission gate "
+        "rather than by a role list",
+    "":
+        "no role at all -- a plain session, which the gate and the "
+        "session allow-list bound instead",
+    "research_agent":
+        "bounded by a DERIVED deny-list rather than an allow-list: the "
+        "whole lab_/cluster_ families, the runners and the message "
+        "tools are refused, computed from the families so a tool added "
+        "to one of them is refused from the moment it exists. An "
+        "allow-list would be the stronger shape and is a separate "
+        "change: measured, the gate's own read-only classification "
+        "covers 27 of the 80 tools this role can reach and omits "
+        "web_search and web_fetch, which are its purpose, so the "
+        "conversion needs its reachable set enumerated rather than "
+        "derived from that classification",
+}
+
+
+#: The lab_/cluster_ tools that only REPORT state. Everything else in
+#: those two families ACTS on something outside the working tree, and so
+#: does a tool added to them next month: the acting set below is the
+#: family MINUS this one. A new ``lab_*`` is therefore denied to a
+#: read-only role from the moment it exists, until somebody deliberately
+#: names it a report here. That direction is the point -- the previous
+#: arrangement was a deny-list of what somebody had thought of, and what
+#: nobody thought of was every calculation, cluster and lab tool.
+#:
+#: These six stay reachable because the roles that read the work have a
+#: use for them and nothing is moved by reading. The gate's own
+#: ``_MCP_READONLY_TOOL_BASES`` classifies even these as side-effecting,
+#: which is a separate and smaller question: if that classification is
+#: right they belong below, and if it is wrong the fix is there and not
+#: a second opinion here.
+_HARDWARE_REPORTING_TOOLS: frozenset[str] = frozenset({
+    "lab_read", "lab_devices", "lab_plan_check",
+    "cluster_read", "cluster_status", "cluster_fetch",
+})
+
+#: Tools that act OUTSIDE the working tree: they start calculations,
+#: submit to a cluster, move a lab device or send a message. Named
+#: explicitly because they are MCP tools from delfin-tools and so are not
+#: in the native catalogue; ``_tool_denied_for_role`` strips the
+#: ``mcp__server__`` namespace, so a namespaced call is judged by these
+#: same base names.
+_EXTERNAL_RUNNER_TOOLS: frozenset[str] = frozenset({
+    "run_application", "submit_application", "register_module",
+    "save_application", "cancel_run", "draft_email", "publish_report",
+})
+
+
+def _external_effect_tool_names() -> frozenset[str]:
+    """Every tool that acts outside the working tree, derived.
+
+    MEASURED, and the reason this function exists rather than a literal
+    set: the six roles whose stated purpose is reading -- "Reviewers,
+    planners and the runtime watcher: they read the work and say what
+    they found", "Research reads and searches, it does not execute" --
+    were each allowed all 22 acting tools, ``lab_set`` and ``lab_estop``
+    among them. Their deny-lists carried ``_WRITE_TOOL_NAMES`` and
+    (for research) bash: file writes and the shell, and nothing about
+    calculations, clusters or hardware.
+
+    Severity, measured rather than asserted: UNATTENDED the side-effect
+    gate refuses all of them for want of an approval dialog, so this was
+    never an open door. ATTENDED it is one dialog and an approval, and
+    the dialog itself should not have been askable for a role whose job
+    is to read. A gap in depth, and a question the role model promised
+    would never be put.
+    """
+    # From tool_catalog, not the module-level alias: this runs while the
+    # deny-list literal below is being built, which is before that alias
+    # exists. The two are the same object once the module is loaded, and
+    # a test in tests/test_the_tool_catalogue_is_the_same_after_the_move.py
+    # pins that identity.
+    from .tool_catalog import _DOC_TOOLS_OPENAI as _catalogue
+
+    fam = {
+        str((entry.get("function") or {}).get("name") or "")
+        for entry in _catalogue
+    }
+    fam = {n for n in fam if n.startswith(("lab_", "cluster_"))}
+    return frozenset((fam | _EXTERNAL_RUNNER_TOOLS)
+                     - _HARDWARE_REPORTING_TOOLS)
+
+
 _ROLE_EXEC_DENYLIST: dict[str, frozenset[str]] = {
     # The office agent works on documents and data, not on chemistry.
     # The calc and ORCA-manual tools are not merely useless there — they
@@ -8317,16 +8457,22 @@ _ROLE_EXEC_DENYLIST: dict[str, frozenset[str]] = {
     "office_agent": _DELFIN_ONLY_TOOL_NAMES,
     # Reviewers, planners and the runtime watcher: they read the work and
     # say what they found. bash stays — these roles run tests and git.
-    "critic_agent": _WRITE_TOOL_NAMES,
-    "reviewer_agent": _WRITE_TOOL_NAMES,
-    "chief_agent": _WRITE_TOOL_NAMES,
-    "session_manager": _WRITE_TOOL_NAMES,
-    "runtime_agent": _WRITE_TOOL_NAMES,
+    # ... and they do not act outside the tree either. The write names
+    # alone left all of them able to start a calculation, submit to a
+    # cluster and move a lab device; measured, and refused only by the
+    # gate's want of a dialog in an unattended session.
+    "critic_agent": _WRITE_TOOL_NAMES | _external_effect_tool_names(),
+    "reviewer_agent": _WRITE_TOOL_NAMES | _external_effect_tool_names(),
+    "chief_agent": _WRITE_TOOL_NAMES | _external_effect_tool_names(),
+    "session_manager": _WRITE_TOOL_NAMES | _external_effect_tool_names(),
+    "runtime_agent": _WRITE_TOOL_NAMES | _external_effect_tool_names(),
     # Research reads and searches, it does not execute: the dashboard and
     # README promise "no shell commands" and this denylist is the
     # enforcement (tab_agent.py description, README Modes table). Unlike
     # the review roles above, research has no test/git loop to run.
-    "research_agent": _WRITE_TOOL_NAMES | frozenset({"bash", "bash_background"}),
+    "research_agent": (_WRITE_TOOL_NAMES
+                       | frozenset({"bash", "bash_background"})
+                       | _external_effect_tool_names()),
 }
 
 

@@ -118,9 +118,31 @@ def test_the_office_role_appears_in_the_surface_report():
 
 
 def test_the_deny_list_only_names_real_tools():
+    """A typo in a deny-list would silently leak a tool, which is what
+    this catches. The universe is the native catalogue PLUS the
+    delfin-tools MCP tool names, because a role deny-list legitimately
+    names both: ``_tool_denied_for_role`` strips the ``mcp__server__``
+    namespace and judges by the base name, and the reading roles deny
+    run_application and submit_application that way.
+
+    The MCP names are derived from the server MODULE rather than from a
+    live registry, so this holds on a host where the server does not
+    spawn.
+    """
     catalogue = {t["function"]["name"] for t in _DOC_TOOLS_OPENAI}
+
+    import delfin.tools.mcp_server as _mcp_server
+
+    mcp_names = {n.split("_", 1)[1]
+                 for n in dir(_mcp_server)
+                 if n.startswith(("h_", "tool_")) and "_" in n}
+    assert len(mcp_names) > 20, (
+        "the MCP name derivation found almost nothing, so this test "
+        "would pass by measuring an empty set")
+    known = catalogue | mcp_names
     for role, denied in _ROLE_EXEC_DENYLIST.items():
-        assert denied <= catalogue, role
+        unknown = sorted(denied - known)
+        assert not unknown, f"{role} denies names no tool has: {unknown}"
 
 
 # ---------------------------------------------------------------------------
