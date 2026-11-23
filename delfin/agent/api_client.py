@@ -8768,6 +8768,63 @@ def _mcp_calculation_verdict(base: str, args: dict):
     return None
 
 
+def execute_mcp_call(name: str, arguments: dict, permissions,
+                     doc_executor, *, workspace=None) -> str:
+    """The ONE MCP dispatch: gate, call, wrap, post-hooks.
+
+    Input: a namespaced tool name, its arguments, the session's
+    permissions and the executor whose post-tool hooks run afterwards.
+    Output: the result string the caller returns to whoever asked.
+
+    WHY IT IS A FUNCTION. MCP tools skip ``_DocToolExecutor.execute``,
+    so these four steps lived inline in the agent loop -- and a Code
+    Mode program, whose RPC server calls ``execute``, could not reach a
+    single MCP tool. Two attempts added them to the program's
+    allow-list, passed their own tests and changed nothing: the name
+    got past the list and the executor answered "Unknown tool".
+
+    Extracted rather than copied. A second dispatch path is the way
+    round the gate that lives in step 2, and ``code_mode``'s own rule --
+    "there is exactly ONE launcher" -- exists for the same reason. One
+    function, two callers: the agent loop and the RPC server.
+
+    The four steps, in this order and for the reasons the loop recorded:
+
+    1. the UN-NAMESPACED base name, so a hook or an audit rule on
+       ``bash`` also covers ``mcp__kit-coding__bash``;
+    2. ``_mcp_call_refusal``: the PreToolUse hooks answer FIRST and a
+       blocking hook ends it, then the gate and any dialog it raises --
+       a shell-executing MCP tool runs REMOTELY and would otherwise
+       bypass the native gate entirely;
+    3. the registry call, with the agent session id riding in the
+       request rather than the spawn, and the result wrapped as
+       UNTRUSTED. That wrap stays for DELFIN's own servers too: a tool
+       DESCRIPTION is this repository's text (see
+       ``mcp_client.advertised_description``), and a RESULT is data
+       about the world -- a calculation's output, a file, a search
+       answer -- whoever served it;
+    4. the post-tool hooks, audit included, on the base name.
+    """
+    base = (name.rsplit("__", 1)[-1]
+            if name.startswith("mcp__") else name)
+    refusal = _mcp_call_refusal(name, arguments, permissions)
+    if refusal is not None:
+        result = refusal
+    else:
+        try:
+            from . import mcp_client as _mcp
+            ws = (workspace if workspace is not None
+                  else _hook_workspace(permissions))
+            sid = str(getattr(permissions, "task_session_id", "") or "")
+            result = _wrap_untrusted(
+                _mcp.get_registry(ws).call(name, arguments,
+                                           agent_session_id=sid))
+        except Exception as exc:                        # noqa: BLE001
+            result = json.dumps({"error": f"MCP dispatch failed: {exc}"})
+    doc_executor._run_post_tool_hooks(base, arguments, permissions, result)
+    return result
+
+
 def _is_honoured_dry_run(name: str, arguments) -> bool:
     """True when ``check_only`` on this call is a dry run its executor runs.
 
@@ -35467,46 +35524,15 @@ class OpenAIClient(_BaseClient):
                                          "one returned"
                             })
                     elif is_mcp:
-                        # MCP tools skip _DocToolExecutor.execute(), so run the
-                        # SAME PreToolUse hooks + content-gate + audit/PostToolUse
-                        # here, keyed on the un-namespaced base name so a hook or
-                        # audit rule on e.g. `bash`/`write_file` also covers
-                        # `mcp__kit-coding__bash`. Shell-executing MCP tools run
-                        # REMOTELY and would otherwise bypass the native gate.
-                        _mcp_base = (fn_name.rsplit("__", 1)[-1]
-                                     if fn_name.startswith("mcp__") else fn_name)
-                        _refusal = _mcp_call_refusal(
-                            fn_name, fn_args, self._permissions)
-                        if _refusal is not None:
-                            result = _refusal
-                        else:
-                            try:
-                                from . import mcp_client as _mcp
-                                _ws = _hook_workspace(self._permissions)
-                                # JC2 target 2 (operator route): the agent
-                                # session id travels WITH EACH tools/call
-                                # request, not with the spawn — the server
-                                # is spawned during tool-list assembly,
-                                # before any dispatch, so a spawn-time id
-                                # is empty in a fresh process and, in the
-                                # agent service, another session's.  The
-                                # id this dispatch holds (same seam the
-                                # step journal reads) rides in the
-                                # request's `_meta`, read only by
-                                # DELFIN's own delfin-tools handler.
-                                _sid_mcp = str(
-                                    getattr(self._permissions,
-                                            "task_session_id", "") or "")
-                                result = _wrap_untrusted(
-                                    _mcp.get_registry(_ws).call(
-                                        fn_name, fn_args,
-                                        agent_session_id=_sid_mcp))
-                            except Exception as exc:
-                                result = json.dumps({
-                                    "error": f"MCP dispatch failed: {exc}"
-                                })
-                        _doc_executor._run_post_tool_hooks(
-                            _mcp_base, fn_args, self._permissions, result)
+                        # The ONE MCP dispatch (execute_mcp_call): the
+                        # gate, the call, the untrusted wrap and the
+                        # post-tool hooks. It used to stand here inline,
+                        # which is why a Code Mode program -- whose RPC
+                        # server calls the executor -- could reach no
+                        # MCP tool at all.
+                        result = execute_mcp_call(
+                            fn_name, fn_args, self._permissions,
+                            _doc_executor)
                     elif is_mcp_meta:
                         # MCP resource/prompt meta-tools also skip execute()'s
                         # role check — apply the same deny-by-default so a

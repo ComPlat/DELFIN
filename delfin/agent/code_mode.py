@@ -37,16 +37,92 @@ from typing import Any, Optional
 #: Tools the model may call from a Code Mode program. Phase 1: read-only,
 #: job status, output reading/parsing, listing, tables. Every name must exist
 #: in ``_DOC_TOOLS_OPENAI`` (the real catalogue) — never an invented tool.
+#: The server DELFIN's own pipeline tools live behind. Namespaced here
+#: because that is the name the executor dispatches; the stub derives a
+#: Python-safe function name from it (:func:`_py_name`), so a program
+#: writes ``resolve_spec(...)`` and the RPC carries
+#: ``mcp__delfin-tools__resolve_spec``. One list, two spellings derived
+#: from it -- not two lists.
+_PIPELINE = "mcp__delfin-tools__"
+
+#: The READ-ONLY pipeline tools. 21 of that server's 26 are reads by its
+#: own classification (``api_client._MCP_READONLY_TOOL_BASES``), and
+#: none of them was reachable from a program: a Code Mode program could
+#: not DISCOVER a capability, RESOLVE a spec or LINT one, which is most
+#: of what a multi-step calculation workflow is. Phase 1 as it was
+#: meant, not a widening of it.
+#:
+#: Measured before adding them: no name here collides with a native
+#: tool, with a delfin-ops tool or with the seven below, so the
+#: Python-safe short name is unambiguous.
+READ_ONLY_PIPELINE_TOOLS: frozenset[str] = frozenset(
+    _PIPELINE + n for n in (
+        # discover
+        "get_guide", "get_manifest", "catalog", "list_capabilities",
+        "describe_capability", "describe_key", "list_keys",
+        "compatible_successors",
+        # build and judge
+        "resolve_spec", "validate_spec", "scientific_lint",
+        "validate_application",
+        # look at what exists and what ran
+        "list_applications", "describe_application", "list_runs",
+        "run_status", "run_metrics", "run_diagnostics",
+        # the environment, and the template for a missing block
+        "probe", "install_plan", "new_capability_template",
+    ))
+
+#: The two pipeline RUNNERS. Side-effecting, and allowed here for one
+#: reason: the gate judges them now. Every call from a program reaches
+#: ``KitToolExecutor.execute`` -- the same single public entry a direct
+#: call takes -- and from there
+#: ``api_client._mcp_calculation_verdict`` -> ``calc_policy``
+#: ``judge_application_run``, which reads the saved spec from disk and
+#: the call's own cores and inputs and applies the SAME check a
+#: ``bash orca job.inp`` gets: the step list, the resource request
+#: against the host's unasked limit, and charge/mult where the inputs
+#: give them. Checked runs, refused over the limit WITH the reason,
+#: unreadable stays refused.
+#:
+#: Before that check existed this would have been a hole: run_application
+#: returned None from the verdict by design, which in an unattended
+#: session meant "refused for want of a dialog" -- so a program could
+#: not have run one anyway, and the day it could it would have run
+#: unjudged. The order matters and is recorded here: the gate first,
+#: then the door.
+#:
+#: Measured, and this is what makes a LOOP safe: the gate judges every
+#: call. Three good calls produced three verdicts and three bad ones
+#: three refusals -- nothing is cached, so a program that iterates over
+#: ten applications is judged ten times.
+RUNNER_TOOLS: frozenset[str] = frozenset(
+    _PIPELINE + n for n in ("run_application", "submit_application"))
+
 READ_ONLY_TOOLS: frozenset[str] = frozenset({
     "search_calcs", "get_calc_info", "search_docs", "read_section",
     "bash_status", "bash_output", "list_docs",
-})
+}) | READ_ONLY_PIPELINE_TOOLS | RUNNER_TOOLS
+
+
+def _py_name(tool: str) -> str:
+    """The function name a program calls for *tool*.
+
+    ``mcp__delfin-tools__resolve_spec`` -> ``resolve_spec``. The server
+    name carries a hyphen, so the namespaced form is not a Python
+    identifier; the short one is, and it is unambiguous because no
+    allow-listed suffix collides with another allow-listed name (a test
+    asserts it, so a future addition that would collide fails there
+    rather than shadowing something silently).
+    """
+    return tool.rsplit("__", 1)[-1] if tool.startswith("mcp__") else tool
 
 #: The tools a program must NOT call, and how to do it properly instead.
 _DIRECT_ROUTE_HINT = (
-    "Code Mode is read-only (phase 1). To use tool '%s' directly, the model "
-    "calls it as a normal individual tool call — permissions, write scope "
-    "and approvals apply there exactly as before."
+    "A program may call DELFIN's read-only tools and the two pipeline "
+    "runners (mcp__delfin-tools__run_application and "
+    "__submit_application, each judged by the gate per call). Tool '%s' "
+    "is not one of them. To use it, the model calls it directly as a "
+    "normal individual tool call — permissions, write scope and "
+    "approvals apply there exactly as before."
 )
 
 #: Results are capped before they return to the model: a program that
@@ -90,11 +166,25 @@ class Connection:
         refusal = _check_allowed(name)
         if refusal is not None:
             return json.dumps({"error": refusal}, ensure_ascii=False)
-        # Public-entry parity (CM1 operator finding): the direct path enters
-        # at KitToolExecutor.execute (api_client.py:17651), which carries
-        # deny rules, plan-mode, sandbox, role and shape checks BEFORE
-        # _dispatch_under_rules. The RPC must call the same single public
-        # entry and nothing lower; rules are evaluated inside execute.
+        # Public-entry parity (CM1 operator finding): the direct path
+        # enters at the executor, which carries deny rules, plan-mode,
+        # sandbox, role and shape checks BEFORE _dispatch_under_rules.
+        # The RPC must call the same single public entry and nothing
+        # lower; rules are evaluated inside execute.
+        #
+        # AND AN MCP NAME GOES WHERE AN MCP NAME GOES. MCP tools skip
+        # the executor -- it answers "Unknown tool" for every one of
+        # them -- and their gate, untrusted wrap and post-tool hooks
+        # live in api_client.execute_mcp_call, which the agent loop
+        # calls too. Measured before this existed: the allow-list let
+        # `mcp__delfin-tools__get_guide` past and the executor refused
+        # it as unknown, so the capability two changes claimed to add
+        # did not exist. One dispatcher, two callers; a second one here
+        # would be the way round the gate it carries.
+        if name.startswith("mcp__"):
+            from .api_client import execute_mcp_call
+            return _cap_result(execute_mcp_call(
+                name, arguments, self._permissions, self._executor))
         return _cap_result(self._executor.execute(
             name, arguments, self._permissions))
 
@@ -316,12 +406,13 @@ def generate_stub() -> str:
         "",
     ]
     for name in sorted(READ_ONLY_TOOLS):
-        lines.append("def %s(**arguments):" % name)
+        lines.append("def %s(**arguments):" % _py_name(name))
         lines.append("    return _call(%r, arguments)" % name)
         lines.append("")
     lines.append("class delfin_tools:")
     for name in sorted(READ_ONLY_TOOLS):
-        lines.append("    %s = staticmethod(%s)" % (name, name))
+        lines.append("    %s = staticmethod(%s)"
+                     % (_py_name(name), _py_name(name)))
     lines.append("")
     lines.append("if __name__ == '__main__':")
     lines.append("    print(sorted(n for n in dir(delfin_tools)"

@@ -28,8 +28,23 @@ from delfin.agent import code_mode
 
 
 def _catalogue():
+    """Every tool name that really exists: the native catalogue AND the
+    discovered MCP surface.
+
+    The allow-list gained DELFIN's own read-only pipeline tools, which
+    are dispatched by their namespaced name
+    (``mcp__delfin-tools__resolve_spec``) and live on an MCP server, not
+    in _DOC_TOOLS_OPENAI. The invariant is unchanged -- no invented name
+    -- and the set it is checked against is now the whole surface.
+    """
     from delfin.agent.api_client import _DOC_TOOLS_OPENAI
-    return {t["function"]["name"] for t in _DOC_TOOLS_OPENAI}
+    names = {t["function"]["name"] for t in _DOC_TOOLS_OPENAI}
+    try:
+        from delfin.agent import mcp_client as _mcp
+        names |= {t.namespaced_name for t in _mcp.get_registry(None).discover_all()}
+    except Exception:
+        pass
+    return names
 
 
 def test_read_only_tools_exist_in_the_real_catalogue():
@@ -138,8 +153,13 @@ def test_program_without_rpc_env_gets_no_client():
 
 
 def test_generated_stub_contains_only_read_only_tools():
+    """Every allowed tool is callable from a program, by the name a
+    program can write: a namespaced MCP name is not a Python
+    identifier, so the stub emits ``_py_name`` and dispatches the full
+    one."""
     stub = code_mode.generate_stub()
     for name in code_mode.READ_ONLY_TOOLS:
-        assert 'def %s(' % name in stub
+        assert 'def %s(' % code_mode._py_name(name) in stub
+        assert repr(name) in stub or '"%s"' % name in stub
     assert "write_file" not in stub
     assert "submit_calculation" not in stub
