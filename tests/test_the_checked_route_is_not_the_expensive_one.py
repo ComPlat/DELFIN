@@ -54,6 +54,14 @@ BASE = "run_application"
 #: A built-in application with a real four-step spec on disk.
 APP = "conformer_dG"
 
+#: What a CHECKED call carries. Until a second review on 2026-11-23 the
+#: tests below admitted calls with no molecule, charge or multiplicity at
+#: all, and one of them asserted that an UNREAD setup was admitted --
+#: which is the defect, not the behaviour. The rule names spin parity as
+#: part of the check, every other route counts the molecule's electrons,
+#: and so a call is admitted unasked only when it says what it runs.
+SETUP = {"smiles": "CCO", "charge": 0, "mult": 1}
+
 
 @pytest.fixture()
 def gate():
@@ -80,7 +88,7 @@ def gate():
 
 def test_a_checked_application_runs_unattended(gate):
     """What was refused before this change."""
-    assert gate({"name": APP, "cores": 1}) is None
+    assert gate({"name": APP, "cores": 1, "inputs": SETUP}) is None
 
 
 def test_a_resource_request_over_the_limit_is_refused_with_its_reason(gate):
@@ -102,21 +110,26 @@ def test_an_application_the_gate_cannot_read_still_refuses(gate):
 # --- the judge itself --------------------------------------------------
 
 def test_the_judge_admits_a_checked_run_and_names_what_it_checked():
-    v = cp.judge_application_run(APP, 1, inputs={"charge": 0, "mult": 1})
+    v = cp.judge_application_run(APP, 1, inputs=SETUP)
     assert v is not None and v.calculation and v.admit
     assert APP in v.summary
     assert "step(s)" in v.summary
     assert "core(s)" in v.summary
-    assert "charge=0" in v.summary and "mult=1" in v.summary
+    # what was CHECKED, not only what was passed: the electron count
+    assert "26 electrons at charge 0, multiplicity 1" in v.summary
 
 
-def test_the_judge_says_what_it_could_not_read():
+def test_the_judge_does_not_admit_what_it_could_not_read():
     """An unread check that reads as a pass is the defect this module
-    exists to prevent."""
+    exists to prevent -- and this test used to assert exactly that
+    defect: no inputs, admitted, with "setup not read here" in the
+    summary. Saying it did not check is not the same as not passing it.
+    The call now goes to the dialog with the reason, and with nobody to
+    ask it is refused, as an unreadable geometry is on every other
+    route."""
     v = cp.judge_application_run(APP, 1)
-    assert v is not None and v.admit
-    assert "setup not read here" in v.summary
-    assert "charge" in v.summary and "mult" in v.summary
+    assert v is not None and v.calculation and not v.admit
+    assert "molecule" in v.reason
 
 
 def test_the_judge_refuses_too_many_cores():
@@ -134,8 +147,10 @@ def test_an_unreadable_application_is_none_not_a_verdict(name):
 def test_the_core_limit_is_the_hosts_own(monkeypatch):
     """The same unasked limit the bash path uses, not a second number."""
     monkeypatch.setattr(cp, "local_core_limit", lambda kind: 2)
-    assert cp.judge_application_run(APP, 2, kind="workstation").admit
-    assert not cp.judge_application_run(APP, 3, kind="workstation").admit
+    assert cp.judge_application_run(APP, 2, kind="workstation",
+                                    inputs=SETUP).admit
+    assert not cp.judge_application_run(APP, 3, kind="workstation",
+                                        inputs=SETUP).admit
 
 
 # --- the lookup that nearly made this a no-op -------------------------

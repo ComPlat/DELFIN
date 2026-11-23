@@ -86,7 +86,10 @@ def test_a_native_write_tool_stays_refused(tool):
 # --- the gate still decides ------------------------------------------
 
 def test_a_checked_run_is_admitted(gate):
-    assert gate({"name": APP, "cores": 1}) is None
+    """A checked call says what it runs: molecule, charge, multiplicity.
+    Until 2026-11-23 this admitted a call with none of them."""
+    assert gate({"name": APP, "cores": 1, "inputs": {
+        "smiles": "CCO", "charge": 0, "mult": 1}}) is None
 
 
 def test_a_run_over_the_limit_is_refused_with_its_reason(gate):

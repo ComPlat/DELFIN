@@ -60,6 +60,7 @@ electron count as readily as a correct run.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -1596,29 +1597,85 @@ def judge_application_run(name: str, cores: int, *,
     if not all(labels):
         return None
 
-    # The setup, where the call's inputs fill the placeholders.
+    # The setup: the molecule, its charge and -- where the application
+    # takes one -- its multiplicity, checked with the SAME functions the
+    # CONTROL.txt route uses (electrons_of, spin_allowed). One policy for
+    # every route; an unread check is not a pass, so whatever cannot be
+    # read sends the call to the dialog with the reason, and without a
+    # dialog it is refused -- exactly as an unreadable geometry is there.
     given = dict(inputs or {})
-    read: list[str] = []
-    unread: list[str] = []
-    for key in ("charge", "mult"):
-        value = given.get(key)
-        if value is None:
-            # A spec placeholder with no input is filled by the
-            # application's own defaults at run time, which this cannot
-            # see from here.
-            unread.append(key)
-        else:
-            read.append(f"{key}={value}")
-
+    smiles = str(given.get("smiles") or "").strip()
+    if not smiles:
+        return Verdict(True, False, "", (
+            f"{name}: no molecule was given (inputs.smiles), so its "
+            f"electrons -- and the spin parity the check requires -- "
+            f"could not be counted"))
+    symbols = _smiles_symbols(smiles)
+    if symbols is None:
+        return Verdict(True, False, "", (
+            f"{name}: the molecule {smiles!r} could not be read, so its "
+            f"electrons could not be counted"))
+    nuclear = electrons_of(symbols)
+    if nuclear is None:
+        return Verdict(True, False, "", (
+            f"{name}: the molecule {smiles!r} contains an element this "
+            f"check does not know"))
+    charge = _int(given.get("charge"))
+    if charge is None:
+        return Verdict(True, False, "", (
+            f"{name}: no whole-number charge was given (inputs.charge), "
+            f"so the electron count is not known"))
+    # Electrons are the nuclear charge minus the DECLARED charge, as on
+    # the bash route. The SMILES' own formal charge is deliberately not
+    # compared: a redox workflow passes the neutral molecule's SMILES with
+    # charge=+1, mult=2 for its radical cation, and that is correct.
+    n = nuclear - charge
+    if n < 0:
+        return Verdict(True, False, "", (
+            f"{name}: charge {charge} exceeds the molecule's nuclear "
+            f"charge {nuclear}"))
+    if "{mult}" in json.dumps(spec):
+        mult = _int(given.get("mult"))
+        if mult is None:
+            return Verdict(True, False, "", (
+                f"{name}: no whole-number multiplicity was given "
+                f"(inputs.mult), so spin parity could not be checked"))
+        if mult < 1 or not spin_allowed(n, mult - 1):
+            return Verdict(True, False, "", (
+                f"{name}: {n} electrons at charge {charge} cannot have "
+                f"multiplicity {mult}"))
+        spin = f"{n} electrons at charge {charge}, multiplicity {mult}"
+    else:
+        # The application takes no {mult}: the multiplicity is not an
+        # input, so it is not an unread check either -- and the summary
+        # does not claim a parity it did not test.
+        spin = (f"{n} electrons at charge {charge}; multiplicity chosen "
+                f"by the application")
     summary = (f"{name}: {len(labels)} step(s) "
                f"({', '.join(labels[:4])}{'...' if len(labels) > 4 else ''}), "
-               f"{asked} core(s) of {limit} unasked on this {kind}")
-    if read:
-        summary += "; " + ", ".join(read)
-    if unread:
-        summary += ("; setup not read here: " + ", ".join(unread)
-                    + " (the application's own defaults fill them)")
+               f"{asked} core(s) of {limit} unasked on this {kind}; {spin}")
     return Verdict(True, True, summary, "")
+
+
+def _smiles_symbols(smiles: str) -> Optional[list]:
+    """Element symbols of a SMILES with its hydrogens made explicit.
+
+    None when it cannot be parsed, or when RDKit is not installed -- in
+    both cases the electrons are not known, and the caller treats that as
+    an unread check rather than as a pass.
+    """
+    try:
+        from rdkit import Chem, RDLogger
+    except Exception:
+        return None
+    RDLogger.DisableLog("rdApp.*")
+    try:
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            return None
+        return [a.GetSymbol() for a in Chem.AddHs(mol).GetAtoms()]
+    except Exception:
+        return None
 
 
 #: What a hand-started engine run is told about the route it bypassed.
