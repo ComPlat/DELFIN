@@ -1,6 +1,6 @@
 ---
 name: method-researcher
-description: Read-only literature and manual research on a computational method. Use for "which functional/basis/solvent model for this property", with sources.
+description: Read-only research on which method to use, with sources. Use for "which functional/basis/solvent model for this property", with sources.
 mode: plan
 tools: [read_file, read_section, list_sections, list_files, list_docs, grep_file, find_definition, find_references, search_docs, read_document, view_image, exit_plan_mode, ask_user_question, report_verdict, subagent_result, subagent_message, search_docs, read_section, list_sections, list_docs, read_document, web_search, search_calcs, get_calc_info]
 ---
