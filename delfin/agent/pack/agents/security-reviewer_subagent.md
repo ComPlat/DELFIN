@@ -1,6 +1,6 @@
 ---
 name: security-reviewer
-description: Read-only audit of a change to the permission, gate or sandbox layer. Use before landing anything that touches what the agent may do.
+description: Read-only audit of a change to permissions, gates or sandbox. Use before landing anything that touches what the agent may do.
 mode: plan
 tools: [read_file, read_section, list_sections, list_files, list_docs, grep_file, find_definition, find_references, search_docs, read_document, view_image, exit_plan_mode, ask_user_question, report_verdict, subagent_result, subagent_message, history_search, history_get, list_changes_made]
 output_schema: {"type": "object", "properties": {"verdict": {"type": "string"}, "evidence": {"type": "array", "items": {"type": "string"}}, "files_written": {"type": "array", "items": {"type": "string"}}, "open_questions": {"type": "array", "items": {"type": "string"}}, "live_run": {"type": "object", "properties": {"ran": {"type": "boolean"}, "where_ran": {"type": "string"}, "head_sha": {"type": "string"}, "test_counts": {"type": "object", "properties": {"passed": {"type": "integer"}, "failed": {"type": "integer"}, "skipped": {"type": "integer"}}, "required": ["passed", "failed", "skipped"]}}, "required": ["ran", "where_ran", "head_sha", "test_counts"]}}, "required": ["verdict", "evidence", "live_run"]}

@@ -25,6 +25,17 @@ from delfin.config import parse_control_text
 ORCA_TERMINATED_NORMALLY = "ORCA TERMINATED NORMALLY"
 XTB_TERMINATED_NORMALLY = "normal termination of xtb"
 
+#: ORCA's own statement of how long it ran, read the same way
+#: delfin/reporting/delfin_collector.py:211 reads it. An engine that
+#: states its run time can be checked against the wall time the files
+#: occupied; one that states none cannot, and says so.
+_ORCA_RUN_TIME = re.compile(
+    r"TOTAL RUN TIME:\s*(\d+)\s*days?\s*(\d+)\s*hours?\s*"
+    r"(\d+)\s*minutes?\s*([\d.]+)\s*seconds?", re.IGNORECASE)
+_ORCA_RUN_TIME_SHORT = re.compile(
+    r"TOTAL RUN TIME:\s*(\d+)\s*hours?\s*(\d+)\s*minutes?\s*"
+    r"([\d.]+)\s*seconds?", re.IGNORECASE)
+
 def _workflow_defaults(workflow) -> Dict[str, Any]:
     """The workflow's own defaults, read from the template object.
 
@@ -105,6 +116,238 @@ class Evidence:
                 continue
             records.append(record)
         return records
+
+
+@dataclass
+class Contract:
+    """Whether a run's own files show that the calculation happened.
+
+    Four flags, after the execution audit of DFT-Agent Bench
+    (arXiv:2611.10629), carried over to ORCA/xtb. Each is ``True``
+    (shown), ``False`` (contradicted) or ``None`` (the workspace holds
+    no evidence either way). ``None`` is never read as a pass: a flag
+    nobody could judge is reported as not certified, because the
+    alternative -- counting absence as compliance -- is the failure mode
+    the audit exists to catch.
+
+    The measured reason for this class: a rubric can score a report
+    whose calculation never finished. In the QE study the audit voided
+    1.6 % of runs and 20 of the 26 voided runs had a raw score of 0.85
+    or better; one example is a seven-point curve that met the numerical
+    tolerance while only three of the seven calculations completed. The
+    grader before this change had the same hole:
+    ``all_steps_terminated`` asks whether every step that EXISTS ended
+    normally, which three finished calculations out of seven satisfy.
+    """
+
+    engine_invoked: Optional[bool] = None
+    grid_complete: Optional[bool] = None
+    wallclock_plausible: Optional[bool] = None
+    no_egress: Optional[bool] = None
+    problems: List[str] = field(default_factory=list)
+    notes: List[str] = field(default_factory=list)
+
+    @property
+    def flags(self) -> Dict[str, Optional[bool]]:
+        return {
+            "engine_invoked": self.engine_invoked,
+            "grid_complete": self.grid_complete,
+            "wallclock_plausible": self.wallclock_plausible,
+            "no_egress": self.no_egress,
+        }
+
+    def failed(self) -> bool:
+        """A flag is contradicted by the files. The result is void."""
+        return any(v is False for v in self.flags.values())
+
+    def certified(self) -> bool:
+        """Every flag is shown. Only then is the run fully attested."""
+        return all(v is True for v in self.flags.values())
+
+    def unjudged(self) -> List[str]:
+        """The flags the workspace could not answer."""
+        return [k for k, v in self.flags.items() if v is None]
+
+
+def _orca_run_seconds(text: str) -> Optional[float]:
+    """ORCA's own total run time in seconds, or None if it states none."""
+    m = _ORCA_RUN_TIME.search(text)
+    if m:
+        d, h, mi, s = m.groups()
+        return (int(d) * 86400 + int(h) * 3600 + int(mi) * 60 + float(s))
+    m = _ORCA_RUN_TIME_SHORT.search(text)
+    if m:
+        h, mi, s = m.groups()
+        return int(h) * 3600 + int(mi) * 60 + float(s)
+    return None
+
+
+def contract(ev: "Evidence", *, expected_steps: Optional[int] = None,
+             egress_events: Optional[List[Any]] = None) -> Contract:
+    """The execution contract of one collected run.
+
+    Input: an :class:`Evidence`; optionally the number of calculations
+    the task REQUIRES (``expected_steps``) and the egress records of the
+    run's time window (``egress_events``, an empty list meaning "the log
+    was read and holds none"). Output: a :class:`Contract`.
+
+    Read-only, like everything in this module, and it starts no
+    calculation.
+
+    * ``engine_invoked`` -- at least one step carries an output that
+      parsed as an engine output. A result claimed with no input and no
+      output at all contradicts it.
+    * ``grid_complete`` -- every step present ended normally AND their
+      number reaches ``expected_steps``. Without ``expected_steps`` the
+      second half cannot be judged: the flag is then ``None``, with a
+      note, because "every file I found is fine" is exactly the
+      statement that three of seven calculations satisfies.
+    * ``wallclock_plausible`` -- no output is older than the input that
+      is supposed to have produced it, and no engine claims more run
+      time than the files' own span allows. Both catch an output that
+      was not produced by this run; neither can prove one that was.
+    * ``no_egress`` -- judged only from ``egress_events``. A workspace's
+      files do not record network activity, so without that argument the
+      flag stays ``None``. A check that cannot see its subject must say
+      so rather than return True.
+    """
+    problems: List[str] = []
+    notes: List[str] = []
+    steps = list(ev.steps or [])
+
+    # --- engine_invoked
+    with_output = [s for s in steps
+                   if s.get("output") and s.get("terminated_normally")
+                   is not None]
+    if not steps:
+        engine_invoked = False
+        problems.append(
+            "no program input or output in the workspace: nothing shows "
+            "that an engine ran")
+    elif not with_output:
+        engine_invoked = False
+        problems.append(
+            "no step carries an engine output: inputs alone do not show "
+            "a calculation")
+    else:
+        engine_invoked = True
+
+    # --- grid_complete
+    ended_badly = [s for s in steps
+                   if s.get("terminated_normally") is False]
+    unknown_end = [s for s in steps
+                   if s.get("terminated_normally") is None]
+    done = [s for s in steps if s.get("terminated_normally") is True]
+    if ended_badly:
+        grid_complete = False
+        problems.append(
+            f"{len(ended_badly)} step(s) did not end normally: "
+            + ", ".join(sorted(str(s.get("output")) for s in ended_badly)))
+    elif unknown_end:
+        grid_complete = False
+        problems.append(
+            f"{len(unknown_end)} step(s) have an output whose end could "
+            "not be read; a step that cannot be shown to have finished "
+            "is not a finished step")
+    elif expected_steps is None:
+        grid_complete = None
+        notes.append(
+            f"{len(done)} step(s) ended normally, and the task declared "
+            "no required number, so completeness of the grid is not "
+            "judged (every file found being fine is what three of seven "
+            "calculations also satisfies)")
+    elif len(done) < int(expected_steps):
+        grid_complete = False
+        problems.append(
+            f"the task requires {int(expected_steps)} calculation(s) and "
+            f"{len(done)} ended normally: the grid is incomplete, however "
+            "well the numbers that are there agree")
+    else:
+        grid_complete = True
+
+    # --- wallclock_plausible
+    wallclock_plausible, wall_problems, wall_notes = _wallclock(ev, steps)
+    problems.extend(wall_problems)
+    notes.extend(wall_notes)
+
+    # --- no_egress
+    if egress_events is None:
+        no_egress = None
+        notes.append(
+            "egress is not judged: a workspace's files do not record "
+            "network activity, so this flag needs the run's own egress "
+            "records passed in")
+    elif egress_events:
+        no_egress = False
+        problems.append(
+            f"{len(egress_events)} egress record(s) in the run's window: "
+            "a calculation that reaches the network is not an isolated run")
+    else:
+        no_egress = True
+
+    return Contract(engine_invoked=engine_invoked,
+                    grid_complete=grid_complete,
+                    wallclock_plausible=wallclock_plausible,
+                    no_egress=no_egress,
+                    problems=problems, notes=notes)
+
+
+def _wallclock(ev: "Evidence", steps: List[Dict[str, Any]]):
+    """(flag, problems, notes) for the wall-clock half of the contract.
+
+    Two falsifiable checks, both from the files themselves:
+
+    1. an output older than its own input cannot have been produced by
+       it (an output carried in from elsewhere);
+    2. the engine's own stated run time cannot exceed the span the
+       workspace's files occupy.
+
+    Where neither can be evaluated the flag is None: these checks can
+    contradict a claimed run, never confirm one.
+    """
+    ws = Path(ev.workspace)
+    problems: List[str] = []
+    notes: List[str] = []
+    judged = False
+    ok = True
+
+    stamps: List[float] = []
+    claimed = 0.0
+    for step in steps:
+        out_rel, in_rel = step.get("output"), step.get("input")
+        out = ws / str(out_rel) if out_rel else None
+        src = ws / str(in_rel) if in_rel else None
+        if out is not None and out.is_file():
+            stamps.append(out.stat().st_mtime)
+            if src is not None and src.is_file():
+                judged = True
+                stamps.append(src.stat().st_mtime)
+                if out.stat().st_mtime + 1 < src.stat().st_mtime:
+                    ok = False
+                    problems.append(
+                        f"{out_rel} is older than {in_rel}, so that input "
+                        "did not produce this output")
+            if step.get("program") == "orca":
+                secs = _orca_run_seconds(out.read_text(errors="replace"))
+                if secs is not None:
+                    judged = True
+                    claimed += secs
+
+    if claimed and len(stamps) >= 2:
+        span = max(stamps) - min(stamps)
+        # One minute of slack: the files' timestamps are not a stopwatch.
+        if claimed > span + 60:
+            ok = False
+            problems.append(
+                f"the engine states {claimed:.0f} s of run time while the "
+                f"workspace's files span {span:.0f} s: the run time "
+                "claimed did not happen here")
+    if not judged:
+        notes.append(
+            "wall-clock is not judged: no output with both its input and "
+            "a stated run time")
+        return None, problems, notes
+    return ok, problems, notes
 
 
 def _default_is_placeholder(default: Any) -> bool:

@@ -190,7 +190,8 @@ def test_role_prompt_within_token_budget(filename, max_tokens):
 
 
 def _selected(text: str, *, delfin: bool = True,
-              stacks: frozenset = frozenset({"python"})) -> str:
+              stacks: frozenset = frozenset({"python"}),
+              fill: bool = False) -> str:
     """The file as one workspace receives it, module markers removed.
 
     Workspace regions (``<!-- context:delfin -->``, ``<!-- stack:X -->``)
@@ -213,7 +214,15 @@ def _selected(text: str, *, delfin: bool = True,
             return m.group(3) if (m.group(2) == "delfin" and delfin) else ""
         return m.group(3) if m.group(2) in stacks else ""
 
-    return PromptLoader._REGION_RE.sub(_keep, text)
+    selected = PromptLoader._REGION_RE.sub(_keep, text)
+    # ``fill`` renders the generated blocks as load_role_prompt does.
+    # The FILE budgets measure the markdown a pack file holds, so they
+    # leave it off; the no-marker invariant and anything comparing what
+    # a workspace RECEIVES must switch it on, because a marker that
+    # survives the pipeline would reach the model and a rendered table
+    # is text the model is charged for.
+    return (PromptLoader()._fill_generated_blocks(selected) if fill
+            else selected)
 
 
 @pytest.mark.parametrize("stack", ["python", "node", "rust", "go", "generic"])
@@ -223,13 +232,15 @@ def test_a_foreign_workspace_receives_less_than_the_delfin_tree(stack):
     drops. Measured 2026-10-14: DELFIN 10,775; foreign python 10,167,
     node 10,091, rust 10,042, go 10,040, generic 10,062."""
     text = (_PROMPT_DIR / "solo_agent.md").read_text()
-    home = _estimate_tokens(_selected(text))
+    home = _estimate_tokens(_selected(text, fill=True))
     foreign = _estimate_tokens(
-        _selected(text, delfin=False, stacks=frozenset({stack})))
+        _selected(text, delfin=False, stacks=frozenset({stack}),
+                  fill=True))
     assert foreign < home, (stack, foreign, home)
-    # No region marker survives a selection (they would reach the model).
+    # No marker of any kind survives the pipeline: a region marker or a
+    # generated marker left in the text would reach the model.
     assert "<!--" not in _selected(
-        text, delfin=False, stacks=frozenset({stack}))
+        text, delfin=False, stacks=frozenset({stack}), fill=True)
 
 
 # The file budgets above guard the markdown. This one guards what the model
@@ -255,7 +266,18 @@ def test_a_foreign_workspace_receives_less_than_the_delfin_tree(stack):
         # choice came as a prose list while ask_user_question was bound.
         # In the stable head, not behind a trigger: it applies to every
         # turn that ends, which is every turn.
-        ("solo_agent", "solo", ["solo_agent"], 11605),
+        # 11605 -> 11720 (2026-11-22): the subagent_type table is RENDERED
+        # from the preset registry instead of hand-maintained in the
+        # prompt pack, so the enum, the dispatch and the table are one
+        # list. The table grew from 11 hand-written rows to 17 rendered
+        # ones, because six specialist roles were callable and named
+        # nowhere in the prompt -- in 79,056 tool calls the tool was
+        # dispatched 50 times and 44 of those were `explore`, the row
+        # with the broadest cue. Measured 115 tokens, of which the
+        # capability paid 70 back by cutting the prose the table makes
+        # redundant and shortening every cue to one clause of at most 64
+        # characters; the remaining 111 is what the six roles cost.
+        ("solo_agent", "solo", ["solo_agent"], 11720),
         ("dashboard_agent", "dashboard", ["dashboard_agent"], 10400),
     ],
 )

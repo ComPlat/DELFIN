@@ -11169,7 +11169,18 @@ class KitToolPermissions:
         """chmod of a path, or pytest --basetemp, that lands outside every
         workspace root (red team LA: `chmod 000 /etc/hosts`, `chmod 600
         ../../f`, `pytest --basetemp=/elsewhere`). A path that cannot be
-        parsed counts as outside -- it goes to the confirm gate."""
+        parsed counts as outside -- it goes to the confirm gate.
+
+        Redirection targets are deliberately NOT judged here. Measured
+        2026-11-22 at the TOOL entry (_doc_executor.execute, not the
+        permission gate): the write-path gate already refuses every
+        redirect target outside the workspace roots, with its own
+        wording ("would write to '<target>', which is outside what you
+        may modify"), and it refuses relative, absolute, append and
+        stderr spellings alike. Judging them here as well replaced those
+        refusals with a question, which is weaker, and broke the
+        ephemeral-sink classification the write path uses.
+        """
         try:
             words = shlex.split(cmd)
         except ValueError:
@@ -11626,8 +11637,14 @@ def _sed_script_writes(cmd: str) -> bool:
 
 
 #: Options that make a reading program write a file or run a program.
+#: ``sort`` is NOT in this table: a deny-pattern cannot judge it. GNU
+#: getopt accepts any unambiguous long-option prefix, so ``--out=f``
+#: writes a file although the pattern looked for ``--output``, and
+#: ``--compress-program=PROG`` runs PROG although no pattern named it.
+#: Both ran unasked at the gate until 2026-11-22; the allow-list
+#: judgement lives in readonly_pipeline.sort_flags_write_or_run and is
+#: consulted in _reader_writes_or_runs below.
 _READER_ESCAPES = (
-    (r"^\s*sort\b", re.compile(r"(?:^|\s)(?:-o\S*|--output\b|-\w*o\b)")),
     (r"^\s*find\b", re.compile(
         r"(?:^|\s)-(?:fprint0?|fprintf|fls|exec|execdir|ok|okdir|delete)\b")),
     (r"^\s*tree\b", re.compile(r"(?:^|\s)(?:-o\b|--output\b)")),
@@ -11685,6 +11702,13 @@ def _reader_writes_or_runs(cmd: str) -> bool:
         # runs that word as a program.
         return any(not (w.startswith("-") or "=" in w) for w in rest) or \
             any(w in ("-S", "--split-string") for w in rest)
+    if first == "sort":
+        # An allow-list, because a deny-list cannot see an abbreviation
+        # getopt accepts (readonly_pipeline knows the read-only long
+        # options; everything else, --out=f and --compress-program=sh
+        # included, goes to the confirm gate).
+        from . import readonly_pipeline as _rop
+        return _rop.sort_flags_write_or_run(stripped)
     if first == "sed":
         return (_sed_loads_a_script_file(stripped)
                 or _sed_script_writes(stripped))
@@ -16592,8 +16616,15 @@ class _DocToolExecutor:
                     "entry": ch.entry, "root": ch.root, "trash": ch.trash,
                     "post_hash": ch.post_hash, "post_sig": ch.post_sig,
                     "post_tree": ch.post_tree})
+                # The session's own write moves its edit baseline: for a
+                # file it had read, and for one it CREATED here, which it
+                # cannot have read and does not need to. Before the overlay
+                # the creation case was covered by pre-reading a redirect
+                # target; the overlay does not pre-read, so without this a
+                # file the shell had just made was refused to edit_file for
+                # want of a baseline nobody could have had.
                 if (ch.kind != "deleted" and isinstance(tracker, dict)
-                        and ch.path in tracker):
+                        and (ch.path in tracker or ch.kind == "created")):
                     try:
                         tracker[ch.path] = Path(ch.path).stat().st_mtime
                     except OSError:

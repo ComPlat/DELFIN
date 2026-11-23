@@ -215,5 +215,3 @@ def set_from_word(workspace: str, word: str) -> dict:
     if word not in mapping:
         raise ValueError("profil <ordner> frei|standard")
     return set_profile(workspace, mapping[word])
-
-

@@ -1849,6 +1849,67 @@ def subagent_type_names() -> list[str]:
     return list(SUBAGENT_PRESETS.keys())
 
 
+#: Where a cue ends: the first sentence end, em/en-dash clause or
+#: semicolon. A preset's ``description`` is written for the reader of
+#: ``/subagents`` and runs to several clauses; what the model needs in
+#: order to CHOOSE is the first one.
+_CUE_END = re.compile(r"(?<=[.!?])\s|\s[—–-]\s|;\s")
+
+#: The cue column stays inside this many characters. The table sits in
+#: the system prompt, so every row is paid for by every turn of every
+#: session; a description that wants more room has ``/subagents``. Each
+#: preset's description is written so that its FIRST CLAUSE fits here
+#: and reads as the cue -- the limit is the budget, not a formatter.
+_CUE_LIMIT = 64
+
+
+def _cue(description: str, limit: int = _CUE_LIMIT) -> str:
+    """One line saying what a preset is FOR, from its own description.
+
+    Input: the ``description`` a preset already carries. Output: its
+    first clause, within ``limit`` characters, ending in a full stop or
+    an ellipsis. No second field is introduced for this: two fields for
+    one purpose is how the table and the enum drifted apart in the first
+    place.
+    """
+    text = " ".join((description or "").split())
+    if not text:
+        return ""
+    match = _CUE_END.search(text)
+    if match:
+        end = match.start()
+        text = text[:end + 1] if text[end] in ".!?" else text[:end]
+        text = text.strip()
+    if len(text) > limit:
+        return text[:limit].rsplit(" ", 1)[0].rstrip(" ,;:.") + " …"
+    return text.rstrip(" .") + "."
+
+
+def decision_table() -> str:
+    """The ``subagent_type`` table the model reads to pick a preset.
+
+    Input: the live registry, the same dict ``subagent_type_names`` and
+    the dispatch read. Output: the markdown table, one row per preset,
+    sorted so the order is stable across sessions (a reordered system
+    prompt costs the whole prefix cache).
+
+    Written because the table used to be a hand-maintained copy in
+    ``pack/agents/solo_agent.md`` and had drifted: measured 2026-11-22,
+    the enum offered 13 specialist roles and the table named 7 of them,
+    so six valid roles -- irc-checker, reactivity-department,
+    metal-smiles-builder, swarm-lead, ts-finder, xyz-editor -- were
+    callable and carried no "when to use" cue anywhere in the prompt.
+    The model fell back to the roles that had one, which is where the
+    44-of-50 ``explore`` share came from. One list, three consumers
+    (enum, dispatch, table), no copy.
+    """
+    rows = ["| `subagent_type` | For |", "|---|---|"]
+    for name in sorted(SUBAGENT_PRESETS):
+        preset = SUBAGENT_PRESETS[name]
+        rows.append(f"| `{name}` | {_cue(getattr(preset, 'description', ''))} |")
+    return "\n".join(rows)
+
+
 #: Extra prefixes this check refuses beyond the gate's own list, for the
 #: delegated-writer case specifically: the pack directory (a preset that
 #: rewrites presets) and two entry points that are not individually

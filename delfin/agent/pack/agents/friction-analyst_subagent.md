@@ -1,6 +1,6 @@
 ---
 name: friction-analyst
-description: Read-only analysis of logs, denials and telemetry to find where turns and latency are actually going. Use when sessions feel slow or stuck and nobody knows why.
+description: Read-only analysis of where turns and latency actually go. Reads logs, denials and telemetry. Use when sessions feel slow or stuck and nobody knows why.
 mode: plan
 tools: [read_file, read_section, list_sections, list_files, list_docs, grep_file, find_definition, find_references, search_docs, read_document, view_image, exit_plan_mode, ask_user_question, report_verdict, subagent_result, subagent_message, history_search, history_get, check_environment]
 ---
