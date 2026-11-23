@@ -1082,3 +1082,40 @@ def get_E_ref(config: Dict[str, Any]) -> float:
         }
 
         return solvent_E_ref.get(solvent_key, 4.345)
+
+
+def declared_redox_steps(config: Dict[str, Any]) -> List[str]:
+    """The redox stages this CONTROL declares, in the pipeline's order.
+
+    Input: a parsed CONTROL mapping. Output: stage names as the pipeline
+    itself spells them -- ``initial``, ``ox_step_1``, ``red_step_2`` --
+    or an empty list where the CONTROL declares none.
+
+    WHY THIS EXISTS AS ONE FUNCTION. The same three lines of parsing
+    live in ``cli_imag.py`` (the imaginary-frequency pass) and
+    ``cli_report.py`` (the report's energy table), and the execution
+    contract needs the same answer to judge whether a run's grid is
+    complete. A third copy of the convention is how three answers to one
+    question start to disagree, so the readers are pinned to each other
+    by a test rather than trusted to stay the same. This function does
+    not change either existing caller: the CONTROL workflow keeps its
+    behaviour and gains a shared reader.
+
+    The convention, taken from those callers and not invented here:
+    ``calc_initial`` defaults to yes; ``oxidation_steps`` and
+    ``reduction_steps`` are comma-separated indices and a non-numeric
+    entry is skipped rather than guessed at.
+    """
+    out: List[str] = []
+    if str(config.get("calc_initial", "yes")).strip().lower() == "yes":
+        out.append("initial")
+    for key, prefix in (("oxidation_steps", "ox_step"),
+                        ("reduction_steps", "red_step")):
+        raw = str(config.get(key, "") or "").strip()
+        if not raw:
+            continue
+        for part in raw.split(","):
+            part = part.strip()
+            if part.isdigit():
+                out.append(f"{prefix}_{part}")
+    return out

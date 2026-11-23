@@ -1122,6 +1122,12 @@ def _end_session(engine, sid: str, repo: Path, *, task: str, failed: bool,
                 or getattr(client, "model", None),
                 "provider": getattr(engine_, "provider", None)
                 or getattr(client, "provider", None),
+                # What the request actually asked of the model. The
+                # client records it when it builds the payload, so the
+                # manifest states "nobody set one, the provider's
+                # default applied" instead of leaving the field
+                # unresolved -- which read as an oversight.
+                "sampling": getattr(client, "sampling_record", None),
                 "temperature": getattr(engine_, "temperature", None)
                 or getattr(client, "temperature", None),
                 "seed": getattr(engine_, "seed", None)
@@ -5835,21 +5841,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="Reviewer branch that must be merged in; repeatable")
     prcheck.set_defaults(func=_run_prcheck_subcommand)
 
-    # replay — check a stored run manifest against what derives again now
-    replay_p = sub.add_parser(
-        "replay",
-        help="Check a run manifest against what can be derived again now")
-    replay_p.add_argument(
-        "manifest",
-        help="Path to a <session>.manifest.json, or a session id")
-    replay_p.add_argument(
-        "--workspace", default="",
-        help="Check against this directory instead of the recorded one "
-             "(for a run that was moved or copied)")
-    replay_p.add_argument(
-        "--json", action="store_true",
-        help="The report as JSON instead of lines")
-    replay_p.set_defaults(func=_run_replay_subcommand)
+    # verify — check a stored run manifest against what derives again now.
+    #
+    # NOT "replay". In this field replay means RE-EXECUTION: ReproZip,
+    # Nextflow -resume, Snakemake, AiiDA all re-run the work. This
+    # command re-derives metadata and compares it, and calling that
+    # replay claims something it does not do -- a reviewer who reads
+    # "replayable" and finds no engine was run has caught us
+    # overstating. `replay` stays as an alias so nothing that already
+    # scripts it breaks.
+    for _name, _help in (
+        ("verify", "Check a run manifest against what can be derived "
+                   "again now"),
+        ("replay", "Alias of `verify` (kept for existing scripts; this "
+                   "command re-derives metadata, it does not re-execute)"),
+    ):
+        _p = sub.add_parser(_name, help=_help)
+        _p.add_argument(
+            "manifest",
+            help="Path to a <session>.manifest.json, or a session id")
+        _p.add_argument(
+            "--workspace", default="",
+            help="Check against this directory instead of the recorded one "
+                 "(for a run that was moved or copied)")
+        _p.add_argument(
+            "--json", action="store_true",
+            help="The report as JSON instead of lines")
+        _p.set_defaults(func=_run_replay_subcommand)
 
     # bench — canned-task benchmark suite
     bench = sub.add_parser(

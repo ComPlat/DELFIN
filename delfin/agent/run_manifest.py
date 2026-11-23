@@ -189,12 +189,27 @@ def _model(unresolved: list[str], report: Any,
     two runs, and collapsing it would make a configured id look like a
     measured one.
 
-    The sampling settings are the caller's to pass: nothing in the
-    session record keeps them, so an absent temperature is reported
-    absent rather than assumed.
+    THE SAMPLING SETTINGS ARE A FACT, NOT A GAP. They used to be
+    reported ``unresolved`` in every manifest, which reads as "we forgot
+    to record it". The truth is different and worth recording: nothing
+    in this product has ever SET a temperature or a seed, so the
+    provider's own default applied. ``sampling_source`` says which of
+    the two a reader is looking at:
+
+        provider_default    nobody asked; not reproducible, and the
+                            record says so instead of leaving a hole
+        configured          the session asked and the request carried it
+        refused_by_endpoint the session asked and the endpoint answered
+                            400, so the values are what was ASKED and
+                            never what applied
+
+    A caller that passes ``sampling`` (the record from
+    ``sampling.record``) gets those fields; one that passes a bare
+    temperature or seed keeps working and is treated as configured.
     """
     out: dict[str, Any] = {"id": None, "id_source": None, "provider": None,
                            "temperature": None, "seed": None,
+                           "sampling_source": None, "reproducible": None,
                            "switches": None}
     measured = str(getattr(report, "model", "") or "")
     configured = str((settings or {}).get("model") or "")
@@ -204,12 +219,29 @@ def _model(unresolved: list[str], report: Any,
         out["id"], out["id_source"] = configured, "configured"
     else:
         _unresolved(unresolved, "model.id")
-    for key in ("provider", "temperature", "seed"):
-        value = (settings or {}).get(key)
-        if value is None:
-            _unresolved(unresolved, f"model.{key}")
-        else:
-            out[key] = value
+    provider = (settings or {}).get("provider")
+    if provider is None:
+        _unresolved(unresolved, "model.provider")
+    else:
+        out["provider"] = provider
+
+    # The sampling record, however it reached us.
+    sampling = (settings or {}).get("sampling")
+    if not isinstance(sampling, dict):
+        from . import sampling as _sampling
+        bare = {k: v for k, v in ((k, (settings or {}).get(k))
+                                  for k in ("temperature", "seed"))
+                if v is not None}
+        sampling = _sampling.record(bare)
+    out["temperature"] = sampling.get("temperature")
+    out["seed"] = sampling.get("seed")
+    out["sampling_source"] = sampling.get("source")
+    out["reproducible"] = bool(sampling.get("reproducible"))
+    # Nothing is unresolved here any more: a provider default is an
+    # answer. What IS unresolved is a record that cannot even say which
+    # of the three cases applied.
+    if not out["sampling_source"]:
+        _unresolved(unresolved, "model.sampling_source")
     switches = (settings or {}).get("model_switches")
     out["switches"] = list(switches) if switches else []
     return out

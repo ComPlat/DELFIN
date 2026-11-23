@@ -182,6 +182,44 @@ def _orca_run_seconds(text: str) -> Optional[float]:
     return None
 
 
+def _declared_names(control: Dict[str, Any]) -> List[str]:
+    """The stages this run's CONTROL declares, or [] where there is none.
+
+    An ABSENT CONTROL declares nothing. ``calc_initial`` defaults to
+    "yes" for the pipeline, so asking the reader about an empty mapping
+    would answer ``["initial"]`` -- one stage, for a workspace that has
+    no pipeline and no such file. An agent session's workspace would
+    then be measured against a plan nobody wrote.
+    """
+    if not control:
+        return []
+    try:
+        from delfin.config import declared_redox_steps
+        return list(declared_redox_steps(control))
+    except Exception:                                   # noqa: BLE001
+        return []
+
+
+def _belongs_to(step: Dict[str, Any], declared: List[str]) -> bool:
+    """Whether *step*'s files sit in one of the *declared* stages.
+
+    Matched against every path component and the file's stem, because
+    the pipeline writes a stage either as a file (``red_step_1.out``) or
+    as a directory (``red_step_1_OCCUPIER/``), and a stage name is a
+    prefix of the directory it owns.
+    """
+    for key in ("output", "input"):
+        raw = str(step.get(key) or "")
+        if not raw:
+            continue
+        parts = list(Path(raw).parts) + [Path(raw).stem]
+        for part in parts:
+            for name in declared:
+                if part == name or part.startswith(name + "_"):
+                    return True
+    return False
+
+
 def contract(ev: "Evidence", *, expected_steps: Optional[int] = None,
              egress_events: Optional[List[Any]] = None) -> Contract:
     """The execution contract of one collected run.
@@ -233,16 +271,82 @@ def contract(ev: "Evidence", *, expected_steps: Optional[int] = None,
         engine_invoked = True
 
     # --- grid_complete
-    ended_badly = [s for s in steps
+    #
+    # JUDGED OVER THE STEPS THE RUN DECLARED, where it declared any.
+    #
+    # CONTROL.txt is where a DELFIN pipeline states its own plan:
+    # calc_initial, oxidation_steps, reduction_steps. Those stages are
+    # the grid. Everything else in the workspace is exploration -- an
+    # agent trying five settings and keeping the one that converges -- and
+    # an abandoned trial is not a failed calculation. Counting it as one
+    # made this flag report False on every competent exploratory run,
+    # which is the same defect as a check that fires on correct work.
+    #
+    # Where CONTROL declares nothing, every step is judged, exactly as
+    # before: without a declaration there is no basis for the
+    # distinction, and inventing one would be a guess.
+    declared = _declared_names(ev.control)
+    judged = steps
+    explored: List[Dict[str, Any]] = []
+    if declared:
+        matched = [s for s in steps if _belongs_to(s, declared)]
+        if matched:
+            judged = matched
+            explored = [s for s in steps if s not in matched]
+            notes.append(
+                f"CONTROL declares {len(declared)} stage(s) "
+                f"({', '.join(declared)}); the grid is judged over the "
+                f"{len(matched)} step(s) that belong to them")
+        else:
+            # The CONTROL declares stages and NOTHING in the workspace
+            # carries their names. Judging over the matches would judge
+            # over nothing and come out complete, so every step is
+            # judged and the mismatch is reported.
+            notes.append(
+                f"CONTROL declares {len(declared)} stage(s) and no file "
+                "in the workspace carries their names, so every step is "
+                "judged instead")
+    if explored:
+        bad_explored = [s for s in explored
+                        if s.get("terminated_normally") is not True]
+        if bad_explored:
+            notes.append(
+                f"{len(bad_explored)} step(s) outside the declared "
+                "stages did not end normally "
+                + ", ".join(sorted(str(s.get("output"))
+                                   for s in bad_explored))
+                + " -- reported, and not counted against the grid: a "
+                  "trial that was abandoned is not a failed calculation")
+
+    if expected_steps is None and declared:
+        # The plan was in the run's own CONTROL all along, so no caller
+        # has to pass it. This is what left grid_complete unjudged for
+        # every pipeline run.
+        expected_steps = len(declared)
+        notes.append(
+            f"the required number was taken from CONTROL "
+            f"({expected_steps} declared stage(s))")
+
+    ended_badly = [s for s in judged
                    if s.get("terminated_normally") is False]
-    unknown_end = [s for s in steps
+    unknown_end = [s for s in judged
                    if s.get("terminated_normally") is None]
-    done = [s for s in steps if s.get("terminated_normally") is True]
+    done = [s for s in judged if s.get("terminated_normally") is True]
     if ended_badly:
         grid_complete = False
-        problems.append(
-            f"{len(ended_badly)} step(s) did not end normally: "
-            + ", ".join(sorted(str(s.get("output")) for s in ended_badly)))
+        # Names what SUCCEEDED as well. "12 step(s) did not end normally"
+        # was literally true of a run whose two production calculations
+        # both finished, and read as a failed run. A sentence that lists
+        # only the failures invites the wrong conclusion from a reader
+        # who cannot see the directory.
+        msg = (f"{len(ended_badly)} of {len(judged)} step(s) did not end "
+               "normally: "
+               + ", ".join(sorted(str(s.get("output"))
+                                  for s in ended_badly)))
+        if done:
+            msg += ("; the ones that did: "
+                    + ", ".join(sorted(str(s.get("output")) for s in done)))
+        problems.append(msg)
     elif unknown_end:
         grid_complete = False
         problems.append(
@@ -468,11 +572,39 @@ def collect(workspace) -> Evidence:
         }
 
     steps: List[Dict[str, Any]] = []
+    seen_outputs: set = set()
     for inp in sorted(ws.rglob("*.inp")):
-        steps.append(_collect_orca_step(ws, inp))
+        step = _collect_orca_step(ws, inp)
+        if step.get("output"):
+            seen_outputs.add(str(step["output"]))
+        steps.append(step)
     for log in sorted(ws.rglob("xtb*.out")):
         if log.suffix == ".out" and log.name.startswith("xtb"):
+            seen_outputs.add(str(log.relative_to(ws)))
             steps.append(_collect_xtb_step(ws, log))
+
+    # AN OUTPUT WITHOUT A MATCHING INPUT IS STILL A RESULT.
+    #
+    # Steps used to be anchored on .inp files alone, so an output whose
+    # input has a different name was invisible. Measured on a real run:
+    # the agent edited tddft_pbe0.inp and wrote tddft_pbe0_v2.out, and
+    # BOTH production calculations -- the only two that terminated
+    # normally -- were missing from the evidence. The contract then
+    # reported "12 of 12 steps did not end normally" over a run that had
+    # delivered its results. That is not a strict judgement, it is
+    # blindness to the result, and it would void a correct run.
+    #
+    # Such a step carries input=None: its termination can be read, and
+    # it cannot be re-executed, which run_rerun already requires a pair
+    # for. The .inp-anchored pass runs first so a paired output is never
+    # collected twice.
+    for out in sorted(ws.rglob("*.out")):
+        rel = str(out.relative_to(ws))
+        if rel in seen_outputs or out.name.startswith("xtb"):
+            continue
+        if out.with_suffix(".inp").is_file():
+            continue
+        steps.append(_collect_orphan_output(ws, out))
 
     slurm_records = _collect_slurm_records(ws)
 
@@ -509,6 +641,28 @@ def _collect_orca_step(ws: Path, inp: Path) -> Dict[str, Any]:
             ORCA_TERMINATED_NORMALLY in out.read_text(errors="replace")
         )
     return step
+
+
+def _collect_orphan_output(ws: Path, out: Path) -> Dict[str, Any]:
+    """A step known only by its output: no input of that name exists.
+
+    The engine and the termination are readable; the input-derived
+    fields are not, and are left None rather than guessed from the
+    output's own echo of the keywords -- a step whose input cannot be
+    pointed at must not look as though it could be re-run.
+    """
+    text = out.read_text(errors="replace")
+    return {
+        "input": None,
+        "output": str(out.relative_to(ws)),
+        "program": "orca",
+        "charge": None,
+        "multiplicity": None,
+        "functional": None,
+        "basis": None,
+        "terminated_normally": ORCA_TERMINATED_NORMALLY in text,
+        "input_known": False,
+    }
 
 
 def _charge_mult(text: str) -> Optional[tuple]:

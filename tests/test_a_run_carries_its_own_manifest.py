@@ -51,12 +51,26 @@ def workspace(tmp_path):
 # --- the property the record exists for -------------------------------
 
 def test_a_field_it_could_not_resolve_is_named(workspace):
-    """No caller passed a temperature or a seed, so neither is invented."""
+    """A field nothing could resolve is named; a provider default is not
+    one of them.
+
+    The sampling used to be reported `unresolved`, which reads as "we
+    forgot to record it". Nothing in DELFIN has ever SET a temperature
+    or a seed, so the truth is that the provider's own default applied
+    -- a fact, and one that says the run is not reproducible. It is
+    recorded as such (`sampling_source`), and what remains unresolved is
+    what genuinely could not be derived.
+    """
     man = rm.build(session_id="s1", workspace=workspace)
     assert man["model"]["temperature"] is None
     assert man["model"]["seed"] is None
-    assert "model.temperature" in man["unresolved"]
-    assert "model.seed" in man["unresolved"]
+    assert man["model"]["sampling_source"] == "provider_default"
+    assert man["model"]["reproducible"] is False
+    assert "model.temperature" not in man["unresolved"]
+    assert "model.seed" not in man["unresolved"]
+    # the genuinely unknown are still named
+    assert "model.id" in man["unresolved"]
+    assert "run.termination" in man["unresolved"]
 
 
 def test_what_the_caller_knows_is_not_reported_missing(workspace):
