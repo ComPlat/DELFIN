@@ -64,12 +64,19 @@ A_DEFERRED_TOOL = "create_pdf"
 #: one extra round trip costs far more than the 460 tokens it saves.
 #: So the target is raised by the measured amount and the reason is
 #: here, which is the only way a budget may move.
-SURFACE_TARGET_TOKENS = 4_600
+#
+#: No longer a constant of its own. It was a second copy of
+#: tests/test_tool_schema_budget.py::_SHIPPED_BUDGET, and on 2026-11-23
+#: the two disagreed the first time the hot set changed -- the chemistry
+#: tools became hot in a DELFIN workspace (+438 tokens, measured) and
+#: this copy failed while the real ceiling had already moved. One
+#: ceiling, read from where it is ratcheted.
+from tests.test_tool_schema_budget import _SHIPPED_BUDGET as SURFACE_TARGET_TOKENS  # noqa: E402
 
 #: What the whole mechanism costs per request: the hot schemas plus the
-#: always-sent names. Asserted so a later hot-set addition cannot be
-#: paid for by quietly dropping the listing, or the reverse.
-TOTAL_TARGET_TOKENS = 4_600
+#: always-sent names. The same ceiling, so a later hot-set addition
+#: cannot be paid for by quietly dropping the listing, or the reverse.
+TOTAL_TARGET_TOKENS = SURFACE_TARGET_TOKENS
 
 
 def _surface():
@@ -206,3 +213,40 @@ def test_a_failure_to_defer_keeps_the_whole_surface():
     # and the warning names the consequence, so a reader of the log knows
     # the turn paid tokens rather than lost tools
     assert "sending the full surface" in src
+
+
+# --- a role with its own list ----------------------------------------
+
+def _listed_roles():
+    return sorted(r for r in ac._ROLE_EXEC_ALLOWLIST) + ["workflow-operator"]
+
+
+import pytest as _pytest  # noqa: E402
+
+
+@_pytest.mark.parametrize("role", _listed_roles())
+def test_a_role_with_an_allow_list_loses_nothing_to_deferral(role):
+    """A role with an execution allow-list ships its WHOLE list.
+
+    Measured in a second review on 2026-11-23: describe_native_tool is
+    not on any role's allow-list, so for office_agent, dashboard_agent
+    and workflow-operator the role filter removed it -- and with it the
+    listing and the only way to fetch a deferred schema. Their deferred
+    tools were invisible and unreachable; the office agent lost
+    read_document, its own core tool. Every test of the mechanism had
+    used solo_agent.
+
+    The hot set was derived from a generalist's calls and never measured
+    for these roles; their allow-list already IS their curated surface.
+    So deferral applies to a role without a list and not to one with.
+    """
+    allow = ac._role_allowlist(role)
+    assert allow is not None, f"{role} has no allow-list; test is void"
+    ctx = ac.ToolSurfaceContext(role=role)
+    shipped = {t["function"]["name"] for t in
+               ac.advertisable_tools(ac._DOC_TOOLS_OPENAI, ctx, defer=True)}
+    available = {t["function"]["name"] for t in
+                 ac.advertisable_tools(ac._DOC_TOOLS_OPENAI, ctx)}
+    assert shipped == available, (
+        f"{role} loses {sorted(available - shipped)} to deferral")
+    assert ac.deferred_tool_names(ac._DOC_TOOLS_OPENAI, ctx) == []

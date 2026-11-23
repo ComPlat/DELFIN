@@ -12387,6 +12387,11 @@ class ToolSurfaceContext:
     # Whether remote.clusters names a cluster: the cluster tools have none
     # to act on otherwise (connection.connect refuses every name).
     has_clusters: bool = True
+    # Whether the workspace is a DELFIN (chemistry) one. Decides which
+    # schemas are HOT, not which tools exist: see _hot_tool_names. Default
+    # True so that what the budget measures is the LARGER of the two
+    # surfaces; the live request passes the real answer.
+    chemistry_workspace: bool = True
 
 
 #: The tools that act on DELFIN's HPC clusters (cluster_tools.py).
@@ -12525,6 +12530,40 @@ _HOT_TOOL_NAMES: frozenset[str] = frozenset({
     "write_file",            #   2372
 })
 
+def _role_defers(role: str) -> bool:
+    """Whether deferral applies to a role's surface at all.
+
+    Only to a role WITHOUT an execution allow-list. A role with one --
+    office_agent, dashboard_agent, workflow-operator -- already has a
+    curated surface: its list is its choice. And the hot set was derived
+    from a generalist's calls and never measured for those roles.
+    Measured in a second review on 2026-11-23: applied to them it removed
+    describe_native_tool (on no role's list), so their deferred tools had
+    neither a listing nor a way to fetch a schema, and the office agent
+    lost read_document, its own core tool.
+    """
+    return _role_allowlist(role or "") is None
+
+
+def _hot_tool_names(chemistry: bool) -> frozenset[str]:
+    """The tools whose schema is sent on every request: ONE answer.
+
+    ``_HOT_TOOL_NAMES`` was derived from 81,949 real calls, and a second
+    review measured whose: of 584 sessions with tool calls, 28 (4%) used
+    any chemistry tool. So it is a coding agent's hot set. In a DELFIN
+    workspace the repository's own chemistry classification,
+    ``_DELFIN_ONLY_TOOL_NAMES``, is hot as well -- outside one those tools
+    are stripped before deferral and this adds nothing.
+
+    Both the request path and ``advertisable_tools`` ask this, so the
+    budget measures what ships. They used to read the frozen set each on
+    their own, and this change would have made them disagree.
+    """
+    if chemistry:
+        return _HOT_TOOL_NAMES | _DELFIN_ONLY_TOOL_NAMES
+    return _HOT_TOOL_NAMES
+
+
 #: Below this many measured calls a tool's schema is deferred. The
 #: threshold is the knob and the measurement is the reason: 300 and 100
 #: both gave 98% coverage, 50 gives 99% at 3,992 tokens, 25 gives 99%
@@ -12547,10 +12586,12 @@ def deferred_tool_names(
     role cannot run.
     """
     ctx = ctx or ToolSurfaceContext()
+    if not _role_defers(ctx.role):
+        return []
     out = []
     for entry in tools:
         name = _tool_name_of(entry)
-        if not name or name in _HOT_TOOL_NAMES:
+        if not name or name in _hot_tool_names(ctx.chemistry_workspace):
             continue
         if name == "describe_native_tool":
             continue
@@ -12582,7 +12623,7 @@ def deferred_tool_listing(role: str = "",
 
 def advertisable_tools(
     tools: list[dict[str, Any]], ctx: Optional[ToolSurfaceContext] = None,
-    *, defer: bool = True,
+    *, defer: bool = False,
 ) -> list[dict[str, Any]]:
     """Drop every tool *ctx* could not execute anyway, then DEFER the cold ones.
 
@@ -12599,19 +12640,27 @@ def advertisable_tools(
     worse than the cost it saves, which is why that is the one
     assertion in the acceptance pair that was green before this change.
 
-    ``defer=False`` returns the whole advertisable surface, for the
-    report that measures what deferral saved and for a caller that
-    genuinely wants all of it.
+    THE DEFAULT IS ``defer=False``: every tool the context can execute,
+    which is what this function returned before deferral existed. A
+    caller asking for the SHIPPED surface -- the request budget, the cost
+    report -- passes ``defer=True`` and says so. The first version made
+    deferral the default, which changed the meaning of an existing
+    function for every caller at once, and two of them were then wrong
+    without anything failing nearby: ``report_tools`` computed "never
+    used" over the shipped set and so lost exactly the never-used tools
+    (they are the deferred ones), and the REPL's ``/tools`` would have
+    answered "what am I offered" with 34 of 97 callable tools.
     """
     ctx = ctx or ToolSurfaceContext()
     out = [
         t for t in tools
         if tool_unavailable_reason(_tool_name_of(t), ctx) is None
     ]
-    if not defer:
+    if not defer or not _role_defers(ctx.role):
         return out
+    hot = _hot_tool_names(ctx.chemistry_workspace)
     return [t for t in out
-            if _tool_name_of(t) in _HOT_TOOL_NAMES
+            if _tool_name_of(t) in hot
             or _tool_name_of(t) == "describe_native_tool"]
 
 
@@ -12630,7 +12679,10 @@ def role_tool_surface_report(
         "", *sorted(set(_ROLE_EXEC_ALLOWLIST) | set(_ROLE_EXEC_DENYLIST))]
     out: dict[str, dict[str, Any]] = {}
     for role in names:
-        advertised = advertisable_tools(catalogue, ToolSurfaceContext(role=role))
+        # The COST of a role's surface is what ships, so deferral is
+        # asked for here explicitly; see advertisable_tools.
+        advertised = advertisable_tools(
+            catalogue, ToolSurfaceContext(role=role), defer=True)
         out[role] = {
             "count": len(advertised),
             "total_tokens": sum(estimate_schema_tokens(t) for t in advertised),
@@ -34192,9 +34244,10 @@ class OpenAIClient(_BaseClient):
         # skill listing above reaches the model: the cue sits on the tool
         # that acts on it, so nothing has to be paid out of the prompt head.
         try:
-            _deferred = [
+            _hot = _hot_tool_names(_is_delfin)
+            _deferred = [] if not _role_defers(_surface_ctx.role) else [
                 _t for _t in advertised_tools
-                if _tool_name_of(_t) not in _HOT_TOOL_NAMES
+                if _tool_name_of(_t) not in _hot
                 and _tool_name_of(_t) != "describe_native_tool"
             ]
             if _deferred:
@@ -34212,7 +34265,7 @@ class OpenAIClient(_BaseClient):
                             + f"\nDeferred tools: {_defer_note}"),
                     }} if _tool_name_of(_t) == "describe_native_tool" else _t)
                     for _t in advertised_tools
-                    if _tool_name_of(_t) in _HOT_TOOL_NAMES
+                    if _tool_name_of(_t) in _hot
                     or _tool_name_of(_t) == "describe_native_tool"
                 ]
         except Exception as exc:

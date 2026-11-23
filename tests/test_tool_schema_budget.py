@@ -327,7 +327,16 @@ _TOKEN_BUDGET = 11_865
 #: deferred: the hot set plus the always-sent name listing. Measured
 #: 4,408. This is the ceiling with teeth -- it is a third of the
 #: catalogue ceiling above, and a hot-set addition has to pay here.
-_SHIPPED_BUDGET = 4_600
+#:
+#: 4,600 -> 5,038 (2026-11-23, +438 measured in this very context): the
+#: six chemistry tools of _DELFIN_ONLY_TOOL_NAMES are hot in a DELFIN
+#: workspace. The first hot set was derived from 584 sessions of which
+#: 28 (4%) used any chemistry tool, so it was a coding agent's set and a
+#: chemist paid an extra round for search_calcs, get_calc_info,
+#: calc_summary, read_section, list_docs and list_sections. The default
+#: context measures the CHEMISTRY workspace, the larger surface, so the
+#: ceiling holds for both; a coding workspace still ships 4,388.
+_SHIPPED_BUDGET = 5_038
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but
@@ -412,7 +421,8 @@ def test_what_actually_ships_stays_within_the_shipped_budget():
 
     from delfin.agent.api_client import deferred_tool_listing
 
-    shipped = advertisable_tools(_DOC_TOOLS_OPENAI, ToolSurfaceContext())
+    shipped = advertisable_tools(_DOC_TOOLS_OPENAI, ToolSurfaceContext(),
+                                 defer=True)
     tokens = sum(len(json.dumps(t, ensure_ascii=False)) // 4
                  for t in shipped)
     tokens += len(deferred_tool_listing()) // 4

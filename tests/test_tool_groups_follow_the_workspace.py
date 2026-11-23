@@ -99,7 +99,10 @@ def _offered(client, messages=None) -> list[str]:
     msgs = messages or [{"role": "user", "content": "fix the failing test"}]
     list(client.stream_message("sys", msgs, max_tokens=32))
     assert "tools" in seen, "the client sent no request"
-    return [t["function"]["name"] for t in seen["tools"]]
+    # Offered = the schemas sent plus the deferred names the request
+    # carries; one reader for every test that asks (conftest).
+    from conftest import offered_tool_names
+    return offered_tool_names(seen["tools"])
 
 
 def _chemistry(names):

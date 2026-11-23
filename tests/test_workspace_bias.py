@@ -185,24 +185,8 @@ def _advertised_tool_names(workspace, monkeypatch) -> set:
     list(client.stream_message("sys", [{"role": "user", "content": "hallo"}],
                                max_tokens=32))
     assert "tools" in seen, "the client sent no request"
-    names = {t.get("function", {}).get("name") for t in seen["tools"]}
-    # Deferred tools are OFFERED without their schema: their names ride in
-    # describe_native_tool's description and they stay executable. Read
-    # them off the same request, because "offered" is the question this
-    # file asks and a schema is not the whole offer. The listing's own
-    # correctness is asserted in
-    # tests/test_the_schema_arrives_when_it_is_needed.py.
-    for _t in seen["tools"]:
-        _fn = _t.get("function") or {}
-        if _fn.get("name") != "describe_native_tool":
-            continue
-        _desc = str(_fn.get("description") or "")
-        if "Deferred tools:" in _desc:
-            _line = _desc.split("Deferred tools:", 1)[1]
-            _line = _line.split("Call describe_native_tool", 1)[0]
-            names |= {w.strip().rstrip(".") for w in _line.split(",")
-                      if w.strip()}
-    return {n for n in names if n}
+    from conftest import offered_tool_names
+    return {n for n in offered_tool_names(seen["tools"]) if n}
 
 
 def test_a_generic_workspace_is_offered_no_chemistry_tool(tmp_path,

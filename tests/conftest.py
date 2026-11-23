@@ -2161,3 +2161,29 @@ def pytest_runtest_makereport(item, call):
     if any(m in reason for m in _OPI_SKIP_MARKERS):
         rep.outcome = "failed"
         rep.longrepr = f"DELFIN_OPI_REQUIRED=1 but the test skipped for a missing OPI: {reason[:200]}"
+
+
+def offered_tool_names(tools) -> list:
+    """Every tool name a request OFFERS: the schemas it carries plus the
+    deferred tools named in describe_native_tool's description.
+
+    A deferred tool is offered without its schema -- it stays executable
+    and its name rides in that description -- so a test asking "is X
+    offered" must read both. This lives here ONCE because two test files
+    grew their own copy of the request reader, and the first change to
+    the surface broke the one nobody updated.
+    """
+    names = []
+    for t in tools or []:
+        fn = t.get("function") or {}
+        name = fn.get("name")
+        if name:
+            names.append(name)
+        if name == "describe_native_tool":
+            desc = str(fn.get("description") or "")
+            if "Deferred tools:" in desc:
+                line = desc.split("Deferred tools:", 1)[1]
+                line = line.split("Call describe_native_tool", 1)[0]
+                names.extend(w.strip().rstrip(".")
+                             for w in line.split(",") if w.strip())
+    return names
