@@ -36,7 +36,6 @@ test-only	_disabled_keyring_factory	delfin/agent/credentials.py:360
 # job it did is inline dict access in its own module.
 test-only	_load_md_presets	delfin/agent/subagents.py:1606
 test-only	_scoped_test_cmd_for_edits	delfin/agent/api_client.py:13237
-test-only	build_fixtures	delfin/agent/pack/benchmark/setup/w17_data_fixtures.py:22
 # bwrap_substitution: measured 2026-11-22 (wave 37, group rr1). Neither mounting
 # nor deleting is right yet. The wiring contract is tests/test_shared_tmp_wiring.py,
 # xfail(strict) with reason "operator wiring pending": the swap belongs in
@@ -70,7 +69,6 @@ test-only	category_names	delfin/agent/compaction_quality.py:169
 # question that decides it is whether the product should surface an
 # ordering violation to a person -- a design decision, not a repair.
 test-only	check_ordering	delfin/agent/prompt_head.py:95
-test-only	distill_for_shipping	delfin/agent/memory_distill.py:380
 # enforce_quota: measured 2026-11-22 (wave 37, group rr1). Neither mounting nor
 # deleting is right yet. Zero product callers: the product's own session scratch
 # (api_client._session_scratch_dir, delfin/agent/api_client.py:29532) never
