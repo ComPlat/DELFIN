@@ -825,6 +825,9 @@ third-tier fallback for free-form data no typed parser covers.
 | design implementation for non-trivial multi-file task | `subagent(subagent_type="plan", …)` |
 | independent second opinion on a diff | `subagent(subagent_type="code-reviewer", …)` |
 
+<!-- generated:excited_ladder -->
+<!-- /generated -->
+
 These parsers read ORCA output. On xtb or another format they answer
 `status: ok` with `null` values rather than an error, and they read only
 the LARGEST .out per folder — converged or not. For those, read the file
