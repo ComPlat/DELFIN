@@ -2798,6 +2798,42 @@ def cmd_chat(args: argparse.Namespace) -> int:
                 pass
 
 
+def _run_replay_subcommand(args: argparse.Namespace) -> int:
+    """The `replay` subcommand body: check one run manifest.
+
+    The argument may be a path or a bare session id, because a person
+    reading a session report has the id in front of them and not the
+    path to a file under the state root.
+
+    Exit code: 0 when the run reproduced, 1 when a field differs or
+    could not be re-derived, 2 when the manifest could not be read at
+    all. A reader that only looks at the exit code must not read "could
+    not check" as "checked and fine", which is the same rule the report
+    itself follows.
+    """
+    from . import run_manifest, run_replay
+
+    target = Path(str(getattr(args, "manifest", "") or ""))
+    if not target.is_file():
+        guess = run_manifest.path_for(str(args.manifest))
+        if guess is not None and guess.is_file():
+            target = guess
+        else:
+            print(f"no manifest at {args.manifest!r}, and no session of "
+                  f"that id has one", file=sys.stderr)
+            return 2
+
+    report = run_replay.replay_file(
+        target, workspace=(getattr(args, "workspace", "") or None))
+    if getattr(args, "json", False):
+        print(json.dumps(report.as_dict(), indent=1, ensure_ascii=False))
+    else:
+        print(run_replay.render(report))
+    if not report.checks:
+        return 2
+    return 0 if report.reproduced() else 1
+
+
 def _run_prcheck_subcommand(args: argparse.Namespace) -> int:
     """The `prcheck` subcommand body (package PC1): delegate to the
     owned module so the check itself is tested outside cli.py."""
@@ -5798,6 +5834,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--partner", action="append", default=[],
         help="Reviewer branch that must be merged in; repeatable")
     prcheck.set_defaults(func=_run_prcheck_subcommand)
+
+    # replay — check a stored run manifest against what derives again now
+    replay_p = sub.add_parser(
+        "replay",
+        help="Check a run manifest against what can be derived again now")
+    replay_p.add_argument(
+        "manifest",
+        help="Path to a <session>.manifest.json, or a session id")
+    replay_p.add_argument(
+        "--workspace", default="",
+        help="Check against this directory instead of the recorded one "
+             "(for a run that was moved or copied)")
+    replay_p.add_argument(
+        "--json", action="store_true",
+        help="The report as JSON instead of lines")
+    replay_p.set_defaults(func=_run_replay_subcommand)
 
     # bench — canned-task benchmark suite
     bench = sub.add_parser(
