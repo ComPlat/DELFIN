@@ -28,6 +28,7 @@ and the stub functions raise -- no program can fake a connection.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import contextvars
@@ -206,17 +207,99 @@ def runner_program_path(cmd: str) -> Optional[str]:
     return None
 
 
+def _private_dir(base: str) -> None:
+    """Make ``base`` a directory only this user can enter, or refuse.
+
+    The socket behind it can start calculations, so who can reach it is
+    the question. Measured on the shared host (umask 002): the directory
+    used to be created ``drwxrwxr-x``, and the only thing keeping another
+    user out was the mode of the home directory above it. In a shared
+    workspace a group member could also create this NAME first -- as a
+    symlink to a directory they own -- so an existing entry is used only
+    if it is a plain directory owned by this user, and tightened to 0700
+    if an earlier run left it wider.
+    """
+    import stat as _stat
+    try:
+        os.mkdir(base, 0o700)
+    except FileExistsError:
+        pass
+    st = os.lstat(base)
+    if _stat.S_ISLNK(st.st_mode) or not _stat.S_ISDIR(st.st_mode):
+        raise PermissionError(
+            f"{base} is not a plain directory; the Code Mode socket is "
+            "not put behind a link somebody else may control")
+    if hasattr(os, "getuid") and st.st_uid != os.getuid():
+        raise PermissionError(
+            f"{base} belongs to uid {st.st_uid}, not to this user; the "
+            "Code Mode socket is not put in a directory somebody else owns")
+    os.chmod(base, 0o700)
+
+
 def rpc_socket_path(directory: str, token: str) -> str:
     """Unique-per-invocation socket path under the given directory.
 
     The token (uuid4 hex) keeps two concurrent caged programs from
     cross-talking; under the directory the command runs in (the caged
-    child's own write scope, never shared /tmp state).
+    child's own write scope, never shared /tmp state). The directory is
+    this user's alone: see :func:`_private_dir`.
     """
     import uuid
-    base = os.path.join(directory or os.getcwd(), ".code_mode_rpc")
-    os.makedirs(base, exist_ok=True)
+    parent = directory or os.getcwd()
+    os.makedirs(parent, exist_ok=True)
+    base = os.path.join(parent, ".code_mode_rpc")
+    _private_dir(base)
     return os.path.join(base, "rpc-%s.sock" % (token or uuid.uuid4().hex))
+
+
+#: AF_UNIX paths are limited to 108 bytes on Linux (104 on macOS).
+#: Measured: Code Mode failed with "AF_UNIX path too long" for any
+#: workspace path of 78 characters or more, since the socket lives below
+#: it. Past this length both ends reach the socket through
+#: /proc/self/fd/<dir>/<name>, which is short whatever the workspace is.
+_SUN_PATH_MAX = 104
+
+
+@contextlib.contextmanager
+def _reachable(path: str):
+    """``path`` as something bind() and connect() accept.
+
+    A short path is returned as it is. A long one is reached through an
+    open descriptor of its directory, on a system that has
+    /proc/self/fd; elsewhere it is returned unchanged and fails as it
+    always did, so no platform loses anything it had.
+    """
+    if (len(path.encode("utf-8")) < _SUN_PATH_MAX
+            or not os.path.isdir("/proc/self/fd")):
+        yield path
+        return
+    fd = os.open(os.path.dirname(path), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        yield "/proc/self/fd/%d/%s" % (fd, os.path.basename(path))
+    finally:
+        os.close(fd)
+
+
+def _peer_uid(conn: Any) -> Optional[int]:
+    """The uid of the process at the other end, as the kernel reports it.
+
+    ``None`` where the platform has no SO_PEERCRED; the 0700 directory is
+    then the boundary on its own. Measured through a real bubblewrap cage
+    before this was written: the caged child's uid as the server sees it
+    is the server's own, so asking does not shut the cage out.
+    """
+    import socket as _socket
+    import struct as _struct
+    opt = getattr(_socket, "SO_PEERCRED", None)
+    if opt is None:
+        return None
+    try:
+        raw = conn.getsockopt(_socket.SOL_SOCKET, opt,
+                              _struct.calcsize("3i"))
+    except OSError:
+        return None
+    _pid, uid, _gid = _struct.unpack("3i", raw)
+    return uid
 
 
 class RpcServer:
@@ -275,7 +358,11 @@ class RpcServer:
         import socket as _socket
         self._socket_path = socket_path
         self._sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
-        self._sock.bind(socket_path)
+        with _reachable(socket_path) as reachable:
+            self._sock.bind(reachable)
+        # The directory is already 0700; the socket is narrowed as well so
+        # that one widened mode never opens it on its own.
+        os.chmod(socket_path, 0o600)
         self._sock.listen(8)
         return socket_path
 
@@ -293,7 +380,21 @@ class RpcServer:
         conn, _ = self._sock.accept()
         try:
             with conn:
+                # The payload is READ before a refusal is sent, and nothing
+                # in it is acted on: closing a socket with unread data makes
+                # the kernel answer with a reset, and the caller would see a
+                # transport error instead of the reason.
                 buf = conn.recv(1_000_000)
+                # Asked of the kernel: a caller that is not this user is
+                # answered with a refusal and its request never reaches the
+                # executor.
+                uid = _peer_uid(conn)
+                if uid is not None and hasattr(os, "getuid") \
+                        and uid != os.getuid():
+                    conn.sendall(json.dumps({
+                        "error": "Code Mode: the connecting process is not "
+                                 "the owner of this session"}).encode("utf-8"))
+                    return
                 conn.sendall(self.handle_payload(
                     buf.decode("utf-8", errors="replace")).encode("utf-8"))
         finally:
@@ -351,7 +452,8 @@ class RpcClient:
         # unix-family socket only; no network, no host resolution.
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
             s.settimeout(60.0)
-            s.connect(self.rpc_path)
+            with _reachable(self.rpc_path) as reachable:
+                s.connect(reachable)
             s.sendall(payload.encode("utf-8"))
             chunks = []
             while True:
