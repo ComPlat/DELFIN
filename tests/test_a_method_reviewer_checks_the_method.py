@@ -39,6 +39,7 @@ import pytest
 
 from delfin.agent import api_client as ac
 from delfin.agent import subagents as SA
+from delfin.agent.prompt_loader import PromptLoader
 
 _NAME = "method-reviewer"
 _PACK = Path(SA.__file__).resolve().parent / "pack" / "agents"
@@ -113,7 +114,14 @@ def test_it_is_a_pack_file_not_code():
 
 
 def test_the_role_prompt_names_it():
-    text = (_PACK / "solo_agent.md").read_text(encoding="utf-8")
+    """Measured on the prompt the loader BUILDS, not the file it reads.
+
+    The role table is rendered from the preset registry into a generated
+    block, so the stored file names no role at all; a check against it
+    would report every role as missing while the model is told about all
+    of them.
+    """
+    text = PromptLoader().load_role_prompt("solo_agent")
     assert f"`{_NAME}`" in text
 
 
