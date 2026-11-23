@@ -135,19 +135,32 @@ def test_the_note_is_not_a_verdict():
             f"{forbidden!r} in a function that only composes a note")
 
 
-def test_the_gate_attaches_it_beside_the_summary_and_changes_no_verdict():
-    """The call site adds a note and returns the verdict it already had."""
+def test_the_note_is_not_wired_while_the_gate_still_refuses_the_route():
+    """WITHHELD ON PURPOSE, and this test is the reason it stays that way.
+
+    The note advertises `run_application` as "that route". Measured in
+    the gate: `_mcp_calculation_verdict` returns None for
+    `run_application`/`submit_application` by design -- "the dialog
+    stays" -- and in an unattended session
+    (`perms.confirm_callback is None`, mode=default) that None reaches
+    the refusal at api_client.py: "no approval dialog is configured
+    (mode=default), so it is refused".
+
+    So the same session that received the note would have been refused
+    the route it names, while `bash orca job.inp` runs unasked once
+    calc_policy has checked it. Telling a model to take a path the gate
+    blocks is worse than saying nothing: it spends a turn and teaches
+    that the advice is wrong.
+
+    The note is wired once judge_application_run gives those two tools
+    the same check the bash path gets. Until then this assertion keeps
+    it out, and names what has to be true first.
+    """
     import inspect
 
     from delfin.agent import api_client
-    # _DocToolExecutor owns the gate -- the class is named from the
-    # executor it fronts, and this is the one entry that counts: the
-    # predicate and the policy run before it, the write and read path
-    # gates inside it.
     src = inspect.getsource(
         api_client._DocToolExecutor._run_permission_gate)
-    assert "adapter_route_note" in src
-    # the verdict returned is the classifier's, not the note's
-    idx = src.index("adapter_route_note")
-    tail = src[idx:idx + 400]
-    assert "return verdict" in tail
+    assert "adapter_route_note" not in src, (
+        "the note is wired while the gate can still refuse the route it "
+        "names -- fix _mcp_calculation_verdict first")

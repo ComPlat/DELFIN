@@ -1500,6 +1500,127 @@ def judge_orca_run(input_file: Path, *, kind: Optional[str] = None) -> Verdict:
         return Verdict(True, False, "", problem)
     return Verdict(True, True, summary, "")
 
+def _application_spec(name: str) -> "Optional[dict]":
+    """The saved application's serialized pipeline, or None.
+
+    Read from DISK -- the built-in catalogue and
+    ``~/.delfin/applications/*.json`` -- never through the MCP server.
+    A gate that had to spawn a subprocess to decide would be a gate that
+    fails when the subprocess does, and this one is in front of every
+    call.
+    """
+    try:
+        from delfin.tools import applications as _apps
+    except Exception:                                   # noqa: BLE001
+        return None
+    # KEEP LOOKING. Two module attributes carry the same ``name``: the
+    # PipelineTemplate (`conformer_dG`) and the Application built from
+    # it (`conformer_dG_app`), and only the second has a serialized
+    # spec. dir() is alphabetical, so the template comes first --
+    # returning on the first name match found the one without a spec and
+    # read as "no such application", which silently kept every
+    # application on the dialog path.
+    for attr in dir(_apps):
+        if attr.startswith("_"):
+            continue
+        obj = getattr(_apps, attr, None)
+        if getattr(obj, "name", None) != name:
+            continue
+        spec = getattr(obj, "spec", None)
+        if isinstance(spec, dict) and spec.get("steps"):
+            return spec
+    try:
+        import json as _json
+        from pathlib import Path as _P
+        for f in sorted((_P.home() / ".delfin" / "applications").glob("*.json")):
+            data = _json.loads(f.read_text(encoding="utf-8"))
+            if str(data.get("name") or f.stem) == name:
+                spec = data.get("spec") if isinstance(data.get("spec"), dict) \
+                    else data
+                return spec if isinstance(spec, dict) else None
+    except Exception:                                   # noqa: BLE001
+        return None
+    return None
+
+
+def judge_application_run(name: str, cores: int, *,
+                          inputs: Optional[dict] = None,
+                          kind: Optional[str] = None) -> Optional[Verdict]:
+    """The verdict for delfin-tools ``run_application``/``submit_application``.
+
+    Input: the application name, the cores the call asks for, and the
+    call's own ``inputs``. Output: a Verdict, or None where the
+    application cannot be read -- which keeps today's behaviour exactly
+    (the dialog stays, and without a dialog the call is refused).
+
+    WHY THIS EXISTS. The checked route was the expensive one. Measured
+    in this gate: ``bash orca job.inp`` is admitted with no dialog once
+    the setup and the resources pass, and ``run_application`` returned
+    None here by design -- so in an unattended default-mode session the
+    ADAPTER route was refused while the hand route ran free, and
+    solo_agent.md told the model never to launch from bash. Three
+    mechanisms, three answers, and the model took the one that worked.
+    On a real 33-minute run that was 20 hand-written inputs, 46 bash
+    calls and 12 of 14 calculations abandoned.
+
+    WHAT IS CHECKED, and what is not:
+
+    * the RESOURCE request, against the same unasked limit the bash
+      path uses (``local_core_limit``). This is the dimension this
+      module exists for and the one a call carries directly.
+    * the STEPS, which must all name a capability the platform knows. A
+      spec naming something else is not judged here.
+    * the setup -- charge, spin, geometry -- only where the call's
+      ``inputs`` fill the spec's placeholders with values this can read.
+      Where they do not, the summary SAYS the setup was not read rather
+      than implying it passed. An unread check is never a pass; that
+      rule is the whole reason this module is trusted.
+    """
+    spec = _application_spec(str(name or ""))
+    if not spec:
+        return None
+    steps = spec.get("steps") if isinstance(spec.get("steps"), list) else None
+    if not steps:
+        return None
+
+    kind = kind or host_kind()
+    limit = local_core_limit(kind)
+    asked = max(1, int(cores or 1))
+    if asked > limit:
+        return Verdict(True, False, "", (
+            f"{name}: {asked} cores asked and this host gives {limit} "
+            f"without a dialog ({kind})"))
+
+    labels = [str(s.get("step") or "") for s in steps
+              if isinstance(s, dict)]
+    if not all(labels):
+        return None
+
+    # The setup, where the call's inputs fill the placeholders.
+    given = dict(inputs or {})
+    read: list[str] = []
+    unread: list[str] = []
+    for key in ("charge", "mult"):
+        value = given.get(key)
+        if value is None:
+            # A spec placeholder with no input is filled by the
+            # application's own defaults at run time, which this cannot
+            # see from here.
+            unread.append(key)
+        else:
+            read.append(f"{key}={value}")
+
+    summary = (f"{name}: {len(labels)} step(s) "
+               f"({', '.join(labels[:4])}{'...' if len(labels) > 4 else ''}), "
+               f"{asked} core(s) of {limit} unasked on this {kind}")
+    if read:
+        summary += "; " + ", ".join(read)
+    if unread:
+        summary += ("; setup not read here: " + ", ".join(unread)
+                    + " (the application's own defaults fill them)")
+    return Verdict(True, True, summary, "")
+
+
 #: What a hand-started engine run is told about the route it bypassed.
 #:
 #: NOT a refusal. A probe no adapter covers, a bisection to find the

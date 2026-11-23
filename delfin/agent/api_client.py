@@ -8710,10 +8710,26 @@ def _mcp_calculation_verdict(base: str, args: dict):
     ``submit_calculation`` (ORCA and DELFIN mode), ``run_orca_input`` and a
     plain ``pipeline_run`` on a CONTROL.txt are checked; every other tool
     (a recalc, --define, extra arguments, the other workflow runners) is
-    not, and returns None: the dialog stays. So does
-    delfin-tools ``run_application``/``submit_application``: an
-    application's ``inputs`` are its own schema, which carries no charge,
-    spin or geometry this check could read.
+    not, and returns None: the dialog stays.
+
+    delfin-tools ``run_application``/``submit_application`` ARE checked
+    now, by ``calc_policy.judge_application_run``. They used to return
+    None here, on the ground that an application's ``inputs`` are its
+    own schema and carry no charge, spin or geometry. True of the
+    inputs, and it left the gate's cost gradient inverted: ``bash orca
+    job.inp`` was admitted with no dialog once the setup and the
+    resources passed, the adapter route was refused in an unattended
+    session for want of a dialog, and solo_agent.md told the model never
+    to launch an engine from bash. Three mechanisms, three answers, and
+    the model took the one that worked -- 20 hand-written inputs and 12
+    of 14 calculations abandoned on one measured run.
+
+    What the judge reads is the SAVED SPEC on disk plus the call's own
+    cores and inputs: the step list, the resource request against the
+    same unasked limit the bash path uses, and charge/mult where the
+    inputs give them. What it cannot read it SAYS, and an application it
+    cannot read at all still returns None -- so nothing here is loosened
+    for a call this cannot judge.
     """
     try:
         from . import calc_policy
@@ -8735,6 +8751,11 @@ def _mcp_calculation_verdict(base: str, args: dict):
                 int(a.get("maxcore") or 6000),
                 str(a.get("time_limit") or "12:00:00"),
                 budget=budget, job=job)
+        if base in ("run_application", "submit_application"):
+            return calc_policy.judge_application_run(
+                str(a.get("name") or ""), int(a.get("cores") or 1),
+                inputs=a.get("inputs") if isinstance(a.get("inputs"), dict)
+                else None)
         if base == "pipeline_run":
             control = Path(str(a.get("control_file") or "CONTROL.txt"))
             if (a.get("define") or a.get("extra_args") or a.get("overwrite")
@@ -23051,14 +23072,6 @@ class _DocToolExecutor:
                         perms, name, args, mode)
                     if verdict is None and calc_notes is not None:
                         calc_notes.append(_calc.summary)
-                        # And the route this run went around. Every ORCA
-                        # or xtb launch the BASH gate sees is by hand:
-                        # a run started through run_application never
-                        # passes here, so seeing it here IS the signal.
-                        from . import calc_policy as _cp_route
-                        _route = _cp_route.adapter_route_note(_calc)
-                        if _route:
-                            calc_notes.append(_route)
                     return verdict
                 if not _calc.admit:
                     _calc_reason = _calc.reason
