@@ -31,7 +31,20 @@ _MAX_ENUM_SHOWN = 8          # list allowed values inline only for small enums
 
 
 def _producers_of(tag: str) -> List[str]:
-    """Registered step names that produce capability *tag* (for fix hints)."""
+    """Registered step names that produce capability *tag*, GENERAL FIRST.
+
+    The order is what a fix hint shows, so it decides which steps a person
+    is pointed at. It used to be alphabetical, and for ``qc_output`` the
+    first six of 27 were orca_bs_opi, orca_dlpno_opi, orca_eprnmr_opi, ...
+    while orca_sp -- the plain single point that needs only a charge -- was
+    thirteenth. It also made the hint depend on the host: the OPI variants
+    register where they can, so where they did, orca_sp fell past the cut.
+
+    A variant extends its base name (orca_sp -> orca_sp_opi ->
+    orca_sp_opi_basis_solv), so fewer name parts is the more general step;
+    ties break alphabetically. With the variants absent the general steps
+    shown are the same, which is what makes the hint host-independent.
+    """
     out = []
     for name, adapter in _list_steps().items():
         try:
@@ -39,7 +52,7 @@ def _producers_of(tag: str) -> List[str]:
                 out.append(name)
         except Exception:
             continue
-    return sorted(out)
+    return sorted(out, key=lambda n: (n.count("_"), n))
 
 
 def _param_fix_hint(spec_param) -> str:
@@ -226,7 +239,11 @@ def _check_real_step(
         for tag in missing_inputs:
             producers = _producers_of(tag)
             if producers:
-                shown = ", ".join(producers[:6]) + ("…" if len(producers) > 6 else "")
+                # The rest is COUNTED: an ellipsis hid that 21 more existed.
+                rest = len(producers) - 6
+                shown = ", ".join(producers[:6]) + (
+                    f" and {rest} more (describe_capability lists them)"
+                    if rest > 0 else "")
                 hints.append(f"{tag} (add an upstream step producing it: {shown})")
             else:
                 hints.append(tag)
