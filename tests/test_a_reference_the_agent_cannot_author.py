@@ -241,3 +241,95 @@ def test_the_report_is_json_serialisable(workspace):
     json.dumps(data)
     assert data["counts"][ro.AGREES] == 1
     assert data["coverage"] == 1.0
+
+
+# --- the fourth verdict, which must actually be reachable --------------
+
+#: Two BRIGHT transitions 0.1 eV apart. A reference between them with a
+#: tolerance of 0.2 eV cannot tell them apart, so an agreement would be
+#: about the density of states and not about the assignment.
+_OUT_TWO_BRIGHT = """\
+-----------------------------------------------------------------------
+         ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS
+-----------------------------------------------------------------------
+      Transition      Energy     Energy  Wavelength     fosc        D2
+                       (eV)      (cm-1)      (nm)                (au**2)
+-----------------------------------------------------------------------
+  0-1A  ->  1-1A     3.950000   31859.0     313.8   0.220000000   2.20000
+  0-1A  ->  2-1A     4.050000   32665.0     306.0   0.310000000   3.10000
+"""
+
+
+@pytest.fixture()
+def two_bright(tmp_path):
+    d = tmp_path / "degenerate"
+    d.mkdir()
+    (d / "degenerate.out").write_text(_OUT_TWO_BRIGHT, encoding="utf-8")
+    return tmp_path
+
+
+def test_two_candidates_inside_the_tolerance_are_ambiguous(two_bright):
+    """A verdict declared and never emitted is a verdict that does not
+    exist. This is the case it was declared for."""
+    rep = ro.compare(two_bright, [_ref(key="degenerate", value=4.00,
+                                       tolerance=0.20)])
+    v = _by_key(rep, "degenerate")
+    assert v.verdict == ro.AMBIGUOUS
+    assert "3.95" in v.why and "4.05" in v.why
+    assert ro.MATCH_FIRST_BRIGHT in v.why
+
+
+def test_an_ambiguous_row_is_not_counted_as_agreement(two_bright):
+    rep = ro.compare(two_bright, [_ref(key="degenerate", value=4.00,
+                                       tolerance=0.20)])
+    assert rep.of(ro.AGREES) == []
+    assert rep.as_dict()["counts"][ro.AGREES] == 0
+    assert rep.as_dict()["counts"][ro.AMBIGUOUS] == 1
+
+
+def test_an_ambiguous_row_still_counts_as_measured(two_bright):
+    """A value did come out; what is open is which state it belongs to.
+    Counting it as not-measured would understate coverage and hide that
+    the run produced a number."""
+    rep = ro.compare(two_bright, [_ref(key="degenerate", value=4.00,
+                                       tolerance=0.20)])
+    assert rep.coverage() == pytest.approx(1.0)
+    assert rep.of(ro.NOT_MEASURED) == []
+
+
+def test_a_tolerance_that_separates_them_agrees(two_bright):
+    """The control: tighten the reference's own window until only one
+    candidate fits, and the comparison discriminates again."""
+    rep = ro.compare(two_bright, [_ref(key="degenerate", value=4.05,
+                                       tolerance=0.02)])
+    v = _by_key(rep, "degenerate")
+    assert v.verdict == ro.DIFFERS or v.verdict == ro.AGREES
+    assert v.verdict != ro.AMBIGUOUS
+
+
+def test_a_dark_neighbour_does_not_make_a_bright_match_ambiguous(workspace):
+    """The original fixture has a dark state at 3.0 and a bright one at
+    4.0. Matching by first_bright could never have chosen the dark one,
+    so it is not a candidate and not a source of ambiguity."""
+    rep = ro.compare(workspace, [_ref(value=4.00, tolerance=1.50)])
+    v = _by_key(rep, "pna_pbe0")
+    assert v.verdict == ro.AGREES
+
+
+def test_matching_by_index_is_never_ambiguous(two_bright):
+    """The index IS the assignment: the caller named the transition, so
+    no energy spacing can make it undecidable."""
+    rep = ro.compare(two_bright, [_ref(key="degenerate", value=4.00,
+                                       tolerance=0.20,
+                                       match=ro.MATCH_INDEX, index=2)])
+    v = _by_key(rep, "degenerate")
+    assert v.verdict != ro.AMBIGUOUS
+    assert v.computed == pytest.approx(4.05, abs=0.01)
+
+
+def test_the_rendering_puts_ambiguity_above_a_missing_value(two_bright):
+    rep = ro.compare(two_bright, [
+        _ref(key="degenerate", value=4.00, tolerance=0.20),
+        _ref(key="never_computed")])
+    text = ro.render(rep)
+    assert text.index(ro.AMBIGUOUS) < text.index(ro.NOT_MEASURED)

@@ -31,10 +31,12 @@ FOUR VERDICTS, NEVER TWO:
     not_measured  the run produced no comparable value -- never an
                   agreement, for the same reason an unjudged contract
                   flag is never a pass
-    ambiguous     a value exists and which transition it corresponds to
-                  cannot be decided by the matching rule; reported
-                  rather than guessed, because assigning a state by
-                  proximity is how a benchmark scores luck
+    ambiguous     two or more of the transitions the matching rule
+                  could have chosen fall inside the reference's own
+                  tolerance, so the comparison would pass whichever one
+                  it picked. Reported rather than counted as agreement,
+                  because assigning a state by proximity is how a
+                  benchmark scores luck
 
 That last verdict is the honest part. Matching a computed transition to
 a published one is the hard half of this comparison: state ordering
@@ -116,6 +118,10 @@ class Report:
     def coverage(self) -> Optional[float]:
         """The share of references a comparable value came out for.
 
+        An AMBIGUOUS row counts as measured: a value did come out, and
+        what is open is the assignment. It is not counted as agreement
+        anywhere.
+
         The field reports this beside accuracy and for a good reason: an
         agent that answers two cases out of ten very accurately has not
         done better than one that answers nine adequately, and a single
@@ -190,12 +196,21 @@ def load_references(path: Any) -> tuple[list[Reference], list[str]]:
     return refs, problems
 
 
-def _computed(folder: Path, ref: Reference) -> tuple[Optional[float], str]:
-    """The run's own value for *ref*, or None and the reason.
+def _computed(folder: Path, ref: Reference,
+              ) -> tuple[Optional[float], str, list[float]]:
+    """``(value, why, candidates)`` for *ref*, or ``(None, why, [])``.
 
     Read through ``delfin.api.extract_excited_states``: it owns the
     parse and it already defines "bright" with a stated threshold, so
     this module does not get a second opinion on either.
+
+    ``candidates`` are the energies the matching rule could have chosen
+    from -- every bright transition for ``first_bright``, every
+    transition for ``lowest``. The verdict needs them: if two of them
+    fall inside the reference's tolerance, the comparison passes
+    whichever one the rule picked, so the agreement says nothing about
+    which state was matched. That is AMBIGUOUS, and reporting it is the
+    difference between a comparison and a coin that lands well.
     """
     try:
         from delfin.api import extract_excited_states
@@ -216,20 +231,27 @@ def _computed(folder: Path, ref: Reference) -> tuple[Optional[float], str]:
         if not bright:
             return None, (
                 "no transition reaches the extractor's own bright "
-                f"threshold ({getattr(res, 'bright_threshold_fosc', '?')})")
-        return float(bright.get("energy_ev")), "the lowest bright transition"
+                f"threshold ({getattr(res, 'bright_threshold_fosc', '?')})"
+            ), []
+        threshold = float(getattr(res, "bright_threshold_fosc", 0.01) or 0.01)
+        cands = [float(getattr(tr, "energy_ev", 0.0) or 0.0)
+                 for tr in transitions
+                 if float(getattr(tr, "fosc", 0.0) or 0.0) >= threshold]
+        return (float(bright.get("energy_ev")),
+                "the lowest bright transition", cands)
     if ref.match == MATCH_LOWEST:
-        energies = [float(getattr(t, "energy_ev", 0.0) or 0.0)
-                    for t in transitions]
-        return min(energies), "the lowest transition in the table"
-    # MATCH_INDEX
+        energies = [float(getattr(tr, "energy_ev", 0.0) or 0.0)
+                    for tr in transitions]
+        return min(energies), "the lowest transition in the table", energies
+    # MATCH_INDEX: the caller named the transition, so no energy can make
+    # the assignment ambiguous -- the index IS the assignment.
     if ref.index < 1 or ref.index > len(transitions):
         return None, (f"the table has {len(transitions)} transitions and "
-                      f"index {ref.index} was asked for")
+                      f"index {ref.index} was asked for"), []
     value = getattr(transitions[ref.index - 1], "energy_ev", None)
     if value is None:
-        return None, f"transition {ref.index} carries no energy"
-    return float(value), f"transition {ref.index} of the table"
+        return None, f"transition {ref.index} carries no energy", []
+    return float(value), f"transition {ref.index} of the table", []
 
 
 def compare(workspace: Any, references: list[Reference]) -> Report:
@@ -265,7 +287,7 @@ def compare(workspace: Any, references: list[Reference]) -> Report:
                 match=ref.match, source=ref.source,
                 why=f"no folder named {ref.key!r} under the workspace"))
             continue
-        value, why = _computed(folder, ref)
+        value, why, candidates = _computed(folder, ref)
         if value is None:
             report.verdicts.append(Verdict(
                 key=ref.key, quantity=ref.quantity, verdict=NOT_MEASURED,
@@ -273,6 +295,31 @@ def compare(workspace: Any, references: list[Reference]) -> Report:
                 match=ref.match, source=ref.source, why=why))
             continue
         deviation = abs(value - ref.value)
+
+        # AMBIGUOUS IS DECIDED BEFORE AGREEMENT, or luck wins.
+        #
+        # If two of the transitions the rule could have chosen from fall
+        # inside the reference's tolerance, the comparison passes
+        # whichever one it picked. The agreement is then about the
+        # molecule's density of states and not about the assignment, and
+        # reporting it as agreement would credit the run for a coin that
+        # landed well. Both candidates are named so a reader can see
+        # what could not be told apart.
+        inside = sorted(c for c in candidates
+                        if abs(c - ref.value) <= ref.tolerance)
+        if len(inside) >= 2:
+            report.verdicts.append(Verdict(
+                key=ref.key, quantity=ref.quantity, verdict=AMBIGUOUS,
+                reference=ref.value, computed=value, deviation=deviation,
+                tolerance=ref.tolerance, match=ref.match,
+                source=ref.source,
+                why=(f"{len(inside)} transitions fall within "
+                     f"{ref.tolerance} of the reference "
+                     f"({', '.join(f'{c:.4g}' for c in inside)} eV), so "
+                     f"matching by {ref.match} does not decide which "
+                     "state this is")))
+            continue
+
         report.verdicts.append(Verdict(
             key=ref.key, quantity=ref.quantity,
             verdict=AGREES if deviation <= ref.tolerance else DIFFERS,
