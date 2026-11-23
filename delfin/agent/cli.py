@@ -5383,12 +5383,14 @@ def cmd_prompt_size(args: argparse.Namespace) -> int:
     # the test/override path and expects pack/ inside it.
     loader = PromptLoader()
     # An unknown role composes an empty prompt without complaint, which
-    # would print a table of zeros that reads as a measurement. The
-    # role prompt file is the registry: a role exists exactly when its
-    # agents/<role>.md does.
-    if not (loader.agent_dir / "agents" / f"{role}.md").is_file():
-        print(f"ERROR: unknown role {role!r} -- no "
-              f"agents/{role}.md in the pack", file=sys.stderr)
+    # would print a table of zeros that reads as a measurement. Asked
+    # through loader.role_exists, not of the directory: a mode's route
+    # may name a subagent preset instead of a pack file, and the
+    # directory test refused a role the engine runs.
+    if not loader.role_exists(role):
+        print(f"ERROR: unknown role {role!r} -- no agents/{role}.md in "
+              f"the pack and no subagent preset of that name",
+              file=sys.stderr)
         return 2
     try:
         report = loader.prompt_size_report(
@@ -5561,8 +5563,8 @@ def _add_agent_flags(p: argparse.ArgumentParser, *,
     # `choices=`. Named modes only, and an unknown one falls back to solo
     # rather than failing, which is what the engine already does.
     p.add_argument("--mode", default=mode_default,
-                   help="Agent mode: solo / dashboard / office / research "
-                        "(plan is a permission profile, not a mode)")
+                   help="Agent mode: solo / dashboard / office / research / "
+                        "workflow (plan is a permission profile, not a mode)")
     p.add_argument("--backend", default="", choices=["", "api", "cli"],
                    help="api (direct Anthropic) or cli (subprocess)")
     p.add_argument("--provider", default="",

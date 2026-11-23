@@ -1499,3 +1499,47 @@ def judge_orca_run(input_file: Path, *, kind: Optional[str] = None) -> Verdict:
     if problem:
         return Verdict(True, False, "", problem)
     return Verdict(True, True, summary, "")
+
+#: What a hand-started engine run is told about the route it bypassed.
+#:
+#: NOT a refusal. A probe no adapter covers, a bisection to find the
+#: keyword that broke a convergence and a one-off somebody asked for by
+#: hand are all real work, and a gate that blocks them is a gate people
+#: route around. What the run carries instead is the ONE fact the model
+#: could not otherwise know: that a checked route exists and what it
+#: would have added.
+#:
+#: Measured on a real 33-minute run (bench17 t13, 2026-11-23): the agent
+#: called write_file 20 times and bash 46 times to assemble and start
+#: ORCA by hand, 12 of its 14 calculations were abandoned, and the 26
+#: tools of the delfin-tools server -- offered on that request -- were
+#: called zero times. The tools were on the table and nothing said they
+#: were the way.
+_ADAPTER_ROUTE_NOTE = (
+    "started by hand: delfin-tools would run this with checked "
+    "parameters (resolve_spec fills the defaults and shows them, "
+    "validate_spec and scientific_lint judge the spec, run_application "
+    "runs it), and the workflow-operator sub-agent or `--mode workflow` "
+    "is that route. A by-hand run carries no declared parameters and "
+    "cannot be re-derived from a spec -- which is a cost, not a "
+    "prohibition, and yours to weigh"
+)
+
+
+def adapter_route_note(verdict: "Verdict") -> str:
+    """The note for *verdict*, or "" where it does not apply.
+
+    ONE QUESTION: did this start a calculation. An information call
+    (``orca --version`` asks a program what it is and starts nothing)
+    carries ``calculation = False`` by construction -- the Verdict's own
+    rule, "``information``: ... ``calculation`` is then False" -- so a
+    second check for it would be a guard no test can reach. This
+    function had one until a positive control showed that removing it
+    changed nothing: the whole suite stayed green, which is what a dead
+    guard looks like from the outside.
+    """
+    if verdict is None:
+        return ""
+    if not getattr(verdict, "calculation", False):
+        return ""
+    return _ADAPTER_ROUTE_NOTE

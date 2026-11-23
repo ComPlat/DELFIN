@@ -95,12 +95,19 @@ def test_the_pack_readme_does_not_list_it(mode):
 # ---------------------------------------------------------------------------
 
 def test_the_four_that_remain_are_the_four_that_are_declared():
+    """Five now: `workflow` was added 2026-11-23, and this test is why
+    it was added in all five places a mode is stated rather than only in
+    the manifest. The lesson the file records cuts both ways -- a mode
+    declared at one hop and dropped at the next is the same defect
+    whether it is being retired or introduced."""
     from delfin.agent.prompt_loader import PromptLoader
     modes = PromptLoader(repo_dir=_ROOT / "delfin" / "agent").available_modes()
-    assert sorted(modes) == ["dashboard", "office", "research", "solo"]
+    assert sorted(modes) == ["dashboard", "office", "research", "solo",
+                             "workflow"]
 
 
-@pytest.mark.parametrize("mode", ["dashboard", "solo", "office", "research"])
+@pytest.mark.parametrize("mode", ["dashboard", "solo", "office", "research",
+                                  "workflow"])
 def test_a_remaining_mode_still_has_its_file(mode):
     assert (_PACK / "modes" / f"{mode}.md").is_file()
 

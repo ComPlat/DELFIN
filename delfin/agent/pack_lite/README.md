@@ -49,5 +49,6 @@ Do not add Critic, Runtime, Research, or Chief unless there is a concrete reason
 - `modes/solo.md`
 - `modes/office.md`
 - `modes/research.md`
+- `modes/workflow.md`
 - `shared/escalation_rules.md`
 - `shared/selection_guide.md`

@@ -7620,6 +7620,45 @@ _ROLE_EXEC_ALLOWLIST: dict[str, frozenset[str]] = {
     "office_agent": _OFFICE_AGENT_ALLOWED_TOOLS,
 }
 
+
+def _role_allowlist(role: str) -> "frozenset[str] | None":
+    """The execution allow-list for *role*, or None for no restriction.
+
+    THE DICT FIRST, AND A SUBAGENT PRESET AFTER IT. A mode whose route
+    names a preset-backed role -- `--mode workflow` -> `workflow-operator`
+    -- must be restricted exactly as that preset is when the generalist
+    delegates to it. Without this the same specialist would be LESS
+    restricted when chosen directly than when delegated, because a role
+    absent from the dict has no role-level restriction at all
+    (``allow is None`` means "not refused" at both call sites). One
+    definition with two entry points has to mean one permission surface
+    too, or the second entry point is a way around the first.
+
+    Derived, never a second dict entry: the preset's ``tools:`` line is
+    the single statement of what that specialist may do, and a hand
+    copy here is how two statements of one list start to disagree.
+    """
+    allow = _ROLE_EXEC_ALLOWLIST.get(role or "")
+    if allow is not None:
+        return allow
+    if not role:
+        return None
+    try:
+        from .subagents import SUBAGENT_PRESETS
+        preset = SUBAGENT_PRESETS.get(role)
+    except Exception:                                   # noqa: BLE001
+        return None
+    if preset is None:
+        return None
+    tools = tuple(getattr(preset, "tools", ()) or ())
+    if not tools:
+        # A preset with no tools line carries no restriction of its own
+        # (SubagentPreset.tools), so it does not gain one here either.
+        return None
+    # Judged by the underlying tool name, as everywhere else: a preset
+    # may list `resolve_spec` for `mcp__delfin-tools__resolve_spec`.
+    return frozenset(str(x).rsplit("__", 1)[-1] for x in tools)
+
 # Meta/plumbing tools with no side effects or scope concern — always permitted
 # even for a role that carries an allow-list. report_verdict is pure data
 # (the gate reads it) and must reach EVERY review-ish role, however locked
@@ -8799,7 +8838,7 @@ def _tool_denied_for_role(role: str, name: str) -> bool:
     deny = _ROLE_EXEC_DENYLIST.get(role or "")
     if deny is not None and base in deny:
         return True
-    allow = _ROLE_EXEC_ALLOWLIST.get(role or "")
+    allow = _role_allowlist(role or "")
     if allow is None:
         return False
     if name in _ALWAYS_ALLOWED_TOOLS or base in _ALWAYS_ALLOWED_TOOLS:
@@ -12173,7 +12212,7 @@ def tool_unavailable_reason(
     deny = _ROLE_EXEC_DENYLIST.get(ctx.role or "")
     if deny is not None and base in deny:
         return f"role {ctx.role!r} may not execute this tool"
-    allow = _ROLE_EXEC_ALLOWLIST.get(ctx.role or "")
+    allow = _role_allowlist(ctx.role or "")
     if allow is not None and base not in allow:
         return f"role {ctx.role!r} may not execute this tool"
     session = _session_tool_refusal(
@@ -23012,6 +23051,14 @@ class _DocToolExecutor:
                         perms, name, args, mode)
                     if verdict is None and calc_notes is not None:
                         calc_notes.append(_calc.summary)
+                        # And the route this run went around. Every ORCA
+                        # or xtb launch the BASH gate sees is by hand:
+                        # a run started through run_application never
+                        # passes here, so seeing it here IS the signal.
+                        from . import calc_policy as _cp_route
+                        _route = _cp_route.adapter_route_note(_calc)
+                        if _route:
+                            calc_notes.append(_route)
                     return verdict
                 if not _calc.admit:
                     _calc_reason = _calc.reason

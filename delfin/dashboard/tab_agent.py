@@ -8414,6 +8414,12 @@ def create_tab(ctx):
         "research": "Research agent — literature search, DFT benchmarks, best practices, "
                     "state-of-the-art methods. Web search and code reading; "
                     "read-only: no file changes, no shell commands.",
+        "workflow": "Workflow — runs a calculation through DELFIN's adapters: fills the "
+                    "validated defaults, lints the spec for physical sense, submits it "
+                    "and reports what happened. Sets up OCCUPIER / IMAG / ESD stages, "
+                    "watches and recovers a chain. Where a step would need engine input "
+                    "written by hand it asks you first. The same specialist the coding "
+                    "agent delegates to, chosen directly.",
         # quick / reviewed / tdd / cluster / full were retired with the
         # pipeline modes (see the dropdown below). Their descriptions
         # outlived them here by months: a dictionary nothing looks up,
@@ -8439,7 +8445,8 @@ def create_tab(ctx):
         # remains is what genuinely differs — which folder the session works
         # in, and what it is allowed to reach from there.
         options=[("Dashboard", "dashboard"), ("Code", "solo"),
-                 ("Office", "office"), ("Research", "research")],
+                 ("Office", "office"), ("Research", "research"),
+                 ("Workflow", "workflow")],
         value="dashboard",
         # "Mode:", and not "Workspace:" as it read between 478eb33e and
         # this change. The argument for the rename was that the control
