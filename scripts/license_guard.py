@@ -97,6 +97,25 @@ QM_OUTPUT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# One compiled pattern per signature, so the DISTINCT kinds in a file can be
+# counted. Real licensed output carries several of them -- the banner, the
+# version line, the host line, the input echo. A parser carries ONE, inside
+# quotes, because it is looking for the marker rather than holding it:
+#
+#     return '****ORCA TERMINATED NORMALLY****' in text
+#
+# That line is DELFIN's own code. Flagging it taught two files into a
+# whole-file exemption (SELF_EXEMPT), which is strictly worse: an exemption
+# admits a real paste as well. So the rule is a THRESHOLD, not an exemption.
+QM_SIGNATURE_RES = tuple(re.compile(s, re.IGNORECASE)
+                         for s in QM_OUTPUT_SIGNATURES)
+
+#: Distinct signatures a file needs before it is refused. One is a parser or
+#: prose; two or more is an output block. Single hits are still REPORTED --
+#: demoted to an advisory, never silenced, because a signature nobody sees is
+#: a signature nobody acts on.
+QM_DISTINCT_REQUIRED = 2
+
 # committed-file PATH patterns that must never enter the public repo.
 FORBIDDEN_PATH_RE = re.compile(
     r"("
@@ -139,11 +158,11 @@ SELF_EXEMPT = {
     "docs/RETRY_LOGIC.md",
     "docs/methodology.md",
     # installation walkthrough quoting the version banner of the local
-    # ORCA install as a verification step — a version number, not DATA.
-    "examples/example_Job_Submission_Scripts/BwUniCluster/DELFIN_INSTALLATION_ANLEITUNG.txt",
-    # dashboard-agent corpus: transcript TEXT that mentions the phrase in
-    # prose (which file has which status); no ORCA output block is in it.
-    "tests/fixtures/choice_offer_corpus.json",
+    # Two files used to be exempted here because a single QM signature in
+    # prose or in a parser tripped the old per-line rule. They are scanned
+    # again: QM_DISTINCT_REQUIRED decides, and a whole-file exemption would
+    # admit a genuine output block alongside the false positive it was
+    # written for.
 }
 
 
@@ -157,7 +176,9 @@ def _line_allows(lines: list[str], lineno: int) -> bool:
     return False
 
 
-def scan_path_text(relpath: str, text: str) -> list[tuple[int, str]]:
+def scan_path_text(relpath: str, text: str,
+                   advisories: list[tuple[int, str]] | None = None,
+                   ) -> list[tuple[int, str]]:
     """Scan ONE file of any type for licensed QM-program output.
 
     Returns [(lineno, message)]. Binary bytes are skipped silently (no
@@ -172,10 +193,32 @@ def scan_path_text(relpath: str, text: str) -> list[tuple[int, str]]:
     lines = text.splitlines()
     if lines and lines[0].strip() == QM_SYNTHETIC_MARKER:
         return findings
+
+    # Collect every hit, and which signature produced it.
+    hits: list[tuple[int, str, int]] = []       # (lineno, matched text, kind)
     for i, ln in enumerate(lines, 1):
-        hit = QM_OUTPUT_RE.search(ln)
-        if hit:
-            findings.append((i, f"looks like licensed QM program output ('{hit.group(0)}')"))
+        if _line_allows(lines, i):
+            continue
+        for kind, rx in enumerate(QM_SIGNATURE_RES):
+            m = rx.search(ln)
+            if m:
+                hits.append((i, m.group(0), kind))
+                break
+
+    kinds = {kind for _, _, kind in hits}
+    if len(kinds) >= QM_DISTINCT_REQUIRED:
+        for lineno, matched, _ in hits:
+            findings.append((
+                lineno,
+                f"looks like licensed QM program output ('{matched}'; "
+                f"{len(kinds)} distinct signatures in this file)"))
+    elif hits and advisories is not None:
+        lineno, matched, _ = hits[0]
+        advisories.append((
+            lineno,
+            f"one QM-output signature ('{matched}'), {len(hits)} "
+            f"occurrence(s) -- a parser or prose rather than an output "
+            f"block. Not refused; check it if you did not write it."))
     return findings
 
 
@@ -271,7 +314,8 @@ def staged_blob(relpath: str) -> str:
 # Modes
 # ---------------------------------------------------------------------------
 
-def _report(violations: list[str]) -> int:
+def _report(violations: list[str],
+            advisories: list[str] | None = None) -> int:
     if violations:
         print("🚫 LICENSE GUARD: CCDC/CSD violation(s) — BLOCKED")
         for v in violations:
@@ -280,13 +324,50 @@ def _report(violations: list[str]) -> int:
         print("CCDC/CSD material is INTERNAL only (agent_workspace/), never shipped.")
         print("Ship open sources (COD, Pyykkö/Cordero radii, VSEPR) instead.")
         print("Deliberate exception: add '# license-guard: allow' on that line.")
+        _print_advisories(advisories)
         return 1
     print("✅ LICENSE GUARD: clean (no CCDC/CSD material).")
+    _print_advisories(advisories)
     return 0
+
+
+def _print_advisories(advisories: list[str] | None) -> None:
+    """Single-signature hits. Reported and not refused.
+
+    A file with one QM signature is a parser or prose, so refusing it
+    would be the false positive that drove two files into a whole-file
+    exemption. Printing it keeps the information: a signature nobody
+    sees is a signature nobody acts on.
+    """
+    if not advisories:
+        return
+    print()
+    print(f"ℹ️  {len(advisories)} single-signature file(s), NOT refused:")
+    for a in advisories:
+        print(f"   {a}")
+
+
+def _scan_one(rel: str, text: str,
+              advisories: list[tuple[int, str]]) -> list[tuple[int, str]]:
+    """Both scans over one file, whatever its extension.
+
+    A .py file used to get scan_py_source alone, which checks imports and
+    CCDC strings and NOT the QM-output signatures -- so a pasted ORCA
+    output block in a .py file was never seen. Running both is safe only
+    because scan_path_text now needs QM_DISTINCT_REQUIRED distinct
+    signatures: a parser that merely looks for the marker is an advisory,
+    not a refusal.
+    """
+    findings = list(scan_path_text(rel, text, advisories))
+    if rel.endswith(".py"):
+        findings.extend(scan_py_source(rel, text))
+    return findings
 
 
 def run_package() -> int:
     violations: list[str] = []
+    advisories: list[str] = []
+    advisory_hits: list[tuple[int, str]] = []
     for rel in tracked_text_files():
         if rel in SELF_EXEMPT:
             continue
@@ -294,17 +375,18 @@ def run_package() -> int:
             text = Path(rel).read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if rel.endswith(".py"):
-            findings = scan_py_source(rel, text)
-        else:
-            findings = scan_path_text(rel, text)
+        findings = _scan_one(rel, text, advisory_hits)
         for lineno, msg in findings:
             violations.append(f"{rel}:{lineno}: {msg}")
-    return _report(violations)
+        for lineno, msg in advisory_hits[len(advisories):]:
+            advisories.append(f"{rel}:{lineno}: {msg}")
+    return _report(violations, advisories)
 
 
 def run_staged() -> int:
     violations: list[str] = []
+    advisories: list[str] = []
+    advisory_hits: list[tuple[int, str]] = []
     for rel in staged_files():
         path_msg = check_path(rel)
         if path_msg:
@@ -315,33 +397,32 @@ def run_staged() -> int:
                 text = staged_blob(rel)
             except Exception:
                 text = ""
-            findings = scan_py_source(rel, text) if rel.endswith(".py") else scan_path_text(rel, text)
-            for lineno, msg in findings:
+            for lineno, msg in _scan_one(rel, text, advisory_hits):
                 violations.append(f"{rel}:{lineno}: {msg}")
-    return _report(violations)
+            for lineno, msg in advisory_hits[len(advisories):]:
+                advisories.append(f"{rel}:{lineno}: {msg}")
+    return _report(violations, advisories)
 
 
 def run_paths(paths: list[str]) -> int:
     violations: list[str] = []
+    advisories: list[str] = []
+    advisory_hits: list[tuple[int, str]] = []
     for p in paths:
         rel = os.path.relpath(p)
         path_msg = check_path(rel)
         if path_msg:
             violations.append(path_msg)
-        if p.endswith(".py"):
-            if rel not in SELF_EXEMPT and Path(p).is_file():
-                text = Path(p).read_text(encoding="utf-8", errors="replace")
-                findings = scan_py_source(rel, text)
-            else:
-                findings = []
-        elif rel not in SELF_EXEMPT and Path(p).is_file():
+        if rel not in SELF_EXEMPT and Path(p).is_file():
             text = Path(p).read_text(encoding="utf-8", errors="replace")
-            findings = scan_path_text(rel, text)
+            findings = _scan_one(rel, text, advisory_hits)
         else:
             findings = []
         for lineno, msg in findings:
             violations.append(f"{rel}:{lineno}: {msg}")
-    return _report(violations)
+        for lineno, msg in advisory_hits[len(advisories):]:
+            advisories.append(f"{rel}:{lineno}: {msg}")
+    return _report(violations, advisories)
 
 
 def main(argv: list[str]) -> int:
