@@ -2835,6 +2835,28 @@ def _run_replay_subcommand(args: argparse.Namespace) -> int:
         print(json.dumps(report.as_dict(), indent=1, ensure_ascii=False))
     else:
         print(run_replay.render(report))
+
+    # The real replay, only when asked: it costs the same compute the
+    # original run did, so it is never part of a plain check.
+    if getattr(args, "rerun", False):
+        from . import run_rerun
+        # The workspace the manifest recorded, unless the caller named
+        # another: a run that was moved is re-run where it now lives.
+        ws = getattr(args, "workspace", "") or ""
+        if not ws:
+            try:
+                stored = json.loads(target.read_text(encoding="utf-8"))
+                ws = str((stored.get("workspace") or {}).get("root") or "")
+            except Exception:                           # noqa: BLE001
+                ws = ""
+        rr = run_rerun.rerun(
+            ws or ".",
+            max_steps=int(getattr(args, "rerun_steps", 1) or 0),
+            timeout_s=float(getattr(args, "rerun_timeout", 1800.0)))
+        print()
+        print(run_rerun.render(rr))
+        if rr.reproduced() is False:
+            return 1
     if not report.checks:
         return 2
     return 0 if report.reproduced() else 1
@@ -5867,6 +5889,20 @@ def build_parser() -> argparse.ArgumentParser:
         _p.add_argument(
             "--json", action="store_true",
             help="The report as JSON instead of lines")
+        _p.add_argument(
+            "--rerun", action="store_true",
+            help="Also RE-EXECUTE the run's inputs and compare the "
+                 "energies. ORCA and xtb are deterministic for a fixed "
+                 "binary and input, so this is the real replay -- and it "
+                 "costs the same compute the original did")
+        _p.add_argument(
+            "--rerun-steps", type=int, default=1, metavar="N",
+            help="How many steps --rerun may execute (default 1; 0 for "
+                 "every step in the workspace)")
+        _p.add_argument(
+            "--rerun-timeout", type=float, default=1800.0, metavar="S",
+            help="Seconds one re-run may take before it is reported as "
+                 "not comparable (default 1800)")
         _p.set_defaults(func=_run_replay_subcommand)
 
     # bench — canned-task benchmark suite
