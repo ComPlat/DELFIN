@@ -12667,22 +12667,29 @@ def advertisable_tools(
 def role_tool_surface_report(
     roles: Optional[list[str]] = None,
     tools: Optional[list[dict[str, Any]]] = None,
+    *, defer: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Advertised surface + token cost per role.
 
     ``""`` is the unrestricted baseline (any role without an execution
     allow-list). Every role carrying an allow-list is reported next to it, so
     the saving from role scoping is measurable rather than asserted.
+
+    That comparison is about what each role can CALL, so the default is the
+    available surface (``defer=False``), as it was before deferral existed.
+    ``defer=True`` reports what ships on a request instead. Making shipped
+    the default changed the baseline under its oldest caller: the office
+    scoping test compares office (38 tools, 5,196 tokens -- unchanged)
+    with ``""``, and ``""`` alone shrank to 4,586 once deferred, so a
+    scoping that had not moved read as "widened back out" in CI.
     """
     catalogue = _DOC_TOOLS_OPENAI if tools is None else tools
     names = roles if roles is not None else [
         "", *sorted(set(_ROLE_EXEC_ALLOWLIST) | set(_ROLE_EXEC_DENYLIST))]
     out: dict[str, dict[str, Any]] = {}
     for role in names:
-        # The COST of a role's surface is what ships, so deferral is
-        # asked for here explicitly; see advertisable_tools.
         advertised = advertisable_tools(
-            catalogue, ToolSurfaceContext(role=role), defer=True)
+            catalogue, ToolSurfaceContext(role=role), defer=defer)
         out[role] = {
             "count": len(advertised),
             "total_tokens": sum(estimate_schema_tokens(t) for t in advertised),
