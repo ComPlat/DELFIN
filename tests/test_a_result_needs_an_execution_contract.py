@@ -181,7 +181,12 @@ def test_more_run_time_than_the_files_span_is_contradicted(tmp_path):
     ev = run_evidence.collect(tmp_path)
     con = run_evidence.contract(ev, expected_steps=1)
     assert con.wallclock_plausible is False
-    assert any("did not happen here" in p for p in con.problems), con.problems
+    # The message names the step rather than a total: the check takes the
+    # LONGEST step and never the sum, because DELFIN runs engine jobs in
+    # parallel and a sum would fail an honest run.
+    assert any("did not fit in this workspace" in p for p in con.problems), \
+        con.problems
+    assert any("opt.out" in p for p in con.problems), con.problems
 
 
 def test_a_stated_run_time_inside_the_span_is_plausible(tmp_path):

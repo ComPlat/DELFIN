@@ -34762,6 +34762,23 @@ class OpenAIClient(_BaseClient):
                 "stream_options": {"include_usage": True},
             }
 
+            # Sampling. Nothing is sent unless the session asked for it,
+            # so the default behaviour of every existing run is
+            # unchanged -- a module that records what was asked must not
+            # change what is asked. What the request carried is kept on
+            # the client so the run manifest can state it as a fact
+            # rather than leaving the field unresolved, which read as an
+            # oversight when the truth was "nobody set one and the
+            # provider's default applied".
+            try:
+                from . import sampling as _sampling
+                _sample_params = _sampling.configured()
+                kwargs.update(_sample_params)
+                self.sampling_record = _sampling.record(_sample_params)
+            except Exception:                           # noqa: BLE001
+                # A recording feature never costs a turn.
+                self.sampling_record = None
+
             # Ollama (and other llama.cpp-backed servers) silently truncate to
             # a tiny default num_ctx (2-4k) on the OpenAI-compatible surface
             # unless options.num_ctx is passed — so even a 128k model only
@@ -35287,6 +35304,43 @@ class OpenAIClient(_BaseClient):
                             f"\n⚠️ `{self.model}` is unavailable and the "
                             "model-switch budget for this turn is used up. "
                             "No KIT model answered; try again later.\n"))
+                    # An endpoint that does not know `seed` (or rejects a
+                    # temperature) answers 400 to the whole request. A
+                    # parameter added so the manifest can STATE the
+                    # sampling must never end a run, so the parameters are
+                    # dropped for the rest of this process, the round is
+                    # retried without them, and the manifest records
+                    # `refused_by_endpoint` -- the values as ASKED, never
+                    # as applied. Narrow on purpose: the error has to name
+                    # one of the parameters, or a 400 about the messages
+                    # would be hidden by a pointless retry.
+                    try:
+                        from . import sampling as _sampling
+                        _sampling_sent = ("temperature" in kwargs
+                                          or "seed" in kwargs)
+                    except Exception:                   # noqa: BLE001
+                        _sampling, _sampling_sent = None, False
+                    if _sampling_sent and _sampling is not None \
+                            and _sampling.looks_like_a_parameter_refusal(
+                                _stream_exc):
+                        _asked = {k: kwargs[k] for k in ("temperature", "seed")
+                                  if k in kwargs}
+                        kwargs = _sampling.without(kwargs)
+                        _sampling.disable()
+                        self.sampling_record = _sampling.record(
+                            _asked, source=_sampling.REFUSED)
+                        yield StreamEvent(type="notice", text=(
+                            "\n⚠️ The endpoint refused the sampling "
+                            f"parameters ({', '.join(sorted(_asked))}). "
+                            "This session continues without them, and the "
+                            "run manifest records that they were refused "
+                            "rather than applied.\n"))
+                        _text_chunks = []
+                        _tool_calls = {}
+                        _round_in = 0
+                        finish_reason = None
+                        continue
+
                     # Context-window overflow is deterministic — retrying the
                     # same request just fails again. End the turn cleanly with a
                     # terminal stop instead of crashing the generator (which
