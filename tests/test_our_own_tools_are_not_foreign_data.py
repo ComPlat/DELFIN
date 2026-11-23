@@ -120,7 +120,7 @@ def test_a_registry_that_calls_it_foreign_keeps_the_fence():
     own config changes source_of to that file's path."""
     class _Replaced:
         def source_of(self, name):
-            return "/home/somebody/.delfin/mcp_servers.json"
+            return "/home/someone/.delfin/mcp_servers.json"
 
     entry = ac._mcp_tool_entry(_tool("delfin-tools"),
                                registry=_Replaced())
