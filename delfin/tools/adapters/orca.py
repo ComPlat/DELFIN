@@ -474,6 +474,10 @@ class OrcaTddftAdapter(_OrcaBase):
     produces_geometry = False
     params = _ORCA_PARAMS + (
         ParamSpec("nroots", "int", default=10, description="Number of excited-state roots"),
+        ParamSpec("tda", "bool",
+                  description="Tamm-Dancoff approximation; ORCA applies it "
+                              "by default, and it moves the excitation "
+                              "energies, so the choice belongs in the spec"),
     )
 
     def validate_params(self, **kwargs: Any) -> None:
@@ -486,6 +490,27 @@ class OrcaTddftAdapter(_OrcaBase):
         if "TDDFT" not in extra_kw.upper():
             extra_kw = f"TDDFT NRoots {nroots} " + extra_kw
         kwargs["extra_keywords"] = extra_kw.strip()
+
+        # TDA reaches the INPUT, not only the record.
+        #
+        # Measured 2026-11-23: `tda` was accepted in a step's kwargs,
+        # the science lint asked for it, the grader passed a spec that
+        # set it -- and nothing here read it, so ORCA ran its default
+        # (TDA on) whatever the spec said. A decision recorded and not
+        # executed is worse than one never asked for: the number carries
+        # a provenance that is false.
+        #
+        # There is no dependable bang-line spelling, so it goes in the
+        # %tddft block. An explicit %tddft block from the caller is left
+        # alone -- they spelled it out, and two blocks is an ORCA error.
+        tda = kwargs.pop("tda", None)
+        if tda is not None:
+            blocks = str(kwargs.get("extra_blocks", "") or "")
+            if "%tddft" not in blocks.lower():
+                flag = "true" if tda else "false"
+                block = f"%tddft\n  TDA {flag}\nend"
+                kwargs["extra_blocks"] = (
+                    f"{blocks.rstrip()}\n{block}" if blocks.strip() else block)
         return self._run(work_dir, "SP", geometry, cores, time.monotonic(), **kwargs)
 
 

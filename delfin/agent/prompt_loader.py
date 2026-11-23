@@ -1547,6 +1547,14 @@ class PromptLoader:
         if name == "subagent_table":
             from . import subagents as _sa
             return _sa.decision_table()
+        if name == "excited_ladder":
+            # One declaration, two readers: the science lint judges a
+            # spec against these rungs and this renders the same rungs
+            # into the prompt the model reads before it builds one. A
+            # ladder the model is graded against and a ladder it is told
+            # about have to be the same ladder.
+            from delfin.tools._science_rules.excited import ladder_text
+            return ladder_text()
         return None
 
     def _fill_generated_blocks(self, text: str) -> str:
