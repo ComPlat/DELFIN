@@ -8915,7 +8915,7 @@ def _mcp_calculation_verdict(base: str, args: dict):
 
 
 def execute_mcp_call(name: str, arguments: dict, permissions,
-                     doc_executor, *, workspace=None) -> str:
+                     doc_executor) -> str:
     """The ONE MCP dispatch: gate, call, wrap, post-hooks.
 
     Input: a namespaced tool name, its arguments, the session's
@@ -8959,8 +8959,11 @@ def execute_mcp_call(name: str, arguments: dict, permissions,
     else:
         try:
             from . import mcp_client as _mcp
-            ws = (workspace if workspace is not None
-                  else _hook_workspace(permissions))
+            # Always through the guard, with no way to hand a workspace
+            # past it: an optional override here was unused and was a way
+            # round the one check that keeps a project's own MCP config
+            # from starting processes.
+            ws = _hook_workspace(permissions)
             sid = str(getattr(permissions, "task_session_id", "") or "")
             result = _wrap_untrusted(
                 _mcp.get_registry(ws).call(name, arguments,
