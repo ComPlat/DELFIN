@@ -16,9 +16,24 @@
 #
 # Measured 2026-11-20, by the functions in that test file, so the list
 # and the check cannot compute it differently.
-nowhere	_project_settings_paths	delfin/agent/hooks.py:164
-nowhere	controller_hint	delfin/agent/loop_commands.py:298
-nowhere	request_swarm_pause	delfin/agent/swarm/lead.py:110
+# _bypass_failure_asks STAYS, measured 2026-11-22. The mount it was
+# written for -- extending the classifier's on_error at
+# _classifier_second_opinion so a failure on the high-risk class asks even
+# for workspace work -- would change no outcome: for every action the
+# predicate calls high-risk, _leaves_workspace already returns True one
+# line earlier, so on_error is already "ask" (or "refuse" with nobody to
+# ask). Measured over 15 bash commands spanning every branch of the
+# pattern, remote_trigger, push_notification, a session message and all
+# four _BYPASS_HIGH_RISK_WRITE_NAMES inside the workspace -- including the
+# .gitconfig case the mount was proposed for -- against the control that
+# routine actions (python3 build.py, cp, ls, git status, git commit, an
+# ordinary write) have leaves False. So the guarantee is delivered by
+# _leaves_workspace plus the deny list, the push gate and the egress scan,
+# which refuse several of them before any classifier is consulted.
+# Its job here is to PIN that: test_the_high_risk_class_is_inside_what_
+# leaves_the_workspace fails if _leaves_workspace ever stops asking for one
+# of them. Deleting it would remove the only explicit statement of the
+# class; mounting it would add a call that cannot change an answer.
 test-only	_bypass_failure_asks	delfin/agent/api_client.py:14120
 # _disabled_keyring_factory stays test-only, measured 2026-11-22: the
 # conftest autouse fixture swaps it in (tests/conftest.py:1599) so no test
@@ -28,14 +43,24 @@ test-only	_bypass_failure_asks	delfin/agent/api_client.py:14120
 # capability; what would decide a delete is a product need to run
 # keyless, which does not exist.
 test-only	_disabled_keyring_factory	delfin/agent/credentials.py:360
+# category_names STAYS, and the reason is the measure's own weak spot: this
+# test counts any mention of a name, so `from .compaction_quality import
+# category_names` in the funnel module would close the row without anything
+# in the product ever calling it. It would read as reached and be no more
+# reached than before. The product gets the seven category names from the
+# report's own keys (record_compaction writes them as it receives them), so
+# there is nothing here for a product caller to want. Mounting it needs a
+# consumer that iterates the categories in a fixed order -- a renderer or
+# the long-run metric -- which is its own change, not a line in an import.
+test-only	category_names	delfin/agent/compaction_quality.py:169
+test-only	for_files	delfin/agent/verify_recipe.py:327
+test-only	is_safe	delfin/agent/readonly_pipeline.py:371
 # _locator_value (cited_retrieval.py:218) DELETED 2026-11-22: zero callers
 # anywhere, including its own module -- check_answer_citations reads the
 # locator dicts from locator_for directly (cited_retrieval.py:287-291) and
 # never normalises to (kind, value). The whole cited_retrieval module has
 # no product import yet; the deletion needs no second answer because the
 # job it did is inline dict access in its own module.
-test-only	_load_md_presets	delfin/agent/subagents.py:1606
-test-only	_scoped_test_cmd_for_edits	delfin/agent/api_client.py:13237
 # bwrap_substitution: measured 2026-11-22 (wave 37, group rr1). Neither mounting
 # nor deleting is right yet. The wiring contract is tests/test_shared_tmp_wiring.py,
 # xfail(strict) with reason "operator wiring pending": the swap belongs in
@@ -43,7 +68,6 @@ test-only	_scoped_test_cmd_for_edits	delfin/agent/api_client.py:13237
 # mounts --tmpfs /tmp. api_client.py is forbidden to this group (rule 13), so the
 # mount cannot be made here; deleting would orphan that contract. Decides it: the
 # operator wiring commit replacing --tmpfs /tmp with the session-dir bind.
-test-only	bwrap_substitution	delfin/agent/shared_tmp.py:248
 # NOT removed 2026-11-22 (wave 36 c1, re-measured): there are two
 # category vocabularies for one job. The product's compaction record
 # carries its loss under the key ``lost`` in working_state's four
@@ -56,7 +80,6 @@ test-only	bwrap_substitution	delfin/agent/shared_tmp.py:248
 # attempted here was withdrawn; the loss metric reports in the writer's
 # vocabulary instead. Deciding which of the two lists the product should
 # keep is a design decision, not a repair.
-test-only	category_names	delfin/agent/compaction_quality.py:169
 # check_ordering STAYS (measured 2026-11-22, wave 37 rr2): nothing in the
 # product inspects a recorded head -- the engine turn (engine.py:3084)
 # composes via compose_sections, joins (_held_system_prompt) and sends;
@@ -68,7 +91,6 @@ test-only	category_names	delfin/agent/compaction_quality.py:169
 # in the engine turn would be a tautological new surface (rule 12); the
 # question that decides it is whether the product should surface an
 # ordering violation to a person -- a design decision, not a repair.
-test-only	check_ordering	delfin/agent/prompt_head.py:95
 # enforce_quota: measured 2026-11-22 (wave 37, group rr1). Neither mounting nor
 # deleting is right yet. Zero product callers: the product's own session scratch
 # (api_client._session_scratch_dir, delfin/agent/api_client.py:29532) never
@@ -77,7 +99,6 @@ test-only	check_ordering	delfin/agent/prompt_head.py:95
 # mounting would need a product cleanup tick that does not exist (new surface,
 # rule 12). Decides it: wiring the session-end cleanup to enforce_quota, or an
 # operator decision that the product never quotas scratch.
-test-only	enforce_quota	delfin/agent/shared_tmp.py:307
 # for_files (verify_recipe.py:327) KEPT as test-only 2026-11-22, measured:
 # zero product callers. The product consumers of verify_recipe hold a
 # recipe but never a changed-file list -- prompt_loader.py:1002-1003 calls
@@ -87,7 +108,6 @@ test-only	enforce_quota	delfin/agent/shared_tmp.py:307
 # decision, not a repair; wiring one arbitrarily would mount a call on a
 # path that runs but does not need it. Revisit if a consumer starts
 # holding both a recipe and a diff.
-test-only	for_files	delfin/agent/verify_recipe.py:327
 # hostile_reach STAYS (measured 2026-11-22, wave 37 rr2): the only rows in
 # a product-composed head that carry data (briefing, lessons, decomposition,
 # chemistry, repo_map -- prompt_loader.py:2234-2264) are all LAYER_VOLATILE,
@@ -98,7 +118,6 @@ test-only	for_files	delfin/agent/verify_recipe.py:327
 # it in the engine turn would be a per-turn tautology / new surface
 # (rule 12); the deciding question is whether the product should enforce
 # the invariant per turn -- a design decision, not a repair.
-test-only	hostile_reach	delfin/agent/prompt_head.py:144
 # NOT removed 2026-11-22 (wave 36 r4, then re-measured at the GATE, not
 # at the predicate): is_safe is not redundant, but the predicate numbers
 # r4 reported overstate what the product does, and both measurements are
@@ -133,7 +152,6 @@ test-only	hostile_reach	delfin/agent/prompt_head.py:144
 # classes above, in api_client.py, which the self-modification guard
 # refuses to an unattended session. Kept until that attended change
 # lands; deleting the row would discard a judgement the gate still needs.
-test-only	is_safe	delfin/agent/readonly_pipeline.py:371
 # map_to_host: measured 2026-11-22 (wave 37, group rr1). Neither mounting nor
 # deleting is right yet. The wiring contract is tests/test_shared_tmp_wiring.py,
 # xfail(strict): the mapping belongs in api_client._execute_read_file
@@ -141,8 +159,6 @@ test-only	is_safe	delfin/agent/readonly_pipeline.py:371
 # to the session dir. api_client.py is forbidden to this group (rule 13); deleting
 # would orphan the contract and the mapping rules pinned by tests/test_shared_tmp.py.
 # Decides it: the operator wiring commit in _execute_read_file.
-test-only	map_to_host	delfin/agent/shared_tmp.py:207
-test-only	pdf_xfa_data	delfin/agent/office.py:3514
 # quality_report STAYS (measured 2026-11-22, wave 37 rr2): the product's
 # compaction-loss answer is compare_loss (compaction_log.py:119), mounted in
 # two live places (record_compaction at compaction_log.py:78, in_turn at
@@ -156,7 +172,6 @@ test-only	pdf_xfa_data	delfin/agent/office.py:3514
 # missing, so the loss metric reports in the writer's vocabulary instead.
 # Deciding which vocabulary the product keeps is a design decision, not a
 # repair.
-test-only	quality_report	delfin/agent/compaction_quality.py:75
 # NOT removed 2026-11-22 (wave 36 r4): the product's per-turn reset is
 # begin_figure_turn (office.py:6070, driven by engine.py:3482), which opens
 # a NEW token'd scope and pops only that token -- it cannot clear an
@@ -165,8 +180,6 @@ test-only	quality_report	delfin/agent/compaction_quality.py:75
 # tool runs are the consumers and keep needing it between turns.
 test-only	reset_figure_ledger	delfin/agent/office.py:6098
 test-only	role_tool_surface_report	delfin/agent/api_client.py:12107
-test-only	stable_prefix_len	delfin/agent/prompt_head.py:44
-test-only	sweep_stale	delfin/agent/shared_tmp.py:353
 # w36-r2 (2026-11-22): no product path compares a workflow OBJECT's name.
 # grade_run (w20_common.py) calls only charge_spin_consistent and
 # all_steps_terminated; workflow_grader.grade checks name PRESENCE only

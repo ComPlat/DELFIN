@@ -310,6 +310,18 @@ _NOT_CARRIED = {
     #    a second folder. Per turn for the same reason as the language
     #    latch above it.
     "_stray_write_noted",
+    #    The request-head check's per-turn diagnostics, from the
+    #    prompt_head mount: findings of the last composed turn, the rows
+    #    of that turn (for the cross-turn prefix), the cross-turn prefix
+    #    report, and the set of findings already warned about. Not carried: a
+    #    resumed session composes a fresh first turn anyway, so the
+    #    report would be recomputed from that turn's rows; carrying the
+    #    last turn's rows across a resume would hold prompt-sized bytes
+    #    in a resumed session's memory for nothing.
+    "_prompt_head_findings",
+    "_prompt_head_last_sections",
+    "_prompt_head_prefix",
+    "_prompt_head_noted",
     #    Whether THIS turn's message was a greeting and nothing else.
     #    Read by the cross-session task notice, which must not hand a
     #    backlog to a model that was only greeted.

@@ -106,6 +106,25 @@ _NO_PROGRAM_FLAGS = {
     "blame": ("--no-textconv",),
     "grep": ("--no-textconv",),
 }
+
+#: Configuration ``-c`` pairs passed before a subcommand.
+#:
+#: ``git grep`` runs one thread per core unless told otherwise, and when a
+#: thread cannot be created it exits 128 with "fatal: grep: failed to create
+#: thread: Resource temporarily unavailable" -- no match and no "no match".
+#: Measured 2026-11-20 on a 384-core workstation at load 192, inside an agent
+#: session whose thread budget was already partly spent: `git grep -q -E
+#: '(def|class) present\b'` in a two-file repository exited 128, and the same
+#: command with grep.threads=1 exited 0. Every git grep behind this module
+#: failed there, which knowledge_curation reads as "cannot tell" and so
+#: silently reported no broken function references.
+#:
+#: Four: enough to keep a search parallel over a large tree, few enough that
+#: the pool is not a function of what the host reports. This bounds this
+#: module's reads of the repository, not the user's own git commands.
+_SUBCOMMAND_CONFIG = {
+    "grep": ("grep.threads=4",),
+}
 _SUBMODULE_AWARE = frozenset({"status", "diff"})
 
 _DEFAULT_TIMEOUT_S = 30.0
@@ -222,6 +241,8 @@ def argv_for(args: Sequence[str], cwd: str, *, timeout: float = 10.0,
     if not args:
         return argv
     sub, rest = args[0], args[1:]
+    for kv in _SUBCOMMAND_CONFIG.get(sub, ()):
+        argv += ["-c", kv]
     argv.append(sub)
     argv += list(_NO_PROGRAM_FLAGS.get(sub, ()))
     if sub in _SUBMODULE_AWARE:

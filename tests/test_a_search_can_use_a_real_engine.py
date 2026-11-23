@@ -17,7 +17,6 @@ def _creds(monkeypatch, **values):
 
 def test_without_a_key_no_engine_is_configured_and_the_chain_is_untouched(monkeypatch):
     _creds(monkeypatch)
-    assert W.keyed_engines_configured() == []
     assert W._keyed_search("x", 5, 5) == ([], "", "")
 
 

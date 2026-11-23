@@ -62,7 +62,7 @@ import pytest
 from delfin.agent import subagents as S
 from delfin.agent.skills import _parse_frontmatter
 
-# The glob the product uses in ``_load_md_presets`` / ``_build_preset_registry``.
+# The glob the product uses in ``_build_preset_registry``.
 _PRESET_GLOB = "*_subagent.md"
 
 

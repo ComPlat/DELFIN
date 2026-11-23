@@ -735,7 +735,16 @@ _KEYED_ENGINES = (("google", _google_cse_search), ("brave", _brave_search))
 
 
 def keyed_engines_configured() -> list[str]:
-    """Which keyed engines have a key here, by name."""
+    """Which keyed engines have a key here, by name.
+
+    Restored in the combined tree. Two branches judged this name on the
+    same day and both were right on their own branch: one measured it
+    unreached and deleted it as test-only, the other mounted it in
+    ``_keyed_search`` below. Together the deletion loses -- a production
+    caller exists now, so the name is reached and removing it removes
+    something that is used. Caught by the F821 check over the merged
+    tree, which is the only place the contradiction is visible.
+    """
     out = []
     if _credential("GOOGLE_CSE_API_KEY") and _credential("GOOGLE_CSE_CX"):
         out.append("google")
