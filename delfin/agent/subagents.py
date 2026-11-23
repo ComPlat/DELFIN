@@ -2005,6 +2005,26 @@ def _known_preset_tool_names() -> frozenset[str]:
                 names.add(f"mcp__delfin-ops__{_base}")
     except Exception:
         pass
+    # The PIPELINE server's tools, derived the same way. This mechanism
+    # knew one of DELFIN's two own servers: delfin-ops was derived and
+    # delfin-tools was not, so all 26 of resolve_spec, validate_spec,
+    # run_application, run_diagnostics, new_capability_template and the
+    # rest were "not a known tool" and a preset listing them was called
+    # invalid. That is the server a specialist needs in order to run a
+    # calculation through the adapters instead of writing engine input by
+    # hand, so the one preset that most needs a tool list could not have
+    # one. Its handlers are named h_<tool> where the ops server uses
+    # tool_<tool>; derived from the module for the same reason -- a tool
+    # it registers later stays known automatically.
+    try:
+        from delfin.tools import mcp_server as _tools_server
+        for _n in dir(_tools_server):
+            if _n.startswith("h_"):
+                _base = _n[len("h_"):]
+                names.add(_base)
+                names.add(f"mcp__delfin-tools__{_base}")
+    except Exception:
+        pass
     # The read-only surface the looking presets share, from the constant
     # that defines it.
     #

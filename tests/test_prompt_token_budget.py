@@ -277,7 +277,20 @@ def test_a_foreign_workspace_receives_less_than_the_delfin_tree(stack):
         # capability paid 70 back by cutting the prose the table makes
         # redundant and shortening every cue to one clause of at most 64
         # characters; the remaining 111 is what the six roles cost.
-        ("solo_agent", "solo", ["solo_agent"], 11720),
+        # 11720 -> 11736 (2026-11-23): one more rendered row, for the
+        # `workflow-operator` specialist. Measured 16 tokens, and they
+        # could not be paid back. The table's own truncation makes the
+        # description nearly free -- cutting it from 146 to 66
+        # characters saved 3 tokens -- so the cost is the row itself:
+        # the name plus one clause of cue. The only way to pay would be
+        # to shorten _CUE_LIMIT for every preset (64 -> 50 saves 32
+        # tokens and truncates 13 of 18 cues), and this table exists
+        # BECAUSE a role without a cue is not used: with six roles
+        # unnamed in the prompt, 44 of 50 dispatches went to `explore`,
+        # the row with the broadest cue. Trading every other
+        # specialist's cue for this one's row would buy the tokens by
+        # spending the thing they pay for.
+        ("solo_agent", "solo", ["solo_agent"], 11736),
         ("dashboard_agent", "dashboard", ["dashboard_agent"], 10400),
     ],
 )
