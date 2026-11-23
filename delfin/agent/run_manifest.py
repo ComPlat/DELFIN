@@ -257,13 +257,23 @@ def _ledger(unresolved: list[str], session_id: str) -> dict[str, Any]:
 
 
 def _contract(unresolved: list[str], workspace: Optional[Path],
-              expected_steps: Optional[int]) -> dict[str, Any]:
+              expected_steps: Optional[int],
+              window: Optional[tuple[float, float]] = None,
+              ) -> dict[str, Any]:
     """The execution contract over the files the run left behind.
 
     This is the manifest's only judgement, and it is the one the field
     asks for: an oracle that reads the artifacts rather than the
     model's account of them. An unjudged flag is not a pass, so the
     flags are carried as they are -- True, False or None.
+
+    ``window`` is the run's own ``(started_at, ended_at)``, already
+    established above from the session's activity. The egress flag is
+    judged from the audit log over exactly that window: without it the
+    flag was None for EVERY run DELFIN has ever made, because nothing
+    in the product filled ``egress_events`` -- the parameter existed and
+    had no caller. With no window the flag stays None, which is the
+    honest answer and not a pass.
     """
     out: dict[str, Any] = {"flags": None, "certified": None, "failed": None,
                            "unjudged": None, "problems": None,
@@ -275,7 +285,14 @@ def _contract(unresolved: list[str], workspace: Optional[Path],
     try:
         from . import run_evidence
         ev = run_evidence.collect(workspace)
-        con = run_evidence.contract(ev, expected_steps=expected_steps)
+        egress = None
+        if window and window[0] and window[1] and window[1] >= window[0]:
+            # Returns None wherever absence cannot be demonstrated (no
+            # log, or a log that begins after the run did), so a rotated
+            # log leaves the flag unjudged instead of quiet.
+            egress = run_evidence.egress_in_window(window[0], window[1])
+        con = run_evidence.contract(ev, expected_steps=expected_steps,
+                                    egress_events=egress)
         out.update({
             "flags": dict(con.flags),
             "certified": con.certified(),
@@ -379,7 +396,9 @@ def build(*, session_id: str = "", workspace: Any = None,
         "environment": _environment(unresolved),
         "activity": activity,
         "ledger": _ledger(unresolved, sid) if sid else {},
-        "contract": _contract(unresolved, ws, expected_steps),
+        "contract": _contract(unresolved, ws, expected_steps,
+                              window=((started, ended)
+                                      if started and ended else None)),
         "workspace": _workspace(unresolved, ws),
     }
     if not str(termination or "").strip():

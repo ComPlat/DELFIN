@@ -292,6 +292,89 @@ def contract(ev: "Evidence", *, expected_steps: Optional[int] = None,
                     problems=problems, notes=notes)
 
 
+# ---------------------------------------------------------------------------
+# The egress half, which the files cannot answer
+# ---------------------------------------------------------------------------
+
+#: Audit-record tools and security-event kinds that mean data left the
+#: machine or tried to. Taken from security_events.known_kinds(), where
+#: they are declared; ``network`` is included because a command whose
+#: network was held by the proxy is a reach for the network either way.
+EGRESS_KINDS: frozenset = frozenset({
+    "egress", "egress_asked", "egress_blocked", "egress_payload_refused",
+    "egress_sent", "egress_upload", "egress_upload_refused", "network",
+})
+
+
+def _record_ts(rec: Dict[str, Any]) -> Optional[float]:
+    """An audit record's timestamp as a POSIX float, or None."""
+    raw = str(rec.get("ts") or "")
+    if not raw:
+        return None
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(raw.rstrip("Z"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:                                   # noqa: BLE001
+        return None
+
+
+def egress_in_window(start: float, end: float, *,
+                     log_path: Optional[Any] = None,
+                     limit: int = 100000) -> Optional[List[Dict[str, Any]]]:
+    """Egress records in ``[start, end]``, or None when not judgeable.
+
+    Input: a time window as POSIX seconds and an optional audit-log
+    path. Output: the matching records, or ``None``.
+
+    NONE IS THE ANSWER WHENEVER ABSENCE CANNOT BE DEMONSTRATED, and that
+    is the whole value of this function. An empty list says "the log
+    covers this window and holds no egress in it". None says "this
+    cannot be judged", which keeps ``no_egress`` unjudged and
+    ``certified`` False. The two must never be confused: an empty
+    bounded read looks exactly like a quiet run.
+
+    None is returned when the log is absent or unreadable, and when the
+    log's own oldest record is NEWER than ``start`` -- the window then
+    reaches back before anything this log can speak about, which happens
+    after a rotation. A caller that treated that as "no egress" would
+    certify a run on a log that had been rotated away.
+    """
+    try:
+        from . import audit_log
+    except Exception:                                   # noqa: BLE001
+        return None
+    try:
+        kwargs = {"log_path": Path(log_path)} if log_path else {}
+        records = audit_log.read_last_n(limit, **kwargs)
+    except Exception:                                   # noqa: BLE001
+        return None
+    if not records:
+        # No readable record at all: absence of a log is not absence of
+        # egress.
+        return None
+
+    stamps = [ts for ts in (_record_ts(r) for r in records) if ts is not None]
+    if not stamps:
+        return None
+    if min(stamps) > start:
+        # The log begins after the run did; what happened before its
+        # first record is outside what it can testify to.
+        return None
+
+    out: List[Dict[str, Any]] = []
+    for rec in records:
+        ts = _record_ts(rec)
+        if ts is None or not (start <= ts <= end):
+            continue
+        kind = str(rec.get("kind") or rec.get("tool") or "")
+        if kind in EGRESS_KINDS:
+            out.append(rec)
+    return out
+
+
 def _wallclock(ev: "Evidence", steps: List[Dict[str, Any]]):
     """(flag, problems, notes) for the wall-clock half of the contract.
 
