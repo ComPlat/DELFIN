@@ -4988,7 +4988,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     from . import doctor as _doc
 
     workspace = getattr(args, "workspace", "") or None
-    results = _doc.run_doctor(workspace)
+    # fast=False is the doctor's network path. No caller reached it before
+    # --live: MCP reachability and the live key checks existed and nothing
+    # in the product could run them.
+    results = _doc.run_doctor(
+        workspace, fast=not getattr(args, "live", False))
     if not getattr(args, "repair", False):
         print(_doc.format_doctor(results))
         return 1 if any(r.get("status") == "FAIL" for r in results) else 0
@@ -6598,6 +6602,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor.add_argument("--workspace", default="",
                         help="Workspace directory (default: current dir)")
+    doctor.add_argument("--live", action="store_true",
+                        help="Also ask the network: probe the MCP servers, "
+                             "check each stored provider key with its "
+                             "endpoint, and send the configured model one "
+                             "short prompt to see that it answers")
     doctor.add_argument("--repair", action="store_true",
                         help="Ask about, and apply with approval, every "
                              "step that fixes a WARN/FAIL; refuses when stdin "
