@@ -1100,7 +1100,46 @@ def _end_session(engine, sid: str, repo: Path, *, task: str, failed: bool,
         from .eval_loop import maybe_run_scheduled
         maybe_run_scheduled()
 
+    def _manifest_stage(sid_, engine_, repo_):
+        """Write the run manifest; the settings only this caller knows.
+
+        The sampling settings and the model switches live on the engine
+        and its client, not in the session record, so they are read here
+        and passed in. The termination label is the engine's own last
+        stop reason -- the record must distinguish a run that finished
+        from one that hit a ceiling, and an absent reason is reported
+        absent rather than read as "done".
+        """
+        from .run_manifest import write_run_manifest
+        client = getattr(engine_, "client", None)
+        write_run_manifest(
+            str(sid_ or getattr(engine_, "session_id", "") or ""),
+            workspace=repo_,
+            termination=str(
+                getattr(engine_, "last_turn_stop_reason", "") or ""),
+            settings={
+                "model": getattr(engine_, "model", None)
+                or getattr(client, "model", None),
+                "provider": getattr(engine_, "provider", None)
+                or getattr(client, "provider", None),
+                "temperature": getattr(engine_, "temperature", None)
+                or getattr(client, "temperature", None),
+                "seed": getattr(engine_, "seed", None)
+                or getattr(client, "seed", None),
+                "model_switches": getattr(
+                    client, "_turn_model_switches", None) or [],
+            },
+            # The role lives on the permissions, not on the engine.
+            role=str(getattr(getattr(engine_, "kit_permissions", None),
+                             "agent_role", "") or ""))
+
     _session_end_stage("report", lambda: _report_stage(sid, engine))
+    # The run's manifest, beside its report: what produced the result,
+    # rather than what the session did. The report cannot answer whether
+    # someone else could arrive here again -- the commit, the model, the
+    # prompt the model read, the engine versions and the execution
+    # contract over the workspace decide that, and they are not activity.
+    _session_end_stage("manifest", lambda: _manifest_stage(sid, engine, repo))
     # Shared session-end stage: skill learning, same hook as the CLI
     # chat and the dashboard. Best-effort; never breaks the run.
     _session_end_stage("skill learning", lambda: _learn_stage(engine, sid))
