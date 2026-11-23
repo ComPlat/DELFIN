@@ -110,11 +110,38 @@ QM_OUTPUT_RE = re.compile(
 QM_SIGNATURE_RES = tuple(re.compile(s, re.IGNORECASE)
                          for s in QM_OUTPUT_SIGNATURES)
 
-#: Distinct signatures a file needs before it is refused. One is a parser or
-#: prose; two or more is an output block. Single hits are still REPORTED --
-#: demoted to an advisory, never silenced, because a signature nobody sees is
-#: a signature nobody acts on.
+#: Extensions that exist to HOLD engine output. In one of these, a single
+#: signature is the thing itself: nobody writes a parser into a .out file.
+#: One hit refuses, whatever its spelling -- which is what the adversarial
+#: probes require (tests/test_lc1_adversarial_guard.py): re-wrapped
+#: whitespace, lowercase prose and truncated continuations are the same DATA
+#: when they sit in an output file.
+QM_OUTPUT_SUFFIXES: frozenset = frozenset({
+    ".out", ".log", ".dat", ".engrad", ".hess", ".gbw", ".cube", ".nbo",
+    ".property.txt", ".densities", ".interp", ".smd", ".bibtex",
+})
+
+#: Everywhere else -- source, notebooks, docs, fixtures, corpora -- a file
+#: needs this many DISTINCT signatures before it is refused. One is a parser
+#: looking for the marker or a sentence mentioning it:
+#:
+#:     return '****ORCA TERMINATED NORMALLY****' in text
+#:
+#: Single hits there are still REPORTED, demoted to an advisory and never
+#: silenced, because a signature nobody sees is a signature nobody acts on.
+#:
+#: This is the distinction the repository was missing, and both halves of it
+#: were already asserted in opposite directions: the adversarial probes
+#: demand that prose be caught, and two files sat in SELF_EXEMPT precisely
+#: because their prose WAS caught. Neither side was wrong about its own
+#: case; the rule just could not tell an output file from a source file.
 QM_DISTINCT_REQUIRED = 2
+
+
+def _is_output_file(relpath: str) -> bool:
+    """Whether *relpath* is a file whose purpose is to hold engine output."""
+    low = str(relpath).lower()
+    return any(low.endswith(suf) for suf in QM_OUTPUT_SUFFIXES)
 
 # committed-file PATH patterns that must never enter the public repo.
 FORBIDDEN_PATH_RE = re.compile(
@@ -206,12 +233,15 @@ def scan_path_text(relpath: str, text: str,
                 break
 
     kinds = {kind for _, _, kind in hits}
-    if len(kinds) >= QM_DISTINCT_REQUIRED:
+    required = 1 if _is_output_file(relpath) else QM_DISTINCT_REQUIRED
+    if len(kinds) >= required:
         for lineno, matched, _ in hits:
             findings.append((
                 lineno,
                 f"looks like licensed QM program output ('{matched}'; "
-                f"{len(kinds)} distinct signatures in this file)"))
+                + (f"an output file by its name"
+                   if required == 1 else
+                   f"{len(kinds)} distinct signatures in this file") + ")"))
     elif hits and advisories is not None:
         lineno, matched, _ = hits[0]
         advisories.append((
@@ -358,10 +388,24 @@ def _scan_one(rel: str, text: str,
     signatures: a parser that merely looks for the marker is an advisory,
     not a refusal.
     """
-    findings = list(scan_path_text(rel, text, advisories))
     if rel.endswith(".py"):
-        findings.extend(scan_py_source(rel, text))
-    return findings
+        # NOT scanned for QM output, and the attempt to do so was
+        # measured and withdrawn. A source file holds these markers as
+        # VOCABULARY: a parser knows the banner and the termination line
+        # because it looks for them, a benchmark generator writes a
+        # synthetic output block, and orca_recovery.py knows the error
+        # signatures by name. Running the output scan over .py files
+        # flagged 142 tracked files, among them api.py, orca_read.py,
+        # the dashboard and most of the test suite.
+        #
+        # Signature counting cannot separate a pasted output block from
+        # a parser, because both legitimately carry several. A .py file
+        # that holds real engine output is therefore NOT caught by this
+        # family -- stated here rather than left to be discovered, and
+        # the path rules still refuse the binary artifacts (.gbw/.hess/
+        # .engrad) whatever they are called.
+        return scan_py_source(rel, text)
+    return list(scan_path_text(rel, text, advisories))
 
 
 def run_package() -> int:

@@ -99,24 +99,64 @@ def test_the_threshold_is_what_the_rule_says_it_is(lg):
     assert lg.scan_path_text("a.txt", two, []) != []
 
 
-def test_a_py_file_with_pasted_output_is_now_scanned(lg):
-    """The gap the threshold allowed closing: scan_py_source checks
-    imports and CCDC strings only, so this file was never examined for
-    QM output at all."""
+def test_a_source_file_is_not_scanned_for_qm_output_and_why(lg):
+    """The gap that cannot be closed this way, measured and recorded.
+
+    Extending the output scan to .py files flagged 142 tracked files --
+    api.py, orca_read.py, the dashboard, the benchmark generators and
+    most of the test suite -- because a source file holds these markers
+    as VOCABULARY. A parser knows the banner and the termination line
+    because it looks for them; orca_recovery.py knows the error
+    signatures by name; a benchmark generator writes a synthetic output
+    block on purpose. Signature counting cannot separate those from a
+    paste, since both carry several.
+
+    So a .py file holding real engine output is not caught by this
+    family. Asserted so the limit is known rather than discovered, and
+    the path rules still refuse the binary artifacts whatever they are
+    named.
+    """
     src = f'LOG = """\n{REAL_OUTPUT}"""\n'
-    assert lg.scan_py_source("delfin/x.py", src) == [], (
-        "scan_py_source is unchanged: it does not look for QM output")
-    assert lg._scan_one("delfin/x.py", src, []), (
-        "the combined scan must see it")
+    assert lg._scan_one("delfin/x.py", src, []) == []
+    # what still refuses regardless of content:
+    assert lg.check_path("runs/job.gbw") is not None
+    assert lg.check_path("runs/job.hess") is not None
 
 
-def test_a_footer_alone_is_not_refused_and_that_is_the_known_limit(lg):
-    """One line is indistinguishable from a parser holding that line.
-    Asserted so the limit is documented rather than discovered."""
+def test_a_footer_alone_in_an_output_file_is_refused(lg):
+    """THE distinction. Nobody writes a parser into a .out file, so one
+    signature there is the thing itself -- whatever its spelling.
+
+    Both halves of this rule were already asserted in the repository,
+    in opposite directions: the adversarial probes
+    (test_lc1_adversarial_guard.py) demand that re-wrapped whitespace
+    and lowercase prose be caught, and two files sat in SELF_EXEMPT
+    precisely because their prose WAS caught. Neither side was wrong
+    about its own case; the rule could not tell an output file from a
+    source file.
+    """
+    footer = "                   ****ORCA TERMINATED NORMALLY****\n"
+    assert lg.scan_path_text("run.out", footer, []) != []
+    assert lg.scan_path_text("x.log", "  ORCA  TERMINATED  NORMALLY\n",
+                             []) != []
+
+
+def test_the_same_line_in_a_source_file_is_an_advisory(lg):
+    """One line is indistinguishable from a parser holding that line, so
+    outside an output file it is reported and not refused. This is the
+    known limit, documented rather than discovered."""
     advisories: list = []
     footer = "                   ****ORCA TERMINATED NORMALLY****\n"
     assert lg.scan_path_text("x.txt", footer, advisories) == []
     assert advisories
+
+
+def test_the_output_suffixes_cover_what_the_engines_write(lg):
+    """A suffix missing here is an output file judged as source."""
+    for suffix in (".out", ".log", ".dat", ".hess", ".engrad", ".gbw"):
+        assert lg._is_output_file(f"x{suffix}"), suffix
+    for suffix in (".py", ".md", ".json", ".ipynb", ".txt", ".yaml"):
+        assert not lg._is_output_file(f"x{suffix}"), suffix
 
 
 def test_the_synthetic_marker_still_exempts_a_whole_fixture(lg):
