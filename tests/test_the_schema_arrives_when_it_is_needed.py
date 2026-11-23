@@ -80,7 +80,10 @@ TOTAL_TARGET_TOKENS = SURFACE_TARGET_TOKENS
 
 
 def _surface():
-    return ac.role_tool_surface_report(["solo_agent"])["solo_agent"]
+    # What SHIPS, which this file is about; the report's default is what
+    # a role can call.
+    return ac.role_tool_surface_report(["solo_agent"],
+                                       defer=True)["solo_agent"]
 
 
 # --- the cost ---------------------------------------------------------
