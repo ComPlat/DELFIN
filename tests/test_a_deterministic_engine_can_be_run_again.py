@@ -34,9 +34,7 @@ machine with no quantum chemistry program installed.
 from __future__ import annotations
 
 import hashlib
-import os
 import stat
-import sys
 from pathlib import Path
 
 import pytest
@@ -47,7 +45,7 @@ _E1 = -76.12345678
 _E2 = -76.12349999        # 4.3e-5 Ha away: outside the default tolerance
 
 
-def _stub(tmp_path, *, energy=_E1, version="6.1.0", sleep=0,
+def _stub(tmp_path, *, energy=_E1, version="6.1.0",
           emit_energy=True) -> Path:
     """An executable that writes an ORCA-shaped output beside its input.
 
@@ -58,8 +56,6 @@ def _stub(tmp_path, *, energy=_E1, version="6.1.0", sleep=0,
         "#!/bin/sh",
         'name="${1%.inp}"',
     ]
-    if sleep:
-        body.append(f"sleep {sleep}")
     body.append(f'echo "           Program Version {version}  -  RELEASE  -"'
                 f' > "$name.out"')
     if emit_energy:
@@ -164,16 +160,30 @@ def test_no_engine_is_unavailable_and_not_a_pass(tmp_path):
     assert rep.reproduced() is None
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="sh stub")
-def test_a_timeout_is_unavailable_and_not_a_difference(tmp_path):
+def test_a_timeout_is_unavailable_and_not_a_difference(tmp_path,
+                                                      monkeypatch):
     """A calculation that did not finish in the time allowed has not
-    disagreed with anything."""
+    disagreed with anything.
+
+    The timeout is raised rather than waited for: the branch under test
+    is OUR handling of it, and a test that sleeps a real child process
+    would need a shell the machine may not have. A skip runs nowhere,
+    which this repository's machine ratchet refuses for exactly that
+    reason.
+    """
+    import subprocess as _sp
+
+    def _timeout(*_a, **_k):
+        raise _sp.TimeoutExpired(cmd="stub", timeout=0.5)
+
+    monkeypatch.setattr(run_rerun.subprocess, "run", _timeout)
     ws = _workspace(tmp_path)
-    rep = run_rerun.rerun(ws, executable=str(_stub(tmp_path, sleep=5)),
+    rep = run_rerun.rerun(ws, executable=str(_stub(tmp_path)),
                           timeout_s=0.5)
     v = rep.verdicts[0]
     assert v.verdict == run_rerun.UNAVAILABLE
     assert "did not finish" in v.note
+    assert v.seconds == pytest.approx(0.5)
     assert rep.reproduced() is None
 
 
