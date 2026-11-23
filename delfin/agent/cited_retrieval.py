@@ -215,13 +215,6 @@ class Claim:
         return f"{icon} {self.message}"
 
 
-def _locator_value(locator: dict | None) -> tuple[str, Any] | None:
-    """Normalise one section's locator to (kind, value), or None."""
-    if not locator:
-        return None
-    return (locator.get("kind"), locator.get("value"))
-
-
 def check_answer_citations(answer_text: str, *, corpus: dict) -> list[Claim]:
     """Audit the citation markers an answer declares against the local index.
 

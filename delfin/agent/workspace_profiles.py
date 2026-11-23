@@ -215,9 +215,3 @@ def set_from_word(workspace: str, word: str) -> dict:
     if word not in mapping:
         raise ValueError("profil <ordner> frei|standard")
     return set_profile(workspace, mapping[word])
-
-
-def set_for_workspace_words(workspace: str, word: str) -> dict:
-    """Like :func:`set_from_word`, but only the user (outside an agent
-    session) may raise the profile to ``free``."""
-    return set_from_word(workspace, word)

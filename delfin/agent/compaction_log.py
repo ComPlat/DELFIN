@@ -28,6 +28,21 @@ _LOG_DIR = state_root() / "compaction_log"
 
 _MAX_RECORD_CHARS = 2000
 
+#: The categories one compaction's loss is reported in, in report order.
+#: One definition, because two of them drift: the extractors below and
+#: every reader of a record's ``lost`` key read this tuple and nothing
+#: else. It is the vocabulary of ``working_state``'s extractors (what the
+#: surviving state block is built from), which is NOT
+#: ``compaction_quality.category_names()`` -- that is a second, broader
+#: keep-list vocabulary with no writer on this path.
+LOSS_CATEGORIES: tuple[str, ...] = ("denials", "tests", "files",
+                                    "instructions")
+
+
+def loss_categories() -> tuple[str, ...]:
+    """The category names a record's ``lost`` key carries, in order."""
+    return LOSS_CATEGORIES
+
 
 def _log_path(session_id: str) -> Path:
     safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in session_id)
@@ -78,8 +93,16 @@ def record_compaction(
         lost = compare_loss(
             compacted_texts, state_block=state_block,
             summary_text=summary_text)
+        # ``total`` is the number of facts EXAMINED in this category,
+        # ``n_lost`` the number that survived nowhere, and ``lost`` their
+        # names, truncated to ten. n_lost is recorded because the
+        # truncation is lossy in the one direction that matters: without
+        # it a record of ten names cannot say whether ten or fifty facts
+        # were dropped, and a reader counting the names would report the
+        # truncation limit as the loss.
         record["lost"] = {
-            cat: {"total": v["total"], "lost": v["lost"][:10]}
+            cat: {"total": v["total"], "n_lost": len(v["lost"]),
+                  "lost": v["lost"][:10]}
             for cat, v in lost.items()
         }
     except Exception:
@@ -151,12 +174,13 @@ def compare_loss(
         lost = [f for f in facts if f not in carried]
         return {"total": len(facts), "lost": lost}
 
-    return {
-        "denials": _category(_ws._denials),
-        "tests": _category(_ws._test_outcomes),
-        "files": _category(_ws._touched_names),
-        "instructions": _category(_ws._instructions),
+    extractors = {
+        "denials": _ws._denials,
+        "tests": _ws._test_outcomes,
+        "files": _ws._touched_names,
+        "instructions": _ws._instructions,
     }
+    return {cat: _category(extractors[cat]) for cat in LOSS_CATEGORIES}
 
 
 def _state_block_sections(block: str) -> dict[str, int]:
