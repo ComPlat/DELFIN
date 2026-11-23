@@ -1446,8 +1446,30 @@ class OrbitalEnergyResult:
     lumo_line: int | None = None
 
 
+#: The marker ORCA writes when a job completed. Kept here rather than
+#: imported so this reader has no import of its own to fail on.
+_ORCA_OK_MARKER = "ORCA TERMINATED NORMALLY"
+
+
 def _read_largest_out(folder: str) -> tuple["Path | None", str, str | None]:
-    """Pick the largest .out, return (path, text, error_or_None)."""
+    """Pick the folder's result output; return (path, text, error_or_None).
+
+    A FINISHED OUTPUT IS PREFERRED OVER A LARGER ONE, and the largest of
+    the finished ones is taken. Size alone picks the wrong file whenever
+    a job was abandoned and rerun: an abandoned run is often BIGGER,
+    because it ran for a long time before it was killed and wrote every
+    SCF cycle while doing so.
+
+    Measured on a real workspace: tddft_pbe0.out was 98,374 bytes and
+    held no absorption block (abandoned mid-SCF), tddft_pbe0_v2.out was
+    86,460 bytes and held the result. Size chose the failure, so every
+    reader built on this one -- eight public functions in this module --
+    reported "no absorption block" while the answer sat beside it.
+
+    Where no output terminated normally the largest is still taken, so a
+    folder of unfinished work reads exactly as before: this prefers a
+    result where one exists and never refuses to read.
+    """
     from pathlib import Path as _P
     p = _P(folder)
     if not p.exists():
@@ -1455,7 +1477,17 @@ def _read_largest_out(folder: str) -> tuple["Path | None", str, str | None]:
     out_files = sorted(p.glob("*.out")) if p.is_dir() else [p]
     if not out_files:
         return None, "", "no ORCA output"
-    target = max(out_files, key=lambda f: f.stat().st_size)
+
+    def _finished(f: "_P") -> bool:
+        try:
+            return _ORCA_OK_MARKER in f.read_text(
+                encoding="utf-8", errors="replace")
+        except Exception:                               # noqa: BLE001
+            return False
+
+    finished = [f for f in out_files if _finished(f)]
+    candidates = finished or out_files
+    target = max(candidates, key=lambda f: f.stat().st_size)
     try:
         text = target.read_text(encoding="utf-8", errors="replace")
     except Exception as exc:

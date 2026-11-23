@@ -106,6 +106,18 @@ FORBIDDEN_PATH_RE = re.compile(
     r"fragment_index_v|"
     r"fragment_index.*\.(json|sqlite|db)$|"
     r"paper_data/|"
+    # LC2: a share-alike reference database, vendored. QUESTDB -- the
+    # obvious source of reference excitation energies (GitHub
+    # pfloos/QUESTDB, Zenodo 10.5281/zenodo.15671385) -- is
+    # CC-BY-SA-4.0, and this repository is LGPL-3.0: committing the data
+    # would put share-alike obligations on everything distributed with
+    # it, which is the conflict LICENSE_GUARD.md's principle forbids.
+    #
+    # A PATH rule and deliberately not a content rule: the comparator
+    # that uses such a set CITES it, and a citation is not a copy. The
+    # reference set is an argument to delfin.agent.reference_oracle, so
+    # it never needs to be in the tree at all.
+    r"questdb|quest[-_]db|quest_db_|"
     r"\.(gbw|hess|engrad)$"          # ORCA binary/vector artifacts (EULA DATA)
     r")",
     re.IGNORECASE,
