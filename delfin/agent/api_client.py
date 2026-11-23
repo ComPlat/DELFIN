@@ -13329,12 +13329,16 @@ def _related_test_files(edited_paths: list, scope) -> list[str]:
 
 def _scoped_test_cmd_for_edits(edited_paths: list, scope) -> str:
     """A pytest command over the test files that cover the edited modules
-    (_related_test_files). Returns "" when no such test file exists."""
+    (_related_test_files). Returns "" when no such test file exists.
+
+    No try/except around the lookup, deliberately: the auto-verify caller
+    treats "" as "no test covers these edits" and says so to the model, and
+    two branches below that sentence becomes the reason a run is skipped.
+    A failure to COMPUTE the list is not the same fact, and reporting it as
+    one is how "no signal" masquerades as "verified".
+    """
     import shlex
-    try:
-        files = _related_test_files(edited_paths, scope)
-    except Exception:
-        return ""
+    files = _related_test_files(edited_paths, scope)
     if not files:
         return ""
     return "python -m pytest -x -q " + " ".join(shlex.quote(f) for f in files)
@@ -13527,15 +13531,13 @@ def _run_auto_verify(edited_paths: list, mode: str, command: str,
             scope = _scoped_test_dir(edited_paths, workspace) or Path(workspace)
             # A configured command is the user's own choice of what "the
             # tests" are, so it is run as given.
-            related = [] if command else _related_test_files(edited_paths, scope)
-            if related:
-                import shlex
-                cmd = "python -m pytest -x -q " + " ".join(
-                    shlex.quote(f) for f in related)
-                st["command"] = cmd
+            scoped = ("" if command
+                      else _scoped_test_cmd_for_edits(edited_paths, scope))
+            if scoped:
+                st["command"] = scoped
                 st["scoped"] = True
                 prob, timed_out = _run_test_command(
-                    cmd, scope, _RELATED_TEST_TIMEOUT_S, perms)
+                    scoped, scope, _RELATED_TEST_TIMEOUT_S, perms)
                 if timed_out:
                     st["skipped"] = True
                     st["timed_out"] = True
