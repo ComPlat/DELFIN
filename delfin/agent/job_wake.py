@@ -17,7 +17,29 @@ finished, and the caller decides what that is worth.
 
 from __future__ import annotations
 
+import os
+
 from typing import Any, Iterable, Optional
+
+
+def _sandbox_refused(stderr_path: Any) -> bool:
+    """Whether a job's stderr says the sandbox refused the command.
+
+    A sandboxed shell that cannot apply its seccomp/landlock sandbox
+    exits 126 and writes "the command was not run" on stderr -- the
+    command never ran, so an exit-code notice reads as the command
+    failing. Read tolerates the path a record holds (a string, a Path,
+    or nothing at all); never raises -- a wake-up that throws is worse
+    than one that misses.
+    """
+    try:
+        raw = str(stderr_path or "")
+        if not raw or not os.path.isfile(raw):
+            return False
+        with open(raw, "r", encoding="utf-8", errors="replace") as fh:
+            return "the command was not run" in fh.read(4000).lower()
+    except Exception:
+        return False
 
 
 def finished_shells(seen: set, *, registry: Any = None,
@@ -64,6 +86,13 @@ def finished_shells(seen: set, *, registry: Any = None,
                 # Not the command's own status: something outside ended
                 # it. "exit -9" reads as an ordinary failure.
                 state = f"killed by {_signal_name(-code)}"
+            elif code == 126 and _sandbox_refused(getattr(job, "stderr_path", "")):
+                # 126 is also the exit a sandboxed shell leaves when the
+                # cage refuses it: stderr then says "the command was not
+                # run". Reporting "exit 126" reads as the command failing,
+                # and the agent spends its turn debugging a command that
+                # never ran. The notice owes the watcher's own finding.
+                state = "sandbox refused; the command was not run"
             else:
                 state = f"exit {code}"
             out.append({
