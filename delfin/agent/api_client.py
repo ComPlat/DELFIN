@@ -16590,8 +16590,15 @@ class _DocToolExecutor:
                     "entry": ch.entry, "root": ch.root, "trash": ch.trash,
                     "post_hash": ch.post_hash, "post_sig": ch.post_sig,
                     "post_tree": ch.post_tree})
+                # The session's own write moves its edit baseline: for a
+                # file it had read, and for one it CREATED here, which it
+                # cannot have read and does not need to. Before the overlay
+                # the creation case was covered by pre-reading a redirect
+                # target; the overlay does not pre-read, so without this a
+                # file the shell had just made was refused to edit_file for
+                # want of a baseline nobody could have had.
                 if (ch.kind != "deleted" and isinstance(tracker, dict)
-                        and ch.path in tracker):
+                        and (ch.path in tracker or ch.kind == "created")):
                     try:
                         tracker[ch.path] = Path(ch.path).stat().st_mtime
                     except OSError:
