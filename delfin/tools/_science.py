@@ -136,6 +136,12 @@ def scientific_lint(spec: Dict[str, Any]) -> List[ScienceFinding]:
                 lint_solvator_step)
             findings.extend(lint_solvator_step(
                 label, str(st.get("step") or ""), st.get("kwargs", {}) or {}))
+            # Excited-state decision rules: like the solvation rule above
+            # they need the step NAME, which _lint_step does not receive,
+            # so they are called here rather than changing that signature.
+            from delfin.tools._science_rules.excited import lint_excited
+            findings.extend(lint_excited(
+                str(st.get("step") or ""), label, st.get("kwargs", {}) or {}))
             concrete.append(st)
         # spec-level chain rules need the whole concrete step sequence
         if collect:
