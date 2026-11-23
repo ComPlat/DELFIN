@@ -22,31 +22,32 @@ does not open it:
     shared workspace is refused rather than used;
   * the socket is ``0600``;
   * the server asks the kernel who connected (``SO_PEERCRED``) and
-    answers only its own uid. Measured through a real bubblewrap cage
-    before this was written: the caged child's uid as the server sees it
-    is the server's own, so the check does not shut the cage out.
+    answers only its own uid. Measured through a real bubblewrap 0.9.0
+    cage before this was written: the caged child's uid as the server
+    sees it is the server's own, so the check does not shut the cage
+    out. That measurement is NOT a test here -- how a sandbox maps user
+    ids is a property of the host, and a test may bind to DELFIN, never
+    to a machine (tests/test_a_test_is_bound_to_delfin_not_to_a_machine
+    .py). What DELFIN decides -- the owner answered, another uid refused
+    -- is tested below through a real connection.
 
 AND A PATH THAT WAS TOO LONG. ``AF_UNIX`` paths are limited to 108
 bytes; measured, Code Mode failed with "AF_UNIX path too long" for any
 workspace path of 78 characters or more. Both ends now reach the socket
-through ``/proc/self/fd/<dir>/<name>`` when the full path is too long.
+through ``/proc/self/fd/<dir>/<name>`` when the full path is too long; a
+system without /proc keeps the old behaviour, and the test asserts
+whichever of the two applies rather than skipping on one of them.
 """
 from __future__ import annotations
 
 import json
 import os
-import shutil
 import stat
-import subprocess
-import sys
 import threading
 
 import pytest
 
 from delfin.agent import code_mode as cm
-
-_LINUX_PROC = os.path.isdir("/proc/self/fd")
-
 
 class _Echo:
     """An executor that answers every call, so a test can see a call land."""
@@ -159,44 +160,24 @@ def test_the_check_is_on_the_path_that_serves():
 
 # --- the length that broke it ----------------------------------------
 
-@pytest.mark.skipif(not _LINUX_PROC, reason="the long-path route uses "
-                    "/proc/self/fd; elsewhere a long path fails as before")
-def test_a_deep_workspace_still_connects(tmp_path):
+def test_a_deep_workspace_connects_where_the_platform_allows_it(tmp_path):
+    """Both documented outcomes, never a skip: with /proc/self/fd the
+    deep path connects; without it the path is used unchanged and fails
+    as it always did, so no platform loses what it had."""
     deep = tmp_path
     while len(str(deep)) < 140:
         deep = deep / "a_rather_long_directory_name"
     deep.mkdir(parents=True)
     path = cm.rpc_socket_path(str(deep), "probe")
     assert len(path.encode()) > 108, "the case under test is not long"
-    srv, t = _serve_once(path)
-    try:
-        assert cm.RpcClient(path).call(_ALLOWED) == f"ran {_ALLOWED}"
-    finally:
-        srv.close()
-
-
-# --- and through the real cage ---------------------------------------
-
-@pytest.mark.skipif(shutil.which("bwrap") is None, reason="no bubblewrap")
-def test_a_caged_child_is_still_answered(tmp_path):
-    """The check must not shut out the program it exists to serve."""
-    path = cm.rpc_socket_path(str(tmp_path), "probe")
-    srv, t = _serve_once(path)
-    repo = os.path.dirname(os.path.dirname(os.path.abspath(cm.__file__)))
-    repo = os.path.dirname(repo)
-    code = ("import sys; sys.path.insert(0, %r); "
-            "from delfin.agent import code_mode as cm; "
-            "print(cm.RpcClient(%r).call(%r))" % (repo, path, _ALLOWED))
-    try:
-        out = subprocess.run(
-            ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev",
-             "--proc", "/proc", "--unshare-pid",
-             "--bind", str(tmp_path), str(tmp_path),
-             sys.executable, "-c", code],
-            capture_output=True, text=True, timeout=60)
-        if "Operation not permitted" in out.stderr or \
-                "setting up uid map" in out.stderr:
-            pytest.skip("bubblewrap cannot create a namespace here")
-        assert f"ran {_ALLOWED}" in out.stdout, out.stderr[-400:]
-    finally:
-        srv.close()
+    with cm._reachable(path) as reached:
+        short = reached
+    if os.path.isdir("/proc/self/fd"):
+        assert short.startswith("/proc/self/fd/") and len(short) < 108
+        srv, t = _serve_once(path)
+        try:
+            assert cm.RpcClient(path).call(_ALLOWED) == f"ran {_ALLOWED}"
+        finally:
+            srv.close()
+    else:
+        assert short == path
