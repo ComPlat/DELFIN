@@ -84,7 +84,36 @@ def record_compaction(
         }
     except Exception:
         pass
+    # The keep-list loss (compaction_quality.quality_report): the seven
+    # categories the brief names (person goal, instructions, constraints,
+    # refusals, decisions, waits, tests) over the same before/after pair.
+    # Advisory only — the report never vetoes a compaction; here it only
+    # names what the surviving state block and summary did NOT carry.
+    # Wrapped as texts so the report reads them as it reads history rows.
+    try:
+        from . import compaction_quality as _cq
+        report = _cq.quality_report(
+            [{"role": "user", "content": t}
+             for t in (compacted_texts or [])],
+            after_state_block=state_block, after_summary_text=summary_text)
+        record["keep_list_loss"] = {
+            name: {"kept": len(v["kept"]), "lost": v["lost"][:5]}
+            for name, v in report.items()
+        }
+    except Exception:
+        pass
     line = json.dumps(record, ensure_ascii=False)
+    if len(line) > _MAX_RECORD_CHARS:
+        # The keep-list report is the newest and largest field, and its
+        # names are reconstructible from the archived transcript; the note
+        # is written once and nowhere else. So the report sheds its names
+        # first, the record is measured again, and the note is dropped only
+        # if that was not enough.
+        record["keep_list_loss"] = {
+            name: {"kept": v["kept"], "lost_count": len(v["lost"])}
+            for name, v in record.get("keep_list_loss", {}).items()
+        }
+        line = json.dumps(record, ensure_ascii=False)
     if len(line) > _MAX_RECORD_CHARS:
         record["note"] = ""
         line = json.dumps(record, ensure_ascii=False)
