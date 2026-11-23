@@ -603,8 +603,9 @@ Dashboard tabs: `ACTION: /calc ls|read|info`, `/analyze <dir>`,
   and analyze files there, but you CANNOT write, modify, delete, or submit
   anything.
 - Write output in your current workspace, per "Work in ONE workspace".
-- Real calculations start only through the sanctioned tools (`/orca submit`,
-  `submit_calculation`, `pipeline_run`) — never by launching ORCA, xTB or SLURM from bash.
+- A calculation goes through the building blocks or the CONTROL.txt route.
+  Bash is allowed and gate-checked, and declares no parameters — prefer the
+  blocks.
 
 ## Self-optimization
 
@@ -803,6 +804,7 @@ third-tier fallback for free-form data no typed parser covers.
 
 | Intent | First tool |
 |---|---|
+| RUN / submit a calculation | `get_guide`, then `resolve_spec` -> `run_application`; or `subagent(workflow-operator)` |
 | imag freq / minimum / TS | `extract_imaginary_frequencies` |
 | HOMO/LUMO / gap | `extract_orbital_energies` |
 | UV/Vis / TDDFT | `extract_excited_states` |

@@ -29282,13 +29282,32 @@ def _mcp_pin_admits(tool, registry, perms, all_tools=()) -> bool:
     return False
 
 
-def _mcp_tool_entry(tool) -> dict:
-    """The tool-schema entry advertised for a discovered MCP tool. Its
-    description is ``mcp_client.advertised_description``: fenced as data,
-    or withheld when it carries an instruction shape, which is recorded
-    once per tool and process as ``mcp_description_withheld``."""
+def _mcp_tool_entry(tool, *, registry=None) -> dict:
+    """The tool-schema entry advertised for a discovered MCP tool.
+
+    Its description is ``mcp_client.advertised_description``: fenced as
+    data, or withheld when it carries an instruction shape (recorded
+    once per tool and process as ``mcp_description_withheld``), or
+    PLAIN when the server is still DELFIN's own built-in entry.
+
+    The trust question is answered here because this is the caller that
+    holds the registry: ``source_of(server) == "built-in"`` means the
+    name was not redefined by a config, so the text is this
+    repository's own at this commit -- the same provenance as the native
+    tools' descriptions, which are not fenced. Without a registry the
+    answer is "not first party", so the fence stays: a caller that does
+    not know cannot buy an exemption by omission.
+    """
     from . import mcp_client as _mcp
-    desc, withheld = _mcp.advertised_description(tool)
+    first_party = False
+    if registry is not None:
+        try:
+            first_party = registry.source_of(
+                getattr(tool, "server", "")) == "built-in"
+        except Exception:                               # noqa: BLE001
+            first_party = False
+    desc, withheld = _mcp.advertised_description(
+        tool, first_party=first_party)
     if withheld and tool.namespaced_name not in _MCP_WITHHELD_REPORTED:
         _MCP_WITHHELD_REPORTED.add(tool.namespaced_name)
         _record_security_event("mcp_description_withheld",
@@ -33853,7 +33872,7 @@ class OpenAIClient(_BaseClient):
                 if not _mcp_pin_admits(_tool, _registry, self._permissions,
                                        _mcp_tools):
                     continue
-                _entry = _mcp_tool_entry(_tool)
+                _entry = _mcp_tool_entry(_tool, registry=_registry)
                 try:
                     _cost = len(json.dumps(_entry, ensure_ascii=False))
                 except Exception:
