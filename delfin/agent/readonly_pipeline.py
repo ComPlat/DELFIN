@@ -156,7 +156,6 @@ _PROCSUBST = re.compile(r"<\(|>\(|\$<")
 
 _GIT_WORD = re.compile(r"(?:\S*/)?git\b")
 
-
 def _strip_quotes(s: str) -> str:
     """Remove enclosing quotes/backslashes so ``git 'log'`` reads as git."""
     out = []
@@ -366,6 +365,27 @@ def _sort_flags_ok(args: list[str]) -> bool:
 def _flag_base(tok: str) -> str:
     """``--output=file`` -> ``--output`` so a value form matches its flag."""
     return tok.split("=", 1)[0]
+
+
+def sort_flags_write_or_run(segment: str) -> bool:
+    """True when a ``sort`` line carries a flag that writes a file or
+    runs a program.
+
+    Input: one shell segment. Output: the judgement the gate's own
+    deny-pattern for ``sort`` could not make, because GNU getopt accepts
+    what a pattern keyed to ``-o``/``--output`` does not see: a short
+    cluster (``-ofile``, ``-kT``), any unambiguous long-option prefix
+    (``--out=f`` for ``--output``) and ``--compress-program=PROG``, which
+    runs PROG. Judged by an allow-list of the long options that only
+    read, which is the only direction that stays correct when getopt
+    accepts an abbreviation nobody enumerated.
+
+    A segment whose command is not ``sort`` is False (nothing to judge).
+    """
+    if _command_of(segment) != "sort":
+        return False
+    words = _strip_quotes(segment).split()
+    return not _sort_flags_ok(words[1:])
 
 
 def is_safe(cmd: str) -> bool:

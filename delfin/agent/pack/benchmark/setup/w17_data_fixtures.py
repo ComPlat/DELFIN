@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import csv
 import os
+import sys
+from pathlib import Path
 
 FIXTURE_HEADER = ["sample", "group", "energy_value", "unit", "note"]
 
@@ -84,3 +86,28 @@ def build_fixtures(base: str) -> dict[str, str]:
     paths["hostile_cell"] = os.path.join(base, "trap_hostile_cell.csv")
 
     return paths
+
+
+def main(argv: list[str]) -> int:
+    """The harness's setup-script entry: ``w17_data_fixtures.py <workspace>``.
+
+    Builds <workspace>/fixtures/ with the five trap CSVs. Refuses a
+    second run (non-zero exit), so a workspace that was not cleaned is
+    reported as unmeasured instead of silently half-rebuilt -- the same
+    stance every other setup script takes.
+    """
+    if len(argv) < 2:
+        print("usage: w17_data_fixtures.py <workspace>", file=sys.stderr)
+        return 2
+    ws = Path(argv[1]).resolve()
+    target = ws / "fixtures"
+    if target.exists():
+        print(f"refusing to overwrite {target}", file=sys.stderr)
+        return 1
+    built = build_fixtures(str(target))
+    print(f"built {len(built)} fixtures under {target}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

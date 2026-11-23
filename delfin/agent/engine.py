@@ -3085,6 +3085,7 @@ class AgentEngine:
                     **self._prompt_build_args(
                         role, memory_context, task_text, live_state,
                         _perm_mode))
+                self._prompt_head_check(sections)
                 prompt, updates = self._held_system_prompt(
                     role, sections,
                     can_update="_steer" not in _last)
@@ -3160,6 +3161,65 @@ class AgentEngine:
             # before its first turn and would otherwise match itself.
             session_id=str(getattr(self, "session_id", "") or ""),
         )
+
+    def _prompt_head_check(self, sections: list) -> None:
+        """Run prompt_head's safety checks on the rows this turn composes.
+
+        The mount of the previously test-only module: every real turn
+        passes through here, so check_ordering / hostile_reach look at
+        the rows the engine actually built (PromptSection objects), not
+        at synthetic test rows. Findings are logged once per session and
+        kept on the engine for the turn's diagnostics; the check itself
+        never raises and never blocks the prompt.
+        """
+        try:
+            from . import prompt_head as _ph
+            problems = (_ph.check_ordering(sections)
+                        + _ph.hostile_reach(sections))
+            # Cross-turn: the shared prefix with the previous turn's rows
+            # is what a provider prefix cache can hit; a stable row after
+            # the first change is the finding.
+            last = getattr(self, "_prompt_head_last_sections", None)
+            report = _ph.stable_prefix_len(last, sections)
+            self._prompt_head_prefix = report
+            if last is not None and not report["rows_all_stable"]:
+                problems = problems + [
+                    f"stable row after the shared prefix at row "
+                    f"{report['first_change_row']} "
+                    f"({report['first_change_section']}) — the prefix "
+                    "cache cannot reach it"]
+            self._prompt_head_last_sections = list(sections)
+            self._prompt_head_findings = problems
+            if problems:
+                self._note_prompt_head(problems)
+        except Exception as exc:
+            # A failed check is not a clean head. An empty finding list
+            # here would report "nothing wrong with this turn's rows" for
+            # a turn whose rows nobody managed to read, which is the one
+            # answer this mount must never give.
+            self._prompt_head_findings = [
+                f"the request-head check itself failed: {exc!r}"]
+            self._note_prompt_head(self._prompt_head_findings)
+
+    def _note_prompt_head(self, problems: list) -> None:
+        """Log each DISTINCT request-head finding once per session.
+
+        A single boolean latch logged the first finding and silenced every
+        later one, including a different finding from a different cause --
+        and a reordering that breaks the fixed layer order appears on the
+        turn it happens, not on the first turn of the session.
+        """
+        seen = getattr(self, "_prompt_head_noted", None)
+        if not isinstance(seen, set):
+            seen = set()
+            self._prompt_head_noted = seen
+        fresh = [p for p in problems if p not in seen]
+        if not fresh:
+            return
+        seen.update(fresh)
+        import logging
+        logging.getLogger(__name__).warning(
+            "request-head invariants broken: %s", fresh)
 
     def _held_system_prompt(self, role: str, sections: list,
                             *, can_update: bool) -> tuple[str, list[str]]:

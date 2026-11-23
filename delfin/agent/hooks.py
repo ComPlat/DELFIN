@@ -161,20 +161,6 @@ def _user_settings_path() -> Path:
     return Path.home() / ".delfin" / "settings.json"
 
 
-def _project_settings_paths(workspace: Path) -> list[Path]:
-    """Every settings file this loader knows about inside *workspace*.
-
-    Derived from the trust registry rather than spelled out here, so the
-    set of files that RUN commands and the set of files that need a
-    trust decision (and a protected glob) cannot drift apart. They had:
-    ``settings.local.json`` was read here and protected nowhere.
-    """
-    from . import workspace_trust as _trust
-    root = Path(workspace)
-    return [root / rel
-            for rel in _trust.get_kind(_trust.KIND_HOOKS).relative_paths]
-
-
 def _read_json_safe(path: Path) -> dict[str, Any]:
     try:
         return json.loads(path.read_text(encoding="utf-8"))

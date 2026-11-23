@@ -734,20 +734,13 @@ def _brave_search(query: str, max_results: int, timeout_s: int) -> list[dict]:
 _KEYED_ENGINES = (("google", _google_cse_search), ("brave", _brave_search))
 
 
-def keyed_engines_configured() -> list[str]:
-    """Which keyed engines have a key here, by name."""
-    out = []
-    if _credential("GOOGLE_CSE_API_KEY") and _credential("GOOGLE_CSE_CX"):
-        out.append("google")
-    if _credential("BRAVE_SEARCH_API_KEY"):
-        out.append("brave")
-    return out
-
-
 def _keyed_search(query: str, max_results: int, timeout_s: int) -> tuple[list[dict], str, str]:
     """(hits, source, error) from the first keyed engine that answers."""
     error = ""
+    configured = keyed_engines_configured()
     for name, fn in _KEYED_ENGINES:
+        if name not in configured:
+            continue
         try:
             hits = fn(query, max_results, timeout_s)
         except Exception as exc:
@@ -780,6 +773,16 @@ def web_search(query: str, *, max_results: int = 8,
     keyed_hits, keyed_source, keyed_error = _keyed_search(query, max_results, timeout_s)
     if keyed_hits:
         return {"query": query, "results": keyed_hits, "source": keyed_source}
+    # A configured engine that FAILED is news: the person's key is wrong,
+    # expired or rate-limited, and until now nobody was told. The string
+    # was built here and read by nothing (measured 2026-11-22: the only
+    # mention of ``keyed_error`` in this file was its own assignment), so
+    # a broken key looked exactly like a search with no hits. It is
+    # appended to whatever the fallback reports, and only when the
+    # fallback also fails -- a search that succeeds without the keyed
+    # engine needs no apology.
+    keyed_note = (f" The configured search engine was tried first and "
+                  f"failed: {keyed_error}." if keyed_error else "")
     encoded = urllib.parse.urlencode({"q": query})
     url = f"https://duckduckgo.com/html/?{encoded}"
     err = _check_url(url)
@@ -805,15 +808,15 @@ def web_search(query: str, *, max_results: int = 8,
             status = int(_fetched[2]) if len(_fetched) > 2 else 0
             break
         except urllib.error.HTTPError as exc:
-            return {"error": f"HTTP {exc.code}: {exc.reason}"}
+            return {"error": f"HTTP {exc.code}: {exc.reason}{keyed_note}"}
         except urllib.error.URLError as exc:
             if _is_connection_reset(exc) and _attempts < _RESET_ATTEMPTS:
                 time.sleep(0.5 * _attempts)
                 continue
             suffix = (f" (after {_attempts} attempts)" if _attempts > 1 else "")
-            return {"error": f"network error: {exc.reason}{suffix}"}
+            return {"error": f"network error: {exc.reason}{suffix}{keyed_note}"}
         except Exception as exc:
-            return {"error": f"search failed: {exc}"}
+            return {"error": f"search failed: {exc}{keyed_note}"}
 
     text = body.decode("utf-8", errors="replace")
     # DDG HTML markup: each result is in a <div class="result__body">

@@ -96,38 +96,64 @@ _KIT_PREFERENCE: tuple[str, ...] = (
     # Multimodal MoE, the base model behind the ``standard-local`` alias.
     "kit.mistral-small-4-119b-a8b",
 )
-# Blablador, ranked by measurement rather than by name. Twelve candidates
-# on the roster were given four code-reasoning items on 2026-11-19, each
-# a defect found in this repository that day reduced to the smallest
-# snippet that still carries it, with one fixed token as the answer:
+# Blablador, ranked by measurement rather than by name. Two measurements
+# exist and they disagree, so both are recorded and the larger one
+# decides.
 #
-#   deepseek-v4.1-flash-at-hzdr  4/4    6.5 s   60 req/min
+# 2026-11-22, 13 items x 3 repeats = 39 requests per model. Each item is
+# a defect measured in this repository, reduced to the smallest snippet
+# that still carries it, with one fixed token as the answer; the expected
+# answers are balanced 7 yes / 6 no, so always-yes scores 21 and
+# always-no 18 of 39. One item is a calibration item whose answer is
+# obvious. Scored on ANSWERED rows only.
+#
+#   alias-glm-5.3-flash          39/39 answered, 39 right, median 23.6 s
+#   alias-code                   36/39 answered, 36 right, median 60.9 s
+#
+# 2026-11-19, the same method with FOUR items. That instrument is no
+# longer trusted to exclude a model: it scored alias-glm-5.3-flash 2/4,
+# and the 39-request run above has the same model at 39 of 39. A
+# four-item score can order two models weakly; it cannot establish that
+# one misreads code. The entries below are therefore kept in their old
+# relative order, as the only measurement they have:
+#
 #   alias-huge   (MiMo-V2.6-Pro) 4/4   21.0 s   30 req/min   1M context
-#   alias-code   (Qwen3.8-27B)   4/4   34.7 s   40 req/min
 #   alias-mimo-v2.6-pro          4/4   41.7 s   20 req/min
 #   alias-fast   (GPT-OSS-120b)  3/4    9.3 s   60 req/min
 #   alias-large  (Qwen3.8-Flash) 3/4   36.6 s   40 req/min
 #   alias-muse-spark (816B)      4/4  184.0 s   20 req/min
 #   alias-kimi-k3-1m             3/4  452.3 s   20 req/min
-#   alias-glm-5.3-flash          2/4   53.7 s
 #   alias-qwen3.8-flash-next     2/4   45.0 s
 #
-# Ordered by score first and measured latency second, which is why the
-# 27B model outranks the 125B one and the 816B model is far down: a
+# Still left out: alias-kimi-k3-1m and alias-muse-spark for their
+# latency, which is a measurement a four-item set cannot get wrong -- a
 # fallback is taken mid-turn, so a model that answers in three minutes
-# turns a recovery into a stall. The two that scored 2/4 are left out
-# entirely -- continuing a turn on a model that misreads the code is not
-# a recovery. kimi is left out for its 452 s.
+# turns a recovery into a stall. alias-qwen3.8-flash-next stays out too,
+# but on weaker ground than before: its 2/4 came from the instrument that
+# failed above, so the exclusion is unconfirmed rather than measured, and
+# a 13-item run would settle it.
+#
+# deepseek-v4.1-flash-at-hzdr is GONE from the roster, where it used to
+# be the first choice. /v1/models advertises it with a router instance
+# and client_count 1, but /v1/chat/completions answered
+# HTTP 400 "Unsupported model or no available clients" on 2 of 2 attempts
+# (2026-11-22, 14:35-14:40 UTC), while the same id answered on another
+# host at ~12:15 the same day: the registration is intermittent, not
+# dead. A roster exists to continue a turn whose model stopped being
+# served; leading it with an id that may itself refuse makes the
+# recovery the second failure. The healthy entries differ in the listing
+# itself (owned_by "vllm", a current timestamp, two backend instances),
+# so a health judgement is possible where a presence check is not.
 #
 # Every entry chains tool calls (measured: all twelve do), which a
 # fallback must, since a sub-agent drives tools.
 _BLABLADOR_PREFERENCE: tuple[str, ...] = (
-    "deepseek-v4.1-flash-at-hzdr",
-    "alias-huge",
+    "alias-glm-5.3-flash",
     "alias-code",
+    "alias-huge",
+    "alias-mimo-v2.6-pro",
     "alias-fast",
     "alias-large",
-    "alias-mimo-v2.6-pro",
 )
 
 #: Ranked rosters per provider, for continuing a turn whose model stopped

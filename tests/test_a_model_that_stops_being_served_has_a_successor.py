@@ -114,20 +114,49 @@ def test_kit_is_unchanged():
 # --- the roster itself ----------------------------------------------------
 
 
-def test_the_blablador_roster_holds_only_measured_models():
-    """Ranked from a measurement on 2026-11-19, not from the names. The
-    two candidates that scored 2/4 on the code-reasoning items are absent
-    on purpose: continuing a turn on a model that misreads the code is
-    not a recovery, and `alias-kimi-k3-1m` is absent for its 452 s.
+def test_the_blablador_roster_leads_with_the_larger_measurement():
+    """The head of the roster is the model measured over 39 requests, not
+    the one a four-item set put first.
+
+    Two measurements exist: 13 items x 3 repeats (2026-11-22) and 4 items
+    (2026-11-19). They disagree about `alias-glm-5.3-flash` -- 39 of 39
+    correct against 2 of 4 -- and the larger one decides, because a
+    four-item score cannot establish that a model misreads code.
     """
     ranked = mc.MODEL_PREFERENCE_BY_PROVIDER["blablador"]
 
-    assert "alias-glm-5.3-flash" not in ranked
+    assert ranked[0] == "alias-glm-5.3-flash", (
+        "39 of 39 answered correctly at a median of 23.6 s, the best "
+        "measured pair of score and latency on the roster")
+    assert ranked[1] == "alias-code", (
+        "36 of 39 answered, all 36 correct, median 60.9 s: the same "
+        "score on fewer answers, and 2.6x slower")
+
+
+def test_the_roster_excludes_the_id_the_endpoint_refuses():
+    """`deepseek-v4.1-flash-at-hzdr` led this roster and must not: it is
+    advertised by /v1/models while /v1/chat/completions answered HTTP 400
+    "Unsupported model or no available clients" on 2 of 2 attempts
+    (2026-11-22, 14:35-14:40 UTC). A roster exists to continue a turn
+    whose model stopped being served, so an entry that may refuse makes
+    the recovery the second failure."""
+    ranked = mc.MODEL_PREFERENCE_BY_PROVIDER["blablador"]
+    assert "deepseek-v4.1-flash-at-hzdr" not in ranked
+
+
+def test_the_roster_excludes_what_latency_rules_out():
+    """Latency is the one judgement a four-item set cannot get wrong, so
+    these exclusions stand: a fallback taken mid-turn on a model that
+    answers in three minutes turns a recovery into a stall.
+
+    `alias-qwen3.8-flash-next` is also absent, but on weaker ground --
+    its 2/4 came from the instrument that misjudged the model now leading
+    the roster, so that exclusion is unconfirmed rather than measured.
+    """
+    ranked = mc.MODEL_PREFERENCE_BY_PROVIDER["blablador"]
+    assert "alias-kimi-k3-1m" not in ranked      # 452.3 s
+    assert "alias-muse-spark" not in ranked      # 184.0 s
     assert "alias-qwen3.8-flash-next" not in ranked
-    assert "alias-kimi-k3-1m" not in ranked
-    assert ranked[0] == "deepseek-v4.1-flash-at-hzdr", (
-        "the one that scored 4/4 at 6.5 s with the highest request limit "
-        "leads; a fallback is taken mid-turn, so latency is part of it")
 
 
 def test_no_roster_offers_an_embedding_or_image_model():

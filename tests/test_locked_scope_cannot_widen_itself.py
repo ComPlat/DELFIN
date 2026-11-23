@@ -271,8 +271,15 @@ def test_a_locked_session_without_bwrap_says_so(monkeypatch):
     assert "ls" not in argv and "refused" in " ".join(argv), \
         "a locked session without any isolation must refuse the command"
     assert recorded, "the downgrade was not recorded anywhere"
-    text = " ".join(str(x) for x in recorded[0][0])
-    assert "isolation" in text and "NOT active" in text
+    # Looked for among everything recorded, not read off the first
+    # entry. The same call also records what the network is held to, and
+    # which of the two is recorded first is not a property this test is
+    # about: measured 2026-11-23, a host with an egress proxy configured
+    # records the network event first and the isolation one second, so
+    # indexing reported the downgrade as unannounced on a machine where
+    # it was announced correctly.
+    texts = [" ".join(str(x) for x in args) for args, _kw in recorded]
+    assert any("isolation" in t and "NOT active" in t for t in texts), texts
 
 
 def test_a_locked_session_without_bwrap_is_held_by_landlock(monkeypatch):

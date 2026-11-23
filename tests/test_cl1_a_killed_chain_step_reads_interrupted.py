@@ -147,10 +147,25 @@ def _run_child(tmp_path, sig, prelude=""):
     return child, wd
 
 
+#: How long a signalled child may take to die before the test calls it a
+#: hang. The property under test is that the end is RECORDED and the run
+#: still ends -- not that it ends within any particular second. Measured
+#: 2026-11-22: 30 s failed twice on this host, in two independent full-suite
+#: runs, while the same test passed 11 of 11 in 2.2 s with the machine
+#: idle. The child launches a real engine and the signal arrives while
+#: that subprocess is being torn down, so the wait is as long as the
+#: machine's scheduling makes it. A test that passes on an idle machine
+#: and fails on a busy one is machine-dependent, which this suite does
+#: not allow; the limit is therefore generous enough to survive a loaded
+#: server and still short enough to catch a child that never dies.
+_SIGNAL_EXIT_TIMEOUT_S = 120
+
+
 @pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGHUP])
 def test_a_signal_records_the_end_and_still_ends_the_run(tmp_path, sig):
     child, wd = _run_child(tmp_path, sig)
-    assert child.wait(timeout=30) == -sig          # ended exactly as before
+    assert child.wait(                             # ended exactly as before
+        timeout=_SIGNAL_EXIT_TIMEOUT_S) == -sig
     step = cs.ChainState.load(wd / "chain_state.json").steps[0]
     assert step.state == "submitted"
     assert step.runner["ended"] == sig.name

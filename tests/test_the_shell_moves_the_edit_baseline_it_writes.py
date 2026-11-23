@@ -113,3 +113,57 @@ def test_a_file_created_by_the_shell_can_then_be_edited(bash):
     fresh = ws / "created.py"
     run(f"printf 'a\\n' > {fresh}")
     assert str(fresh.resolve()) in perms.read_tracker
+
+
+def test_the_overlay_journal_baselines_a_file_it_created(tmp_path,
+                                                         monkeypatch):
+    """The same contract, measured on every machine.
+
+    The test above reaches the overlay only where bubblewrap's full cage
+    runs, so it is green on a host -- and in CI -- where the overlay never
+    runs at all. That is how this regressed unseen from 79770e23b until
+    2026-11-22: green where the behaviour does not matter, red where it
+    does. This drives the overlay journal directly instead.
+
+    Input: one created, one modified-after-read and one modified-never-read
+    change. Output: a baseline for the first two, none for the third -- the
+    guard against somebody ELSE's change stays whole.
+    """
+    from delfin.agent import api_client as A
+    from delfin.agent import overlay_workspace as _ow
+
+    made = tmp_path / "created.py"
+    read_before = tmp_path / "read-before.py"
+    never_read = tmp_path / "never-read.py"
+    for p in (made, read_before, never_read):
+        p.write_text("x\n")
+
+    perms = KitToolPermissions(workspace=tmp_path)
+    perms.read_tracker[str(read_before.resolve())] = 1.0
+
+    class _Change:
+        def __init__(self, path, kind):
+            self.path = str(path.resolve())
+            self.kind = kind
+            self.journal = True
+            self.entry = self.root = self.trash = ""
+            self.post_hash = self.post_sig = self.post_tree = None
+
+    class _Outcome:
+        changes = [_Change(made, "created"),
+                   _Change(read_before, "modified"),
+                   _Change(never_read, "modified")]
+
+    monkeypatch.setattr(_ow, "apply", lambda plan: _Outcome())
+    engine = _DocToolExecutor.__new__(_DocToolExecutor)
+    engine._permissions = perms
+    engine._journal_overlay("bash", object(), perms)
+
+    assert str(made.resolve()) in perms.read_tracker, (
+        "a file the session created has no baseline, so its own next edit "
+        "is refused for a read nobody could have made")
+    assert perms.read_tracker[str(read_before.resolve())] > 1.0, (
+        "the baseline of a file the session had read was not moved")
+    assert str(never_read.resolve()) not in perms.read_tracker, (
+        "a file the session never read and did not create must still need "
+        "a read before an edit")

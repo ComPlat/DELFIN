@@ -1,6 +1,12 @@
 """A session scratch directory holds what one command of a session wrote so
-the NEXT command of the SAME session and the read tool can use it, and no
-other session can see it; /tmp itself stays private and fresh.
+the NEXT command of the SAME session can use it, and no other session can
+see it; /tmp itself stays private and fresh.
+
+The route to it is the cage's TMPDIR and nothing else. The file tools do
+NOT reach it: it is shell state, not a workspace, so a ``write_file`` into
+it is refused and ``read_file`` cannot read what a command left there. This
+docstring said "and the read tool can use it" until 2026-11-22, against the
+assertion two of these tests have always made.
 
 Input: the scratch root built per session (``_session_scratch_dir``), the
 cage argv builders (bwrap in ``delfin/agent/sandbox.py`` and the api_client
@@ -10,11 +16,15 @@ Output measured by running the real cage on this host (bwrap and Landlock
 are functional here; skipped where not):
 
 * a file one caged command writes to ``$TMPDIR`` survives to the next
-  command of the same session, and ``read_file`` can read it;
+  command of the same session;
+* ``read_file`` reaches that file only from a workspace that CONTAINS the
+  scratch dir, which is this file's own fixture and not a session: from a
+  workspace elsewhere the read is refused;
 * ``TMPDIR``/``TMP``/``TEMP`` inside every cage point at the scratch dir;
 * the scratch dir is 0700 and named after the session's own private temp
   dir (never shared between two processes);
-* a write tool call into the scratch dir is admitted by the write gate;
+* a ``write_file`` into the scratch dir is REFUSED -- it is no file-tool
+  root, writable or readable, not even with an unlocked scope;
 * /tmp remains a fresh tmpfs (a file in /tmp does NOT survive).
 """
 from __future__ import annotations
@@ -24,6 +34,7 @@ import os
 import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -160,6 +171,11 @@ def test_file_written_by_one_command_survives_to_the_next():
         assert first.get("returncode", 0) == 0, first
         second = _run_caged("cat \"$TMPDIR/note.txt\"", ws)
         assert "kept" in second.get("stdout", ""), second
+        # read_file reaches it HERE only because this test's workspace is
+        # the scratch dir's parent, so the file lies inside the workspace.
+        # The case a session is actually in is the control in
+        # test_a_read_from_a_workspace_elsewhere_is_refused, which needs no
+        # cage and therefore runs on every host.
         content = _read_via_tool(ws, scratch + "/note.txt")
         assert "kept" in content
 
@@ -209,6 +225,45 @@ def test_write_gate_does_not_treat_scratch_as_a_file_tool_root(tmp_path):
         {"path": os.path.join(scratch, "agent.txt"),
          "content": "hello"}, perms)
     assert "error" in out, out
+    # The docstring of the thing itself has to say so, or the next reader
+    # believes the opposite: it claimed the scratch dir was "on the file
+    # tools' writable and readable root lists" until 2026-11-22, while
+    # these two assertions have always said it is not. A prose claim and a
+    # gate drift apart silently, so the claim is read back here.
+    doc = A._session_scratch_dir.__doc__ or ""
+    assert "not a file-tool root" in doc, (
+        "_session_scratch_dir's docstring no longer states that the file "
+        "tools cannot reach it, which this test measures")
+
+
+def test_a_read_from_a_workspace_elsewhere_is_refused():
+    """The read side of the same contract, on the path a session takes.
+
+    The end-to-end test above reads the scratch file back through
+    ``read_file`` and succeeds, because its workspace IS the scratch dir's
+    parent -- a fixture that makes the claim true by construction. A
+    session's workspace is the project directory and the scratch dir lies
+    under the process's private temp dir, so the same read must be refused.
+    No cage is needed for this, so unlike the end-to-end test it is
+    measured on every host.
+    """
+    scratch = A._session_scratch_dir()
+    note = Path(scratch) / "from-a-command.txt"
+    note.write_text("written by a caged command", encoding="utf-8")
+    elsewhere = Path(tempfile.mkdtemp())
+    # A refusal comes back as JSON carrying "error"; a successful read comes
+    # back as the numbered file text, which is not JSON at all.
+    refused = _doc_executor.execute(
+        "read_file", {"path": str(note)}, _perms(elsewhere))
+    assert "error" in json.loads(refused), (
+        f"read_file reached the scratch dir from a workspace that does not "
+        f"contain it: {refused}")
+    # The control for that assertion: the same file, read with a workspace
+    # that DOES contain it, comes back. So the refusal above is about the
+    # root list, not about this file, this tool or this host.
+    inside = _doc_executor.execute(
+        "read_file", {"path": str(note)}, _perms(Path(scratch)))
+    assert "written by a caged command" in inside, inside
 
 
 @requires_a_working_sandbox

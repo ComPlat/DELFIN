@@ -1,6 +1,6 @@
 ---
 name: irc-checker
-description: Verifies a given transition state by IRC and endpoint match only — the two IRC ends are real minima (zero imaginary modes) and map onto the stated reactant and product. Use to confirm a mechanism from a TS the user already found.
+description: Verifies a transition state the user already has, by IRC only — the two IRC ends are real minima (zero imaginary modes) and map onto the stated reactant and product. Use to confirm a mechanism from a TS the user already found.
 mode: plan
 tools: [read_file, read_section, list_sections, list_files, list_docs, grep_file, find_definition, find_references, search_docs, read_document, view_image, exit_plan_mode, ask_user_question, report_verdict, subagent_result, subagent_message, search_calcs, get_calc_info, calc_summary]
 department: reactivity

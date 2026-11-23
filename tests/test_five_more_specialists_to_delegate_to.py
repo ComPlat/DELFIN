@@ -25,6 +25,7 @@ import pathlib
 import pytest
 
 from delfin.agent import subagents as SA
+from delfin.agent.prompt_loader import PromptLoader
 
 _NEW = ("security-reviewer", "verifier", "method-researcher",
         "data-extractor", "friction-analyst")
@@ -174,6 +175,14 @@ def test_a_preset_cannot_hand_a_child_a_tool_the_session_denied():
 @pytest.mark.parametrize("name", _NEW)
 def test_the_role_prompt_names_it(name):
     """A preset the prompt does not mention is one the model will not
-    reach for. Asserted on the shipped file, which is what is injected."""
-    text = (_PACK / "solo_agent.md").read_text(encoding="utf-8")
+    reach for. Asserted on the prompt as the loader BUILDS it.
+
+    The pack file carried a hand-written copy of the role table until the
+    table was rendered from the preset registry; since then the file on
+    disk holds an empty generated block and the names reach the model
+    only through the loader. Reading the file would therefore report a
+    missing role for every role that is in fact presented -- the measure
+    has to be the text that is injected, not the text that is stored.
+    """
+    text = PromptLoader().load_role_prompt("solo_agent")
     assert f"`{name}`" in text, name

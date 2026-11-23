@@ -16,32 +16,175 @@
 #
 # Measured 2026-11-20, by the functions in that test file, so the list
 # and the check cannot compute it differently.
-nowhere	_project_settings_paths	delfin/agent/hooks.py:164
-nowhere	controller_hint	delfin/agent/loop_commands.py:298
-nowhere	request_swarm_pause	delfin/agent/swarm/lead.py:110
-nowhere	set_for_workspace_words	delfin/agent/workspace_profiles.py:220
+# _bypass_failure_asks STAYS, measured 2026-11-22. The mount it was
+# written for -- extending the classifier's on_error at
+# _classifier_second_opinion so a failure on the high-risk class asks even
+# for workspace work -- would change no outcome: for every action the
+# predicate calls high-risk, _leaves_workspace already returns True one
+# line earlier, so on_error is already "ask" (or "refuse" with nobody to
+# ask). Measured over 15 bash commands spanning every branch of the
+# pattern, remote_trigger, push_notification, a session message and all
+# four _BYPASS_HIGH_RISK_WRITE_NAMES inside the workspace -- including the
+# .gitconfig case the mount was proposed for -- against the control that
+# routine actions (python3 build.py, cp, ls, git status, git commit, an
+# ordinary write) have leaves False. So the guarantee is delivered by
+# _leaves_workspace plus the deny list, the push gate and the egress scan,
+# which refuse several of them before any classifier is consulted.
+# Its job here is to PIN that: test_the_high_risk_class_is_inside_what_
+# leaves_the_workspace fails if _leaves_workspace ever stops asking for one
+# of them. Deleting it would remove the only explicit statement of the
+# class; mounting it would add a call that cannot change an answer.
 test-only	_bypass_failure_asks	delfin/agent/api_client.py:14120
+# _disabled_keyring_factory stays test-only, measured 2026-11-22: the
+# conftest autouse fixture swaps it in (tests/conftest.py:1599) so no test
+# touches the real keyring, and _keyring_factory is only ever bound to
+# _default_keyring_factory (delfin/agent/credentials.py:400) -- no
+# production path disables the keyring. Mounting one would be a new
+# capability; what would decide a delete is a product need to run
+# keyless, which does not exist.
 test-only	_disabled_keyring_factory	delfin/agent/credentials.py:360
-test-only	_load_md_presets	delfin/agent/subagents.py:1606
-test-only	_locator_value	delfin/agent/cited_retrieval.py:218
-test-only	_scoped_test_cmd_for_edits	delfin/agent/api_client.py:13237
-test-only	build_fixtures	delfin/agent/pack/benchmark/setup/w17_data_fixtures.py:22
-test-only	bwrap_substitution	delfin/agent/shared_tmp.py:248
+# category_names STAYS, and the reason is the measure's own weak spot: this
+# test counts any mention of a name, so `from .compaction_quality import
+# category_names` in the funnel module would close the row without anything
+# in the product ever calling it. It would read as reached and be no more
+# reached than before. The product gets the seven category names from the
+# report's own keys (record_compaction writes them as it receives them), so
+# there is nothing here for a product caller to want. Mounting it needs a
+# consumer that iterates the categories in a fixed order -- a renderer or
+# the long-run metric -- which is its own change, not a line in an import.
 test-only	category_names	delfin/agent/compaction_quality.py:169
-test-only	check_ordering	delfin/agent/prompt_head.py:95
-test-only	distill_for_shipping	delfin/agent/memory_distill.py:380
-test-only	enforce_quota	delfin/agent/shared_tmp.py:307
 test-only	for_files	delfin/agent/verify_recipe.py:327
-test-only	hostile_reach	delfin/agent/prompt_head.py:144
 test-only	is_safe	delfin/agent/readonly_pipeline.py:371
-test-only	keyed_engines_configured	delfin/agent/web_tools.py:698
-test-only	map_to_host	delfin/agent/shared_tmp.py:207
-test-only	pdf_xfa_data	delfin/agent/office.py:3514
-test-only	quality_report	delfin/agent/compaction_quality.py:75
-test-only	recall_levels	delfin/agent/memory_distill.py:495
+# _locator_value (cited_retrieval.py:218) DELETED 2026-11-22: zero callers
+# anywhere, including its own module -- check_answer_citations reads the
+# locator dicts from locator_for directly (cited_retrieval.py:287-291) and
+# never normalises to (kind, value). The whole cited_retrieval module has
+# no product import yet; the deletion needs no second answer because the
+# job it did is inline dict access in its own module.
+# bwrap_substitution: measured 2026-11-22 (wave 37, group rr1). Neither mounting
+# nor deleting is right yet. The wiring contract is tests/test_shared_tmp_wiring.py,
+# xfail(strict) with reason "operator wiring pending": the swap belongs in
+# api_client._bash_isolation_argv (delfin/agent/api_client.py:31275), which still
+# mounts --tmpfs /tmp. api_client.py is forbidden to this group (rule 13), so the
+# mount cannot be made here; deleting would orphan that contract. Decides it: the
+# operator wiring commit replacing --tmpfs /tmp with the session-dir bind.
+# NOT removed 2026-11-22 (wave 36 c1, re-measured): there are two
+# category vocabularies for one job. The product's compaction record
+# carries its loss under the key ``lost`` in working_state's four
+# categories (compaction_log.LOSS_CATEGORIES: denials, tests, files,
+# instructions); category_names() is a second, broader keep-list list
+# (goal, instruction, constraints, refusals, decisions, waits, tests)
+# whose only reader would be a consumer of quality_report, which is
+# itself unmounted one row below. Reporting a metric in this vocabulary
+# would make five of its seven categories None forever, so the mount
+# attempted here was withdrawn; the loss metric reports in the writer's
+# vocabulary instead. Deciding which of the two lists the product should
+# keep is a design decision, not a repair.
+# check_ordering STAYS (measured 2026-11-22, wave 37 rr2): nothing in the
+# product inspects a recorded head -- the engine turn (engine.py:3084)
+# composes via compose_sections, joins (_held_system_prompt) and sends;
+# the layer order is guaranteed at the source by construction
+# (prompt_loader.py:2050 "the composition order IS the layer order"), so a
+# product-composed head cannot violate it. The check is the suite/human
+# measurement layer over recorded rows (as the adversarial test does:
+# record the real engine rows, call the check from the test). Mounting it
+# in the engine turn would be a tautological new surface (rule 12); the
+# question that decides it is whether the product should surface an
+# ordering violation to a person -- a design decision, not a repair.
+# enforce_quota: measured 2026-11-22 (wave 37, group rr1). Neither mounting nor
+# deleting is right yet. Zero product callers: the product's own session scratch
+# (api_client._session_scratch_dir, delfin/agent/api_client.py:29532) never
+# calls shared_tmp at all, and no cleanup path in delfin/ names this function.
+# Deleting would orphan the quota pin tests (tests/test_shared_tmp_cleanup.py);
+# mounting would need a product cleanup tick that does not exist (new surface,
+# rule 12). Decides it: wiring the session-end cleanup to enforce_quota, or an
+# operator decision that the product never quotas scratch.
+# for_files (verify_recipe.py:327) KEPT as test-only 2026-11-22, measured:
+# zero product callers. The product consumers of verify_recipe hold a
+# recipe but never a changed-file list -- prompt_loader.py:1002-1003 calls
+# discover+render, evidence.py:203 calls discover -- so narrowing a recipe
+# to changed files (for_files) is unreachable by construction today.
+# Deciding WHICH consumer would gain a changed-file list is a design
+# decision, not a repair; wiring one arbitrarily would mount a call on a
+# path that runs but does not need it. Revisit if a consumer starts
+# holding both a recipe and a diff.
+# hostile_reach STAYS (measured 2026-11-22, wave 37 rr2): the only rows in
+# a product-composed head that carry data (briefing, lessons, decomposition,
+# chemistry, repo_map -- prompt_loader.py:2234-2264) are all LAYER_VOLATILE,
+# which hostile_reach exempts (layer >= 2); the layer 0/1 rows are trusted
+# addendum files and fixed route text. Product rows therefore cannot trip
+# the check by construction -- it guards a future layer-assignment
+# regression that would reclassify data into the cacheable head. Mounting
+# it in the engine turn would be a per-turn tautology / new surface
+# (rule 12); the deciding question is whether the product should enforce
+# the invariant per turn -- a design decision, not a repair.
+# NOT removed 2026-11-22 (wave 36 r4, then re-measured at the GATE, not
+# at the predicate): is_safe is not redundant, but the predicate numbers
+# r4 reported overstate what the product does, and both measurements are
+# recorded here because the difference between them is the lesson.
+#
+# At the predicate (KitToolPermissions.matches_bash_auto_allow,
+# api_client.py:11109), default mode: 8 commands are auto-allowed that
+# is_safe refuses -- ls > f, ls 3>f, ls >&f, ls &>f, cat <>f,
+# sort --out=f x, sort --compress-program=sh x, git reflog expire --all.
+#
+# At the gate (_run_permission_gate, the entry a bash call really takes,
+# which consults the predicate only after the deny list, the secret scan,
+# the approval guard, the irreversibility rule and unrestorable.refusal):
+# git reflog expire --expire=now --all ASKS, and echo x >
+# ~/.ssh/authorized_keys is refused outright (secret-deny). What runs
+# unasked is the redirect family inside the workspace -- which is
+# deliberate policy, documented in matches_bash_auto_allow itself, and
+# confined by the cage -- plus two classes that are not:
+#   * a redirect whose TARGET is outside the workspace
+#     (echo x > ~/.bashrc, ls > /tmp/elsewhere.txt, ls > ../escape.txt:
+#     RUN, no question; _changes_outside_the_workspace does not read
+#     redirection targets at all),
+#   * a flag that runs a program (sort --compress-program=sh x and the
+#     space form: RUN, no question).
+# Controls at the gate: ls -la, git status, cat f, grep x f, grep -r,
+# python3 --version, pytest all RUN; rm -rf f and git push --force are
+# refused by deny-pattern; curl -T asks.
+#
+# So a blanket veto on is_safe would be wrong: at the predicate it also
+# refuses grep -r, sed -n, awk, find, python3 --version, pytest, mkdir
+# and touch, which the list grants on purpose. The repair is the two
+# classes above, in api_client.py, which the self-modification guard
+# refuses to an unattended session. Kept until that attended change
+# lands; deleting the row would discard a judgement the gate still needs.
+# map_to_host: measured 2026-11-22 (wave 37, group rr1). Neither mounting nor
+# deleting is right yet. The wiring contract is tests/test_shared_tmp_wiring.py,
+# xfail(strict): the mapping belongs in api_client._execute_read_file
+# (delfin/agent/api_client.py:18215) BEFORE the read gate, so /tmp/... resolves
+# to the session dir. api_client.py is forbidden to this group (rule 13); deleting
+# would orphan the contract and the mapping rules pinned by tests/test_shared_tmp.py.
+# Decides it: the operator wiring commit in _execute_read_file.
+# quality_report STAYS (measured 2026-11-22, wave 37 rr2): the product's
+# compaction-loss answer is compare_loss (compaction_log.py:119), mounted in
+# two live places (record_compaction at compaction_log.py:78, in_turn at
+# in_turn_compaction.py:307), and it reports in working_state's four
+# categories (denials, tests, files, instructions). quality_report is a
+# second, broader seven-category keep-list with no writer on the product
+# path -- the same two-vocabularies finding as the category_names row above
+# (that row's reason lives on the wave-36-c1 branch swarm/w36-c1-l1-t2,
+# not yet merged). Wave 36 c1 already attempted and withdrew the mount:
+# in this vocabulary five of the seven categories would read as forever
+# missing, so the loss metric reports in the writer's vocabulary instead.
+# Deciding which vocabulary the product keeps is a design decision, not a
+# repair.
+# NOT removed 2026-11-22 (wave 36 r4): the product's per-turn reset is
+# begin_figure_turn (office.py:6070, driven by engine.py:3482), which opens
+# a NEW token'd scope and pops only that token -- it cannot clear an
+# existing scope on demand, and eviction (office.py:6051) only trims stale
+# scopes. No product path is equivalent to an explicit clear; the office
+# tool runs are the consumers and keep needing it between turns.
 test-only	reset_figure_ledger	delfin/agent/office.py:6098
-test-only	resources_within	delfin/agent/pack/benchmark/accept/w20_common.py:111
 test-only	role_tool_surface_report	delfin/agent/api_client.py:12107
-test-only	stable_prefix_len	delfin/agent/prompt_head.py:44
-test-only	sweep_stale	delfin/agent/shared_tmp.py:353
+# w36-r2 (2026-11-22): no product path compares a workflow OBJECT's name.
+# grade_run (w20_common.py) calls only charge_spin_consistent and
+# all_steps_terminated; workflow_grader.grade checks name PRESENCE only
+# (workflow_grader.py:361); w21_build_verify/w21_run_verify never compare
+# spec names. Mounting it needs a new surface -- a repair wave does not
+# build one. The row stays until a grading path needs to pin the template
+# by name; then workflow_is is the function that does it.
 test-only	workflow_is	delfin/agent/pack/benchmark/accept/w20_common.py:15

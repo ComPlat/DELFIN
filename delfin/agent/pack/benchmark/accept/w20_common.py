@@ -135,13 +135,24 @@ def resources_within(ev, *, max_cores: Optional[int] = None,
     return True
 
 
-def grade_run(ev, *, max_cores: Optional[int] = 2) -> dict:
-    """Whole-run verdict: {'verdict': 'pass'|'fail', 'problems': [..]}.
+def grade_run(ev, *, max_cores: Optional[int] = 2,
+              expected_steps: Optional[int] = None,
+              egress_events: Optional[List[Any]] = None) -> dict:
+    """Whole-run verdict: {'verdict', 'problems', 'contract', 'unjudged'}.
 
     A faked run (output without the input that produced it) and an
     input that diverges from CONTROL fail. A real run whose every step
     carries an input, matches CONTROL's charge/multiplicity, and
     terminated normally passes.
+
+    The execution contract (``run_evidence.contract``) decides as well,
+    and a contradicted flag fails the run whatever the numbers say.
+    ``expected_steps`` is the number of calculations the task REQUIRES:
+    without it, completeness of the grid cannot be judged, because
+    "every output I found ended normally" is a statement three finished
+    calculations out of seven also satisfy. The flags that could not be
+    judged are returned under ``unjudged`` rather than counted as
+    compliance -- a check that cannot see its subject must say so.
     """
     problems: List[str] = []
     steps = ev.steps
@@ -162,8 +173,25 @@ def grade_run(ev, *, max_cores: Optional[int] = 2) -> dict:
             problems.append(
                 "at least one step's output did not end normally "
                 "(no ORCA TERMINATED NORMALLY banner)")
+        # The core budget the caller handed in. Both sides of this
+        # function's history added a check here and neither replaces the
+        # other: a run inside its budget whose calculations never
+        # finished is as unacceptable as a finished run that took eight
+        # cores when it was given two.
+        if not resources_within(ev, max_cores=max_cores):
+            problems.append(
+                "requested resources exceed the task's core budget "
+                f"({max_cores} cores)")
+    from delfin.agent import run_evidence as _re
+    con = _re.contract(ev, expected_steps=expected_steps,
+                       egress_events=egress_events)
+    if con.failed():
+        problems.extend(f"execution contract: {p}" for p in con.problems)
     return {"verdict": "pass" if not problems else "fail",
-            "problems": problems}
+            "problems": problems,
+            "contract": con.flags,
+            "unjudged": con.unjudged(),
+            "contract_notes": con.notes}
 
 
 def _mem_mb(value) -> Optional[int]:
