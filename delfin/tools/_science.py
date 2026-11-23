@@ -168,3 +168,24 @@ def scientific_lint(spec: Dict[str, Any]) -> List[ScienceFinding]:
 
 
 __all__ = ["ScienceFinding", "scientific_lint"]
+
+
+def justification_requirement(code: str) -> "dict | None":
+    """How a lint finding of *code* may be justified, or None.
+
+    The single place a consumer asks, so the grader does not import each
+    rule module and the rule modules stay the owners of their own
+    requirement. Returns what the owning module returns; see
+    ``_science_rules.excited.justification_requirement`` for the shapes.
+    Never raises: a rule module that cannot answer leaves the caller on
+    its default, which is the word match it used before.
+    """
+    try:
+        from delfin.tools._science_rules.excited import (
+            justification_requirement as _excited)
+    except Exception:
+        return None
+    try:
+        return _excited(code)
+    except Exception:
+        return None
