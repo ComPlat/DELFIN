@@ -2798,6 +2798,27 @@ def cmd_chat(args: argparse.Namespace) -> int:
                 pass
 
 
+def _run_oracle_subcommand(args: argparse.Namespace) -> int:
+    """The `oracle` subcommand: compare a run's numbers to a reference set.
+
+    Exit 0 where nothing disagreed, 1 where something did, 2 where the
+    reference file held nothing usable. An AMBIGUOUS row does not fail
+    the command -- an open assignment is a question, not a disagreement
+    -- and it is printed first so nobody misses it.
+    """
+    from . import reference_oracle
+    report = reference_oracle.compare_file(
+        args.workspace or ".", args.references)
+    if args.json:
+        import json as _json
+        print(_json.dumps(report.as_dict(), indent=2))
+    else:
+        print(reference_oracle.render(report))
+    if not report.verdicts:
+        return 2
+    return 1 if report.of(reference_oracle.DIFFERS) else 0
+
+
 def _run_replay_subcommand(args: argparse.Namespace) -> int:
     """The `replay` subcommand body: check one run manifest.
 
@@ -5834,6 +5855,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--partner", action="append", default=[],
         help="Reviewer branch that must be merged in; repeatable")
     prcheck.set_defaults(func=_run_prcheck_subcommand)
+
+    # oracle — compare a run's own numbers against published references.
+    #
+    # The reference set is an ARGUMENT and is never shipped: QUESTDB and
+    # its kind are CC-BY-SA-4.0 while this repository is LGPL-3.0, so
+    # the data stays outside the tree (LICENSE_GUARD.md section 0). That
+    # is also what makes the comparator work with any reference set
+    # rather than with one.
+    oracle_p = sub.add_parser(
+        "oracle",
+        help="Compare a run's computed values against a reference set")
+    oracle_p.add_argument(
+        "references",
+        help="Path to a JSON file of reference values (the fields are in "
+             "delfin/agent/reference_oracle.py)")
+    oracle_p.add_argument(
+        "--workspace", default="",
+        help="The run's workspace (default: the current directory)")
+    oracle_p.add_argument(
+        "--json", action="store_true",
+        help="The report as JSON instead of lines")
+    oracle_p.set_defaults(func=_run_oracle_subcommand)
 
     # replay — check a stored run manifest against what derives again now
     replay_p = sub.add_parser(

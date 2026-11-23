@@ -215,16 +215,16 @@ def _computed(folder: Path, ref: Reference,
     try:
         from delfin.api import extract_excited_states
     except Exception as exc:                            # noqa: BLE001
-        return None, f"the extractor is unavailable ({type(exc).__name__})"
+        return None, f"the extractor is unavailable ({type(exc).__name__})", []
     try:
         res = extract_excited_states(str(folder))
     except Exception as exc:                            # noqa: BLE001
-        return None, f"the extractor raised {type(exc).__name__}"
+        return None, f"the extractor raised {type(exc).__name__}", []
     if getattr(res, "error", None):
-        return None, f"no transition table: {res.error}"
+        return None, f"no transition table: {res.error}", []
     transitions = list(getattr(res, "transitions", None) or [])
     if not transitions:
-        return None, "the output holds no transitions"
+        return None, "the output holds no transitions", []
 
     if ref.match == MATCH_FIRST_BRIGHT:
         bright = getattr(res, "first_bright", None)
