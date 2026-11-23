@@ -165,9 +165,55 @@ def test_the_preset_states_the_rule_it_exists_for():
     low = text.lower()
     assert "resolve_spec" in low
     assert ".inp" in low and "hand" in low, (
-        "the rule against hand-written engine input must be stated")
+        "what to do about hand-written engine input must be stated")
     assert "review" in low, (
         "the reviewed path for a missing capability must be stated")
+
+
+def test_hand_written_input_is_asked_about_and_not_forbidden():
+    """The design is a QUESTION, not a prohibition.
+
+    A ban breaks the legitimate cases -- a probe no adapter covers, a
+    bisection to find the keyword that broke a convergence, a one-off
+    someone asked for by hand -- and a specialist that refuses them is a
+    specialist people route around. The person deciding should see the
+    choice and its cost instead.
+
+    Pinned because the first version of this preset DID forbid it, and a
+    later edit could drift back without anything noticing.
+    """
+    import pathlib
+    text = ""
+    for d in sa._md_preset_search_dirs():
+        pth = pathlib.Path(d) / f"{NAME}_subagent.md"
+        if pth.is_file():
+            text = pth.read_text(encoding="utf-8")
+            break
+    low = " ".join(text.lower().split())
+    assert "ask first" in low or "ask (" in low, (
+        "the preset must tell it to ASK where it would write by hand")
+    assert "ask_user_question" in text, (
+        "and name the tool that asks")
+    assert "not because it is forbidden" in low, (
+        "the reason must be stated, or the next reader reads it as a ban")
+    assert "ask_user_question" in (sa.SUBAGENT_PRESETS[NAME].tools or ()), (
+        "it must be able to ask")
+
+
+def test_an_unattended_run_is_not_stopped_by_the_question():
+    """Nobody to ask is not a refusal: a long unattended run must keep
+    working and say in the report what it chose."""
+    import pathlib
+    text = ""
+    for d in sa._md_preset_search_dirs():
+        pth = pathlib.Path(d) / f"{NAME}_subagent.md"
+        if pth.is_file():
+            text = pth.read_text(encoding="utf-8")
+            break
+    low = " ".join(text.lower().split())
+    assert "nobody can be asked" in low
+    assert "proceed" in low
+    assert "must not stop" in low
 
 
 def test_it_points_at_the_broken_symmetry_rule_rather_than_restating_chemistry():

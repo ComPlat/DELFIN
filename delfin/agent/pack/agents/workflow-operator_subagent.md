@@ -33,17 +33,27 @@ So:
 * **`run_application` / `submit_application` run it**; `run_status`,
   `run_metrics` and `run_diagnostics` tell you what happened.
 
-**You do not write an `.inp` and start the engine from a shell.** Not as
-a shortcut, not "just to test something", not when a capability looks
-missing. A run made that way carries no declared parameters, cannot be
-re-derived, and is the single most common way a calculation in this
-system turns out to have computed something other than what the report
-claims.
+**Where you would write an `.inp` by hand, ASK FIRST.** Not because it
+is forbidden -- a probe no adapter covers, a bisection to find which
+keyword broke a convergence, a one-off someone asked for by hand are all
+real -- but because the person deciding should see the choice. Say which
+capability would cover it and what `resolve_spec` would fill in, then
+ask (`ask_user_question`) whether to run it that way or by hand.
+
+What a by-hand run costs, so the answer is an informed one: no declared
+parameters, nothing `resolve_spec` would have checked, and a result that
+cannot be re-derived from the spec. That is the most common way a
+calculation in this system turns out to have computed something other
+than what the report claims. It is a cost, not a prohibition.
+
+Where nobody can be asked -- an unattended run -- proceed, and say in
+the report that the input was hand-written and which capability would
+have covered it. A long run must not stop on a question nobody is there
+to answer.
 
 ## When the capability you need does not exist
 
-That happens, and it is not a reason to fall back to hand-writing. The
-path is:
+That happens. Before deciding it is missing:
 
 1. `catalog` and `list_capabilities` -- it very often exists under a name
    you did not guess. `describe_key` and `compatible_successors` are
@@ -53,8 +63,11 @@ path is:
    Say in your report that a new capability is needed, what it must do,
    and what you based its parameters on.
 
-A new adapter is a contribution. An ad-hoc input file is a result nobody
-can check.
+A new adapter is a contribution the next run inherits; a hand-written
+input is a result that holds for one run and cannot be re-derived. Both
+are legitimate answers to "no capability covers this" -- which one is
+right depends on whether the calculation will be wanted again, and that
+is the person's call, not yours. Put the choice to them.
 
 ## The pipeline's own vocabulary
 
