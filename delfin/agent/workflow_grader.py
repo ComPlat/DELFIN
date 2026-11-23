@@ -304,7 +304,44 @@ def _coverage_reason(request: str, steps: List[dict]) -> Optional[str]:
     return None
 
 
-def _lint_verdict(findings: List[dict], answer: str) -> (List[dict], List[str]):
+def _justification_requirement(code: str) -> "dict | None":
+    """What the owning lint module says about justifying *code*.
+
+    Asked through the lint's own module so the grader does not import
+    each rule module; None means "no declared requirement", which is
+    every rule that has not been given one yet.
+    """
+    try:
+        from delfin.tools._science import justification_requirement
+        return justification_requirement(code)
+    except Exception:
+        return None
+
+
+def _step_has_field(spec: Dict[str, Any], label: str, field: str) -> bool:
+    """Whether the step the finding is about carries *field* in kwargs.
+
+    Matched on the label the lint reports, which is the step's ``label``
+    or, lacking one, its ``step``. Walks trunk and branches, because the
+    lint walks both.
+    """
+    def _walk(steps):
+        for st in steps or []:
+            if not isinstance(st, dict):
+                continue
+            here = str(st.get("label") or st.get("step") or "")
+            if here == label and field in (st.get("kwargs") or {}):
+                return True
+            if _walk(st.get("steps")) or _walk(st.get("branches")):
+                return True
+        return False
+
+    inner = spec.get("spec") if "spec" in spec and "steps" not in spec else spec
+    return _walk((inner or {}).get("steps"))
+
+
+def _lint_verdict(findings: List[dict], answer: str,
+                  spec: Dict[str, Any]) -> (List[dict], List[str]):
     """Science-lint warnings are tolerated ONLY when the answer justifies
     them in the same breath; errors never pass (science findings are
     advisory by design, _science.py:14-15 — the tolerance here is the
@@ -319,12 +356,53 @@ def _lint_verdict(findings: List[dict], answer: str) -> (List[dict], List[str]):
                            f"{f.get('message')}")
             out.append(entry)
             continue
-        needle = (f.get("rule") or "").split("-")[0].lower()
         # The justification must mention the substance, not the rule id:
         # a reason counts where the deviation stands (wave-20 lesson A4).
-        words = [w for w in re.split(r"\W+", f.get("message", ""))
-                 if len(w) > 3]
-        hit = any(w.lower() in answer.lower() for w in words)
+        #
+        # Three routes, in this order, because the single word match this
+        # used to be accepted any English sentence. Measured 2026-11-23
+        # against the excited-state rungs: the answer "This is the
+        # result." justified the TDA warning ("this" is in the message),
+        # "The results are listed here." justified the charge-transfer
+        # warning ("here"), and quoting the system prompt's own ladder
+        # back justified both -- because the prompt and the finding are
+        # rendered from one declaration, so the grader was checking for
+        # vocabulary it had handed the model itself. That is the shape of
+        # "a rubric may score a vocabulary, not a behaviour".
+        requirement = _justification_requirement(f.get("rule") or "")
+        field = (requirement or {}).get("spec_field") or ""
+        if field:
+            # The decision lives in the spec. Prose cannot close it:
+            # either the step carries the field or the warning stands.
+            hit = _step_has_field(spec, f.get("step") or "", field)
+            if not hit:
+                entry["justified_by"] = f"missing kwarg {field!r}"
+        else:
+            words = {w.lower() for w in re.split(r"\W+", f.get("message", ""))
+                     if len(w) >= 4}
+            prompt_words = {
+                w.lower() for w in re.split(
+                    r"\W+", (requirement or {}).get("prompt_vocabulary") or "")
+                if len(w) >= 4}
+            if prompt_words:
+                # Only what the prompt did NOT say counts: for a rule
+                # whose text the model is given, the case-specific
+                # interpolations are what a real justification names.
+                own = words - prompt_words
+                found = {w for w in own if w in answer.lower()}
+                hit = bool(found)
+            else:
+                # A rule with no declared requirement keeps the word
+                # match, with a floor: two distinct words of five
+                # characters or more rather than any one of four. That
+                # is an improvement, not a solution, and it is written
+                # down as such -- the real fix for such a rule is to
+                # declare how it may be justified.
+                found = {w for w in words if len(w) >= 5
+                         and w in answer.lower()}
+                hit = len(found) >= 2
+            if found:
+                entry["justified_by"] = sorted(found)[:6]
         entry["justified"] = bool(hit)
         if not hit:
             reasons.append(
@@ -391,7 +469,7 @@ def grade(spec: Dict[str, Any], request: str, *,
 
     # 3. science lint, justified in the answer
     lint_findings = _platform.scientific_lint(spec)
-    lint_entries, lint_reasons = _lint_verdict(lint_findings, answer or "")
+    lint_entries, lint_reasons = _lint_verdict(lint_findings, answer or "", spec)
     findings["lint"] = lint_entries
     reasons.extend(lint_reasons)
 
