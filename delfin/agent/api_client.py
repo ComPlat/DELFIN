@@ -29539,8 +29539,18 @@ def _session_scratch_dir() -> str:
     for free: 0700, never shared with another session (one process = one
     session), and pruned when the session ends (the atexit rmtree of the
     parent). It is exported as TMPDIR/TMP/TEMP in every cage layer and
-    bound read-write into each one, and it is on the file tools' writable
-    and readable root lists -- see KitToolPermissions.all_workspace_roots.
+    bound read-write into each one.
+
+    It is **not a file-tool root**, and that is deliberate: it is shell
+    state for caged commands, so ``all_workspace_roots`` and
+    ``all_readable_roots`` do not list it (api_client.py, the comment above
+    ``all_readable_roots``), a ``write_file`` into it is refused, and
+    ``read_file`` cannot read a file a command left there -- the route to
+    it is the cage's own TMPDIR, i.e. another command of the same session.
+    This docstring claimed the opposite until 2026-11-22, which would send
+    a model to read back a file it cannot reach;
+    ``test_write_gate_does_not_treat_scratch_as_a_file_tool_root`` is what
+    states the contract, and it reads this sentence back.
     /tmp itself stays private and fresh; nothing else becomes writable.
     """
     global _SESSION_SCRATCH
