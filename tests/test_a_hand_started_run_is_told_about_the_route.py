@@ -135,32 +135,64 @@ def test_the_note_is_not_a_verdict():
             f"{forbidden!r} in a function that only composes a note")
 
 
-def test_the_note_is_not_wired_while_the_gate_still_refuses_the_route():
-    """WITHHELD ON PURPOSE, and this test is the reason it stays that way.
+def test_the_condition_for_wiring_the_note_holds(tmp_path):
+    """The note was WITHHELD while the route it names was refused.
 
-    The note advertises `run_application` as "that route". Measured in
-    the gate: `_mcp_calculation_verdict` returns None for
-    `run_application`/`submit_application` by design -- "the dialog
-    stays" -- and in an unattended session
-    (`perms.confirm_callback is None`, mode=default) that None reaches
-    the refusal at api_client.py: "no approval dialog is configured
-    (mode=default), so it is refused".
-
-    So the same session that received the note would have been refused
-    the route it names, while `bash orca job.inp` runs unasked once
-    calc_policy has checked it. Telling a model to take a path the gate
-    blocks is worse than saying nothing: it spends a turn and teaches
-    that the advice is wrong.
-
-    The note is wired once judge_application_run gives those two tools
-    the same check the bash path gets. Until then this assertion keeps
-    it out, and names what has to be true first.
+    It advertises run_application as "that route", and until 2026-11-23
+    an unattended session was refused that route ("no approval dialog is
+    configured") while `bash orca job.inp` ran unasked. Telling a model
+    to take a path the gate blocks is worse than saying nothing. The
+    condition this file named for wiring it was: judge_application_run
+    gives those tools the same check the bash path gets. It does now --
+    the same electrons_of and spin_allowed -- and this asserts it at the
+    real entry rather than trusting that sentence.
     """
+    from delfin.agent import api_client
+
+    perms = api_client.KitToolPermissions(workspace=str(tmp_path),
+                                          mode="default")
+    perms.confirm_callback = None
+    refused = api_client._mcp_call_refusal(
+        "mcp__delfin-tools__run_application",
+        {"name": "conformer_dG", "cores": 1,
+         "inputs": {"smiles": "CCO", "charge": 0, "mult": 1}}, perms)
+    assert refused is None, (
+        "the route the note names is refused unattended; the note must "
+        f"not be wired while that holds: {refused}")
+
+
+def test_the_note_is_wired_into_the_bash_gate():
     import inspect
 
     from delfin.agent import api_client
     src = inspect.getsource(
         api_client._DocToolExecutor._run_permission_gate)
-    assert "adapter_route_note" not in src, (
-        "the note is wired while the gate can still refuse the route it "
-        "names -- fix _mcp_calculation_verdict first")
+    assert "adapter_route_note(" in src
+
+
+def test_a_hand_started_run_carries_the_note_once_per_session(tmp_path,
+                                                              monkeypatch):
+    """Through the real executor, on a real (tiny) calculation. Once per
+    session: bench17 started 46 calculations by hand, and 46 copies of a
+    400-character note is the context waste this file exists to avoid
+    teaching anything new."""
+    import json
+
+    from delfin.agent import api_client
+
+    monkeypatch.setattr(calc_policy, "host_kind",
+                        lambda env=None: "workstation")
+    monkeypatch.setattr(calc_policy, "_available_cpus", lambda: 8)
+    (tmp_path / "h2.xyz").write_text("2\n\nH 0 0 0\nH 0 0 0.74\n")
+    perms = api_client.KitToolPermissions(workspace=str(tmp_path),
+                                          mode="default",
+                                          agent_role="solo_agent")
+    perms.confirm_callback = None
+    seen = []
+    for _ in range(2):
+        out = json.loads(api_client._doc_executor.execute(
+            "bash", {"command": "xtb h2.xyz --sp -P 1 > h2.out 2>&1"},
+            perms))
+        assert "calculation_check" in out, out
+        seen.append("run_application" in out["calculation_check"])
+    assert seen == [True, False], seen

@@ -23483,6 +23483,21 @@ class _DocToolExecutor:
                         perms, name, args, mode)
                     if verdict is None and calc_notes is not None:
                         calc_notes.append(_calc.summary)
+                        # Every engine launch this gate sees was started
+                        # by hand -- one through run_application never
+                        # reaches it -- so the run carries back the one
+                        # fact the model could not otherwise know: a
+                        # checked route exists. Wired once that route ran
+                        # under the same check as this one (spin parity
+                        # included); ONCE per session, because a run that
+                        # starts 46 calculations by hand would otherwise
+                        # carry 46 copies of the same 400 characters.
+                        from . import calc_policy as _cp_route
+                        _route = _cp_route.adapter_route_note(_calc)
+                        if _route and not getattr(
+                                perms, "_adapter_route_told", False):
+                            calc_notes.append(_route)
+                            perms._adapter_route_told = True
                     return verdict
                 if not _calc.admit:
                     _calc_reason = _calc.reason
