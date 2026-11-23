@@ -65,6 +65,11 @@ _EXERCISED = {
 # Not exercised here, each with the reason. A reason like "hard to test"
 # is not a reason; every line below names the resource that is missing.
 _NOT_EXERCISED_HERE = {
+    # The deferral mechanism: a real _DocToolExecutor.execute call returns
+    # a deferred tool's schema, and an unknown name answers with the
+    # listing instead of a bare error.
+    "describe_native_tool":
+        "tests/test_the_schema_arrives_when_it_is_needed.py",
     # Live probes drive these through a real pty, where the approval
     # channel and the plan gate are themselves under test.
     "exit_plan_mode": "tests/agent_terminal_probes — needs the approval channel",

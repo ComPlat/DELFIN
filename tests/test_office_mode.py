@@ -97,7 +97,7 @@ def test_other_roles_are_unaffected_by_the_deny_list():
 def test_chemistry_tools_leave_the_advertised_surface_too():
     ctx = ToolSurfaceContext(role="office_agent")
     advertised = {t["function"]["name"]
-                  for t in advertisable_tools(_DOC_TOOLS_OPENAI, ctx)}
+                  for t in advertisable_tools(_DOC_TOOLS_OPENAI, ctx, defer=False)}
     assert not (_DELFIN_ONLY_TOOL_NAMES & advertised)
     for tool in _DELFIN_ONLY_TOOL_NAMES:
         assert tool_unavailable_reason(tool, ctx) is not None
@@ -106,7 +106,7 @@ def test_chemistry_tools_leave_the_advertised_surface_too():
 def test_advertising_stays_a_subset_of_what_may_execute():
     """The invariant the whole surface layer rests on, for this role too."""
     ctx = ToolSurfaceContext(role="office_agent")
-    for tool in advertisable_tools(_DOC_TOOLS_OPENAI, ctx):
+    for tool in advertisable_tools(_DOC_TOOLS_OPENAI, ctx, defer=False):
         name = tool["function"]["name"]
         assert not _tool_denied_for_role("office_agent", name), name
 

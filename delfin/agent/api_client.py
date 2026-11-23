@@ -12326,16 +12326,144 @@ def tool_unavailable_reason(
     return None
 
 
-def advertisable_tools(
+#: The tools whose SCHEMA rides on every request. Derived from
+#: 81,949 real tool calls in ~/.delfin/tool_traces by one rule --
+#: at least 50 calls, plus every tool the gate always permits
+#: (_ALWAYS_ALLOWED_TOOLS) and `subagent` -- and the counts are kept
+#: beside the names so the rule can be re-applied rather than guessed
+#: at. Measured: these 27 cost 3,992 tokens and cover 99% of all calls,
+#: against 11,729 for all 96.
+#:
+#: TWO TOOLS ARE HERE DESPITE BEING RARE, and for the same reason:
+#: `subagent` (133 calls, 444 tokens -- the most expensive single
+#: schema) and `ask_user_question` (32 calls, 245 tokens). Both are
+#: already UNDER-used and deferring them would make that worse: six
+#: specialist roles named nowhere in the prompt were chosen zero times
+#: in 79,056 calls, and a measured session gave four of seven choices
+#: as a prose list while ask_user_question was bound. Cost is not the
+#: only axis.
+#:
+#: NOT a hand-picked list of favourites. A tool missing here is still
+#: executable and still named in `deferred_tool_listing`; what it loses
+#: is the schema in the request, which `describe_native_tool` returns.
+_HOT_TOOL_NAMES: frozenset[str] = frozenset({
+    "ask_user_question",     #     32
+    "bash",                  #  46992
+    "bash_background",       #    407
+    "bash_output",           #    363
+    "bash_status",           #    534
+    "edit_file",             #   4379
+    "enter_worktree",        #     57
+    "exit_plan_mode",        #     30
+    "exit_worktree",         #    112
+    "grep_file",             #   3581
+    "list_files",            #    211
+    "multi_edit",            #    537
+    "orca_explain",          #     77
+    "read_file",             #  14352
+    "remember",              #    655
+    "report_verdict",        #    228
+    "run_tests",             #    834
+    "search_docs",           #     50
+    "skill",                 #    455
+    "subagent",              #    133
+    "subagent_result",       #     79
+    "task_create",           #   1061
+    "task_list",             #   1658
+    "task_update",           #   2006
+    "web_fetch",             #     80
+    "web_search",            #     53
+    "write_file",            #   2372
+})
+
+#: Below this many measured calls a tool's schema is deferred. The
+#: threshold is the knob and the measurement is the reason: 300 and 100
+#: both gave 98% coverage, 50 gives 99% at 3,992 tokens, 25 gives 99%
+#: at 4,617. 50 is the point where another 600 tokens buys nothing.
+_HOT_CALL_THRESHOLD = 50
+
+
+def _tool_name_of(entry: dict) -> str:
+    return str((entry.get("function") or {}).get("name") or "")
+
+
+def deferred_tool_names(
     tools: list[dict[str, Any]], ctx: Optional[ToolSurfaceContext] = None
-) -> list[dict[str, Any]]:
-    """Drop every tool *ctx* could not execute anyway."""
+) -> list[str]:
+    """The executable tools whose SCHEMA is not in the request, sorted.
+
+    Everything the context could execute, minus the hot set and minus
+    ``describe_native_tool`` itself. Computed from the same list the
+    request is built from, so the listing can never name a tool the
+    role cannot run.
+    """
     ctx = ctx or ToolSurfaceContext()
-    return [
+    out = []
+    for entry in tools:
+        name = _tool_name_of(entry)
+        if not name or name in _HOT_TOOL_NAMES:
+            continue
+        if name == "describe_native_tool":
+            continue
+        if tool_unavailable_reason(name, ctx) is None:
+            out.append(name)
+    return sorted(out)
+
+
+def deferred_tool_listing(role: str = "",
+                          tools: Optional[list[dict[str, Any]]] = None
+                          ) -> str:
+    """The deferred tools, as names, for the one cue the model gets.
+
+    A capability with no cue is a capability nobody uses, measured here
+    twice: six specialist roles callable and named nowhere were chosen
+    zero times in 79,056 tool calls, and 29 of 67 skills sat past a
+    listing cap. So the names are always sent even when the schemas are
+    not -- about 340 characters per 50 names, against 6,799 tokens of
+    schema for the tools with fewer than ten calls each.
+    """
+    catalogue = tools if tools is not None else _DOC_TOOLS_OPENAI
+    names = deferred_tool_names(catalogue, ToolSurfaceContext(role=role))
+    if not names:
+        return ""
+    return (", ".join(names)
+            + ". Call describe_native_tool(name=...) for one of these "
+              "before using it; its schema is not in this request.")
+
+
+def advertisable_tools(
+    tools: list[dict[str, Any]], ctx: Optional[ToolSurfaceContext] = None,
+    *, defer: bool = True,
+) -> list[dict[str, Any]]:
+    """Drop every tool *ctx* could not execute anyway, then DEFER the cold ones.
+
+    Measured over 81,949 real tool calls: the 96 tools advertised to a
+    solo session cost 11,729 tokens of schema on EVERY request, ten of
+    them are 95% of all calls, and 61 with fewer than ten calls each
+    cost 6,799 of those tokens. The hot set (_HOT_TOOL_NAMES, derived
+    by one rule from the same data) is 27 tools, 3,992 tokens, 99% of
+    calls.
+
+    A deferred tool is NOT removed: it stays executable, it is named in
+    ``deferred_tool_listing`` and its schema arrives through
+    ``describe_native_tool``. Deferral that broke execution would be
+    worse than the cost it saves, which is why that is the one
+    assertion in the acceptance pair that was green before this change.
+
+    ``defer=False`` returns the whole advertisable surface, for the
+    report that measures what deferral saved and for a caller that
+    genuinely wants all of it.
+    """
+    ctx = ctx or ToolSurfaceContext()
+    out = [
         t for t in tools
-        if tool_unavailable_reason(t.get("function", {}).get("name", ""), ctx)
-        is None
+        if tool_unavailable_reason(_tool_name_of(t), ctx) is None
     ]
+    if not defer:
+        return out
+    return [t for t in out
+            if _tool_name_of(t) in _HOT_TOOL_NAMES
+            or _tool_name_of(t) == "describe_native_tool"]
 
 
 def role_tool_surface_report(
@@ -18202,6 +18330,31 @@ class _DocToolExecutor:
                 f"Source: {doc.get('title', doc_id)}\n\n"
                 f"{section.get('text', '')}"
             )
+
+        elif name == "describe_native_tool":
+            # The other half of deferral: the names are always sent and
+            # the schema arrives here. An unknown name answers with the
+            # listing rather than a bare error -- a model that mistyped
+            # one should not have to guess twice, and the measured
+            # failure mode of a missing cue is that the capability goes
+            # unused entirely.
+            _want = str((arguments or {}).get("name") or "").strip()
+            _entry = None
+            for _t in _DOC_TOOLS_OPENAI:
+                if str((_t.get("function") or {}).get("name") or "") == _want:
+                    _entry = _t.get("function")
+                    break
+            if _entry is None:
+                return json.dumps({
+                    "error": f"no DELFIN tool named {_want!r}",
+                    "available": deferred_tool_listing(
+                        getattr(permissions, "agent_role", "") or ""),
+                })
+            return json.dumps({
+                "name": _entry.get("name"),
+                "description": _entry.get("description", ""),
+                "parameters": _entry.get("parameters") or {},
+            }, ensure_ascii=False)
 
         elif name == "list_docs":
             docs = []
@@ -33753,7 +33906,13 @@ class OpenAIClient(_BaseClient):
                 or frozenset()),
             has_clusters=_clusters_configured(),
         )
-        advertised_tools = advertisable_tools(advertised_tools, _surface_ctx)
+        # defer=False: deferral is the LAST step, below. Every filter
+        # between here and there removes tools (DELFIN-only in a
+        # generic repo, hidden groups, role denials), and a listing
+        # built before them would name tools that are then stripped --
+        # the inverse of the defect deferral exists to avoid.
+        advertised_tools = advertisable_tools(
+            advertised_tools, _surface_ctx, defer=False)
 
         # Strip DELFIN-only tools when the workspace is not a DELFIN repo.
         # Generic projects shouldn't see search_calcs / get_calc_info /
@@ -33872,6 +34031,50 @@ class OpenAIClient(_BaseClient):
         # tool schemas the turn had no use for.
         _suppress_tools = bool(no_tools) or bool(
             _caps is not None and not _caps.supports_tools)
+
+        # DEFERRAL, last of the native filters so the listing names exactly
+        # what survived the others. Measured over 81,949 real tool calls:
+        # 96 schemas cost 11,729 tokens on EVERY request, 27 of them cover
+        # 99% of all calls, and 61 with fewer than ten calls each account
+        # for 6,799 of those tokens. The names stay (about 280 tokens for
+        # 69 of them) and the schemas arrive through describe_native_tool.
+        #
+        # The listing rides on that tool's own DESCRIPTION, which is how the
+        # skill listing above reaches the model: the cue sits on the tool
+        # that acts on it, so nothing has to be paid out of the prompt head.
+        try:
+            _deferred = [
+                _t for _t in advertised_tools
+                if _tool_name_of(_t) not in _HOT_TOOL_NAMES
+                and _tool_name_of(_t) != "describe_native_tool"
+            ]
+            if _deferred:
+                _names = sorted(_tool_name_of(_t) for _t in _deferred)
+                _defer_note = (
+                    ", ".join(_names)
+                    + ". Call describe_native_tool(name=...) for one of "
+                      "these before using it; its schema is not in this "
+                      "request.")
+                advertised_tools = [
+                    ({**_t, "function": {
+                        **_t["function"],
+                        "description": (
+                            _t["function"].get("description", "")
+                            + f"\nDeferred tools: {_defer_note}"),
+                    }} if _tool_name_of(_t) == "describe_native_tool" else _t)
+                    for _t in advertised_tools
+                    if _tool_name_of(_t) in _HOT_TOOL_NAMES
+                    or _tool_name_of(_t) == "describe_native_tool"
+                ]
+        except Exception as exc:
+            # The turn goes on with the FULL surface, which costs tokens and
+            # loses nothing. A bare ``pass`` here would hide the opposite
+            # failure -- a shrunk surface with no listing -- which is how the
+            # skill listing stayed invisible for as long as it existed.
+            import logging
+            logging.getLogger(__name__).warning(
+                "tool schemas not deferred, sending the full surface: %r",
+                exc)
 
         # Augment with MCP tools discovered from configured servers.
         # Failures (missing config, server crash) leave the registry

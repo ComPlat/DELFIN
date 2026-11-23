@@ -157,6 +157,29 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "describe_native_tool",
+            "description": (
+                "The full schema of one DELFIN tool whose schema is not in "
+                "this request. Most tools are DEFERRED: their names are "
+                "listed for you and their parameters are not, because 96 "
+                "schemas cost 11,729 tokens on every request while 27 of "
+                "them cover 99% of all calls. Call this for a deferred "
+                "tool, then call the tool."),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "The tool name, as the listing gives it.",
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_docs",
             "description": "List indexed documents (doc_id, title, section_count).",
             "parameters": {

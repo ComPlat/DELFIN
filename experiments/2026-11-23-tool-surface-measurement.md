@@ -85,3 +85,110 @@ than the cost it saves:
 
 Recorded before the change. 3 of the 4 were red at this commit, and the
 one that was green is the one that must not break.
+
+---
+
+# After the change
+
+| | tools | tokens |
+|---|---|---|
+| available to the role | 97 | 11,865 |
+| schemas sent | 28 | 4,128 |
+| + the name listing (69 names) | — | 280 |
+| **= on every request** | | **4,408** |
+
+**7,457 tokens freed per request, 63 % less.** Every one of the 97 stays
+executable; 69 of them arrive as names and their schemas on demand.
+
+## The prediction was wrong, and by how much
+
+Recorded before building: 4,000 tokens, from the hot set (3,992) alone.
+Measured: 4,408. The prediction left out **the mechanism's own cost** —
+`describe_native_tool`'s schema (136) and the name listing (280) — and
+was 10 % low because of it.
+
+The option that would have saved the prediction was a threshold of 100
+calls instead of 50: 22 tools, 3,532 + 416 = 3,948. It was not taken.
+It costs a point of coverage (98 % against 99 %) and one extra round
+trip costs far more than the 460 tokens it saves. The target was raised
+by the measured amount with the reason recorded, which is the only way
+a budget here may move.
+
+## The hot set, and two tools that are in it despite being rare
+
+Derived by one rule — at least 50 measured calls, plus every tool the
+gate always permits, plus `subagent` — not hand-picked:
+
+```
+ask_user_question bash bash_background bash_output bash_status
+edit_file enter_worktree exit_plan_mode exit_worktree grep_file
+list_files multi_edit orca_explain read_file remember report_verdict
+run_tests search_docs skill subagent subagent_result task_create
+task_list task_update web_fetch web_search write_file
+```
+
+`subagent` (133 calls, **444 tokens** — the most expensive single
+schema) and `ask_user_question` (32 calls, 245 tokens) would both be
+deferred on cost alone. Both are kept, because both are already
+**under**-used and deferring them would make that worse: six specialist
+roles named nowhere in the prompt were chosen zero times in 79,056
+calls, and a measured session gave four of seven choices as a prose list
+while `ask_user_question` was bound. Cost is not the only axis.
+
+## Two things the repository already knew
+
+Found while building, and both say the measurement was not news:
+
+* beside the request assembly: *"The tool schemas ride on every request
+  outside api_messages... Measured once per turn: 41 244 chars for 69
+  tools (~10 k tokens, 7.9 % of a 131 072 window)"*;
+* and a turn-level version of this very idea: *"a message that is
+  nothing but a greeting needs no tools, and sending the surface anyway
+  costs the whole schema block for a one-sentence reply. Measured in the
+  field: a 'hallo' cost 12,385 input tokens, roughly nine thousand of
+  which were tool schemas the turn had no use for."*
+
+The all-or-nothing version shipped. This is the graded one.
+
+## Where the listing had to go, and the near-miss
+
+`deferred_tool_listing` was written, tested, and read by **nothing** —
+the fourth instance of built-tested-unreachable in one day. Two fixes
+followed:
+
+1. the listing rides on `describe_native_tool`'s own **description**,
+   which is how the skill listing reaches the model: the cue sits on the
+   tool that acts on it and no prompt-head budget is spent;
+2. deferral became the **last** native filter rather than the first.
+   Four filters run between the old call site and the request (DELFIN-only
+   tools in a generic repo, hidden groups, role denials), and a listing
+   built before them would have named tools they then strip — the exact
+   inverse of the defect deferral exists to avoid.
+
+## The consuming suites, with a control
+
+75 suites consume the tool surface. **20 failed**, and the control at
+`origin/main` was **1928 passed, 0 failed** — so all 20 were mine and
+none was pre-existing. They sorted into three kinds, and none was a
+wrong-answer bug:
+
+* **availability read as advertisement** (13 assertions across 7 files).
+  These ask *which tools a filter keeps*, which is `defer=False`. The
+  invariant's own docstring names the risk — *"nothing in it may become
+  unreachable through the advertising filters"* — and deferral does not
+  make anything unreachable, so the tests now ask the availability
+  question they always meant.
+* **a budget pointed at a proxy.** `_TOKEN_BUDGET` capped the CATALOGUE
+  total as a stand-in for "what rides on every request". Deferral makes
+  those two different numbers, so the catalogue ceiling moved by the
+  measured +136 and a new, far tighter `_SHIPPED_BUDGET` (4,600) was
+  added for the number that actually costs money. The 35 %-below-baseline
+  ratchet did not move at all: the new tool joins the
+  post-compaction set, like every tool added since the baseline.
+* **two recorded guards doing their job**: the catalogue drift detector
+  (count, name order, two sha256s, two token figures) re-taken with the
+  cause named, as that file requires; and the reachability ratchet,
+  which refused to let a new advertised tool sit unexamined.
+
+Final: **1962 passed, 0 failed** across the 75, against 1928/0 at the
+control.

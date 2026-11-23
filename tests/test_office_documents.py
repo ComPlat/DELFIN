@@ -630,7 +630,7 @@ def test_document_tools_need_permissions(ws, book):
 def test_office_tools_are_hidden_without_a_backend():
     ctx = ToolSurfaceContext(has_office_libs=False)
     advertised = {t["function"]["name"]
-                  for t in advertisable_tools(_DOC_TOOLS_OPENAI, ctx)}
+                  for t in advertisable_tools(_DOC_TOOLS_OPENAI, ctx, defer=False)}
     assert not (_OFFICE_TOOL_NAMES & advertised)
     for name in _OFFICE_TOOL_NAMES:
         assert tool_unavailable_reason(name, ctx) == (
@@ -640,7 +640,7 @@ def test_office_tools_are_hidden_without_a_backend():
 def test_office_tools_are_advertised_when_the_backend_is_there():
     ctx = ToolSurfaceContext(has_office_libs=True)
     advertised = {t["function"]["name"]
-                  for t in advertisable_tools(_DOC_TOOLS_OPENAI, ctx)}
+                  for t in advertisable_tools(_DOC_TOOLS_OPENAI, ctx, defer=False)}
     assert _OFFICE_TOOL_NAMES <= advertised
 
 
