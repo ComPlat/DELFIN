@@ -16590,8 +16590,18 @@ class _DocToolExecutor:
                     "entry": ch.entry, "root": ch.root, "trash": ch.trash,
                     "post_hash": ch.post_hash, "post_sig": ch.post_sig,
                     "post_tree": ch.post_tree})
-                if (ch.kind != "deleted" and isinstance(tracker, dict)
-                        and ch.path in tracker):
+                # The edit baseline moves for every file the command
+                # wrote, not only for one already read. The direct path
+                # does this where it captures the redirect pre-image;
+                # over an overlay that capture is skipped on purpose
+                # (the layer is applied through the trash instead), so
+                # without this a file the shell CREATED reached the
+                # editor as a stranger and the next edit_file refused it
+                # as "modified since last read_file". Measured
+                # 2026-11-23: the condition holds wherever bubblewrap
+                # makes the overlay available, which is why the suite
+                # sees it on a workstation and not on a runner.
+                if ch.kind != "deleted" and isinstance(tracker, dict):
                     try:
                         tracker[ch.path] = Path(ch.path).stat().st_mtime
                     except OSError:
