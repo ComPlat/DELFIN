@@ -159,3 +159,108 @@ def test_a_shell_nobody_watched_is_still_told(job_registry, workspace):
     # is what identifies it here -- whether the command got to run or was
     # refused by the sandbox, the notice is about the same job either way.
     assert "echo unwatched" in rows[0], rows[0]
+
+
+def _model_turn_that_sees(notice, ws):
+    """Run one turn with the real streaming loop over a stub backend, and
+    return the messages the model was shown a second time.
+
+    The tool loop is ``OpenAIClient.stream_message``; only the backend is a
+    double, the same shape ``test_memory_context_nudge_integration`` uses.
+    This is the half the wake path is FOR: the notice is worth nothing if
+    the model's context never receives it.
+    """
+    import threading
+    import types
+
+    from delfin.agent import api_client as ac
+
+    state = {"round": 0, "requests": []}
+
+    class _Stream:
+        def __init__(self, events):
+            self._events = events
+
+        def __iter__(self):
+            for ev in self._events:
+                yield ev
+
+        def close(self):
+            pass
+
+    def _answer(text):
+        return [
+            types.SimpleNamespace(
+                usage=None,
+                choices=[types.SimpleNamespace(
+                    delta=types.SimpleNamespace(
+                        content=text, tool_calls=None, reasoning_content=None),
+                    finish_reason=None)]),
+            types.SimpleNamespace(
+                usage=types.SimpleNamespace(prompt_tokens=5, completion_tokens=3),
+                choices=[types.SimpleNamespace(
+                    delta=types.SimpleNamespace(
+                        content=None, tool_calls=None, reasoning_content=None),
+                    finish_reason="stop")]),
+        ]
+
+    class _Stub:
+        chat = types.SimpleNamespace(
+            completions=types.SimpleNamespace(create=None))
+
+    def _create(**kw):
+        msgs = kw.get("messages") or []
+        state["requests"].append(msgs)
+        # One answer per user message (the wake-up): no tool round needed,
+        # this test is about what the model was READ, not what it did.
+        return _Stream(_answer("I see the job's outcome."))
+
+    _Stub.chat.completions.create = _create
+
+    client = ac.OpenAIClient.__new__(ac.OpenAIClient)
+    client.client = _Stub()
+    client.model = "stub-model"
+    client._provider = "kit"
+    client._base_url = "https://example.invalid/api/v1"
+    client._api_key = "x"
+    client.effort = ""
+    client._permissions = KitToolPermissions(workspace=ws, mode="default",
+                                             task_session_id=SESSION)
+    client.on_model_switched = None
+    client._steer_lock = threading.Lock()
+    client._steer_msgs = []
+    client._run_notes = []
+    client._test_evidence = []
+    client._observed_files_session = set()
+    client._red_test_files = []
+    client._thrash = None
+    client.max_tool_rounds = 2
+
+    list(client.stream_message(
+        messages=[{"role": "user", "content": notice}],
+        system="You are a test.", max_tokens=64))
+    assert state["requests"], "the model was never asked anything"
+    return state["requests"][-1]
+
+
+def test_the_notice_reaches_the_model_in_the_words_that_were_rendered(
+        job_registry, workspace):
+    """The notice is what the next turn is given, and what the model is
+    shown is that notice -- one job, named once."""
+    job_id, exit_code = _run_the_calls(workspace)
+    notice = _notice(workspace)
+    assert notice, "the finished job produced no wake-up at all"
+
+    shown = _model_turn_that_sees(notice, workspace)
+
+    text = "\n".join(str(m.get("content") or "") for m in shown
+                     if isinstance(m, dict))
+    rows_in_context = [ln for ln in text.splitlines()
+                       if ln.lstrip().startswith("- ") and job_id in ln]
+    assert rows_in_context, (
+        "the model's context does not carry the job's notice row: "
+        + repr(text[:400]))
+    assert len(rows_in_context) == 1, (
+        "the model's context carries " + str(len(rows_in_context))
+        + " rows for one job: " + repr(rows_in_context))
+
