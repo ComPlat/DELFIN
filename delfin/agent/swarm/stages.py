@@ -101,8 +101,11 @@ def advance(run: str, busy: set | None = None, *, start_real_run=None) -> list[d
         # OOM kill, a reboot), not finished. That is an outage like an
         # endpoint error; counted as an ending, ten killed integrators were
         # asked for real runs, killed again and marked final (2026-11-24).
+        # A PR.md says nothing here: the brief has it begun before any
+        # measurement, so a killed member usually has one.
         killed = not res.get("stop_reason")
-        if (res.get("stop_reason") == "error" or killed) and not (wt / "scratch" / "PR.md").is_file():
+        if killed or (res.get("stop_reason") == "error"
+                      and not (wt / "scratch" / "PR.md").is_file()):
             counter = d / f"{tid}.error_resumes"
             n = int(counter.read_text() or 0) if counter.exists() else 0
             try:

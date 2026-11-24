@@ -336,6 +336,9 @@ def test_a_member_killed_from_outside_is_resumed_not_finished(waves, monkeypatch
     import signal
     wave.start("r31", [_task("a", "sleep:60")], waves["repo"], wait=False)
     a = wave.load_state("r31")["agents"]["a"]
+    # begun before measuring, as the brief asks: it does not make a kill an ending
+    (Path(a["worktree"]) / "scratch").mkdir(exist_ok=True)
+    (Path(a["worktree"]) / "scratch" / "PR.md").write_text("# PENDING\n")
     os.kill(int(a["pid"]), signal.SIGKILL)
     _wait_ended("r31", "a")
     assert wave._last_result(Path(a["log"])) == {}
