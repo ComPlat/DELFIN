@@ -98,6 +98,7 @@ class Channel:
     level: str = "free"
     tolerance: float = 0.0
     readback: Optional[str] = None
+    text: bool = False
 
     @property
     def is_state(self) -> bool:
@@ -195,13 +196,24 @@ def _num(v, where, problems) -> Optional[float]:
 
 
 def _channel(name, spec, where, writable, problems) -> Channel:
-    allowed = {"unit", "states", "min", "max", "max_step", "min_interval_s",
-               "level", "tolerance", "readback"} if writable else {
+    allowed = {"unit", "states", "text", "min", "max", "max_step",
+               "min_interval_s", "level", "tolerance",
+               "readback"} if writable else {
                    "unit", "states", "text"}
     spec = _closed(spec, allowed, where, problems)
     states = tuple(state_str(s) for s in (spec.get("states") or ()))
     unit = spec.get("unit")
-    text = bool(spec.get("text")) and not writable
+    # A container slot is the one writable channel that carries a NAME and not
+    # a number or a state: the barcode of the vial a rack position holds. The
+    # registry in a campaign's checkpoint says where a sample is; this is what
+    # makes that true of the world, so a hand-over has something to check the
+    # next module's reading against. A writable text channel needs neither a
+    # unit nor a range -- the thing written is compared for equality, never
+    # bounded -- and it may not also declare states, because a state channel is
+    # matched against a closed list instead.
+    text = bool(spec.get("text"))
+    if text and writable and states:
+        problems.append(f"{where}: a text channel cannot also declare states")
     if (states or text) and unit:
         problems.append(f"{where}: a state or text channel has no unit")
     if not states and not text:
@@ -215,7 +227,7 @@ def _channel(name, spec, where, writable, problems) -> Channel:
         problems.append(f"{where}: level must be one of {', '.join(LEVELS)}")
     lo = _num(spec.get("min"), where + ".min", problems)
     hi = _num(spec.get("max"), where + ".max", problems)
-    if writable and not states and level != "forbidden" and (
+    if writable and not states and not text and level != "forbidden" and (
             lo is None or hi is None):
         problems.append(f"{where}: a numeric setpoint needs min and max")
     if lo is not None and hi is not None and not lo < hi:
@@ -226,7 +238,7 @@ def _channel(name, spec, where, writable, problems) -> Channel:
         min_interval_s=_num(spec.get("min_interval_s"), where, problems) or 0.0,
         level=level if writable else "free",
         tolerance=_num(spec.get("tolerance"), where, problems) or 0.0,
-        readback=spec.get("readback"))
+        readback=spec.get("readback"), text=text)
 
 
 def _address(addr, where, problems) -> dict:
@@ -322,7 +334,10 @@ def parse_document(doc: Any) -> Manifest:
                 if ch.is_state and state_str(v) not in ch.states:
                     problems.append(f"{where}: safe value {v!r} for {ch_name} "
                                     "is not one of its states")
-                if not ch.is_state and (
+                if ch.text and not state_str(v).strip():
+                    problems.append(f"{where}: safe value {v!r} for {ch_name} "
+                                    "is not a container name")
+                if not ch.is_state and not ch.text and (
                         _num(v, f"{where}.safe_state.{ch_name}", problems)
                         is None or not ch.min <= float(v) <= ch.max):
                     problems.append(f"{where}: safe value {v!r} for {ch_name} "

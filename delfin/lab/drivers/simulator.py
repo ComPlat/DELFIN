@@ -53,7 +53,7 @@ _KIND_CHANNELS = {
     "sensor": {},
     "pump": {"flow": 0.0, "power": "off"},
     "analyser": {"run": "idle"},
-    "reader": {},
+    "reader": {"container": ""},
 }
 
 
@@ -148,7 +148,14 @@ class SimulatorDriver(Driver):
             if kind == "analyser":
                 out["signal"] = Reading(float(e.get("signal", 0.0)), "au", ts)
             if kind in ("analyser", "reader"):
-                out["barcode"] = Reading(str(e.get("barcode", "")), None, ts)
+                # The barcode a position reports IS the container it holds: for
+                # a reader that is the slot a hand-over writes, for an analyser
+                # what a `place` put there. Keeping them one value means a
+                # transfer cannot succeed in the registry and fail in the world.
+                bc = e.get("barcode")
+                if bc is None or bc == "":
+                    bc = e["values"].get("container", "")
+                out["barcode"] = Reading(str(bc), None, ts)
             return out
 
     def write(self, device, channel: str, value: Any) -> str:

@@ -135,6 +135,32 @@ class Coordinator:
                 mods.append(dev.module)
         return mods
 
+    def _carrier_for(self, module_id: str, position: str):
+        """(client, device) of the device that HOLDS a container at ``position``.
+
+        A hand-over has to be made true of the world, and the only device that
+        can make it true is one that (a) declares this position in its
+        ``address`` and (b) has a writable ``container`` slot -- a rack slot.
+        Returns ``(None, None)`` when the module has no such device, which the
+        caller reports as a registry-only hand-over rather than silently
+        claiming a move. More than one such device is a mis-wired manifest, and
+        the first in document order is used so the outcome is deterministic
+        rather than dependent on dict order at run time.
+        """
+        mod = self.manifest.modules.get(module_id)
+        if mod is None:
+            return None, None
+        for dev_id in mod.devices:
+            dev = self.manifest.devices.get(dev_id)
+            if dev is None or (dev.address or {}).get("position") != position:
+                continue
+            if "container" not in dev.writes:
+                continue
+            client, d = self._client_for_device(dev_id)
+            if client is not None:
+                return client, d
+        return None, None
+
     def run(self, wf: dict, run_id: str, *, parallel: int = 1) -> dict:
         """Run (or resume) a workflow.
 
@@ -308,10 +334,16 @@ class Coordinator:
         live: list = []                  # threads this scheduler started
 
         def worker(st):
+            # The grant this step was resumed with. Read from the per-step map
+            # and not from `cp["pending"]`: in a parallel pass several steps
+            # can park, and `pending` keeps only the last one -- so a worker
+            # resumed with its own grant would otherwise hand the kernel a
+            # request id belonging to a different step.
+            grant = (cp.get("waiting") or {}).get(st["id"])
             try:
                 if st.get("op") in ("set", "measure", "transfer"):
                     with write_lock:
-                        outcome = self._step(st, actor, cp)
+                        outcome = self._step(st, actor, cp, approval=grant)
                 else:
                     # hold / wait: the part that takes the time
                     outcome = self._step(st, actor, cp)
@@ -330,6 +362,10 @@ class Coordinator:
                     cp["status"] = "waiting_approval"
                     cp["pending"] = {"step": sid, "approval":
                                      outcome.get("approval_request")}
+                    # Every parked step keeps its own id, so a resume hands
+                    # each worker the grant that was filed for it.
+                    cp.setdefault("waiting", {})[sid] = \
+                        outcome.get("approval_request")
                     _save(cp["run_id"], cp)
                     stop_state.append(cp)
                 elif not outcome.get("ok"):
@@ -339,6 +375,7 @@ class Coordinator:
                     cp["done"].append(sid)
                     if (cp.get("pending") or {}).get("step") == sid:
                         cp["pending"] = None
+                    (cp.get("waiting") or {}).pop(sid, None)
                     done.add(sid)
                     _save(cp["run_id"], cp)
                 busy.difference_update(self._step_devices(st))
@@ -476,17 +513,22 @@ class Coordinator:
             except Exception:
                 pass
 
-    def _step(self, st: dict, actor: dict, cp: dict) -> dict:
+    def _step(self, st: dict, actor: dict, cp: dict, approval=None) -> dict:
         op = st.get("op")
         if op == "set":
             client, d = self._client_for_device(st.get("device", ""))
             if client is None:
                 return {"ok": False, "code": "unknown_device",
                         "reason": f"no edge for device {st.get('device')!r}"}
-            approval = None
-            pend = cp.get("pending") or {}
-            if pend.get("step") == st["id"]:
-                approval = pend.get("approval")
+            if approval is None:
+                # Sequential runs: the checkpoint names the one step that is
+                # waiting. A parallel run passes its own grant in explicitly,
+                # because here `cp["pending"]` is shared state two workers
+                # write to -- and the grant one of them was resumed with must
+                # not be replaced by another step's request id.
+                pend = cp.get("pending") or {}
+                if pend.get("step") == st["id"]:
+                    approval = pend.get("approval")
             return client.call("set", actor, device=st["device"],
                                channel=st.get("channel"),
                                value=st.get("value"), unit=st.get("unit"),
@@ -559,8 +601,39 @@ class Coordinator:
                 {"from": sample.get("module"), "position": sample.get(
                     "position"), "ts": self.clock()}]
             sample["module"], sample["position"] = st["to"], st["position"]
-            return {"ok": True, "sample": st["sample"], "at":
-                    f"{st['to']}:{st['position']}"}
+            # A hand-over is a physical move, not a bookkeeping one. The
+            # registry above says where the sample is; the destination's
+            # position must then HOLD it, or the next module's measure step
+            # reads an empty rack and reports a mix-up for a campaign that was
+            # carried out correctly. The carrier is the device that declares
+            # this position and can hold a container (a rack slot); a module
+            # whose positions have no carrier is a registry-only hand-over, and
+            # says so rather than claiming a move it did not make.
+            carrier, cdev = self._carrier_for(st["to"], st["position"])
+            if carrier is None:
+                moved = {"registry_only": True,
+                         "why": f"{st['to']}:{st['position']} has no device that "
+                                f"holds a container"}
+            else:
+                res = carrier.call("set", actor, device=cdev.id,
+                                   channel="container",
+                                   value=sample.get("container"))
+                if not res.get("ok"):
+                    return {"ok": False, "code": res.get("code") or "handover",
+                            "reason": f"hand-over to {st['to']}:{st['position']}"
+                                      f" did not place {sample.get('container')}"
+                                      f": {res.get('reason')}"}
+                # Read the slot back: the move is the world's, not the report's.
+                back = carrier.call("read", actor, device=cdev.id)
+                held = ((back.get("readings") or {}).get("container") or {})
+                if held.get("value") != sample.get("container"):
+                    return {"ok": False, "code": "handover", "reason":
+                            f"hand-over to {st['to']}:{st['position']} read "
+                            f"back {held.get('value')!r}, not "
+                            f"{sample.get('container')!r}"}
+                moved = {"placed_on": cdev.id}
+            return {"ok": True, "sample": st["sample"],
+                    "at": f"{st['to']}:{st['position']}", **moved}
         if op == "measure":
             sid = st.get("sample")
             sample = cp["samples"].get(sid)

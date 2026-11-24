@@ -241,13 +241,20 @@ def _run_workflow(args) -> int:
     cp = coord.run(wf, run_id, parallel=max(1, int(args.parallel)))
     _print({"run_id": cp.get("run_id"), "status": cp.get("status"),
             "done": cp.get("done"), "pending": cp.get("pending"),
+            "waiting": cp.get("waiting") or {},
             "deviations": cp.get("deviations"),
             "measurements": cp.get("measurements"),
             "parallel": max(1, int(args.parallel))})
     if cp.get("status") == "waiting_approval":
-        print("waiting for a person: `delfin-agent lab approve "
-              f"{cp['pending']['approval']}`, then rerun the same command",
-              file=sys.stderr)
+        # A parallel run can park MORE than one step: `pending` names the one
+        # this pass reported last, `waiting` every step still owed a grant.
+        # Printing only `pending` would send a person to approve one of two
+        # and leave the other waiting on an id nobody was told about.
+        waiting = cp.get("waiting") or {}
+        names = " ".join(sorted({str(a) for a in waiting.values() if a})) \
+            or cp["pending"]["approval"]
+        print(f"waiting for a person: approve {names} with `delfin-agent lab "
+              "approve <id>`, then rerun the same command", file=sys.stderr)
         return 4
     return 0 if cp.get("status") == "completed" else 1
 

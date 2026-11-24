@@ -368,6 +368,12 @@ modules:
         address: {position: A1}
         reads:
           barcode: {text: true}
+        writes:
+          # The rack slot: the container this position HOLDS. A
+          # hand-over writes it, so the registry and the world
+          # agree and the analyser can prove which vial it read.
+          container: {text: true, level: benign}
+        safe_state: {container: empty}
       - id: hplc_2
         driver: simulator
         model: analyser
@@ -386,6 +392,12 @@ modules:
         address: {position: A2}
         reads:
           barcode: {text: true}
+        writes:
+          # The rack slot: the container this position HOLDS. A
+          # hand-over writes it, so the registry and the world
+          # agree and the analyser can prove which vial it read.
+          container: {text: true, level: benign}
+        safe_state: {container: empty}
       - id: hplc_3
         driver: simulator
         model: analyser
@@ -404,6 +416,12 @@ modules:
         address: {position: A3}
         reads:
           barcode: {text: true}
+        writes:
+          # The rack slot: the container this position HOLDS. A
+          # hand-over writes it, so the registry and the world
+          # agree and the analyser can prove which vial it read.
+          container: {text: true, level: benign}
+        safe_state: {container: empty}
       - id: hplc_4
         driver: simulator
         model: analyser
@@ -422,6 +440,12 @@ modules:
         address: {position: A4}
         reads:
           barcode: {text: true}
+        writes:
+          # The rack slot: the container this position HOLDS. A
+          # hand-over writes it, so the registry and the world
+          # agree and the analyser can prove which vial it read.
+          container: {text: true, level: benign}
+        safe_state: {container: empty}
 
   # Mains switching of an unknown load is never executed, with or without
   # approval. Present so the level is exercised by a real manifest.
