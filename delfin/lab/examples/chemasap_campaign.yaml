@@ -1,0 +1,439 @@
+# A ChemASAP-shaped platform: four modules and four parallel synthesis lines.
+#
+# The reference case is KIT's ChemASAP (storage, synthesis, purification and
+# analysis modules for automated, parallel organic synthesis; data planned to
+# flow into Chemotion). This manifest models that shape for the simulator:
+# FOUR parallel positions per module, each position with its own instruments,
+# so four samples can be worked on at the same time.
+#
+# Every device is the `simulator` driver. Nothing here reaches hardware.
+#
+# Units, ranges and levels follow docs/design/lab-control.md §4 and §13:
+#   benign     the kernel's checks only        (drawers, valves, stirring)
+#   hazardous  a person approves this exact    (any heater above 40 degC,
+#              action, single use              any pump moving solvent)
+#   forbidden  never executed                  (mains switching of an
+#                                               unknown load)
+#
+# Copy to <lab_dir>/manifest.yaml, read it, then pin it:
+#   delfin-agent lab manifest pin
+#
+# An instrument declares `address.position`: the position whose container it
+# reads. The coordinator refuses to measure a sample whose registered position
+# is not the position its instrument serves (delfin/lab/workflow.py), so a
+# mis-wired campaign cannot report one vial's reading under another's name.
+lab_manifest: 1
+installation: chemasap-campaign
+version: 1
+nodes:
+  - id: edge_storage
+    description: storage module controller
+  - id: edge_synthesis
+    description: synthesis module controller (four parallel reactors)
+  - id: edge_purification
+    description: purification module controller
+  - id: edge_analysis
+    description: analysis module controller
+modules:
+  # ------------------------------------------------------------------ storage
+  # Four drawers, one per sample. A drawer is a relay: power on opens it. The
+  # module floor is benign -- opening a drawer moves nothing into a reactor.
+  - id: storage
+    node: edge_storage
+    min_level: benign
+    description: vial storage, four drawers
+    positions: [ST1, ST2, ST3, ST4]
+    devices:
+      - id: storage_drawer_1
+        driver: simulator
+        model: relay
+        description: drawer 1 of the storage module
+        writes:
+          power: {states: [open, closed], level: benign}
+        safe_state: {power: closed}
+      - id: storage_drawer_2
+        driver: simulator
+        model: relay
+        description: drawer 2 of the storage module
+        writes:
+          power: {states: [open, closed], level: benign}
+        safe_state: {power: closed}
+      - id: storage_drawer_3
+        driver: simulator
+        model: relay
+        description: drawer 3 of the storage module
+        writes:
+          power: {states: [open, closed], level: benign}
+        safe_state: {power: closed}
+      - id: storage_drawer_4
+        driver: simulator
+        model: relay
+        description: drawer 4 of the storage module
+        writes:
+          power: {states: [open, closed], level: benign}
+        safe_state: {power: closed}
+  # --------------------------------------------------------------- synthesis
+  # Four reactors, one per position. Each is a hotplate with its own stirring
+  # and its own thermocouple probe -- an independent sensor, not the heater's
+  # own report (design §T15). Heating above 40 degC is hazardous and needs the
+  # stirrer and the fume hood running: setting a setpoint with either off is
+  # refused by an interlock, not by the model's judgement.
+  - id: synthesis
+    node: edge_synthesis
+    min_level: benign
+    description: four parallel reactors with a shared fume hood
+    positions: [R1, R2, R3, R4]
+    devices:
+      - id: fume_hood
+        driver: simulator
+        model: plug
+        description: shared extraction; every heated reactor requires it on
+        reads:
+          power_w: {unit: W}
+        writes:
+          power: {states: [on, off], level: benign}
+        safe_state: {power: on}
+      - id: reactor_1
+        driver: simulator
+        model: hotplate
+        description: reactor 1 hotplate (20-120 degC)
+        stale_after_s: 15
+        deadman_s: 30
+        reads:
+          temperature: {unit: degC}
+        writes:
+          # max_step 100 let a campaign arm the hold in one write. The guard
+          # against the dangerous thing is the >40 degC interlock below, not
+          # the rate limit: a rate limit that fires first would report
+          # 'rate' where the operator needs to see 'interlock'.
+          setpoint: {unit: degC, min: 20, max: 120, max_step: 100,
+                     level: hazardous, tolerance: 0.5}
+          power: {states: [on, off], level: benign}
+        safe_state: {setpoint: 20, power: off}
+        interlocks:
+          - when: "reactor_1.setpoint > 40 degC"
+            requires: "stirrer_1.power == on and fume_hood.power == on"
+          - when: "reactor_1.power == on"
+            requires: "reactor_probe_1.temperature < 130 degC"
+      - id: stirrer_1
+        driver: simulator
+        model: stirrer
+        description: magnetic stirrer of reactor 1
+        writes:
+          speed: {unit: rpm, min: 0, max: 1200, max_step: 600, level: benign}
+          power: {states: [on, off], level: benign}
+        safe_state: {speed: 0, power: off}
+      - id: reactor_probe_1
+        driver: simulator
+        model: sensor
+        description: thermocouple on reactor 1 (independent of the heater)
+        address: {follows: reactor_1, position: R1}
+        stale_after_s: 15
+        reads:
+          temperature: {unit: degC}
+      - id: reactor_2
+        driver: simulator
+        model: hotplate
+        description: reactor 2 hotplate (20-120 degC)
+        stale_after_s: 15
+        deadman_s: 30
+        reads:
+          temperature: {unit: degC}
+        writes:
+          # max_step 100 let a campaign arm the hold in one write. The guard
+          # against the dangerous thing is the >40 degC interlock below, not
+          # the rate limit: a rate limit that fires first would report
+          # 'rate' where the operator needs to see 'interlock'.
+          setpoint: {unit: degC, min: 20, max: 120, max_step: 100,
+                     level: hazardous, tolerance: 0.5}
+          power: {states: [on, off], level: benign}
+        safe_state: {setpoint: 20, power: off}
+        interlocks:
+          - when: "reactor_2.setpoint > 40 degC"
+            requires: "stirrer_2.power == on and fume_hood.power == on"
+          - when: "reactor_2.power == on"
+            requires: "reactor_probe_2.temperature < 130 degC"
+      - id: stirrer_2
+        driver: simulator
+        model: stirrer
+        description: magnetic stirrer of reactor 2
+        writes:
+          speed: {unit: rpm, min: 0, max: 1200, max_step: 600, level: benign}
+          power: {states: [on, off], level: benign}
+        safe_state: {speed: 0, power: off}
+      - id: reactor_probe_2
+        driver: simulator
+        model: sensor
+        description: thermocouple on reactor 2 (independent of the heater)
+        address: {follows: reactor_2, position: R2}
+        stale_after_s: 15
+        reads:
+          temperature: {unit: degC}
+      - id: reactor_3
+        driver: simulator
+        model: hotplate
+        description: reactor 3 hotplate (20-120 degC)
+        stale_after_s: 15
+        deadman_s: 30
+        reads:
+          temperature: {unit: degC}
+        writes:
+          # max_step 100 let a campaign arm the hold in one write. The guard
+          # against the dangerous thing is the >40 degC interlock below, not
+          # the rate limit: a rate limit that fires first would report
+          # 'rate' where the operator needs to see 'interlock'.
+          setpoint: {unit: degC, min: 20, max: 120, max_step: 100,
+                     level: hazardous, tolerance: 0.5}
+          power: {states: [on, off], level: benign}
+        safe_state: {setpoint: 20, power: off}
+        interlocks:
+          - when: "reactor_3.setpoint > 40 degC"
+            requires: "stirrer_3.power == on and fume_hood.power == on"
+          - when: "reactor_3.power == on"
+            requires: "reactor_probe_3.temperature < 130 degC"
+      - id: stirrer_3
+        driver: simulator
+        model: stirrer
+        description: magnetic stirrer of reactor 3
+        writes:
+          speed: {unit: rpm, min: 0, max: 1200, max_step: 600, level: benign}
+          power: {states: [on, off], level: benign}
+        safe_state: {speed: 0, power: off}
+      - id: reactor_probe_3
+        driver: simulator
+        model: sensor
+        description: thermocouple on reactor 3 (independent of the heater)
+        address: {follows: reactor_3, position: R3}
+        stale_after_s: 15
+        reads:
+          temperature: {unit: degC}
+      - id: reactor_4
+        driver: simulator
+        model: hotplate
+        description: reactor 4 hotplate (20-120 degC)
+        stale_after_s: 15
+        deadman_s: 30
+        reads:
+          temperature: {unit: degC}
+        writes:
+          # max_step 100 let a campaign arm the hold in one write. The guard
+          # against the dangerous thing is the >40 degC interlock below, not
+          # the rate limit: a rate limit that fires first would report
+          # 'rate' where the operator needs to see 'interlock'.
+          setpoint: {unit: degC, min: 20, max: 120, max_step: 100,
+                     level: hazardous, tolerance: 0.5}
+          power: {states: [on, off], level: benign}
+        safe_state: {setpoint: 20, power: off}
+        interlocks:
+          - when: "reactor_4.setpoint > 40 degC"
+            requires: "stirrer_4.power == on and fume_hood.power == on"
+          - when: "reactor_4.power == on"
+            requires: "reactor_probe_4.temperature < 130 degC"
+      - id: stirrer_4
+        driver: simulator
+        model: stirrer
+        description: magnetic stirrer of reactor 4
+        writes:
+          speed: {unit: rpm, min: 0, max: 1200, max_step: 600, level: benign}
+          power: {states: [on, off], level: benign}
+        safe_state: {speed: 0, power: off}
+      - id: reactor_probe_4
+        driver: simulator
+        model: sensor
+        description: thermocouple on reactor 4 (independent of the heater)
+        address: {follows: reactor_4, position: R4}
+        stale_after_s: 15
+        reads:
+          temperature: {unit: degC}
+  # ------------------------------------------------------------ purification
+  # Four columns, one per position. The pump moves solvent, so a flow above
+  # zero is hazardous: a person approves each one. A pump's own safe value
+  # (0 mL/min) is benign, so a stop never waits for a person.
+  - id: purification
+    node: edge_purification
+    min_level: benign
+    description: four chromatography columns with per-position pumps
+    positions: [P1, P2, P3, P4]
+    devices:
+      - id: column_pump_1
+        driver: simulator
+        model: pump
+        description: solvent pump of column 1 (0-10 mL/min)
+        writes:
+          flow: {unit: mL/min, min: 0, max: 10, max_step: 5, level: hazardous,
+                 tolerance: 0.05}
+          power: {states: [on, off], level: benign}
+        safe_state: {flow: 0, power: off}
+        interlocks:
+          # Solvent may only move with the column open. flow 0 is the pump's
+          # own safe value, so ending a purge never waits for a person.
+          - when: "column_pump_1.flow > 0 mL/min"
+            requires: "column_valve_1.power == on"
+      - id: column_valve_1
+        driver: simulator
+        model: relay
+        description: column 1 inlet valve
+        writes:
+          power: {states: [on, off], level: benign}
+        safe_state: {power: off}
+      - id: column_pump_2
+        driver: simulator
+        model: pump
+        description: solvent pump of column 2 (0-10 mL/min)
+        writes:
+          flow: {unit: mL/min, min: 0, max: 10, max_step: 5, level: hazardous,
+                 tolerance: 0.05}
+          power: {states: [on, off], level: benign}
+        safe_state: {flow: 0, power: off}
+        interlocks:
+          # Solvent may only move with the column open. flow 0 is the pump's
+          # own safe value, so ending a purge never waits for a person.
+          - when: "column_pump_2.flow > 0 mL/min"
+            requires: "column_valve_2.power == on"
+      - id: column_valve_2
+        driver: simulator
+        model: relay
+        description: column 2 inlet valve
+        writes:
+          power: {states: [on, off], level: benign}
+        safe_state: {power: off}
+      - id: column_pump_3
+        driver: simulator
+        model: pump
+        description: solvent pump of column 3 (0-10 mL/min)
+        writes:
+          flow: {unit: mL/min, min: 0, max: 10, max_step: 5, level: hazardous,
+                 tolerance: 0.05}
+          power: {states: [on, off], level: benign}
+        safe_state: {flow: 0, power: off}
+        interlocks:
+          # Solvent may only move with the column open. flow 0 is the pump's
+          # own safe value, so ending a purge never waits for a person.
+          - when: "column_pump_3.flow > 0 mL/min"
+            requires: "column_valve_3.power == on"
+      - id: column_valve_3
+        driver: simulator
+        model: relay
+        description: column 3 inlet valve
+        writes:
+          power: {states: [on, off], level: benign}
+        safe_state: {power: off}
+      - id: column_pump_4
+        driver: simulator
+        model: pump
+        description: solvent pump of column 4 (0-10 mL/min)
+        writes:
+          flow: {unit: mL/min, min: 0, max: 10, max_step: 5, level: hazardous,
+                 tolerance: 0.05}
+          power: {states: [on, off], level: benign}
+        safe_state: {flow: 0, power: off}
+        interlocks:
+          # Solvent may only move with the column open. flow 0 is the pump's
+          # own safe value, so ending a purge never waits for a person.
+          - when: "column_pump_4.flow > 0 mL/min"
+            requires: "column_valve_4.power == on"
+      - id: column_valve_4
+        driver: simulator
+        model: relay
+        description: column 4 inlet valve
+        writes:
+          power: {states: [on, off], level: benign}
+        safe_state: {power: off}
+  # ---------------------------------------------------------------- analysis
+  # Four instruments, one per position, each with its own rack scanner. The
+  # scanner declares the position it serves; the measure step compares the
+  # container's barcode AND the position, so a reading can never be filed
+  # under the wrong sample.
+  - id: analysis
+    node: edge_analysis
+    min_level: benign
+    description: four HPLC instruments, one per rack position
+    positions: [A1, A2, A3, A4]
+    devices:
+      - id: hplc_1
+        driver: simulator
+        model: analyser
+        description: HPLC of rack position A1 (channel A)
+        address: {position: A1}
+        reads:
+          signal: {unit: au}
+          barcode: {text: true}
+        writes:
+          run: {states: [idle, measure], level: benign}
+        safe_state: {run: idle}
+      - id: rack_scanner_1
+        driver: simulator
+        model: reader
+        description: container scanner of rack position A1
+        address: {position: A1}
+        reads:
+          barcode: {text: true}
+      - id: hplc_2
+        driver: simulator
+        model: analyser
+        description: HPLC of rack position A2 (channel A)
+        address: {position: A2}
+        reads:
+          signal: {unit: au}
+          barcode: {text: true}
+        writes:
+          run: {states: [idle, measure], level: benign}
+        safe_state: {run: idle}
+      - id: rack_scanner_2
+        driver: simulator
+        model: reader
+        description: container scanner of rack position A2
+        address: {position: A2}
+        reads:
+          barcode: {text: true}
+      - id: hplc_3
+        driver: simulator
+        model: analyser
+        description: HPLC of rack position A3 (channel A)
+        address: {position: A3}
+        reads:
+          signal: {unit: au}
+          barcode: {text: true}
+        writes:
+          run: {states: [idle, measure], level: benign}
+        safe_state: {run: idle}
+      - id: rack_scanner_3
+        driver: simulator
+        model: reader
+        description: container scanner of rack position A3
+        address: {position: A3}
+        reads:
+          barcode: {text: true}
+      - id: hplc_4
+        driver: simulator
+        model: analyser
+        description: HPLC of rack position A4 (channel A)
+        address: {position: A4}
+        reads:
+          signal: {unit: au}
+          barcode: {text: true}
+        writes:
+          run: {states: [idle, measure], level: benign}
+        safe_state: {run: idle}
+      - id: rack_scanner_4
+        driver: simulator
+        model: reader
+        description: container scanner of rack position A4
+        address: {position: A4}
+        reads:
+          barcode: {text: true}
+
+  # Mains switching of an unknown load is never executed, with or without
+  # approval. Present so the level is exercised by a real manifest.
+  - id: facility
+    node: edge_analysis
+    min_level: benign
+    description: facility relay panel (nothing here is ever switched)
+    positions: []
+    devices:
+      - id: mains_bypass
+        driver: simulator
+        model: relay
+        description: mains bypass -- forbidden, never executed
+        writes:
+          power: {states: [on, off], level: forbidden}

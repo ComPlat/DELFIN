@@ -78,11 +78,16 @@ modules:
       - id: reader
         driver: simulator
         model: reader
+        # The module has one position; the scanner declares it, so the
+        # coordinator can prove this scanner is the one serving the sample
+        # it is about to have measured (delfin/lab/workflow.py, measure).
+        address: {position: A1}
         reads:
           barcode: {text: true}
       - id: uvvis
         driver: simulator
         model: analyser
+        address: {position: A1}
         reads:
           signal: {unit: au}
           barcode: {text: true}
