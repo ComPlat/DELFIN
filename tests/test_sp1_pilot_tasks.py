@@ -60,8 +60,8 @@ _FACTS = {
         ("delfin/agent/explore_pilot.py", 49, "check_delegate"),
     ],
     "sp1_control_parsing": [
-        ("delfin/config.py", 569, "parse_control_text"),
-        ("delfin/config.py", 632, "validate_control_text"),
+        ("delfin/config.py", 571, "parse_control_text"),
+        ("delfin/config.py", 634, "validate_control_text"),
     ],
     "sp1_benchmark_runner_entry": [
         ("delfin/agent/benchmark_runner.py", 1450, "run_task"),

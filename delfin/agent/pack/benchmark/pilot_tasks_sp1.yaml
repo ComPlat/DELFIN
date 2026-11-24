@@ -33,8 +33,8 @@ tasks:
     max_cost_usd: 0.50
     max_tool_calls: 12
 
-  # verified: parse_control_text at delfin/config.py:569;
-  # validate_control_text at 632.
+  # verified: parse_control_text at delfin/config.py:571;
+  # validate_control_text at 634.
   - id: sp1_control_parsing
     task_class: pilot
     mode: solo

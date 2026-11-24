@@ -27,6 +27,8 @@ import re
 import subprocess
 import sys
 
+from conftest import child_env
+
 from delfin.agent import code_mode
 
 TREE = str(pathlib.Path(code_mode.__file__).resolve().parents[2])
@@ -43,7 +45,7 @@ def test_a_socket_is_unlinked_when_its_process_exits(tmp_path):
         "cm.RpcServer(object()).bind(p)\n"
         "print(p)\n")
     out = subprocess.run([sys.executable, "-c", probe], capture_output=True,
-                         text=True, timeout=60)
+                         text=True, timeout=60, env=child_env(tmp_path))
     path = out.stdout.strip().splitlines()[-1]
     assert path.endswith("rpc-exit.sock"), out.stderr[-400:]
     assert not pathlib.Path(path).exists(), (
