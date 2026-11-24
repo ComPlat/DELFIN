@@ -60,7 +60,7 @@ _DEFAULTS = {
     "max_parallel": 4,
     "provider_caps": {},
     "member_cpu": "200%",
-    "member_memory": "6G",
+    "member_memory": "12G",
     # 256 was too few: the egress proxy's threads in a busy member failed
     # with "can't start new thread" (two crashes, 2026-11-23/24).
     "member_tasks": 1024,
@@ -350,12 +350,18 @@ def member_argv(run: str, task: dict, *, session: str = "", cfg: dict | None = N
 
 def _scoped(cmd: list[str], cfg: dict) -> list[str]:
     """The member in a scope of the swarm slice where a user service manager
-    runs one, at the lowest CPU and I/O priority everywhere."""
+    runs one, at the lowest CPU and I/O priority everywhere.
+
+    ``OOMPolicy=continue``: a command the member runs that outgrows the
+    scope's memory is killed, and the member lives on to read exit 137. The
+    default (stop) ended the whole scope on that kill, so a full test suite
+    run by an integrator killed the integrator (w42i, 2026-11-24)."""
     nice = ["nice", "-n", "15"] + (["ionice", "-c", "3"] if shutil.which("ionice") else [])
     if shutil.which("systemd-run") and os.environ.get("XDG_RUNTIME_DIR"):
         return ["systemd-run", "--user", "--scope", "--quiet", f"--slice={cfg['slice']}",
                 "-p", f"CPUQuota={cfg['member_cpu']}", "-p", f"MemoryMax={cfg['member_memory']}",
-                "-p", f"TasksMax={int(cfg['member_tasks'])}", *nice, *cmd]
+                "-p", f"TasksMax={int(cfg['member_tasks'])}", "-p", "OOMPolicy=continue",
+                *nice, *cmd]
     return [*nice, *cmd]
 
 
