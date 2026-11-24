@@ -341,6 +341,9 @@ def run_bench_entry(entry: ScheduleEntry, cfg: dict | None = None) -> dict:
 # scan directly: a read-only look-out must not become a model turn that
 # interprets "scan the account" in its own way, and it costs no tokens.
 WATCHPOST_ENTRY_PREFIX = "[watchpost]"
+#: The waves' tick (delfin.agent.swarm.guard.PROMPT_MARKER): run as a
+#: deterministic pass, never as a model turn.
+SWARM_GUARD_ENTRY_PREFIX = "[swarm-guard]"
 
 
 def run_watchpost_entry(entry: ScheduleEntry) -> dict:
@@ -388,6 +391,15 @@ def make_fire_callback(
         log(f"[scheduler-daemon] firing entry {entry.id} "
             f"({entry.kind}) in {ws}")
         bench_cfg = parse_bench_entry(entry.prompt)
+        if str(entry.prompt or "").startswith(SWARM_GUARD_ENTRY_PREFIX):
+            # The waves' tick: a deterministic pass every minute. It alerts
+            # through the inbox itself (a stop, a stalled member); a
+            # "finished" item each minute would bury those.
+            from .swarm import guard as _swarm_guard
+            done = _swarm_guard.tick()
+            log(f"[scheduler-daemon] swarm tick: {len(done.get('runs', {}))} run(s)"
+                + (", STOPPED" if done.get("stopped") else ""))
+            return
         try:
             if str(entry.prompt or "").startswith(WATCHPOST_ENTRY_PREFIX):
                 result = run_watchpost_entry(entry)

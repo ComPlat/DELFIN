@@ -122,6 +122,65 @@ def configure_parser(
         "merge", help="Pre-PR check + print the merge command")
     p_merge.add_argument("package", help="The package to merge")
 
+    p_wave = sub.add_parser(
+        "wave", help="Waves: a task list of agents, run, watched and steered",
+        description=("A wave is a task list; each task is one caged agent session in its "
+                     "own worktree, started when what it waits for has ended "
+                     "(delfin/agent/swarm/wave.py). The tick keeps it moving; `mcp` "
+                     "serves every verb to an orchestrator over MCP."))
+    wsub = p_wave.add_subparsers(dest="wave_cmd", metavar="VERB")
+    w = wsub.add_parser("start", help="Start a run from a tasks JSON file")
+    w.add_argument("run")
+    w.add_argument("tasks", help="JSON file with the task list")
+    w.add_argument("--repo", default=".", help="The git repository (default: here)")
+    w.add_argument("--parallel", type=int, default=0)
+    w.add_argument("--no-stages", action="store_true",
+                   help="No real runs and resumes after a member ends")
+    w = wsub.add_parser("compose", help="Write a wave's task list from a packages file")
+    w.add_argument("run")
+    w.add_argument("spec", help="JSON: {packages, arms, integrator, lander, reviewer, fixer, base?}")
+    w.add_argument("--out", default="", help="Write the tasks here (default: print them)")
+    w = wsub.add_parser("add", help="Append tasks from a JSON file to a running wave")
+    w.add_argument("run")
+    w.add_argument("tasks")
+    w = wsub.add_parser("status", help="One row per task of a run")
+    w.add_argument("run")
+    wsub.add_parser("runs", help="Every run with its members by state")
+    w = wsub.add_parser("watch", help="Wait for the next events of the runs")
+    w.add_argument("runs", nargs="*")
+    w.add_argument("--timeout", type=float, default=1800)
+    w = wsub.add_parser("review", help="A member's write-up, commits and real runs")
+    w.add_argument("run")
+    w.add_argument("member")
+    w = wsub.add_parser("resume", help="Continue an ended member with a note")
+    w.add_argument("run")
+    w.add_argument("member")
+    w.add_argument("--note", default="")
+    w.add_argument("--fresh", action="store_true")
+    w = wsub.add_parser("stop", help="End a run's members (or one)")
+    w.add_argument("run")
+    w.add_argument("member", nargs="?", default="")
+    wsub.add_parser("tick", help="One pass: start, advance, record, guard")
+    w = wsub.add_parser("emergency-stop", help="Stop every member of every run and hold")
+    w.add_argument("why")
+    wsub.add_parser("clear-stop", help="Lift an emergency stop (a person's decision)")
+    w = wsub.add_parser("friction", help="What the members ran into, counted")
+    w.add_argument("runs", nargs="*")
+    w = wsub.add_parser("guard", help="Install or remove the tick in the scheduler")
+    w.add_argument("action", choices=("install", "remove"))
+    w.add_argument("--every", type=int, default=1, help="Minutes between ticks")
+    w = wsub.add_parser("land", help="Check, review and (with --push) open members' PRs",
+                        description="delfin/agent/swarm/land.py: --calibrate [MODEL ...] and "
+                                    "--calibrate-pair [A B] measure the reviewers first.")
+    w.add_argument("runs", nargs="*", help="Runs to land (default: every run)")
+    w.add_argument("--push", action="store_true",
+                   help="Push the ready branches and open their PRs (default: a dry run)")
+    w.add_argument("--calibrate", nargs="*", metavar="MODEL", default=None,
+                   help="Measure reviewers on the corpus (default: the KIT roster)")
+    w.add_argument("--calibrate-pair", nargs="*", metavar="MODEL", default=None,
+                   help="Score reviewer pairs from stored rows (default: every pair)")
+    wsub.add_parser("mcp", help="Serve the wave verbs over MCP on stdio")
+
     parser.set_defaults(func=run_args, swarm_help=parser.format_help)
     return parser
 
@@ -148,7 +207,82 @@ def run_args(args: argparse.Namespace) -> int:
         return _cmd_triage(args)
     if args.swarm_cmd == "merge":
         return _cmd_merge(args)
+    if args.swarm_cmd == "wave":
+        return _cmd_wave(args)
     return 2
+
+
+def _cmd_wave(args: argparse.Namespace) -> int:
+    """`delfin-agent swarm wave VERB`: each verb is the MCP handler of the
+    same name, so the terminal and an orchestrator get the same answer."""
+    from .swarm import mcp_server as M
+    verb = getattr(args, "wave_cmd", None)
+    if verb == "mcp":
+        M.run_server([])
+        return 0
+    if verb == "land":
+        from .swarm import land
+        if args.calibrate_pair is not None:
+            return land.main(["--calibrate-pair", *args.calibrate_pair])
+        if args.calibrate is not None:
+            return land.main(["--calibrate", *args.calibrate])
+        return land.main([*args.runs, *(["--push"] if args.push else [])])
+    if verb == "start":
+        try:
+            tasks = json.loads(Path(args.tasks).read_text())
+        except (OSError, ValueError) as exc:
+            print(f"cannot read the task list: {exc}")
+            return 2
+        out = M.h_start(args.run, tasks, str(Path(args.repo).resolve()),
+                        not args.no_stages, args.parallel)
+    elif verb == "compose":
+        try:
+            spec = json.loads(Path(args.spec).read_text())
+        except (OSError, ValueError) as exc:
+            print(f"cannot read the wave spec: {exc}")
+            return 2
+        out = M.h_compose(args.run, spec.get("packages"), spec.get("arms") or [],
+                          spec.get("integrator") or {}, spec.get("lander") or {},
+                          spec.get("reviewer") or {}, spec.get("fixer") or {},
+                          spec.get("base") or "origin/main", spec.get("stages"),
+                          spec.get("arm_refs"))
+        if args.out and '"error"' not in out[:40]:
+            Path(args.out).write_text(json.dumps(json.loads(out)["tasks"], indent=1))
+            out = json.dumps({"written": args.out, "tasks": len(json.loads(out)["tasks"])})
+    elif verb == "add":
+        try:
+            more = json.loads(Path(args.tasks).read_text())
+        except (OSError, ValueError) as exc:
+            print(f"cannot read the task list: {exc}")
+            return 2
+        out = M.h_add_tasks(args.run, more)
+    elif verb == "status":
+        out = M.h_status(args.run)
+    elif verb == "runs":
+        out = M.h_runs()
+    elif verb == "watch":
+        out = M.h_watch(args.runs, args.timeout)
+    elif verb == "review":
+        out = M.h_review(args.run, args.member)
+    elif verb == "resume":
+        out = M.h_resume(args.run, args.member, args.note, args.fresh)
+    elif verb == "stop":
+        out = M.h_stop(args.run, args.member)
+    elif verb == "tick":
+        out = M.h_tick()
+    elif verb == "emergency-stop":
+        out = M.h_emergency_stop(args.why)
+    elif verb == "clear-stop":
+        out = M.h_clear_stop()
+    elif verb == "friction":
+        out = M.h_friction(args.runs or None)
+    elif verb == "guard":
+        out = M.h_guard_install(args.every) if args.action == "install" else M.h_guard_remove()
+    else:
+        print("delfin-agent swarm wave VERB -- see --help")
+        return 2
+    print(out)
+    return 1 if '"error"' in out[:40] else 0
 
 
 def _no_spec(path: str) -> int:

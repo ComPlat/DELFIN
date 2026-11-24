@@ -34,6 +34,12 @@ _RUNNERS = {"run", "check_output", "check_call", "call", "Popen",
 ALLOWED = {
     "delfin/agent/safe_git.py:_base":
         "the runner itself",
+    "delfin/agent/swarm/land.py:_push":
+        "a wave member's branch pushed from the run's repository -- the "
+        "person's checkout, whose configuration, hooks and info/ the members' "
+        "cage binds read-only -- with the person's credential helper, which "
+        "safe_git switches off; every read of a member's worktree goes "
+        "through safe_git",
     "delfin/agent/git_config_watch.py:_program_entries":
         "'git config --file <temporary copy> --list' parses bytes; no "
         "repository configuration is read and no program runs",
