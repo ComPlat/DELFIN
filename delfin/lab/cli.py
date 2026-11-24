@@ -209,7 +209,7 @@ def _run_workflow(args) -> int:
     whole plan in one step is phase 5 (docs/design/lab-control.md §4) and is
     deliberately not implemented here.
     """
-    from . import approvals, edge, estop, manifest as _manifest, store, workflow
+    from . import edge, estop, manifest as _manifest, store, workflow
     from .safety import Kernel
     try:
         wf = _load_workflow(args.workflow)
