@@ -58,6 +58,9 @@ _PUSH_NOWHERE = "file:///nonexistent/wave-members-commit-locally-only"
 _DEFAULTS = {
     "waves_root": "~/delfin-waves",
     "max_parallel": 4,
+    # Members alive across ALL runs; 0 is no limit. max_parallel is one
+    # run's: three runs started side by side ran 21 members (2026-11-24).
+    "max_live": 0,
     "provider_caps": {},
     "member_cpu": "200%",
     "member_memory": "12G",
@@ -470,7 +473,6 @@ def start(run: str, tasks: list[dict], repo: str | Path, *, parallel: int | None
     repo = Path(repo).resolve()
     _git(repo, "rev-parse", "--git-dir")
     cfg = settings()
-    parallel = int(parallel or cfg["max_parallel"])
     caps = {str(k): int(v) for k, v in (cfg["provider_caps"] or {}).items()}
     d = run_dir(run)
     d.mkdir(parents=True, exist_ok=True)
@@ -482,7 +484,13 @@ def start(run: str, tasks: list[dict], repo: str | Path, *, parallel: int | None
     with _state_lock(run):
         st = load_state(run)
         st.setdefault("repo", str(repo))
+        # The run keeps its limit: the tick starts the rest of the queue
+        # with no limit of its own, and used the default (2026-11-24).
+        if parallel:
+            st["parallel"] = int(parallel)
         _save_state(run, st)
+    parallel = int(parallel or st.get("parallel") or cfg["max_parallel"])
+    max_live = int(cfg.get("max_live") or 0)
     started: list[str] = []
     while True:
         st = load_state(run)
@@ -491,9 +499,11 @@ def start(run: str, tasks: list[dict], repo: str | Path, *, parallel: int | None
             break
         running = [a for a in st["agents"].values() if alive(a["pid"])]
         launched = False
-        if len(running) < parallel and _room(cfg)[0]:
+        everyone = live_members()
+        if (len(running) < parallel and (not max_live or len(everyone) < max_live)
+                and _room(cfg)[0]):
             live = {}
-            for m in live_members():
+            for m in everyone:
                 live[m["provider"]] = live.get(m["provider"], 0) + 1
             pick = next((t for t in queue if ready(t)
                          and live.get(str(t.get("provider") or ""), 0)
