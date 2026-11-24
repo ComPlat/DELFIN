@@ -123,15 +123,29 @@ def test_one_finished_watched_shell_is_named_once(job_registry, workspace):
 
 def test_the_one_row_carries_the_real_outcome(job_registry, workspace):
     """The control for the row above: the surviving row is the one that
-    says how the job actually ended, not "FINISHED" for a failed job."""
+    says how the job actually ended, not "FINISHED" for a failed job.
+
+    Two wordings are correct, and ``job_wake.finished_shells`` owns both:
+    ``[exit N]`` for a command that RAN and returned N, and
+    ``[sandbox refused; the command was not run]`` for a job the sandbox
+    refused before the command started (exit 126 with that stderr). What
+    the notice must never do is report only that the job reached a
+    terminal state: that is what made ``[FINISHED]`` unreadable beside a
+    failure. Which of the two applies is a property of the run, not of
+    this test, so both are accepted and neither is faked.
+    """
     job_id, exit_code = _run_the_calls(workspace)
 
     rows = _lines_for(_notice(workspace), job_id)
 
     assert len(rows) == 1, rows
-    assert f"[exit {exit_code}]" in rows[0], (
-        "the row kept for a job that exited "
-        + str(exit_code) + " does not say so: " + repr(rows[0]))
+    assert "FINISHED" not in rows[0], (
+        "the row kept for the finished job says only that the job is over, "
+        "not how it ended: " + repr(rows[0]))
+    assert (f"[exit {exit_code}]" in rows[0]
+            or "[sandbox refused" in rows[0]), (
+        "the row kept for a job that ended "
+        + str(exit_code) + " does not say how: " + repr(rows[0]))
 
 
 def test_a_shell_nobody_watched_is_still_told(job_registry, workspace):
