@@ -225,7 +225,11 @@ def analysis_container(measurement: dict, rec: dict) -> dict:
         "attachments": [{
             "id": str(uuid.uuid4()),
             "is_new": True,
+            # run AND sample AND quantity: two samples measured for the same
+            # quantity both produced "<run>-signal.json" before, so the file
+            # an analysis carries could not be told apart from its twin.
             "filename": f"{rec.get('run_id')}-"
+                        f"{measurement.get('sample') or 'sample'}-"
                         f"{measurement.get('quantity') or 'measurement'}.json",
             "content_type": "application/json",
             "checksum": hashlib.md5(

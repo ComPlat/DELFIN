@@ -187,3 +187,48 @@ def test_the_import_says_what_it_could_not_verify(finished_run):
     joined = " ".join(unv)
     assert "container" not in joined.lower() or "children" not in joined.lower()
     assert any("import" in u.lower() or "zip" in u.lower() for u in unv)
+
+
+def test_two_samples_of_one_quantity_keep_their_own_file_names():
+    """A file an analysis carries must be tellable from its twin's.
+
+    Two samples measured for the same quantity are two analyses in two
+    containers. If their data files are named "<run>-<quantity>.json" both
+    are called the same thing, and a reader holding one cannot say which
+    sample it belongs to.
+    """
+    from delfin.lab import chemotion
+
+    rec = {
+        "schema": "delfin.lab.run/1", "run_id": "run-2s",
+        "status": "completed", "installation": "demo-lab",
+        "manifest": {"version": 1, "checksum": "abc"},
+        "plan": {"id": "wf-2s"}, "plan_digest": "d",
+        "actor": {"person": "alice"}, "started": None, "ended": None,
+        "steps": [], "deviations": [], "device_log": [],
+        "measurements": [
+            {"sample": "S-001", "device": "uvvis", "quantity": "signal",
+             "value": 0.42, "unit": "au", "container": "vial-7", "ts": 1},
+            {"sample": "S-002", "device": "uvvis", "quantity": "signal",
+             "value": 0.11, "unit": "au", "container": "vial-8", "ts": 2},
+        ],
+        "samples": {
+            "S-001": {"container": "vial-7", "module": "a", "position": "A1"},
+            "S-002": {"container": "vial-8", "module": "a", "position": "A2"},
+        },
+        "fair": {"identifier": "delfin-lab-run:demo-lab:run-2s",
+                 "creator": "alice", "license": None, "created": None,
+                 "provenance": {"software": "DELFIN", "version": "x",
+                                "manifest_checksum": "abc"}},
+    }
+    model = chemotion.build_import(rec)
+    names = [d["attachments"][0]["filename"]
+             for s in model["samples"]
+             for a in s["container"]["children"]
+             for d in a["children"]]
+    assert len(names) == 2
+    assert len(set(names)) == 2, f"two analyses share a file name: {names}"
+    # and each name still says which run and which quantity it is
+    for n in names:
+        assert n.startswith("run-2s-")
+        assert n.endswith("-signal.json")
