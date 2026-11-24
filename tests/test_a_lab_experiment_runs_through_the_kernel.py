@@ -429,15 +429,25 @@ def test_the_specialist_is_a_type_and_the_mode_routes_to_it():
 
     The route names the PRESET, so the prompt and the tool surface come from
     the one file; a mode with its own copy is the drift that pattern ended.
+
+    Validity is asked of ``validate_preset`` on the FILE, not read out of
+    ``PRESET_LOAD_PROBLEMS``. That dict is an accumulator: nothing clears
+    it, so a reload that ran while ``delfin.agent.api_client`` was still
+    mid-import leaves an entry claiming 'lab_devices' is not a known tool,
+    and every later reload keeps it. Read from there, this test failed or
+    passed depending on which module the suite imported first -- measured
+    with `pytest tests/test_a_definition_does_not_override_the_users_switch.py
+    tests/test_a_lab_experiment_runs_through_the_kernel.py`. Asking the file
+    is the same question without the history.
     """
     from delfin.agent import subagents as sa
     from delfin.agent.prompt_loader import PromptLoader
     sa.reload_subagent_presets()
     try:
         assert "lab-specialist" in sa.subagent_type_names()
-        assert sa.PRESET_LOAD_PROBLEMS.get(
-            str(Path(sa.__file__).parent / "pack" / "agents"
-                / "lab-specialist_subagent.md")) in (None, ())
+        path = str(Path(sa.__file__).parent / "pack" / "agents"
+                   / "lab-specialist_subagent.md")
+        assert sa.validate_preset(path) == [], sa.validate_preset(path)
         loader = PromptLoader(repo_dir=REPO / "delfin" / "agent")
         assert loader.load_mode("lab")["route"] == ["lab-specialist"]
         body = loader.load_role_prompt("lab-specialist")
