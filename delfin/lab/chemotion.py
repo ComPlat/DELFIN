@@ -24,8 +24,9 @@ session and cited in :data:`SOURCES`:
   requires the bearer token to start with ``chemtoken``
   (``authentication_api.rb``).
 * Samples are created under ``/samples`` with a ``collection_id``, a nested
-  ``container`` (their analyses live there) and ``segments``
-  (``sample_api.rb``).
+  ``container`` (their analyses live there as ``children``: analysis ->
+  dataset -> the data file, the shape ``analysis_container`` builds) and
+  ``segments`` (``sample_api.rb``).
 * Attachments upload in 5000-byte chunks: ``POST /attachments/upload_chunk``
   (multipart field ``file``, form ``key``, ``counter``) then
   ``POST /attachments/upload_chunk_complete`` (form ``key``, ``filename``,
@@ -70,8 +71,6 @@ def _iso(ts) -> Optional[str]:
     except (TypeError, ValueError, OSError):
         return str(ts)
 
-
-FORMAT = "delfin.lab.chemotion/1"
 
 # Chunk size used by the official client (chemotionapi analyses_manager.py).
 MAX_UPLOAD_CHUNK = 5000
@@ -576,6 +575,12 @@ def request_sequence(model: dict,
     attachment as a chunked upload (one request per 5000-byte chunk, plus a
     completion request), then the attach step mapping the upload keys onto
     the research-plan element.
+
+    The sample create carries the container ``build_import`` built, byte for
+    byte: the tree (analysis -> dataset -> its data file) is what the server
+    persists, and a second, flatter ``{"analyses": [...]}`` shape here would
+    be a container type the server does not have and would drop the data
+    files the model names. One shape, one place.
     """
     seq = [HttpRequest("POST", "/api/v1/research_plans", kind="json", data={
         "name": model["element"]["name"],
@@ -588,7 +593,7 @@ def request_sequence(model: dict,
             "name": s["name"],
             "external_label": s.get("external_label"),
             "collection_id": collection_id,
-            "container": {"analyses": s.get("analyses") or []},
+            "container": s.get("container") or {},
         }))
     keys = []
     for a in model["attachments"]:

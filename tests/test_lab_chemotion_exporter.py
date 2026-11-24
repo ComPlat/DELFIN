@@ -162,3 +162,67 @@ def test_upload_sends_request_sequence_to_fake_server():
     assert rp["body"]["collection_id"] == 7
     # the token travels as a bearer header (by reference, never embedded)
     assert rp["auth"] == "Bearer chemtoken_test"
+
+
+def test_a_sample_request_carries_the_container_the_analyses_live_in():
+    """The upload request must carry the tree, not a bare list of values.
+
+    ``build_import`` builds each analysis as analysis -> dataset -> the
+    measurement's data file, in the shape the ELN persists. The sample create
+    request then sent ``container: {"analyses": [...]}`` -- the OLD older,
+    flatter shape, with no ``container_type``, no ``children`` and no
+    datasets -- so an upload of this model would have asked the server to
+    create a container type it does not have, and would not have carried the
+    data files at all. The two shapes are built in two places, and had
+    drifted, exactly as the data-file names had.
+
+    This asserts the SAME property for the request as for the file: what the
+    model says an analysis carries is what the request carries.
+    """
+    from delfin.lab import chemotion
+
+    model = chemotion.build_import(_record())
+    seq = chemotion.request_sequence(model, collection_id=7)
+    creates = [r for r in seq if r.path == "/api/v1/samples"]
+    assert len(creates) == 2, [r.path for r in seq]
+
+    for req, sample in zip(creates, model["samples"]):
+        container = req.data["container"]
+        # the request carries the container the model built, not a stub
+        assert container["container_type"] == "root", container
+        assert "children" in container, sorted(container)
+        assert container["children"] == sample["container"]["children"], (
+            "the sample create request does not carry the tree the import "
+            "model built")
+
+    # and each analysis's data file is reachable through the request
+    files = [at["filename"]
+             for req in creates
+             for an in req.data["container"]["children"]
+             for ds in an["children"] for at in ds["attachments"]]
+    assert len(files) == 2, files
+    assert files == sorted(set(files)), files
+
+
+def test_the_upload_carries_every_data_file_the_model_names():
+    """An uploaded attachment list must include the analyses' data files.
+
+    The chunked upload step iterates ``model["attachments"]``; if the
+    per-measurement files were only added to the container tree, the tree
+    would name files the upload never sends.
+    """
+    from delfin.lab import chemotion
+
+    model = chemotion.build_import(_record())
+    seq = chemotion.request_sequence(model)
+    # a multipart request with no file part is the completion step, not an
+    # upload of bytes; only the ones carrying a file count here
+    uploaded = {r.files[0][1] for r in seq
+                if r.kind == "multipart" and r.files}
+    tree = [at["filename"]
+            for s in model["samples"]
+            for an in s["container"]["children"]
+            for ds in an["children"] for at in ds["attachments"]]
+    assert tree, "the model names no data file"
+    missing = [n for n in tree if n not in uploaded]
+    assert not missing, f"the tree names data files the upload never sends: {missing}"
