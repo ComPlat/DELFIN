@@ -136,6 +136,55 @@ def finished_watched_jobs(workspace: str, seen: set, *,
         return []
 
 
+def _one_row_per_job(done: Iterable[dict]) -> list[dict]:
+    """One row per job id, keeping the row that says how the job ended.
+
+    A ``bash_background`` job reaches this renderer twice, by two honest
+    routes: ``finished_shells`` reports the registry (``kind: shell``, state
+    from the exit code) and ``check_agent_jobs`` reports the ``watch_job``
+    entry for the same id (``kind: bash``, state "FINISHED"). Both are
+    right that the job is over; only the first says what happened.
+
+    Measured 2026-11-23 through the terminal's own wake: one job, two rows,
+    for a job that exited 126 —
+
+        - shell 8048adee [exit 126] echo hello; exit 0
+        - bash 8048adee [FINISHED]
+
+    — the second reading as success beside a failure.
+
+    ``background_view.collect`` had already settled the same question for
+    the panel, the other way round: a bash job gets ONE row there and its
+    watch entry is skipped. Two renderings of one state, and only one of
+    them counted.
+
+    ``shell`` outranks a watch entry over all kinds, not only bash: a
+    ``cluster:`` watch and a SLURM watch carry state the shell row cannot
+    see (a queued job has no exit code yet), so where there is no shell row
+    the watch row stands, and where there is one the shell row is the more
+    precise of the two. The order events arrive in is NOT a tie-break: the
+    terminal collects shells first and the dashboard collects watches
+    first, so taking the first would give two answers on two surfaces.
+
+    A dict is returned first-seen order, so the notice keeps the order the
+    caller's own look produced.
+    """
+    rows: dict[str, dict] = {}
+    for ev in done or []:
+        if not isinstance(ev, dict):
+            continue
+        jid = str(ev.get("job_id") or "")
+        prev = rows.get(jid)
+        if prev is None:
+            rows[jid] = ev
+            continue
+        # The shell row wins; anything else only fills a gap.
+        if (str(ev.get("kind", "")) == "shell"
+                and str(prev.get("kind", "")) != "shell"):
+            rows[jid] = ev
+    return list(rows.values())
+
+
 def wake_prompt(done: Iterable[dict]) -> str:
     """The message a finished watched job sends an idle agent; "" for none.
 
@@ -143,9 +192,15 @@ def wake_prompt(done: Iterable[dict]) -> str:
     input the user types into, so without a word to the contrary the
     model reads it as the user asking — and answers them for something
     they never said.
+
+    One job, one row: see :func:`_one_row_per_job`. The de-duplication is
+    here rather than in each caller because there are four callers (the
+    terminal prompt, the headless ``--job-wait`` loop, the dashboard tick
+    and the panel) and the headless one had already grown its own copy of
+    it — a rule applied at one caller is a rule the next caller breaks.
     """
     lines = []
-    for ev in done or []:
+    for ev in _one_row_per_job(done):
         line = (f"- {ev.get('kind', 'job')} {ev.get('job_id')} "
                 f"[{ev.get('state', '?')}]")
         if ev.get("description"):
