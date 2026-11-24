@@ -14,6 +14,8 @@ matplotlib.use("Agg")
 import re
 import shutil
 import subprocess
+
+from delfin.inbound_guard import guarded
 import numpy as np
 from io import StringIO
 from typing import Optional, Tuple, List, Dict, Sequence
@@ -974,7 +976,7 @@ def write_orca_sp_input_and_run(atoms, xyz_path, outdir, orca_keywords="GFN2-XTB
         raise RuntimeError("ORCA wurde nicht gefunden! Ist es im $PATH?")
 
     with open(out, "w") as f:
-        subprocess.run([orca_path, os.path.basename(inp)], cwd=outdir,
+        subprocess.run(guarded([orca_path, os.path.basename(inp)]), cwd=outdir,
                        stdout=f, stderr=subprocess.STDOUT, check=False)
     return out
 
@@ -1047,7 +1049,7 @@ def write_orca_input_and_run(atoms, xyz_path, metal_index, co2_c_index, start_di
     print(f"[INFO] Scan-Bindung: B {i_orca} {j_orca} (M_idx0={metal_index}, CO2_C_idx0={co2_c_index})")
     print("[INFO] Starte ORCA (dist.-scan):", orca_path)
     with open(os.path.join("relaxed_surface_scan", "scan.out"), "w") as f:
-        subprocess.run([orca_path, "scan.inp"], cwd="relaxed_surface_scan",
+        subprocess.run(guarded([orca_path, "scan.inp"]), cwd="relaxed_surface_scan",
                        stdout=f, stderr=subprocess.STDOUT)
 
 # === Plot ===

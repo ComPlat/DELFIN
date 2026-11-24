@@ -28,6 +28,23 @@ named as a listener of the session's own background jobs
 itself works; the user's notebook or model server and other users'
 services on the same host stay out of reach.
 
+Inbound is judged as well, because a socket listening beyond the loopback
+is reachable from the network whatever the proxy refuses outbound. Every
+``bind()`` of an internet socket is performed by the supervisor itself on
+a duplicate of the socket, with the address it copied: a loopback address
+is bound as asked, a wildcard (``0.0.0.0``, ``::``) is bound to the
+loopback of its family instead, and any other address is refused.
+``listen()`` is performed by the supervisor too, after binding a socket
+nothing bound to the loopback -- the kernel would otherwise bind it to the
+wildcard. A datagram sent from an unbound socket under a restricted
+network leaves from a loopback-bound one for the same reason. Measured
+2026-11-24: an unattended agent ran a parallel ORCA, whose OpenMPI ranks
+listened on 0.0.0.0:1024-1025 and whose mpirun listened on four more
+wildcard ports, on a host without a firewall; with only connect() judged
+nothing in the cage stopped it. Only a run with an open network inside a
+SLURM allocation of several nodes keeps its binds (``inbound="any"``):
+there the job's ranks on the other nodes must reach it.
+
 If the supervisor ends, the listener closes and every later connect fails:
 the guard fails closed. Linux x86_64 and aarch64; ``available()`` says
 whether this kernel and architecture support it.
@@ -67,9 +84,17 @@ _ARCH_DGRAM = {
     "aarch64": (200, 206, 211, 269),
 }
 
+#: machine: listen -- x86_64 asm/unistd_64.h 50, aarch64 asm-generic 201
+#: (tests/test_sx2_syscall_numbers.py checks it against the header).
+_ARCH_LISTEN = {"x86_64": 50, "aarch64": 201}
+
 
 def _arch_dgram():
     return _ARCH_DGRAM.get(platform.machine())
+
+
+def _arch_listen():
+    return _ARCH_LISTEN.get(platform.machine())
 
 _SECCOMP_SET_MODE_FILTER = 1
 _SECCOMP_GET_NOTIF_SIZES = 3
@@ -90,6 +115,14 @@ _libc.syscall.restype = ctypes.c_long
 _libc.ioctl.restype = ctypes.c_int
 _libc.connect.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
 _libc.connect.restype = ctypes.c_int
+_libc.bind.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+_libc.bind.restype = ctypes.c_int
+
+#: Families bound as asked besides the internet and Unix ones: neither
+#: reaches another host (netlink: the kernel's own channel, which
+#: getifaddrs and OpenMPI's interface scan bind; AF_ALG: the kernel's
+#: crypto API). Every other family is refused at bind().
+_LOCAL_FAMILIES = (socket.AF_NETLINK, getattr(socket, "AF_ALG", 38))
 
 #: Beneath these a Unix socket may be reached from any sandbox: the cluster
 #: authentication (munge, for sbatch/squeue) and the name services (sssd,
@@ -404,6 +437,10 @@ def _program(block_inet_datagrams: bool = False):
     items += [
         (_JEQ, nr_connect, "notify", None),
         (_JEQ, nr_uring, "enosys", None),
+        # Inbound, in every network mode: the supervisor binds and
+        # listens itself (Supervisor._bind, _listen).
+        (_JEQ, nr_bind, "notify", None),
+        (_JEQ, _arch_listen(), "notify", None),
     ]
     if block_inet_datagrams:
         # The address-bearing datagram sends are judged BEFORE the
@@ -529,8 +566,13 @@ class Supervisor:
     """Answers the command's connect() calls until the command ends."""
 
     def __init__(self, listener: int, allowed: list[str], net_mode: str = "open",
-                 allowed_tcp=(), denied=(), own_listeners=()):
+                 allowed_tcp=(), denied=(), own_listeners=(),
+                 inbound: str = "loopback"):
         self.listener = listener
+        # "loopback": every internet socket the command binds or listens on
+        # is bound to the loopback (bind_target); "any": binds as asked --
+        # only an open network inside a multi-node SLURM allocation.
+        self.inbound = "any" if inbound == "any" else "loopback"
         # The listening sockets of the session's own background jobs (their
         # inodes, read when the command started); with the sockets of the
         # command's own process tree they are the servers it may reach on
@@ -580,6 +622,28 @@ class Supervisor:
         fixed when the command starts (a port given up and taken by another
         program stays open)."""
         return owns_loopback(ip, port, self.own_listeners, self.root_pid)
+
+    def bind_target(self, ip):
+        """The address a bind to ``ip`` is carried out with, or None when it
+        is refused: a loopback address as asked, a wildcard as the
+        loopback of its family (an IPv4-mapped wildcard as the mapped
+        loopback), any other address refused. With ``inbound="any"`` every
+        address as asked."""
+        if self.inbound == "any":
+            return ip
+        mapped = getattr(ip, "ipv4_mapped", None)
+        base = mapped if mapped is not None else ip
+        if base.is_loopback:
+            return ip
+        if base.is_unspecified:
+            if mapped is not None:
+                return ipaddress.ip_address("::ffff:127.0.0.1")
+            return ipaddress.ip_address("127.0.0.1" if ip.version == 4 else "::1")
+        return None
+
+    @staticmethod
+    def _loopback_of(family: int):
+        return ("127.0.0.1", 0) if family == socket.AF_INET else ("::1", 0, 0, 0)
 
     def unix_path_allowed(self, path: str) -> bool:
         real = os.path.realpath(path)
@@ -633,6 +697,186 @@ class Supervisor:
         finally:
             os.close(pidfd)
 
+    def _socket_of(self, pid: int, fd: int):
+        """The command's socket ``fd`` as a socket object of the
+        supervisor's own (a duplicate: same socket, own descriptor), or
+        None. Its family is the kernel's (SO_DOMAIN), not an address the
+        command can rewrite while it is being judged."""
+        dup = self._dup_fd(pid, fd)
+        if dup < 0:
+            return None
+        try:
+            return socket.socket(fileno=dup)
+        except OSError:
+            os.close(dup)
+            return None
+
+    def _bind(self, notif_id: int, pid: int, args: tuple) -> None:
+        """bind(), performed HERE on the supervisor's duplicate of the
+        socket, with the address copied out of the command's memory: an
+        internet address judged by bind_target, a Unix one by
+        _bind_unix, netlink and AF_ALG as asked, every other family
+        refused. Never continued in the kernel: a thread that rewrites the
+        sockaddr, or swaps the descriptor for an internet socket, after the
+        check changes nothing, because the kernel never reads either
+        again."""
+        try:
+            sock = self._socket_of(pid, int(args[0]))
+            if sock is None:
+                self._send(notif_id, -1, -errno.EBADF)
+                return
+            with sock:
+                addr_ptr, addr_len = int(args[1]), int(args[2]) & 0xFFFFFFFF
+                if addr_len < 2 or addr_len > 128:
+                    self._send(notif_id, -1, -errno.EINVAL)
+                    return
+                with open(f"/proc/{pid}/mem", "rb", buffering=0) as mem:
+                    mem.seek(addr_ptr)
+                    raw = mem.read(addr_len)
+                if len(raw) != addr_len or not self._valid(notif_id):
+                    self._send(notif_id, -1, -errno.EACCES)
+                    return
+                family = struct.unpack_from("<H", raw)[0]
+                if family != sock.family:
+                    self._send(notif_id, -1, -(errno.EAFNOSUPPORT
+                                               if sock.family == socket.AF_INET
+                                               else errno.EINVAL))
+                    return
+                if family == socket.AF_UNIX:
+                    self._bind_unix(notif_id, pid, sock, raw)
+                    return
+                if family in _LOCAL_FAMILIES:
+                    self._bind_raw(notif_id, sock, raw)
+                    return
+                if family not in (socket.AF_INET, socket.AF_INET6):
+                    self.refused.append(f"bind in address family {family}")
+                    self._send(notif_id, -1, -errno.EACCES)
+                    return
+                port = struct.unpack_from(">H", raw, 2)[0]
+                if family == socket.AF_INET and len(raw) >= 8:
+                    ip = ipaddress.ip_address(raw[4:8])
+                elif family == socket.AF_INET6 and len(raw) >= 24:
+                    ip = ipaddress.ip_address(raw[8:24])
+                    flowinfo = struct.unpack_from(">I", raw, 4)[0]
+                    scope = struct.unpack_from("<I", raw, 24)[0] if len(raw) >= 28 else 0
+                else:
+                    self._send(notif_id, -1, -errno.EINVAL)
+                    return
+                target = self.bind_target(ip)
+                if target is None:
+                    self.refused.append(f"listen on {ip}:{port}: beyond the loopback")
+                    self._send(notif_id, -1, -errno.EACCES)
+                    return
+                where = ((str(target), port) if family == socket.AF_INET
+                         else (str(target), port, flowinfo, scope))
+                try:
+                    sock.bind(where)
+                except OSError as exc:
+                    self._send(notif_id, -1, -(exc.errno or errno.EACCES))
+                    return
+                self._send(notif_id, 0, 0)
+        except Exception:
+            try:
+                self._send(notif_id, -1, -errno.EACCES)
+            except Exception:
+                pass
+
+    def _bind_raw(self, notif_id: int, sock, raw: bytes) -> None:
+        """bind() with the copied address bytes, on the supervisor's
+        duplicate of the command's socket."""
+        rc = _libc.bind(sock.fileno(), raw, len(raw))
+        err = 0 if rc == 0 else ctypes.get_errno()
+        self._send(notif_id, 0 if rc == 0 else -1, -err if err else 0)
+
+    def _bind_unix(self, notif_id: int, pid: int, sock, raw: bytes) -> None:
+        """A Unix socket: an abstract name (or the kernel's autobind) as
+        asked -- it reaches no other host; a path only beneath the
+        directories a connect may reach (``unix_path_allowed``: the
+        workspace roots and the private temp directory), since the
+        supervisor creates the socket file with its own rights.
+
+        The parent directory is opened (O_PATH) and judged as opened, and
+        the socket is bound through ``/proc/self/fd/N/<name>``: a parent
+        swapped for a symbolic link after the check is not followed, and a
+        path in a deep working directory, which the command named
+        relatively, stays within the 108 bytes a socket address holds. The
+        socket's own name (getsockname) is then that alias."""
+        name = raw[2:]
+        if not name or name[0] == 0:
+            self._bind_raw(notif_id, sock, raw)
+            return
+        path = name.split(b"\0", 1)[0].decode("utf-8", "surrogateescape")
+        if not os.path.isabs(path):
+            path = os.path.join(os.readlink(f"/proc/{pid}/cwd"), path)
+        base = os.path.basename(path)
+        if base in ("", ".", ".."):
+            self._send(notif_id, -1, -errno.EINVAL)
+            return
+        try:
+            dirfd = os.open(os.path.dirname(path) or "/", os.O_PATH | os.O_DIRECTORY)
+        except OSError as exc:
+            self._send(notif_id, -1, -(exc.errno or errno.ENOENT))
+            return
+        try:
+            parent = os.readlink(f"/proc/self/fd/{dirfd}")
+            if not self.unix_path_allowed(parent):
+                self.refused.append(f"unix socket at {os.path.join(parent, base)}")
+                self._send(notif_id, -1, -errno.EACCES)
+                return
+            alias = f"/proc/self/fd/{dirfd}/{base}".encode("utf-8", "surrogateescape")
+            if len(alias) >= 108:
+                self._send(notif_id, -1, -errno.ENAMETOOLONG)
+                return
+            self._bind_raw(notif_id, sock, struct.pack("<H", socket.AF_UNIX) + alias + b"\0")
+        finally:
+            os.close(dirfd)
+
+    def _listen(self, notif_id: int, pid: int, args: tuple) -> None:
+        """listen(): performed HERE on the socket the descriptor named when
+        it was judged (a descriptor replaced in the meantime cannot slip an
+        unbound socket past). An internet socket nothing bound yet is
+        bound to the loopback first -- the kernel would bind it to the
+        wildcard -- and one bound beyond the loopback (bound before the
+        filter, or with inbound "any") listens only when that is allowed."""
+        try:
+            sock = self._socket_of(pid, int(args[0]))
+            if sock is None:
+                self._send(notif_id, -1, -errno.EBADF)
+                return
+            with sock:
+                if not self._valid(notif_id):
+                    self._send(notif_id, -1, -errno.EACCES)
+                    return
+                backlog = struct.unpack("<i", struct.pack("<I", int(args[1]) & 0xFFFFFFFF))[0]
+                if sock.family not in (socket.AF_INET, socket.AF_INET6):
+                    try:
+                        sock.listen(max(backlog, 0))
+                    except OSError as exc:
+                        self._send(notif_id, -1, -(exc.errno or errno.EACCES))
+                        return
+                    self._send(notif_id, 0, 0)
+                    return
+                host, port = sock.getsockname()[:2]
+                ip = ipaddress.ip_address(str(host).split("%", 1)[0])
+                if port == 0:
+                    if self.inbound != "any":
+                        sock.bind(self._loopback_of(sock.family))
+                elif self.bind_target(ip) != ip:
+                    self.refused.append(f"listen on {ip}:{port}: beyond the loopback")
+                    self._send(notif_id, -1, -errno.EACCES)
+                    return
+                try:
+                    sock.listen(max(backlog, 0))
+                except OSError as exc:
+                    self._send(notif_id, -1, -(exc.errno or errno.EACCES))
+                    return
+                self._send(notif_id, 0, 0)
+        except Exception:
+            try:
+                self._send(notif_id, -1, -errno.EACCES)
+            except Exception:
+                pass
+
     def _datagram_socket(self, notif_id: int, pid: int, args: tuple,
                          nr: int) -> None:
         """socket() under a restricted network: creating a datagram socket
@@ -680,7 +924,7 @@ class Supervisor:
                 raise ValueError(f"address family {family}")
             if owns_udp(ip, port, self.own_listeners,
                         self.root_pid, include_root=True):
-                self._send(notif_id, 0, 0, _NOTIF_FLAG_CONTINUE)
+                self._send_datagram(notif_id, pid, args, ip, port)
                 return
             self.refused.append(f"send {ip}:{port}")
             self._send(notif_id, -1, -errno.EACCES)
@@ -690,16 +934,58 @@ class Supervisor:
             except Exception:
                 pass
 
+    def _send_datagram(self, notif_id: int, pid: int, args: tuple, ip, port: int) -> None:
+        """An allowed sendto() with a destination, performed HERE from the
+        socket the descriptor named when it was judged -- never continued,
+        so a descriptor swapped in the meantime cannot send from an
+        unbound socket the kernel would bind to the wildcard. A datagram
+        socket nothing bound yet is bound to the loopback first, for the
+        same reason: every host could otherwise send to its port."""
+        sock = self._socket_of(pid, int(args[0]))
+        if sock is None:
+            self._send(notif_id, -1, -errno.EBADF)
+            return
+        with sock:
+            length = int(args[2]) & 0xFFFFFFFF
+            if length > 65536:
+                self._send(notif_id, -1, -errno.EMSGSIZE)
+                return
+            with open(f"/proc/{pid}/mem", "rb", buffering=0) as mem:
+                mem.seek(int(args[1]))
+                payload = mem.read(length)
+            if len(payload) != length or not self._valid(notif_id):
+                self._send(notif_id, -1, -errno.EACCES)
+                return
+            try:
+                if (sock.type == socket.SOCK_DGRAM
+                        and sock.family in (socket.AF_INET, socket.AF_INET6)
+                        and sock.getsockname()[1] == 0):
+                    sock.bind(self._loopback_of(sock.family))
+                where = ((str(ip), port) if sock.family == socket.AF_INET
+                         else (str(ip), port, 0, 0))
+                if sock.family == socket.AF_INET6 and ip.version == 4:
+                    where = ("::ffff:" + str(ip), port, 0, 0)
+                sent = sock.sendto(payload, int(args[3]) & 0xFFFFFFFF, where)
+            except OSError as exc:
+                self._send(notif_id, -1, -(exc.errno or errno.EACCES))
+                return
+            self._send(notif_id, sent, 0)
+
     def _handle(self, notif_id: int, pid: int, args: tuple, nr: int = -1) -> None:
-        # The datagram surface, by the architecture's own numbers: socket()
-        # is the command's own creation; sendto with a destination is
-        # judged by the UDP ownership rule. bind() is not notified (the
-        # filter allows it in-kernel; the escape is judged at sendto).
-        # sendmsg/sendmmsg never arrive: the filter refuses them
-        # in-kernel (the destination sits inside the msghdr, invisible
-        # to BPF).
+        # By the architecture's own numbers: bind() and listen() are the
+        # inbound half (performed here, _bind/_listen); socket() is the
+        # command's own creation; sendto with a destination is judged by
+        # the UDP ownership rule. sendmsg/sendmmsg never arrive: the
+        # filter refuses them in-kernel (the destination sits inside the
+        # msghdr, invisible to BPF).
         (audit, _sc, nr_connect, nr_socket, nr_uring, _po, _pg) = _arch()
-        (_nr_bind, nr_sendto, _nsm, _nsmm) = _arch_dgram()
+        (nr_bind, nr_sendto, _nsm, _nsmm) = _arch_dgram()
+        if nr == nr_bind:
+            self._bind(notif_id, pid, args)
+            return
+        if nr == _arch_listen():
+            self._listen(notif_id, pid, args)
+            return
         if nr == nr_socket:
             self._datagram_socket(notif_id, pid, args, nr)
             return
@@ -754,12 +1040,30 @@ class Supervisor:
                     self._send(notif_id, -1, -errno.EACCES)
                     return
                 encoded = real.encode("utf-8", "surrogateescape")
+                alias_fd = -1
                 if len(encoded) >= 108:
-                    self._send(notif_id, -1, -errno.ENAMETOOLONG)
-                    return
+                    # A deep path (a relative name in a deep working
+                    # directory): reached through the opened parent, as
+                    # _bind_unix binds it.
+                    try:
+                        alias_fd = os.open(os.path.dirname(real), os.O_PATH | os.O_DIRECTORY)
+                    except OSError as exc:
+                        self._send(notif_id, -1, -(exc.errno or errno.ENOENT))
+                        return
+                    encoded = f"/proc/self/fd/{alias_fd}/{os.path.basename(real)}".encode(
+                        "utf-8", "surrogateescape")
+                    if len(encoded) >= 108 or os.readlink(
+                            f"/proc/self/fd/{alias_fd}") != os.path.dirname(real):
+                        os.close(alias_fd)
+                        self._send(notif_id, -1, -errno.ENAMETOOLONG)
+                        return
                 raw = struct.pack("<H", socket.AF_UNIX) + encoded + b"\0"
+            else:
+                alias_fd = -1
             dup = self._dup_fd(pid, fd)
             if dup < 0:
+                if alias_fd >= 0:
+                    os.close(alias_fd)
                 self._send(notif_id, -1, -errno.EBADF)
                 return
             try:
@@ -770,6 +1074,8 @@ class Supervisor:
                     err = ctypes.get_errno()
             finally:
                 os.close(dup)
+                if alias_fd >= 0:
+                    os.close(alias_fd)
             self._send(notif_id, val, -err if err else 0)
         except Exception:
             try:

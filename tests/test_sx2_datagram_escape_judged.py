@@ -55,13 +55,29 @@ def test_arch_reports_socket_and_bind():
 
 # -- finding 2: no dead bind branch ------------------------------------------
 
-def test_the_bind_judge_branch_is_not_dead_code():
-    """The filter never notifies bind(); a judge branch that no
-    notification can reach is dead code. Pinned: _handle has no bind
-    dispatch (the filter's bind stays in-kernel-allowed, its datagram
-    escape is judged at sendto)."""
-    assert not hasattr(SG.Supervisor, "_bind"), (
-        "a bind judge with no notifying filter is dead code")
+def test_the_bind_and_listen_judges_are_reached():
+    """A judge no notification reaches is dead code; this pinned the bind
+    judge away while the filter allowed bind() in-kernel. Since
+    2026-11-24 the filter hands bind() and listen() to the supervisor in
+    every network mode (an unattended ORCA's OpenMPI listened on
+    0.0.0.0:1024-1025 past a guard that judged connect() only), so both
+    judges are reached: the program notifies both numbers, and _handle
+    dispatches each to its judge."""
+    nr_bind = SG._arch_dgram()[0]
+    nr_listen = SG._arch_listen()
+    for restricted in (False, True):
+        p = SG._program(block_inet_datagrams=restricted)
+        for nr in (nr_bind, nr_listen):
+            i = next(i for i, ins in enumerate(p) if ins[0] == SG._JEQ and ins[3] == nr)
+            jt = p[i][1]
+            assert p[i + 1 + jt] == (SG._RET, 0, 0, SG._RET_USER_NOTIF), (restricted, nr)
+    sup = SG.Supervisor(0, [])
+    seen = []
+    sup._bind = lambda *a: seen.append("bind")
+    sup._listen = lambda *a: seen.append("listen")
+    sup._handle(1, 1, (0, 0, 0), nr_bind)
+    sup._handle(1, 1, (0, 0), nr_listen)
+    assert seen == ["bind", "listen"]
 
 
 # -- finding 3: the address-bearing datagram sends are judged ----------------

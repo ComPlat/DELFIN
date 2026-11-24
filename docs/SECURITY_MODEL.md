@@ -28,6 +28,7 @@ in the [User Manual](USER_MANUAL.md#seeing-the-boundary-before-a-session-starts)
 | The approval channel | A pending approval is answered by the person, never by the session that is waiting or by any process it started. |
 | Git configuration | A command cannot plant a program that git runs later (hooks, filter and diff drivers, `core.hooksPath`) without the person being asked; a program entry a command adds to the repository config anyway is undone after the command; git run by DELFIN's own code on the workspace (its reads, its own commits, the dashboard's Pull, Push and Undo) runs no program the repository names (`safe_git`). |
 | Network egress | An isolated command, and every program it starts, reaches the network only through the egress proxy, which lets through an allow-list of domains and asks about the rest where someone can be asked; the cloud metadata address is refused; an upload is asked or, with nobody to ask, refused unless the user named the host for uploads (the limits of what the proxy can see inside TLS are under the egress proxy below). `web_fetch` takes the same host decision before it resolves anything, and a URL or search query that carries encoded data is asked or, with nobody to ask, refused. |
+| Network ingress | A program an isolated command starts cannot be reached from another host: on Linux the socket guard binds every internet socket it binds or listens on to the loopback (a wildcard address becomes the loopback, any other address is refused), and where the socket guard does not run, the command has a network namespace of its own. Only an open network inside a SLURM allocation of several nodes keeps its binds, for the job's other ranks. Seatbelt (macOS) does not hold ingress yet (see the egress proxy below). |
 | The agent's own safety layer | The files that define the permission system and the settings that decide what runs unattended are protected: writing them is asked in every mode, including `bypassPermissions`. |
 | Shared lessons and memory | The lessons later sessions are shown (`delfin/agent/pack/knowledge`, a repository's `.delfin/knowledge`) and the memory stores under `~/.delfin` are protected paths for the agent's write tools; a note the model writes into memory may not carry an instruction channel. |
 | What the model takes for an instruction | Text whose author is not the user -- files, command output, web pages, MCP results and tool descriptions, other sessions' messages, delegates' reports, recalled memory -- reaches the model inside a nonce'd fence that labels it as data. An MCP tool description that changed since it was first seen is not shown until the user accepts it; another session's message names its sender only when its signature checks. |
@@ -503,6 +504,26 @@ Two guards complete the Linux mechanisms:
   Abstract Unix sockets, datagram Unix sockets and io_uring are refused; the
   cloud metadata addresses and link-local ranges are refused in every
   network mode. If the supervisor dies, every later connect fails.
+  The guard holds the way in as well, in every network mode: it performs
+  every `bind()` and `listen()` itself, on its copy of the socket and with
+  the address it copied (`Supervisor._bind`, `_listen`) -- an internet
+  address is bound only to the loopback (`Supervisor.bind_target`: a
+  wildcard such as `0.0.0.0` or `::` becomes the loopback of its family,
+  any other address is refused), a `listen()` on a socket nothing bound is
+  bound to the loopback first (the kernel would bind it to the wildcard),
+  a Unix socket path is created only beneath the directories a connect may
+  reach, through its opened parent (`/proc/self/fd/N/<name>`), netlink and
+  AF_ALG are bound as asked, and every other family is refused. Nothing of
+  this is continued in the kernel, so a sockaddr rewritten or a descriptor
+  swapped after the check changes nothing. Under a restricted network a
+  datagram from an unbound socket leaves from a loopback-bound one, sent by
+  the supervisor. Measured 2026-11-24: an unattended agent's parallel ORCA
+  listened on 0.0.0.0:1024-1025 (OpenMPI's TCP transport) and mpirun on
+  four more wildcard ports while only `connect()` was judged; OpenMPI's
+  and PMIx's interface settings do not keep mpirun off the wildcard. With
+  `--inbound any` (`api_client._sandbox_network_args`: an open network
+  inside a SLURM allocation of several nodes) binds are carried out as
+  asked.
 - The **process guard** (`process_guard.protect`) marks the terminal agent
   and the dashboard launcher non-dumpable, so a command of the same user
   cannot read their `/proc/<pid>/environ` or attach a debugger to read the
@@ -610,6 +631,13 @@ TCP connects only to the forwarder's port, UDP not covered — partial);
 Seatbelt. With `agent.bash_isolation` = `off`, `mode` = `open`, or on a host
 with none of these, the command has the host's network, and the banner, the
 security panel and `delfin-agent doctor` say so.
+
+The way in is held by the socket guard (every bind on the loopback, above)
+and by the network namespace (nothing outside it reaches the command), in
+every network mode, `open` included. Landlock's TCP restriction alone does
+not hold it (its rule names ports, not addresses), and neither does
+Seatbelt's profile (it restricts outbound traffic only); a command
+under either of them alone can listen on the host's interfaces.
 
 ### 5. Other tools
 

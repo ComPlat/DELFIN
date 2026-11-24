@@ -2359,8 +2359,9 @@ def create_tab(ctx):
                 pass
 
         started = time.monotonic()
+        from delfin.inbound_guard import guarded
         running = subprocess.Popen(
-            [orca, 'check.inp'], cwd=str(room),
+            guarded([orca, 'check.inp'], environment), cwd=str(room),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             env=environment,

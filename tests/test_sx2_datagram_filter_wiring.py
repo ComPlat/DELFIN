@@ -114,12 +114,15 @@ def test_connect_and_uring_rules_unchanged():
 
 
 def test_open_mode_program_keeps_its_old_shape():
-    """Outside a restricted network the program is byte-for-byte today's."""
+    """Outside a restricted network the datagram rules are today's: the
+    UNIX branch refuses datagram sockets. (bind() and listen() are
+    notified in every mode since 2026-11-24, so the branch is found, not
+    counted: it moved by those two instructions.)"""
     assert SG._program(block_inet_datagrams=False) == SG._program(False)
     p = SG._program(block_inet_datagrams=False)
-    # In the open program the UNIX branch has its own JEQ DGRAM (12), whose
-    # true edge is the EACCES denial and whose false edge allows.
-    idx = 12
+    # The UNIX branch has its own JEQ DGRAM, whose true edge is the EACCES
+    # denial and whose false edge allows.
+    idx = _type_jump(p, _first(p, _JEQ, AF_UNIX))[0]
     assert p[idx][0] == _JEQ and p[idx][3] == DGRAM, p[idx]
     assert _target(p, idx, True)[3] == RET_EACCES
     assert _target(p, idx, False)[3] == RET_ALLOW
