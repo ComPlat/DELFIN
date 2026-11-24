@@ -1089,8 +1089,15 @@ class OrcaOptOpiAdapter(StepAdapter):
             coordinates=coordinates,
             charge=kwargs.get("charge", 0),
             mult=kwargs.get("mult", 1),
-            functional=kwargs.get("functional", "BP86"),
-            basis=kwargs.get("basis", "def2-SVP"),
+            # The method a caller asked for is the method that runs. The
+            # template that reaches this step (opi_opt_freq_dlpno) names it
+            # with its own vocabulary, dft_method/dft_basis, on every chained
+            # step; reading only functional/basis silently ran BP86/def2-SVP
+            # for a request of r2SCAN-3c. The adapter's own names win when
+            # both are given, so a caller who sets functional= has the last
+            # word.
+            functional=kwargs.get("functional") or kwargs.get("dft_method") or "BP86",
+            basis=kwargs.get("basis") or kwargs.get("dft_basis") or "def2-SVP",
             ri=kwargs.get("ri", ""),
             aux_basis=kwargs.get("aux_basis", ""),
             dispersion=kwargs.get("dispersion", ""),
