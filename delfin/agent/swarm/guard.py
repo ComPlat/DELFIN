@@ -25,9 +25,14 @@ records, and starts or resumes nothing, until a person clears it
 (``clear_stop``). Alerts go to the attention inbox: a stop as a security
 alert, a stalled member as a session state.
 
-The tick runs from the scheduler daemon (``install_entry``: an interval
-entry the daemon runs as a deterministic pass, never a model turn), or
-from ``delfin-agent swarm wave tick`` in any timer.
+The tick runs in one of three ways, whichever the host has:
+
+  * a systemd user service (``install_unit``): ``wave tick --every 60``
+    from the harness, restarted when it fails, started again at boot;
+  * the scheduler daemon (``install_entry``): an interval entry the daemon
+    runs as a deterministic pass, never a model turn;
+  * ``delfin-agent swarm wave tick --every 60`` under any supervisor
+    (a cluster's tmux, a batch job), or ``wave tick`` once from a timer.
 """
 from __future__ import annotations
 
@@ -35,6 +40,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -255,3 +261,126 @@ def remove_entry(sched=None) -> bool:
             sched.delete(ent.id)
             removed = True
     return removed
+
+
+# -- the tick as a loop and as a service ----------------------------------------------
+
+UNIT = "delfin-wave-tick.service"
+
+
+def loop(every_s: float = 60, *, ticks: int = 0, sleep=time.sleep, log=print) -> int:
+    """Tick every ``every_s`` seconds, one line per tick; ``ticks`` > 0 ends
+    after that many. A tick that raises is logged and the next one runs: the
+    loop is the part that must not end. Returns the number of ticks run."""
+    n = 0
+    while True:
+        try:
+            did = tick()
+            runs = did.get("runs") or {}
+            moved = {r: sorted({e.get("kind", "?") for e in d.get("events") or []}
+                               | ({"started"} if d.get("started") else set()))
+                     for r, d in runs.items()}
+            log(json.dumps({"t": time.strftime("%Y-%m-%d %H:%M:%S"), "runs": len(runs),
+                            "moved": {r: k for r, k in moved.items() if k},
+                            "held": bool(did.get("held")),
+                            "stopped": bool(did.get("stopped"))}))
+        except Exception as exc:
+            log(f"tick failed: {type(exc).__name__}: {str(exc)[:300]}")
+        n += 1
+        if ticks and n >= ticks:
+            return n
+        sleep(every_s)
+
+
+def _unit_dir() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "systemd" / "user"
+
+
+def _q(text: str) -> str:
+    """One systemd word: quoted, with % written as %%."""
+    return '"' + str(text).replace("%", "%%").replace('"', '\\"') + '"'
+
+
+def unit_text(every_s: int = 60, python: str = "") -> str:
+    """The user service that runs ``wave tick --every`` from the harness (or
+    the installed DELFIN when none is configured)."""
+    cfg = wave.settings()
+    harness = str(cfg.get("harness") or "")
+    env = ["PYTHONUNBUFFERED=1"]
+    if harness:
+        env.append("PYTHONPATH=" + str(Path(harness).expanduser()))
+    argv = [python or sys.executable, "-P", "-W", "ignore", "-m", "delfin.agent.cli",
+            "swarm", "wave", "tick", "--every", str(int(every_s))]
+    return "\n".join([
+        "[Unit]",
+        "Description=DELFIN waves: the tick (start, advance, record, guard)",
+        "",
+        "[Service]",
+        "Type=simple",
+        "WorkingDirectory=" + str(wave.root()).replace("%", "%%"),
+        *("Environment=" + _q(e) for e in env),
+        "ExecStart=" + " ".join(_q(a) for a in argv),
+        "Restart=on-failure",
+        "RestartSec=30",
+        "Nice=10",
+        "IOSchedulingClass=idle",
+        "NoNewPrivileges=yes",
+        "",
+        "[Install]",
+        "WantedBy=default.target",
+        "",
+    ])
+
+
+def _systemctl(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["systemctl", "--user", *args], capture_output=True, text=True, timeout=60)
+
+
+def install_unit(every_s: int = 60) -> dict:
+    """Write the user service, enable and start it (idempotent: a running
+    one is restarted on the new text). Raises WaveError where the host has
+    no systemd user manager; ``wave tick --every`` runs anywhere."""
+    if int(every_s) < 10:
+        raise ValueError("every_s must be >= 10")
+    try:
+        probe = _systemctl("show-environment")
+    except (OSError, subprocess.SubprocessError) as exc:
+        probe = None
+        why = f"{type(exc).__name__}"
+    else:
+        why = (probe.stderr or "").strip()[:200]
+    if probe is None or probe.returncode != 0:
+        raise wave.WaveError(f"no systemd user manager here ({why}); run "
+                             "`delfin-agent swarm wave tick --every 60` under any supervisor, "
+                             "or `wave guard install` for the scheduler daemon")
+    path = _unit_dir() / UNIT
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = unit_text(every_s)
+    changed = not path.exists() or path.read_text() != text
+    path.write_text(text)
+    wave.root().mkdir(parents=True, exist_ok=True)
+    _systemctl("daemon-reload")
+    on = _systemctl("enable", "--now", UNIT)
+    if changed:
+        _systemctl("restart", UNIT)
+    active = _systemctl("is-active", UNIT).stdout.strip()
+    return {"unit": str(path), "every_s": int(every_s), "active": active,
+            "error": (on.stderr or "").strip()[:200] if on.returncode else ""}
+
+
+def remove_unit() -> bool:
+    """Stop, disable and delete the user service. True when one was there."""
+    path = _unit_dir() / UNIT
+    if not path.exists():
+        return False
+    try:
+        _systemctl("disable", "--now", UNIT)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    path.unlink()
+    try:
+        _systemctl("daemon-reload")
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return True

@@ -381,6 +381,62 @@ def test_a_member_listening_beyond_the_loopback_stops_everything(waves, monkeypa
     guard.clear_stop()
 
 
+def test_the_tick_loop_outlives_a_tick_that_raises(waves, monkeypatch):
+    calls, lines, slept = [], [], []
+    def flaky():
+        calls.append(1)
+        if len(calls) == 2:
+            raise RuntimeError("disk gone")
+        return {"runs": {"r": {}, "q": {"started": ["a"], "events": [{"kind": "ended"}]}}}
+    monkeypatch.setattr(guard, "tick", flaky)
+    assert guard.loop(5, ticks=3, sleep=slept.append, log=lines.append) == 3
+    assert len(calls) == 3 and slept == [5, 5]
+    assert "tick failed: RuntimeError: disk gone" in lines[1]
+    last = json.loads(lines[2])
+    assert last["runs"] == 2 and last["moved"] == {"q": ["ended", "started"]}   # a quiet run is not listed
+
+
+def _fake_systemctl(monkeypatch, manager=True):
+    calls = []
+    def run(args):
+        calls.append(list(args))
+        ok = manager or args[0] != "show-environment"
+        return subprocess.CompletedProcess(args, 0 if ok else 1, "active\n" if args[0] == "is-active" else "",
+                                           "" if ok else "Failed to connect to bus")
+    monkeypatch.setattr(guard, "_systemctl", lambda *a: run(a))
+    return calls
+
+
+def test_the_tick_service_runs_the_loop_from_the_harness(waves, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    cfg = dict(wave.settings(), harness=str(tmp_path / "har%ness"))
+    monkeypatch.setattr(wave, "settings", lambda: dict(cfg))
+    calls = _fake_systemctl(monkeypatch)
+    out = guard.install_unit(60)
+    unit = Path(out["unit"])
+    assert unit == tmp_path / "cfg" / "systemd" / "user" / guard.UNIT and out["active"] == "active"
+    text = unit.read_text()
+    assert 'Environment="PYTHONPATH=' + str(tmp_path / "har%%ness") + '"' in text   # % escaped
+    assert '"-P"' in text and '"swarm" "wave" "tick" "--every" "60"' in text
+    assert "WorkingDirectory=" + str(waves["root"]) in text and "Restart=on-failure" in text
+    assert ["enable", "--now", guard.UNIT] in calls
+    # the command the unit runs is one the command line takes
+    from delfin.agent import cli_swarm
+    import argparse
+    ns = cli_swarm.configure_parser(argparse.ArgumentParser()).parse_args(["wave", "tick", "--every", "60"])
+    assert ns.wave_cmd == "tick" and ns.every == 60
+    assert guard.remove_unit() is True and not unit.exists() and guard.remove_unit() is False
+
+
+def test_a_host_without_systemd_is_told_how_to_tick_instead(waves, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    _fake_systemctl(monkeypatch, manager=False)
+    with pytest.raises(wave.WaveError, match="wave tick --every 60"):
+        guard.install_unit(60)
+    assert not (tmp_path / "cfg").exists()
+    assert '"error"' in M.h_guard_install(1, systemd=True)[:40]
+
+
 def test_the_scheduler_runs_the_tick_as_a_pass_not_a_model_turn(waves, monkeypatch):
     from delfin.agent import scheduler_daemon as SD
     called = []
@@ -429,6 +485,7 @@ def test_every_wave_verb_is_on_the_command_line():
                  ["wave", "review", "r", "a"], ["wave", "resume", "r", "a", "--note", "n"],
                  ["wave", "stop", "r"], ["wave", "tick"], ["wave", "emergency-stop", "why"],
                  ["wave", "clear-stop"], ["wave", "friction"], ["wave", "guard", "install"],
+                 ["wave", "tick", "--every", "60"], ["wave", "guard", "install", "--systemd"],
                  ["wave", "mcp"], ["wave", "start", "r", "tasks.json"], ["wave", "add", "r", "more.json"],
                  ["wave", "land", "r1", "--push"], ["wave", "land", "--calibrate-pair", "a", "b"],
                  ["wave", "compose", "r", "spec.json", "--out", "t.json"]):
