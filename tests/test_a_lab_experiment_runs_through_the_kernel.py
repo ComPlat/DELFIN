@@ -489,3 +489,118 @@ def test_the_specialist_is_told_the_kernel_decides_and_how_to_report_a_stop():
     assert "lab approve" in body
     assert "dry_run" in body
     assert "simulator" in body
+
+# ---------------------------------------------------------------------------
+# Plan mode is a permission profile, and lab_run must not talk it out of one
+# ---------------------------------------------------------------------------
+
+def test_plan_mode_judges_a_plan_and_does_not_run_it(lab):
+    """The read-only profile reaches the dry run and nothing further.
+
+    ``_PLAN_READONLY_TOOLS`` is a set of NAMES, so a tool whose acting form
+    differs from its dry form by an ARGUMENT cannot be admitted by it. When
+    `lab_run` was put in that set (wave 44, a1's scratch patch), this call
+    -- plan mode, `dry_run: false` -- was admitted by the name-only gate,
+    the workflow ran, and the simulator's stirrer came back `power: 'on'`.
+    Plan mode then means "unless the tool has a second form", which is not
+    a permission profile.
+
+    The input that makes this fail: add "lab_run" to
+    ``_PLAN_READONLY_TOOLS`` and drop the ``dry_run`` branch from
+    ``_is_honoured_dry_run``. The acting call then returns a run, and the
+    simulator reading below catches it.
+    """
+    from delfin.lab.drivers import simulator
+
+    def stirrer_power():
+        return simulator.raw("stirrer").get("values", {}).get("power")
+
+    before = stirrer_power()
+
+    # Judging is the read-only thing plan mode is FOR, and it is admitted
+    # with the tool's own default -- no argument needed.
+    judged = call(lab, "lab_run", {"workflow": _wf()}, mode="plan")
+    assert "error" not in judged, judged
+    assert judged["ran"] is False
+    assert judged["ok"] is True, judged["problems"]
+
+    # Acting in plan mode is refused, and the refusal names the tool.
+    acted = call(lab, "lab_run", {"workflow": _wf(), "dry_run": False},
+                 mode="plan")
+    assert "error" in acted, acted
+    assert "plan" in acted["error"].lower(), acted
+    assert "ran" not in acted or acted["ran"] is False, acted
+
+    # The measurement that would have caught the original hole: the device
+    # did not move. A refusal that still moved the stirrer is not a refusal.
+    assert stirrer_power() == before, (
+        "plan mode refused the call and the device moved anyway")
+
+    # Control case: the same acting call is admitted in a profile that can
+    # act, so the refusal above is the mode's, not a broken tool.
+    from _lab_support import prepare_heating
+    prepare_heating(lab)
+    ok = call(lab, "lab_run", {"workflow": _wf(), "dry_run": False},
+              mode="bypassPermissions")
+    assert "error" not in ok, ok
+    assert ok["ran"] is True, ok
+
+# ---------------------------------------------------------------------------
+# Advertised is not executable -- the defect this wave's arms both hit
+# ---------------------------------------------------------------------------
+
+def test_every_tool_the_specialist_is_offered_actually_dispatches(lab):
+    """A name in the preset's list is not a capability.
+
+    Measured in wave 44: `lab_run` was in the preset's `tools:`, in
+    ``tool_catalog._DOC_TOOLS_OPENAI`` and in ``TOOL_NAMES``, and every call
+    to it answered ``{"error": "Unknown tool: lab_run"}`` -- because the
+    executor's dispatch tuple and ``_LAB_TOOL_NAMES`` are separate lists and
+    neither named it. Two changes in this wave added tool names to an
+    allow-list, passed their own tests, and reached nothing.
+
+    So this calls each tool the preset offers, through the executor, with
+    arguments that are benign, and fails on the one answer that means
+    "unreachable". Everything else -- a refusal, a validation complaint, an
+    empty result -- proves the call ARRIVED at the tool.
+
+    The input that makes it fail: drop "lab_run" from the dispatch tuple in
+    ``_DocToolExecutor.execute`` (or from ``_LAB_TOOL_NAMES``). The name
+    stays in the preset; the call answers "Unknown tool".
+    """
+    from delfin.agent import api_client as A
+    from delfin.agent import subagents as sa
+
+    sa.reload_subagent_presets()
+    try:
+        preset = sa.SUBAGENT_PRESETS["lab-specialist"]
+    finally:
+        sa.reload_subagent_presets()
+
+    benign = {
+        "lab_devices": {},
+        "lab_read": {"device": "stirrer"},
+        "lab_plan_check": {"steps": []},
+        "lab_run": {"workflow": _wf()},
+        "lab_estop": {},
+        "ask_user_question": {"question": "q",
+                              "options": [{"label": "a"}, {"label": "b"}]},
+        "read_file": {"path": "missing-file.txt"},
+        "grep_file": {"pattern": "x"},
+        "list_files": {},
+        "report_verdict": {"status": "approve"},
+        "subagent_result": {"sa_id": "none"},
+        "subagent_message": {"sa_id": "none", "message": "m"},
+        "task_create": {"subject": "s"},
+        "task_update": {"task_id": 1},
+        "task_list": {},
+    }
+
+    unreachable = []
+    for name in preset.tools:
+        out = call(lab, name, benign.get(name, {}), mode="bypassPermissions")
+        err = str(out.get("error") or "")
+        if "Unknown tool" in err:
+            unreachable.append((name, err))
+    assert not unreachable, (
+        "advertised to the model but not executable: " + repr(unreachable))
