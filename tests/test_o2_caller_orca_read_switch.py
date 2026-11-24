@@ -10,6 +10,8 @@ without OPI answers exactly as before.
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 from delfin import orca_read
 
 
@@ -88,3 +90,47 @@ def test_run_results_numbers_via_orca_read(tmp_path):
     assert numbers["energy"] == -6.6
     assert numbers["free_energy"] == -197.5
     assert numbers["zpe"] == 0.2
+
+
+def test_pka_cycle_gibbs_via_orca_read(tmp_path):
+    """pka.read_cycle_gibbs_energies reads each species' G via orca_read.
+
+    The switch reached two read sites in delfin/pka.py (the cycle reader and
+    ``run_cycle``'s own read). Without this case that half of the switch is
+    unmeasured: a pKa is computed from these numbers, so a reader that
+    silently stopped being consulted would show only as a plausible value.
+    """
+    import delfin.pka as pka
+
+    out = tmp_path / "acetic_HA.out"
+    out.write_text(
+        "Final Gibbs free energy        -700.123456 Eh\n", encoding="utf-8")
+
+    with mock.patch.object(orca_read, "read",
+                           return_value=_fake_reading(-701.5)) as mock_read:
+        values = pka.read_cycle_gibbs_energies({"acetic_HA": out})
+
+    mock_read.assert_called_once()
+    assert mock_read.call_args.args[2] == orca_read.Quantity.GIBBS
+    assert values["acetic_HA"] == -701.5, (
+        "the value must be the one the reader returned; two readers "
+        "answering differently is the defect this switch prevents")
+
+
+def test_pka_cycle_falls_back_to_the_text_parser(tmp_path):
+    """Control: a run orca_read has no value for answers as before.
+
+    This case is green before and after the switch; it is what makes the
+    switch safe for ORCA < 6.1.1 and for runs without a property JSON.
+    """
+    import delfin.pka as pka
+
+    out = tmp_path / "acetic_HA.out"
+    out.write_text(
+        "Final Gibbs free energy        -700.123456 Eh\n", encoding="utf-8")
+
+    with mock.patch.object(orca_read, "read",
+                           return_value=_fake_reading(None)):
+        values = pka.read_cycle_gibbs_energies({"acetic_HA": out})
+
+    assert values["acetic_HA"] == pytest.approx(-700.123456)
