@@ -70,7 +70,9 @@ def test_the_documented_stub_command_prints_the_api(capsys):
     out = capsys.readouterr().out
     assert rc == 0
     for name in code_mode.READ_ONLY_TOOLS:
-        assert "def %s(" % name in out
+        # by the name a program can write: a namespaced MCP name
+        # (mcp__delfin-tools__resolve_spec) is not a Python identifier.
+        assert "def %s(" % code_mode._py_name(name) in out
     assert "write_file" not in out
 
 

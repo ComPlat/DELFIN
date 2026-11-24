@@ -25,3 +25,15 @@ modes:
     file: modes/research.md
     route:
       - research_agent
+  # The same specialist the generalist delegates to, as a mode a person
+  # can choose. ONE DEFINITION, TWO ENTRANCES: the route names the
+  # subagent preset `workflow-operator`, so its prompt comes from that
+  # one file (prompt_loader.load_role_prompt falls back to the preset
+  # body) and its tool surface from that one `tools:` line
+  # (api_client._role_allowlist derives it). Nothing about the
+  # specialist is stated twice, and choosing it directly cannot be a way
+  # around the restriction it carries when delegated.
+  - id: workflow
+    file: modes/workflow.md
+    route:
+      - workflow-operator

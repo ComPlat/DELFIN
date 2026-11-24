@@ -189,12 +189,27 @@ def _model(unresolved: list[str], report: Any,
     two runs, and collapsing it would make a configured id look like a
     measured one.
 
-    The sampling settings are the caller's to pass: nothing in the
-    session record keeps them, so an absent temperature is reported
-    absent rather than assumed.
+    THE SAMPLING SETTINGS ARE A FACT, NOT A GAP. They used to be
+    reported ``unresolved`` in every manifest, which reads as "we forgot
+    to record it". The truth is different and worth recording: nothing
+    in this product has ever SET a temperature or a seed, so the
+    provider's own default applied. ``sampling_source`` says which of
+    the two a reader is looking at:
+
+        provider_default    nobody asked; not reproducible, and the
+                            record says so instead of leaving a hole
+        configured          the session asked and the request carried it
+        refused_by_endpoint the session asked and the endpoint answered
+                            400, so the values are what was ASKED and
+                            never what applied
+
+    A caller that passes ``sampling`` (the record from
+    ``sampling.record``) gets those fields; one that passes a bare
+    temperature or seed keeps working and is treated as configured.
     """
     out: dict[str, Any] = {"id": None, "id_source": None, "provider": None,
                            "temperature": None, "seed": None,
+                           "sampling_source": None, "reproducible": None,
                            "switches": None}
     measured = str(getattr(report, "model", "") or "")
     configured = str((settings or {}).get("model") or "")
@@ -204,12 +219,29 @@ def _model(unresolved: list[str], report: Any,
         out["id"], out["id_source"] = configured, "configured"
     else:
         _unresolved(unresolved, "model.id")
-    for key in ("provider", "temperature", "seed"):
-        value = (settings or {}).get(key)
-        if value is None:
-            _unresolved(unresolved, f"model.{key}")
-        else:
-            out[key] = value
+    provider = (settings or {}).get("provider")
+    if provider is None:
+        _unresolved(unresolved, "model.provider")
+    else:
+        out["provider"] = provider
+
+    # The sampling record, however it reached us.
+    sampling = (settings or {}).get("sampling")
+    if not isinstance(sampling, dict):
+        from . import sampling as _sampling
+        bare = {k: v for k, v in ((k, (settings or {}).get(k))
+                                  for k in ("temperature", "seed"))
+                if v is not None}
+        sampling = _sampling.record(bare)
+    out["temperature"] = sampling.get("temperature")
+    out["seed"] = sampling.get("seed")
+    out["sampling_source"] = sampling.get("source")
+    out["reproducible"] = bool(sampling.get("reproducible"))
+    # Nothing is unresolved here any more: a provider default is an
+    # answer. What IS unresolved is a record that cannot even say which
+    # of the three cases applied.
+    if not out["sampling_source"]:
+        _unresolved(unresolved, "model.sampling_source")
     switches = (settings or {}).get("model_switches")
     out["switches"] = list(switches) if switches else []
     return out
@@ -257,13 +289,23 @@ def _ledger(unresolved: list[str], session_id: str) -> dict[str, Any]:
 
 
 def _contract(unresolved: list[str], workspace: Optional[Path],
-              expected_steps: Optional[int]) -> dict[str, Any]:
+              expected_steps: Optional[int],
+              window: Optional[tuple[float, float]] = None,
+              ) -> dict[str, Any]:
     """The execution contract over the files the run left behind.
 
     This is the manifest's only judgement, and it is the one the field
     asks for: an oracle that reads the artifacts rather than the
     model's account of them. An unjudged flag is not a pass, so the
     flags are carried as they are -- True, False or None.
+
+    ``window`` is the run's own ``(started_at, ended_at)``, already
+    established above from the session's activity. The egress flag is
+    judged from the audit log over exactly that window: without it the
+    flag was None for EVERY run DELFIN has ever made, because nothing
+    in the product filled ``egress_events`` -- the parameter existed and
+    had no caller. With no window the flag stays None, which is the
+    honest answer and not a pass.
     """
     out: dict[str, Any] = {"flags": None, "certified": None, "failed": None,
                            "unjudged": None, "problems": None,
@@ -275,7 +317,14 @@ def _contract(unresolved: list[str], workspace: Optional[Path],
     try:
         from . import run_evidence
         ev = run_evidence.collect(workspace)
-        con = run_evidence.contract(ev, expected_steps=expected_steps)
+        egress = None
+        if window and window[0] and window[1] and window[1] >= window[0]:
+            # Returns None wherever absence cannot be demonstrated (no
+            # log, or a log that begins after the run did), so a rotated
+            # log leaves the flag unjudged instead of quiet.
+            egress = run_evidence.egress_in_window(window[0], window[1])
+        con = run_evidence.contract(ev, expected_steps=expected_steps,
+                                    egress_events=egress)
         out.update({
             "flags": dict(con.flags),
             "certified": con.certified(),
@@ -379,7 +428,9 @@ def build(*, session_id: str = "", workspace: Any = None,
         "environment": _environment(unresolved),
         "activity": activity,
         "ledger": _ledger(unresolved, sid) if sid else {},
-        "contract": _contract(unresolved, ws, expected_steps),
+        "contract": _contract(unresolved, ws, expected_steps,
+                              window=((started, ended)
+                                      if started and ended else None)),
         "workspace": _workspace(unresolved, ws),
     }
     if not str(termination or "").strip():

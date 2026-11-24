@@ -47,6 +47,26 @@ SCHEMA = 1
 #: such: ``written_at`` and the activity timestamps differ between two
 #: honest readings of the same run, and comparing them would make every
 #: replay fail for a reason that says nothing.
+#: Compared fields that are SETTINGS rather than measurements of the run.
+#:
+#: `prompt.role` is chosen when a run is started; nothing in a workspace
+#: or a session record can say which role a re-run would use. Comparing
+#: it requires telling replay the answer, which is how two of these
+#: comparisons came to match by construction.
+#:
+#: A setting the record holds and replay cannot re-derive is therefore
+#: UNAVAILABLE and NOT blocking: nothing about the RESULT is unverified.
+#: It is still printed, because a reader comparing two runs needs to see
+#: which settings the record carried.
+SETTINGS: frozenset[str] = frozenset({"prompt.role"})
+
+#: `model.id` is in both camps, and the manifest already records which:
+#: `model.id_source` is "session_metrics" where the id was MEASURED from
+#: the run's own per-turn metrics, and "configured" where it is the
+#: configured default. A measured id is a claim about what answered and
+#: must be re-derived or block; a configured id is a setting.
+MEASURED_SOURCE = "session_metrics"
+
 COMPARED: tuple[str, ...] = (
     "code.commit",
     "code.delfin_version",
@@ -157,8 +177,14 @@ def _dig(node: Any, dotted: str) -> Any:
 
 
 def _compare(report: Report, name: str, recorded: Any, now: Any,
-             *, unresolved_now: set[str]) -> None:
-    """One field, with the reason when it cannot be judged."""
+             *, unresolved_now: set[str], setting: bool = False) -> None:
+    """One field, with the reason when it cannot be judged.
+
+    ``setting`` marks a field that is an INPUT to a run rather than a
+    measurement of it. Such a field standing open does not block:
+    nothing about the result is left unverified by not knowing which
+    role a re-run would be given. See SETTINGS.
+    """
     if recorded is None:
         # Nothing was claimed, so nothing failed to verify. Still shown,
         # because a reader must see which fields the record never held.
@@ -167,10 +193,16 @@ def _compare(report: Report, name: str, recorded: Any, now: Any,
             "the manifest does not carry this field", blocking=False))
         return
     if now is None:
-        why = ("it could not be re-derived here"
-               if name in unresolved_now
-               else "nothing here produced a value for it")
-        report.checks.append(Check(name, UNAVAILABLE, recorded, now, why))
+        if setting:
+            why = ("this is a setting a run is given, not a measurement "
+                   "of it: nothing here can say which value a re-run "
+                   "would use")
+        elif name in unresolved_now:
+            why = "it could not be re-derived here"
+        else:
+            why = "nothing here produced a value for it"
+        report.checks.append(Check(name, UNAVAILABLE, recorded, now, why,
+                                   blocking=not setting))
         return
     report.checks.append(Check(
         name, MATCH if recorded == now else DIFFERS, recorded, now))
@@ -314,20 +346,41 @@ def replay(stored: dict, *, workspace: Any = None,
         recorded_root = _dig(stored, "workspace.root")
         root = recorded_root if recorded_root else None
 
+    # WHAT MAY BE PASSED IN, AND WHAT MAY NOT.
+    #
+    # Nothing that is COMPARED may come from the record being checked.
+    # Seeding `settings` and `role` from the stored manifest made
+    # `model.id` and `prompt.role` match BY CONSTRUCTION: _model falls
+    # back to the configured id whenever the session's per-turn metrics
+    # are absent, which is the normal case on another machine, so two of
+    # the five comparisons could not fail. A check fed the claim it is
+    # meant to test reports agreement with itself.
+    #
+    # Without the seed those two fields are re-derived from the session
+    # record or not at all. Not at all is UNAVAILABLE and BLOCKING --
+    # `_compare` already says "it could not be re-derived here" -- which
+    # is the honest verdict for a recorded claim nothing here can check.
+    #
+    # `expected_steps` is different and is still passed: it is the run's
+    # PLAN, not a claim about its outcome. A workspace's files cannot
+    # carry how many steps were intended, and the flag it feeds
+    # (grid_complete) counts the steps actually present against it. The
+    # plan is input to the check; the count is re-derived.
     fresh = run_manifest.build(
         session_id=sid, workspace=root,
-        expected_steps=_dig(stored, "contract.expected_steps"),
-        termination=str(_dig(stored, "run.termination") or ""),
-        settings={"model": _dig(stored, "model.id"),
-                  "provider": _dig(stored, "model.provider"),
-                  "temperature": _dig(stored, "model.temperature"),
-                  "seed": _dig(stored, "model.seed")},
-        role=str(_dig(stored, "prompt.role") or ""))
+        expected_steps=_dig(stored, "contract.expected_steps"))
     unresolved_now = set(fresh.get("unresolved") or ())
 
     for name in COMPARED:
+        setting = name in SETTINGS
+        if name == "model.id":
+            # The record's own provenance marker decides. A model id the
+            # record calls configured is a setting; one it calls measured
+            # is a claim about what actually answered.
+            setting = (str(_dig(stored, "model.id_source") or "")
+                       != MEASURED_SOURCE)
         _compare(report, name, _dig(stored, name), _dig(fresh, name),
-                 unresolved_now=unresolved_now)
+                 unresolved_now=unresolved_now, setting=setting)
     _engines(report, stored, fresh, unresolved_now)
     _workspace(report, stored, Path(root) if root else None)
     _contract(report, stored, fresh)

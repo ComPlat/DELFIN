@@ -94,13 +94,24 @@ def test_a_small_catalogue_has_no_overflow_notice():
 
 
 def _counted(listing: str, skills: list[Skill]) -> None:
-    """Listed names + announced remainder == total, always."""
+    """Listed names + announced remainder == total, always.
+
+    The listing has three forms under one ceiling, and a skill counts as
+    accounted for in any of them: DESCRIBED ("name — text", "; "-joined),
+    NAMED in the tier after "; also: " (", "-joined), or ANNOUNCED in the
+    "N more" count. The named tier was added on 2026-11-23, when the
+    ceiling was found to decide by alphabet which skills could be called
+    at all, and this counter did not know it until CI said so.
+    """
     import re
+    described, _, also = listing.partition("; also: ")
     listed = [p.split(" — ", 1)[0].strip()
-              for p in listing.split("; ") if " — " in p or (
+              for p in described.split("; ") if " — " in p or (
                   " more" not in p and " more —" not in p)]
+    listed += [w.strip() for w in also.split(", ") if w.strip()]
     names = {s.name for s in skills}
     listed = [p for p in listed if p in names]
+    assert len(listed) == len(set(listed)), "a skill is counted twice"
     m = re.search(r"; (\d+) more —", listing)
     announced = int(m.group(1)) if m else 0
     assert len(listed) + announced == len(skills), (

@@ -31,7 +31,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from delfin.agent.model_capabilities import _KIT_BASE_URL
+from delfin.agent.model_capabilities import _BLABLADOR_BASE_URL, _KIT_BASE_URL
 
 __all__ = [
     "CheckResult",
@@ -43,6 +43,8 @@ __all__ = [
     "check_slurm",
     "check_kit_toolbox_key",
     "check_kit_toolbox_key_live",
+    "check_blablador_key_live",
+    "check_model_answers_live",
     "check_docs_index",
     "check_command_isolation",
     "check_no_exported_key",
@@ -60,6 +62,16 @@ _PROBE_TIMEOUT_S = 15
 
 # The KIT Toolbox model list endpoint, from the one constant that owns the URL.
 _KIT_MODELS_URL = _KIT_BASE_URL + "/models"
+
+#: The providers whose endpoint and key these live checks know, by the name
+#: a session uses (``--provider``): (base URL, credential name). One table
+#: for the key checks and the answer check, from the constants that own
+#: the URLs, so a provider cannot be checked at one address and used at
+#: another.
+_LIVE_PROVIDERS: dict[str, tuple[str, str]] = {
+    "kit": (_KIT_BASE_URL, "KIT_TOOLBOX_API_KEY"),
+    "blablador": (_BLABLADOR_BASE_URL, "BLABLADOR_API_KEY"),
+}
 
 
 @dataclass
@@ -279,56 +291,162 @@ def check_slurm() -> CheckResult:
     )
 
 
-def check_kit_toolbox_key_live(timeout_s: float = 15.0) -> CheckResult:
-    """Ask the KIT-Toolbox whether the stored key is still accepted.
+def _stored_key(name: str) -> str:
+    try:
+        from delfin.agent.credentials import load_credential
+        return str(load_credential(name) or "")
+    except Exception:
+        return os.environ.get(name, "")
 
-    Deliberately NOT part of run_all: it reaches the network, so it would
-    make every doctor run wait on a remote host and could hang one that
-    only wanted to know what is installed. Called when somebody asks.
 
-    Read-only -- it lists models and sends nothing. The key travels to the
-    endpoint it belongs to and nowhere else, and never appears in the
+def _key_live(check: str, models_url: str, key_name: str,
+              timeout_s: float) -> CheckResult:
+    """Whether the endpoint accepts the stored key: list its models.
+
+    Read-only -- it lists models and sends nothing. The key travels to
+    the endpoint it belongs to and nowhere else, and never appears in the
     result: an expired key and a wrong key are the same answer here, and
     printing either would put a secret in a log.
+
+    A key being ACCEPTED is not a model answering: on 2026-11-23 this
+    question had a yes while every Blablador model was refusing work.
+    ``check_model_answers_live`` asks the second question.
     """
     import json as _json
     import urllib.error
     import urllib.request
 
-    try:
-        from delfin.agent.credentials import load_credential
-        key = load_credential("KIT_TOOLBOX_API_KEY")
-    except Exception:
-        key = os.environ.get("KIT_TOOLBOX_API_KEY", "")
+    key = _stored_key(key_name)
     if not key:
         return CheckResult(
-            "kit_toolbox_key_live", MISSING,
-            "no KIT_TOOLBOX_API_KEY to check",
-            "delfin-agent credentials set KIT_TOOLBOX_API_KEY")
+            check, MISSING, f"no {key_name} to check",
+            f"delfin-agent credentials set {key_name}")
     request = urllib.request.Request(
-        _KIT_MODELS_URL,
-        headers={"Authorization": f"Bearer {key}"})
+        models_url, headers={"Authorization": f"Bearer {key}"})
     try:
         with urllib.request.urlopen(request, timeout=timeout_s) as answer:
             data = _json.loads(answer.read() or b"{}")
         count = len(data.get("data") or [])
-        return CheckResult("kit_toolbox_key_live", OK,
-                           f"accepted ({count} models offered)")
+        return CheckResult(check, OK, f"accepted ({count} models offered)")
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
             return CheckResult(
-                "kit_toolbox_key_live", MISSING,
+                check, MISSING,
                 f"the stored key is refused by the server (HTTP {exc.code})",
-                "delfin-agent credentials set KIT_TOOLBOX_API_KEY")
-        return CheckResult("kit_toolbox_key_live", MISSING,
+                f"delfin-agent credentials set {key_name}")
+        return CheckResult(check, MISSING,
                            f"the server answered HTTP {exc.code}")
     except Exception as exc:
         # Unreachable is not the same as refused, and saying so keeps
         # somebody from replacing a key that was never the problem.
         return CheckResult(
-            "kit_toolbox_key_live", MISSING,
+            check, MISSING,
             f"could not be checked: {type(exc).__name__}",
             "this says nothing about the key; check the connection first")
+
+
+def check_kit_toolbox_key_live(timeout_s: float = 15.0) -> CheckResult:
+    """Ask the KIT-Toolbox whether the stored key is still accepted.
+
+    Deliberately NOT part of run_all: it reaches the network, so it would
+    make every doctor run wait on a remote host and could hang one that
+    only wanted to know what is installed. ``delfin-agent doctor --live``
+    runs it.
+    """
+    return _key_live("kit_toolbox_key_live", _KIT_MODELS_URL,
+                     "KIT_TOOLBOX_API_KEY", timeout_s)
+
+
+def check_blablador_key_live(timeout_s: float = 15.0) -> CheckResult:
+    """Ask Blablador whether the stored key is still accepted.
+
+    The same question as KIT's, through the same function. On its own it
+    would have answered yes on the evening it mattered -- see
+    ``check_model_answers_live``.
+    """
+    base, name = _LIVE_PROVIDERS["blablador"]
+    return _key_live("blablador_key_live", base + "/models", name,
+                     timeout_s)
+
+
+def check_model_answers_live(provider: str, model: str,
+                             timeout_s: float = 30.0) -> CheckResult:
+    """Whether *model* on *provider* answers: one minimal prompt.
+
+    MEASURED 2026-11-23: twenty-two agents on Blablador ended on a reply
+    no model had produced -- "There's an issue with the selected model
+    ..." with 0 tokens -- while the key was ACCEPTED and the model was
+    LISTED. Neither of those is the question. A model that answers has
+    read the prompt, so the verdict is the prompt tokens the endpoint
+    reports, never the wording of its reply: a gateway's sentence changes,
+    a count does not. A reasoning model that spends a small budget before
+    writing a word has still read the prompt, and passes.
+
+    Unlike the key checks this SENDS something: "Reply with exactly: OK",
+    at most 64 tokens back. It is never part of a fast doctor run.
+    """
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    check = f"model_answers_live:{provider}"
+    if provider not in _LIVE_PROVIDERS:
+        return CheckResult(
+            check, MISSING,
+            f"no live check for provider {provider!r} "
+            f"(known: {', '.join(sorted(_LIVE_PROVIDERS))})")
+    base, key_name = _LIVE_PROVIDERS[provider]
+    key = _stored_key(key_name)
+    if not key:
+        return CheckResult(check, MISSING, f"no {key_name} to check",
+                           f"delfin-agent credentials set {key_name}")
+    body = _json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": "Reply with exactly: OK"}],
+        "max_tokens": 64, "stream": False}).encode()
+    request = urllib.request.Request(
+        base + "/chat/completions", data=body,
+        headers={"Authorization": f"Bearer {key}",
+                 "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_s) as answer:
+            data = _json.loads(answer.read() or b"{}")
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return CheckResult(
+                check, MISSING,
+                f"{model}: the stored key is refused (HTTP {exc.code})",
+                f"delfin-agent credentials set {key_name}")
+        return CheckResult(check, MISSING,
+                           f"{model}: the server answered HTTP {exc.code}")
+    except Exception as exc:
+        return CheckResult(
+            check, MISSING, f"{model}: could not be checked: "
+            f"{type(exc).__name__}",
+            "this says nothing about the key or the model; check the "
+            "connection first")
+    usage = data.get("usage") if isinstance(data, dict) else None
+    prompt_tokens = 0
+    if isinstance(usage, dict):
+        try:
+            prompt_tokens = int(usage.get("prompt_tokens") or 0)
+        except (TypeError, ValueError):
+            prompt_tokens = 0
+    if prompt_tokens > 0:
+        return CheckResult(check, OK,
+                           f"{model} answers ({prompt_tokens} prompt tokens)")
+    reply = ""
+    try:
+        reply = str(((data.get("choices") or [{}])[0].get("message") or {})
+                    .get("content") or "")
+    except Exception:
+        reply = ""
+    return CheckResult(
+        check, MISSING,
+        f"{model}: the endpoint answered without running the model (no "
+        f"prompt tokens reported); its reply was {reply[:160]!r}",
+        "usually the model is not being served right now: retry later, "
+        "or choose another model")
 
 
 def check_kit_toolbox_key() -> CheckResult:

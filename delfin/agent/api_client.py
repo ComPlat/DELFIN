@@ -7620,6 +7620,45 @@ _ROLE_EXEC_ALLOWLIST: dict[str, frozenset[str]] = {
     "office_agent": _OFFICE_AGENT_ALLOWED_TOOLS,
 }
 
+
+def _role_allowlist(role: str) -> "frozenset[str] | None":
+    """The execution allow-list for *role*, or None for no restriction.
+
+    THE DICT FIRST, AND A SUBAGENT PRESET AFTER IT. A mode whose route
+    names a preset-backed role -- `--mode workflow` -> `workflow-operator`
+    -- must be restricted exactly as that preset is when the generalist
+    delegates to it. Without this the same specialist would be LESS
+    restricted when chosen directly than when delegated, because a role
+    absent from the dict has no role-level restriction at all
+    (``allow is None`` means "not refused" at both call sites). One
+    definition with two entry points has to mean one permission surface
+    too, or the second entry point is a way around the first.
+
+    Derived, never a second dict entry: the preset's ``tools:`` line is
+    the single statement of what that specialist may do, and a hand
+    copy here is how two statements of one list start to disagree.
+    """
+    allow = _ROLE_EXEC_ALLOWLIST.get(role or "")
+    if allow is not None:
+        return allow
+    if not role:
+        return None
+    try:
+        from .subagents import SUBAGENT_PRESETS
+        preset = SUBAGENT_PRESETS.get(role)
+    except Exception:                                   # noqa: BLE001
+        return None
+    if preset is None:
+        return None
+    tools = tuple(getattr(preset, "tools", ()) or ())
+    if not tools:
+        # A preset with no tools line carries no restriction of its own
+        # (SubagentPreset.tools), so it does not gain one here either.
+        return None
+    # Judged by the underlying tool name, as everywhere else: a preset
+    # may list `resolve_spec` for `mcp__delfin-tools__resolve_spec`.
+    return frozenset(str(x).rsplit("__", 1)[-1] for x in tools)
+
 # Meta/plumbing tools with no side effects or scope concern — always permitted
 # even for a role that carries an allow-list. report_verdict is pure data
 # (the gate reads it) and must reach EVERY review-ish role, however locked
@@ -7897,13 +7936,51 @@ def _skill_listing(skills: list) -> str:
             f"name; a miss lists the full catalogue"
             if remaining_after else "")
         if parts and used + cost + len(notice) > _SKILL_LISTING_CHARS:
-            # This entry does not fit. The remainder counts it: names
-            # listed + announced remainder == total, always.
+            # This entry does not fit WITH ITS DESCRIPTION. The rest are
+            # named anyway, without one.
+            #
+            # MEASURED, and this is why: the entries are taken in order,
+            # so the ceiling used to decide by ALPHABET which skills the
+            # model could see at all -- 21 of 49 described and the other
+            # 28 reduced to a count. The folded-front-matter fix made
+            # every description real text instead of ">-", which made
+            # them longer, which pushed `git-errors` out of the listing
+            # entirely: a fix to the metadata made a skill invisible.
+            #
+            # A name is about 12 characters against a described entry's
+            # 80, so naming the remainder costs a fraction of describing
+            # it and removes the alphabet from the decision. Which skill
+            # APPLIES to a turn is answered by skill_pointers, not by
+            # this listing; this only has to make sure nothing is
+            # unnameable.
+            # Give back described entries ONE AT A TIME until the
+            # remaining names fit beside them, so the budget buys as
+            # many descriptions as it can while every skill is still
+            # named. Dropping all the descriptions at once would name
+            # 67 and describe none, and a bare name is a weak cue: the
+            # measured vocabulary of `casscf-setup` by title alone was
+            # {casscf, setup}, while the line under its heading says
+            # "CASSCF/NEVPT2 ... justified active space".
+            kept = list(parts)
+            while True:
+                named = [s.name for s in skills[len(kept):]]
+                tail = ("; also: " + ", ".join(named)) if named else ""
+                body = "; ".join(kept)
+                if len(body) + len(tail) <= _SKILL_LISTING_CHARS:
+                    return body + tail
+                if not kept:
+                    break
+                kept.pop()
+            # Not even the bare names fit. Then names only, which at
+            # least leaves nothing unnameable.
+            all_names = "; ".join(s.name for s in skills)
+            if len(all_names) <= _SKILL_LISTING_CHARS:
+                return all_names
+            # And only then the count, which is the old behaviour and
+            # now the last resort rather than the first.
             remainder = n - len(parts)
             cut = (f"; {remainder} more — call the skill tool with a "
                    f"name; a miss lists the full catalogue")
-            # The notice must fit too. If it does not, un-list entries
-            # until it does — never drop a skill silently to make room.
             while parts and len("; ".join(parts)) + len(cut) > \
                     _SKILL_LISTING_CHARS:
                 parts.pop()
@@ -8270,6 +8347,108 @@ _WRITE_TOOL_NAMES: frozenset[str] = frozenset({
     "make_plot",
 })
 
+#: The roles that hold the WHOLE tool surface, with the reason beside
+#: each. ``_role_allowlist`` returns None for a role it cannot derive a
+#: list for, and ``_tool_denied_for_role`` reads None as ALLOW -- which
+#: is correct for a generalist and silent for an omission. Measured: of
+#: the five routes the manifest offers, three resolved to None, and one
+#: of those three (``research_agent``) was a role whose own prompt names
+#: a bounded set of readers and searchers. Nothing had decided that; a
+#: missing front-matter key had.
+#:
+#: A route that resolves to None and is not named here is a test
+#: failure, so a mode added later cannot arrive unrestricted by
+#: omission. See
+#: tests/test_a_route_without_a_list_allows_everything.py.
+_ROLES_WITHOUT_A_TOOL_LIMIT: dict[str, str] = {
+    "solo_agent":
+        "the generalist: it is the whole product in one role and holds "
+        "the whole surface by design, bounded by the permission gate "
+        "rather than by a role list",
+    "":
+        "no role at all -- a plain session, which the gate and the "
+        "session allow-list bound instead",
+    "research_agent":
+        "bounded by a DERIVED deny-list rather than an allow-list: the "
+        "whole lab_/cluster_ families, the runners and the message "
+        "tools are refused, computed from the families so a tool added "
+        "to one of them is refused from the moment it exists. An "
+        "allow-list would be the stronger shape and is a separate "
+        "change: measured, the gate's own read-only classification "
+        "covers 27 of the 80 tools this role can reach and omits "
+        "web_search and web_fetch, which are its purpose, so the "
+        "conversion needs its reachable set enumerated rather than "
+        "derived from that classification",
+}
+
+
+#: The lab_/cluster_ tools that only REPORT state. Everything else in
+#: those two families ACTS on something outside the working tree, and so
+#: does a tool added to them next month: the acting set below is the
+#: family MINUS this one. A new ``lab_*`` is therefore denied to a
+#: read-only role from the moment it exists, until somebody deliberately
+#: names it a report here. That direction is the point -- the previous
+#: arrangement was a deny-list of what somebody had thought of, and what
+#: nobody thought of was every calculation, cluster and lab tool.
+#:
+#: These six stay reachable because the roles that read the work have a
+#: use for them and nothing is moved by reading. The gate's own
+#: ``_MCP_READONLY_TOOL_BASES`` classifies even these as side-effecting,
+#: which is a separate and smaller question: if that classification is
+#: right they belong below, and if it is wrong the fix is there and not
+#: a second opinion here.
+_HARDWARE_REPORTING_TOOLS: frozenset[str] = frozenset({
+    "lab_read", "lab_devices", "lab_plan_check",
+    "cluster_read", "cluster_status", "cluster_fetch",
+})
+
+#: Tools that act OUTSIDE the working tree: they start calculations,
+#: submit to a cluster, move a lab device or send a message. Named
+#: explicitly because they are MCP tools from delfin-tools and so are not
+#: in the native catalogue; ``_tool_denied_for_role`` strips the
+#: ``mcp__server__`` namespace, so a namespaced call is judged by these
+#: same base names.
+_EXTERNAL_RUNNER_TOOLS: frozenset[str] = frozenset({
+    "run_application", "submit_application", "register_module",
+    "save_application", "cancel_run", "draft_email", "publish_report",
+})
+
+
+def _external_effect_tool_names() -> frozenset[str]:
+    """Every tool that acts outside the working tree, derived.
+
+    MEASURED, and the reason this function exists rather than a literal
+    set: the six roles whose stated purpose is reading -- "Reviewers,
+    planners and the runtime watcher: they read the work and say what
+    they found", "Research reads and searches, it does not execute" --
+    were each allowed all 22 acting tools, ``lab_set`` and ``lab_estop``
+    among them. Their deny-lists carried ``_WRITE_TOOL_NAMES`` and
+    (for research) bash: file writes and the shell, and nothing about
+    calculations, clusters or hardware.
+
+    Severity, measured rather than asserted: UNATTENDED the side-effect
+    gate refuses all of them for want of an approval dialog, so this was
+    never an open door. ATTENDED it is one dialog and an approval, and
+    the dialog itself should not have been askable for a role whose job
+    is to read. A gap in depth, and a question the role model promised
+    would never be put.
+    """
+    # From tool_catalog, not the module-level alias: this runs while the
+    # deny-list literal below is being built, which is before that alias
+    # exists. The two are the same object once the module is loaded, and
+    # a test in tests/test_the_tool_catalogue_is_the_same_after_the_move.py
+    # pins that identity.
+    from .tool_catalog import _DOC_TOOLS_OPENAI as _catalogue
+
+    fam = {
+        str((entry.get("function") or {}).get("name") or "")
+        for entry in _catalogue
+    }
+    fam = {n for n in fam if n.startswith(("lab_", "cluster_"))}
+    return frozenset((fam | _EXTERNAL_RUNNER_TOOLS)
+                     - _HARDWARE_REPORTING_TOOLS)
+
+
 _ROLE_EXEC_DENYLIST: dict[str, frozenset[str]] = {
     # The office agent works on documents and data, not on chemistry.
     # The calc and ORCA-manual tools are not merely useless there — they
@@ -8278,16 +8457,22 @@ _ROLE_EXEC_DENYLIST: dict[str, frozenset[str]] = {
     "office_agent": _DELFIN_ONLY_TOOL_NAMES,
     # Reviewers, planners and the runtime watcher: they read the work and
     # say what they found. bash stays — these roles run tests and git.
-    "critic_agent": _WRITE_TOOL_NAMES,
-    "reviewer_agent": _WRITE_TOOL_NAMES,
-    "chief_agent": _WRITE_TOOL_NAMES,
-    "session_manager": _WRITE_TOOL_NAMES,
-    "runtime_agent": _WRITE_TOOL_NAMES,
+    # ... and they do not act outside the tree either. The write names
+    # alone left all of them able to start a calculation, submit to a
+    # cluster and move a lab device; measured, and refused only by the
+    # gate's want of a dialog in an unattended session.
+    "critic_agent": _WRITE_TOOL_NAMES | _external_effect_tool_names(),
+    "reviewer_agent": _WRITE_TOOL_NAMES | _external_effect_tool_names(),
+    "chief_agent": _WRITE_TOOL_NAMES | _external_effect_tool_names(),
+    "session_manager": _WRITE_TOOL_NAMES | _external_effect_tool_names(),
+    "runtime_agent": _WRITE_TOOL_NAMES | _external_effect_tool_names(),
     # Research reads and searches, it does not execute: the dashboard and
     # README promise "no shell commands" and this denylist is the
     # enforcement (tab_agent.py description, README Modes table). Unlike
     # the review roles above, research has no test/git loop to run.
-    "research_agent": _WRITE_TOOL_NAMES | frozenset({"bash", "bash_background"}),
+    "research_agent": (_WRITE_TOOL_NAMES
+                       | frozenset({"bash", "bash_background"})
+                       | _external_effect_tool_names()),
 }
 
 
@@ -8671,10 +8856,26 @@ def _mcp_calculation_verdict(base: str, args: dict):
     ``submit_calculation`` (ORCA and DELFIN mode), ``run_orca_input`` and a
     plain ``pipeline_run`` on a CONTROL.txt are checked; every other tool
     (a recalc, --define, extra arguments, the other workflow runners) is
-    not, and returns None: the dialog stays. So does
-    delfin-tools ``run_application``/``submit_application``: an
-    application's ``inputs`` are its own schema, which carries no charge,
-    spin or geometry this check could read.
+    not, and returns None: the dialog stays.
+
+    delfin-tools ``run_application``/``submit_application`` ARE checked
+    now, by ``calc_policy.judge_application_run``. They used to return
+    None here, on the ground that an application's ``inputs`` are its
+    own schema and carry no charge, spin or geometry. True of the
+    inputs, and it left the gate's cost gradient inverted: ``bash orca
+    job.inp`` was admitted with no dialog once the setup and the
+    resources passed, the adapter route was refused in an unattended
+    session for want of a dialog, and solo_agent.md told the model never
+    to launch an engine from bash. Three mechanisms, three answers, and
+    the model took the one that worked -- 20 hand-written inputs and 12
+    of 14 calculations abandoned on one measured run.
+
+    What the judge reads is the SAVED SPEC on disk plus the call's own
+    cores and inputs: the step list, the resource request against the
+    same unasked limit the bash path uses, and charge/mult where the
+    inputs give them. What it cannot read it SAYS, and an application it
+    cannot read at all still returns None -- so nothing here is loosened
+    for a call this cannot judge.
     """
     try:
         from . import calc_policy
@@ -8696,6 +8897,11 @@ def _mcp_calculation_verdict(base: str, args: dict):
                 int(a.get("maxcore") or 6000),
                 str(a.get("time_limit") or "12:00:00"),
                 budget=budget, job=job)
+        if base in ("run_application", "submit_application"):
+            return calc_policy.judge_application_run(
+                str(a.get("name") or ""), int(a.get("cores") or 1),
+                inputs=a.get("inputs") if isinstance(a.get("inputs"), dict)
+                else None)
         if base == "pipeline_run":
             control = Path(str(a.get("control_file") or "CONTROL.txt"))
             if (a.get("define") or a.get("extra_args") or a.get("overwrite")
@@ -8706,6 +8912,66 @@ def _mcp_calculation_verdict(base: str, args: dict):
     except Exception:
         return None
     return None
+
+
+def execute_mcp_call(name: str, arguments: dict, permissions,
+                     doc_executor) -> str:
+    """The ONE MCP dispatch: gate, call, wrap, post-hooks.
+
+    Input: a namespaced tool name, its arguments, the session's
+    permissions and the executor whose post-tool hooks run afterwards.
+    Output: the result string the caller returns to whoever asked.
+
+    WHY IT IS A FUNCTION. MCP tools skip ``_DocToolExecutor.execute``,
+    so these four steps lived inline in the agent loop -- and a Code
+    Mode program, whose RPC server calls ``execute``, could not reach a
+    single MCP tool. Two attempts added them to the program's
+    allow-list, passed their own tests and changed nothing: the name
+    got past the list and the executor answered "Unknown tool".
+
+    Extracted rather than copied. A second dispatch path is the way
+    round the gate that lives in step 2, and ``code_mode``'s own rule --
+    "there is exactly ONE launcher" -- exists for the same reason. One
+    function, two callers: the agent loop and the RPC server.
+
+    The four steps, in this order and for the reasons the loop recorded:
+
+    1. the UN-NAMESPACED base name, so a hook or an audit rule on
+       ``bash`` also covers ``mcp__kit-coding__bash``;
+    2. ``_mcp_call_refusal``: the PreToolUse hooks answer FIRST and a
+       blocking hook ends it, then the gate and any dialog it raises --
+       a shell-executing MCP tool runs REMOTELY and would otherwise
+       bypass the native gate entirely;
+    3. the registry call, with the agent session id riding in the
+       request rather than the spawn, and the result wrapped as
+       UNTRUSTED. That wrap stays for DELFIN's own servers too: a tool
+       DESCRIPTION is this repository's text (see
+       ``mcp_client.advertised_description``), and a RESULT is data
+       about the world -- a calculation's output, a file, a search
+       answer -- whoever served it;
+    4. the post-tool hooks, audit included, on the base name.
+    """
+    base = (name.rsplit("__", 1)[-1]
+            if name.startswith("mcp__") else name)
+    refusal = _mcp_call_refusal(name, arguments, permissions)
+    if refusal is not None:
+        result = refusal
+    else:
+        try:
+            from . import mcp_client as _mcp
+            # Always through the guard, with no way to hand a workspace
+            # past it: an optional override here was unused and was a way
+            # round the one check that keeps a project's own MCP config
+            # from starting processes.
+            ws = _hook_workspace(permissions)
+            sid = str(getattr(permissions, "task_session_id", "") or "")
+            result = _wrap_untrusted(
+                _mcp.get_registry(ws).call(name, arguments,
+                                           agent_session_id=sid))
+        except Exception as exc:                        # noqa: BLE001
+            result = json.dumps({"error": f"MCP dispatch failed: {exc}"})
+    doc_executor._run_post_tool_hooks(base, arguments, permissions, result)
+    return result
 
 
 def _is_honoured_dry_run(name: str, arguments) -> bool:
@@ -8799,7 +9065,7 @@ def _tool_denied_for_role(role: str, name: str) -> bool:
     deny = _ROLE_EXEC_DENYLIST.get(role or "")
     if deny is not None and base in deny:
         return True
-    allow = _ROLE_EXEC_ALLOWLIST.get(role or "")
+    allow = _role_allowlist(role or "")
     if allow is None:
         return False
     if name in _ALWAYS_ALLOWED_TOOLS or base in _ALWAYS_ALLOWED_TOOLS:
@@ -12121,6 +12387,11 @@ class ToolSurfaceContext:
     # Whether remote.clusters names a cluster: the cluster tools have none
     # to act on otherwise (connection.connect refuses every name).
     has_clusters: bool = True
+    # Whether the workspace is a DELFIN (chemistry) one. Decides which
+    # schemas are HOT, not which tools exist: see _hot_tool_names. Default
+    # True so that what the budget measures is the LARGER of the two
+    # surfaces; the live request passes the real answer.
+    chemistry_workspace: bool = True
 
 
 #: The tools that act on DELFIN's HPC clusters (cluster_tools.py).
@@ -12173,7 +12444,7 @@ def tool_unavailable_reason(
     deny = _ROLE_EXEC_DENYLIST.get(ctx.role or "")
     if deny is not None and base in deny:
         return f"role {ctx.role!r} may not execute this tool"
-    allow = _ROLE_EXEC_ALLOWLIST.get(ctx.role or "")
+    allow = _role_allowlist(ctx.role or "")
     if allow is not None and base not in allow:
         return f"role {ctx.role!r} may not execute this tool"
     session = _session_tool_refusal(
@@ -12209,34 +12480,216 @@ def tool_unavailable_reason(
     return None
 
 
-def advertisable_tools(
+#: The tools whose SCHEMA rides on every request. Derived from
+#: 81,949 real tool calls in ~/.delfin/tool_traces by one rule --
+#: at least 50 calls, plus every tool the gate always permits
+#: (_ALWAYS_ALLOWED_TOOLS) and `subagent` -- and the counts are kept
+#: beside the names so the rule can be re-applied rather than guessed
+#: at. Measured: these 27 cost 3,992 tokens and cover 99% of all calls,
+#: against 11,729 for all 96.
+#:
+#: TWO TOOLS ARE HERE DESPITE BEING RARE, and for the same reason:
+#: `subagent` (133 calls, 444 tokens -- the most expensive single
+#: schema) and `ask_user_question` (32 calls, 245 tokens). Both are
+#: already UNDER-used and deferring them would make that worse: six
+#: specialist roles named nowhere in the prompt were chosen zero times
+#: in 79,056 calls, and a measured session gave four of seven choices
+#: as a prose list while ask_user_question was bound. Cost is not the
+#: only axis.
+#:
+#: NOT a hand-picked list of favourites. A tool missing here is still
+#: executable and still named in `deferred_tool_listing`; what it loses
+#: is the schema in the request, which `describe_native_tool` returns.
+_HOT_TOOL_NAMES: frozenset[str] = frozenset({
+    "ask_user_question",     #     32
+    "bash",                  #  46992
+    "bash_background",       #    407
+    "bash_output",           #    363
+    "bash_status",           #    534
+    "edit_file",             #   4379
+    "enter_worktree",        #     57
+    "exit_plan_mode",        #     30
+    "exit_worktree",         #    112
+    "grep_file",             #   3581
+    "list_files",            #    211
+    "multi_edit",            #    537
+    "orca_explain",          #     77
+    "read_file",             #  14352
+    "remember",              #    655
+    "report_verdict",        #    228
+    "run_tests",             #    834
+    "search_docs",           #     50
+    "skill",                 #    455
+    "subagent",              #    133
+    "subagent_result",       #     79
+    "task_create",           #   1061
+    "task_list",             #   1658
+    "task_update",           #   2006
+    "web_fetch",             #     80
+    "web_search",            #     53
+    "write_file",            #   2372
+})
+
+def _role_defers(role: str) -> bool:
+    """Whether deferral applies to a role's surface at all.
+
+    Only to a role WITHOUT an execution allow-list. A role with one --
+    office_agent, dashboard_agent, workflow-operator -- already has a
+    curated surface: its list is its choice. And the hot set was derived
+    from a generalist's calls and never measured for those roles.
+    Measured in a second review on 2026-11-23: applied to them it removed
+    describe_native_tool (on no role's list), so their deferred tools had
+    neither a listing nor a way to fetch a schema, and the office agent
+    lost read_document, its own core tool.
+    """
+    return _role_allowlist(role or "") is None
+
+
+def _hot_tool_names(chemistry: bool) -> frozenset[str]:
+    """The tools whose schema is sent on every request: ONE answer.
+
+    ``_HOT_TOOL_NAMES`` was derived from 81,949 real calls, and a second
+    review measured whose: of 584 sessions with tool calls, 28 (4%) used
+    any chemistry tool. So it is a coding agent's hot set. In a DELFIN
+    workspace the repository's own chemistry classification,
+    ``_DELFIN_ONLY_TOOL_NAMES``, is hot as well -- outside one those tools
+    are stripped before deferral and this adds nothing.
+
+    Both the request path and ``advertisable_tools`` ask this, so the
+    budget measures what ships. They used to read the frozen set each on
+    their own, and this change would have made them disagree.
+    """
+    if chemistry:
+        return _HOT_TOOL_NAMES | _DELFIN_ONLY_TOOL_NAMES
+    return _HOT_TOOL_NAMES
+
+
+#: Below this many measured calls a tool's schema is deferred. The
+#: threshold is the knob and the measurement is the reason: 300 and 100
+#: both gave 98% coverage, 50 gives 99% at 3,992 tokens, 25 gives 99%
+#: at 4,617. 50 is the point where another 600 tokens buys nothing.
+_HOT_CALL_THRESHOLD = 50
+
+
+def _tool_name_of(entry: dict) -> str:
+    return str((entry.get("function") or {}).get("name") or "")
+
+
+def deferred_tool_names(
     tools: list[dict[str, Any]], ctx: Optional[ToolSurfaceContext] = None
-) -> list[dict[str, Any]]:
-    """Drop every tool *ctx* could not execute anyway."""
+) -> list[str]:
+    """The executable tools whose SCHEMA is not in the request, sorted.
+
+    Everything the context could execute, minus the hot set and minus
+    ``describe_native_tool`` itself. Computed from the same list the
+    request is built from, so the listing can never name a tool the
+    role cannot run.
+    """
     ctx = ctx or ToolSurfaceContext()
-    return [
+    if not _role_defers(ctx.role):
+        return []
+    out = []
+    for entry in tools:
+        name = _tool_name_of(entry)
+        if not name or name in _hot_tool_names(ctx.chemistry_workspace):
+            continue
+        if name == "describe_native_tool":
+            continue
+        if tool_unavailable_reason(name, ctx) is None:
+            out.append(name)
+    return sorted(out)
+
+
+def deferred_tool_listing(role: str = "",
+                          tools: Optional[list[dict[str, Any]]] = None
+                          ) -> str:
+    """The deferred tools, as names, for the one cue the model gets.
+
+    A capability with no cue is a capability nobody uses, measured here
+    twice: six specialist roles callable and named nowhere were chosen
+    zero times in 79,056 tool calls, and 29 of 67 skills sat past a
+    listing cap. So the names are always sent even when the schemas are
+    not -- about 340 characters per 50 names, against 6,799 tokens of
+    schema for the tools with fewer than ten calls each.
+    """
+    catalogue = tools if tools is not None else _DOC_TOOLS_OPENAI
+    names = deferred_tool_names(catalogue, ToolSurfaceContext(role=role))
+    if not names:
+        return ""
+    return (", ".join(names)
+            + ". Call describe_native_tool(name=...) for one of these "
+              "before using it; its schema is not in this request.")
+
+
+def advertisable_tools(
+    tools: list[dict[str, Any]], ctx: Optional[ToolSurfaceContext] = None,
+    *, defer: bool = False,
+) -> list[dict[str, Any]]:
+    """Drop every tool *ctx* could not execute anyway, then DEFER the cold ones.
+
+    Measured over 81,949 real tool calls: the 96 tools advertised to a
+    solo session cost 11,729 tokens of schema on EVERY request, ten of
+    them are 95% of all calls, and 61 with fewer than ten calls each
+    cost 6,799 of those tokens. The hot set (_HOT_TOOL_NAMES, derived
+    by one rule from the same data) is 27 tools, 3,992 tokens, 99% of
+    calls.
+
+    A deferred tool is NOT removed: it stays executable, it is named in
+    ``deferred_tool_listing`` and its schema arrives through
+    ``describe_native_tool``. Deferral that broke execution would be
+    worse than the cost it saves, which is why that is the one
+    assertion in the acceptance pair that was green before this change.
+
+    THE DEFAULT IS ``defer=False``: every tool the context can execute,
+    which is what this function returned before deferral existed. A
+    caller asking for the SHIPPED surface -- the request budget, the cost
+    report -- passes ``defer=True`` and says so. The first version made
+    deferral the default, which changed the meaning of an existing
+    function for every caller at once, and two of them were then wrong
+    without anything failing nearby: ``report_tools`` computed "never
+    used" over the shipped set and so lost exactly the never-used tools
+    (they are the deferred ones), and the REPL's ``/tools`` would have
+    answered "what am I offered" with 34 of 97 callable tools.
+    """
+    ctx = ctx or ToolSurfaceContext()
+    out = [
         t for t in tools
-        if tool_unavailable_reason(t.get("function", {}).get("name", ""), ctx)
-        is None
+        if tool_unavailable_reason(_tool_name_of(t), ctx) is None
     ]
+    if not defer or not _role_defers(ctx.role):
+        return out
+    hot = _hot_tool_names(ctx.chemistry_workspace)
+    return [t for t in out
+            if _tool_name_of(t) in hot
+            or _tool_name_of(t) == "describe_native_tool"]
 
 
 def role_tool_surface_report(
     roles: Optional[list[str]] = None,
     tools: Optional[list[dict[str, Any]]] = None,
+    *, defer: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Advertised surface + token cost per role.
 
     ``""`` is the unrestricted baseline (any role without an execution
     allow-list). Every role carrying an allow-list is reported next to it, so
     the saving from role scoping is measurable rather than asserted.
+
+    That comparison is about what each role can CALL, so the default is the
+    available surface (``defer=False``), as it was before deferral existed.
+    ``defer=True`` reports what ships on a request instead. Making shipped
+    the default changed the baseline under its oldest caller: the office
+    scoping test compares office (38 tools, 5,196 tokens -- unchanged)
+    with ``""``, and ``""`` alone shrank to 4,586 once deferred, so a
+    scoping that had not moved read as "widened back out" in CI.
     """
     catalogue = _DOC_TOOLS_OPENAI if tools is None else tools
     names = roles if roles is not None else [
         "", *sorted(set(_ROLE_EXEC_ALLOWLIST) | set(_ROLE_EXEC_DENYLIST))]
     out: dict[str, dict[str, Any]] = {}
     for role in names:
-        advertised = advertisable_tools(catalogue, ToolSurfaceContext(role=role))
+        advertised = advertisable_tools(
+            catalogue, ToolSurfaceContext(role=role), defer=defer)
         out[role] = {
             "count": len(advertised),
             "total_tokens": sum(estimate_schema_tokens(t) for t in advertised),
@@ -13821,6 +14274,63 @@ _CLASSIFIED_NETWORK_TOOLS = frozenset({
 # _CLASSIFIER_PROBE_INTERVAL_S until it answers. Counted per model call,
 # not per action: a skipped call while down is not new evidence.
 _CLASSIFIER_RETRY_DELAY_S = 0.5
+
+#: The longest the watcher waits before its one retry when the SERVER
+#: stated a wait. The watcher sits in front of an action, so a longer
+#: stated wait is not sat out: the call fails as it always did and an
+#: action that leaves the workspace is held. Ten seconds covers the
+#: per-minute limits measured here ("Try again ... (in 1s)") with room.
+_CLASSIFIER_RETRY_WAIT_MAX_S = 10.0
+
+#: A 429 that states no wait: a per-minute bucket refilling, so the
+#: retry waits a short step rather than the half second meant for a
+#: dropped connection -- which meets the same limit again.
+_CLASSIFIER_RATE_LIMIT_STEP_S = 2.0
+
+#: The watcher's sleep, a seam like _classifier_clock: tests advance a
+#: virtual clock through it instead of sleeping.
+_classifier_sleep = time.sleep
+
+
+def _classifier_retry_delay(exc: BaseException) -> Optional[float]:
+    """Seconds before the watcher's ONE retry after *exc*, or None for none.
+
+    MEASURED 2026-11-23: six agents shared a KIT key whose binding limit is
+    60 requests a minute, and the watcher spends from the same allowance.
+    KIT answered "Try again at ... UTC (in 1s)", the watcher retried after
+    its fixed 0.5 s, met the same limit, and held the action for want of a
+    verdict. The main stream already lets the server's own wait outrank
+    the ladder; this is the same rule for the watcher:
+
+      * a wait the server STATES -- a Retry-After header, else KIT's
+        "(in Ns)" in the body -- is waited, plus a quarter second for the
+        rounding in "1s";
+      * a stated wait beyond _CLASSIFIER_RETRY_WAIT_MAX_S answers None:
+        not sat out in front of an action, so the call fails as before;
+      * a 429 stating no wait waits _CLASSIFIER_RATE_LIMIT_STEP_S;
+      * anything else keeps _CLASSIFIER_RETRY_DELAY_S.
+    """
+    stated: Optional[float] = None
+    try:
+        stated = _retry_after_stated_seconds(exc)
+    except Exception:
+        stated = None
+    if stated is None:
+        import re as _re
+        m = _re.search(r"\(in (\d+(?:\.\d+)?)\s*s\)", str(exc))
+        if m:
+            try:
+                stated = float(m.group(1))
+            except ValueError:
+                stated = None
+    if stated is not None:
+        if stated > _CLASSIFIER_RETRY_WAIT_MAX_S:
+            return None
+        return max(stated, _CLASSIFIER_RETRY_DELAY_S) + 0.25
+    status = getattr(exc, "status_code", None)
+    if status == 429 or "ratelimit" in type(exc).__name__.lower():
+        return _CLASSIFIER_RATE_LIMIT_STEP_S
+    return _CLASSIFIER_RETRY_DELAY_S
 _CLASSIFIER_BREAKER_FAILURES = 3
 _CLASSIFIER_PROBE_INTERVAL_S = 60.0
 _classifier_clock = time.monotonic
@@ -18086,6 +18596,31 @@ class _DocToolExecutor:
                 f"{section.get('text', '')}"
             )
 
+        elif name == "describe_native_tool":
+            # The other half of deferral: the names are always sent and
+            # the schema arrives here. An unknown name answers with the
+            # listing rather than a bare error -- a model that mistyped
+            # one should not have to guess twice, and the measured
+            # failure mode of a missing cue is that the capability goes
+            # unused entirely.
+            _want = str((arguments or {}).get("name") or "").strip()
+            _entry = None
+            for _t in _DOC_TOOLS_OPENAI:
+                if str((_t.get("function") or {}).get("name") or "") == _want:
+                    _entry = _t.get("function")
+                    break
+            if _entry is None:
+                return json.dumps({
+                    "error": f"no DELFIN tool named {_want!r}",
+                    "available": deferred_tool_listing(
+                        getattr(permissions, "agent_role", "") or ""),
+                })
+            return json.dumps({
+                "name": _entry.get("name"),
+                "description": _entry.get("description", ""),
+                "parameters": _entry.get("parameters") or {},
+            }, ensure_ascii=False)
+
         elif name == "list_docs":
             docs = []
             for doc_id, doc in self._index.get("documents", {}).items():
@@ -21745,10 +22280,15 @@ class _DocToolExecutor:
                     break  # this model timed out; no verdict
                 if "exc" in box:
                     if attempt == 1:
-                        # One short retry: a dropped connection or a 502
-                        # from the proxy is usually gone a moment later.
-                        time.sleep(_CLASSIFIER_RETRY_DELAY_S)
-                        continue
+                        # One retry: a dropped connection or a 502 from the
+                        # proxy is usually gone a moment later, and a rate
+                        # limit is waited for as long as the server said
+                        # (_classifier_retry_delay). A stated wait too long
+                        # to sit out in front of an action is not retried.
+                        _wait = _classifier_retry_delay(box["exc"])
+                        if _wait is not None:
+                            _classifier_sleep(_wait)
+                            continue
                     _reasons.append(type(box["exc"]).__name__)
                     failed.extend(_reasons)
                     # The model's own error, so the watcher's status names
@@ -23012,6 +23552,21 @@ class _DocToolExecutor:
                         perms, name, args, mode)
                     if verdict is None and calc_notes is not None:
                         calc_notes.append(_calc.summary)
+                        # Every engine launch this gate sees was started
+                        # by hand -- one through run_application never
+                        # reaches it -- so the run carries back the one
+                        # fact the model could not otherwise know: a
+                        # checked route exists. Wired once that route ran
+                        # under the same check as this one (spin parity
+                        # included); ONCE per session, because a run that
+                        # starts 46 calculations by hand would otherwise
+                        # carry 46 copies of the same 400 characters.
+                        from . import calc_policy as _cp_route
+                        _route = _cp_route.adapter_route_note(_calc)
+                        if _route and not getattr(
+                                perms, "_adapter_route_told", False):
+                            calc_notes.append(_route)
+                            perms._adapter_route_told = True
                     return verdict
                 if not _calc.admit:
                     _calc_reason = _calc.reason
@@ -29222,13 +29777,32 @@ def _mcp_pin_admits(tool, registry, perms, all_tools=()) -> bool:
     return False
 
 
-def _mcp_tool_entry(tool) -> dict:
-    """The tool-schema entry advertised for a discovered MCP tool. Its
-    description is ``mcp_client.advertised_description``: fenced as data,
-    or withheld when it carries an instruction shape, which is recorded
-    once per tool and process as ``mcp_description_withheld``."""
+def _mcp_tool_entry(tool, *, registry=None) -> dict:
+    """The tool-schema entry advertised for a discovered MCP tool.
+
+    Its description is ``mcp_client.advertised_description``: fenced as
+    data, or withheld when it carries an instruction shape (recorded
+    once per tool and process as ``mcp_description_withheld``), or
+    PLAIN when the server is still DELFIN's own built-in entry.
+
+    The trust question is answered here because this is the caller that
+    holds the registry: ``source_of(server) == "built-in"`` means the
+    name was not redefined by a config, so the text is this
+    repository's own at this commit -- the same provenance as the native
+    tools' descriptions, which are not fenced. Without a registry the
+    answer is "not first party", so the fence stays: a caller that does
+    not know cannot buy an exemption by omission.
+    """
     from . import mcp_client as _mcp
-    desc, withheld = _mcp.advertised_description(tool)
+    first_party = False
+    if registry is not None:
+        try:
+            first_party = registry.source_of(
+                getattr(tool, "server", "")) == "built-in"
+        except Exception:                               # noqa: BLE001
+            first_party = False
+    desc, withheld = _mcp.advertised_description(
+        tool, first_party=first_party)
     if withheld and tool.namespaced_name not in _MCP_WITHHELD_REPORTED:
         _MCP_WITHHELD_REPORTED.add(tool.namespaced_name)
         _record_security_event("mcp_description_withheld",
@@ -33617,7 +34191,13 @@ class OpenAIClient(_BaseClient):
                 or frozenset()),
             has_clusters=_clusters_configured(),
         )
-        advertised_tools = advertisable_tools(advertised_tools, _surface_ctx)
+        # defer=False: deferral is the LAST step, below. Every filter
+        # between here and there removes tools (DELFIN-only in a
+        # generic repo, hidden groups, role denials), and a listing
+        # built before them would name tools that are then stripped --
+        # the inverse of the defect deferral exists to avoid.
+        advertised_tools = advertisable_tools(
+            advertised_tools, _surface_ctx, defer=False)
 
         # Strip DELFIN-only tools when the workspace is not a DELFIN repo.
         # Generic projects shouldn't see search_calcs / get_calc_info /
@@ -33737,6 +34317,51 @@ class OpenAIClient(_BaseClient):
         _suppress_tools = bool(no_tools) or bool(
             _caps is not None and not _caps.supports_tools)
 
+        # DEFERRAL, last of the native filters so the listing names exactly
+        # what survived the others. Measured over 81,949 real tool calls:
+        # 96 schemas cost 11,729 tokens on EVERY request, 27 of them cover
+        # 99% of all calls, and 61 with fewer than ten calls each account
+        # for 6,799 of those tokens. The names stay (about 280 tokens for
+        # 69 of them) and the schemas arrive through describe_native_tool.
+        #
+        # The listing rides on that tool's own DESCRIPTION, which is how the
+        # skill listing above reaches the model: the cue sits on the tool
+        # that acts on it, so nothing has to be paid out of the prompt head.
+        try:
+            _hot = _hot_tool_names(_is_delfin)
+            _deferred = [] if not _role_defers(_surface_ctx.role) else [
+                _t for _t in advertised_tools
+                if _tool_name_of(_t) not in _hot
+                and _tool_name_of(_t) != "describe_native_tool"
+            ]
+            if _deferred:
+                _names = sorted(_tool_name_of(_t) for _t in _deferred)
+                _defer_note = (
+                    ", ".join(_names)
+                    + ". Call describe_native_tool(name=...) for one of "
+                      "these before using it; its schema is not in this "
+                      "request.")
+                advertised_tools = [
+                    ({**_t, "function": {
+                        **_t["function"],
+                        "description": (
+                            _t["function"].get("description", "")
+                            + f"\nDeferred tools: {_defer_note}"),
+                    }} if _tool_name_of(_t) == "describe_native_tool" else _t)
+                    for _t in advertised_tools
+                    if _tool_name_of(_t) in _hot
+                    or _tool_name_of(_t) == "describe_native_tool"
+                ]
+        except Exception as exc:
+            # The turn goes on with the FULL surface, which costs tokens and
+            # loses nothing. A bare ``pass`` here would hide the opposite
+            # failure -- a shrunk surface with no listing -- which is how the
+            # skill listing stayed invisible for as long as it existed.
+            import logging
+            logging.getLogger(__name__).warning(
+                "tool schemas not deferred, sending the full surface: %r",
+                exc)
+
         # Augment with MCP tools discovered from configured servers.
         # Failures (missing config, server crash) leave the registry
         # empty — the agent simply won't see those tools.
@@ -33793,7 +34418,7 @@ class OpenAIClient(_BaseClient):
                 if not _mcp_pin_admits(_tool, _registry, self._permissions,
                                        _mcp_tools):
                     continue
-                _entry = _mcp_tool_entry(_tool)
+                _entry = _mcp_tool_entry(_tool, registry=_registry)
                 try:
                     _cost = len(json.dumps(_entry, ensure_ascii=False))
                 except Exception:
@@ -34276,6 +34901,23 @@ class OpenAIClient(_BaseClient):
                 "stream": True,
                 "stream_options": {"include_usage": True},
             }
+
+            # Sampling. Nothing is sent unless the session asked for it,
+            # so the default behaviour of every existing run is
+            # unchanged -- a module that records what was asked must not
+            # change what is asked. What the request carried is kept on
+            # the client so the run manifest can state it as a fact
+            # rather than leaving the field unresolved, which read as an
+            # oversight when the truth was "nobody set one and the
+            # provider's default applied".
+            try:
+                from . import sampling as _sampling
+                _sample_params = _sampling.configured()
+                kwargs.update(_sample_params)
+                self.sampling_record = _sampling.record(_sample_params)
+            except Exception:                           # noqa: BLE001
+                # A recording feature never costs a turn.
+                self.sampling_record = None
 
             # Ollama (and other llama.cpp-backed servers) silently truncate to
             # a tiny default num_ctx (2-4k) on the OpenAI-compatible surface
@@ -34802,6 +35444,43 @@ class OpenAIClient(_BaseClient):
                             f"\n⚠️ `{self.model}` is unavailable and the "
                             "model-switch budget for this turn is used up. "
                             "No KIT model answered; try again later.\n"))
+                    # An endpoint that does not know `seed` (or rejects a
+                    # temperature) answers 400 to the whole request. A
+                    # parameter added so the manifest can STATE the
+                    # sampling must never end a run, so the parameters are
+                    # dropped for the rest of this process, the round is
+                    # retried without them, and the manifest records
+                    # `refused_by_endpoint` -- the values as ASKED, never
+                    # as applied. Narrow on purpose: the error has to name
+                    # one of the parameters, or a 400 about the messages
+                    # would be hidden by a pointless retry.
+                    try:
+                        from . import sampling as _sampling
+                        _sampling_sent = ("temperature" in kwargs
+                                          or "seed" in kwargs)
+                    except Exception:                   # noqa: BLE001
+                        _sampling, _sampling_sent = None, False
+                    if _sampling_sent and _sampling is not None \
+                            and _sampling.looks_like_a_parameter_refusal(
+                                _stream_exc):
+                        _asked = {k: kwargs[k] for k in ("temperature", "seed")
+                                  if k in kwargs}
+                        kwargs = _sampling.without(kwargs)
+                        _sampling.disable()
+                        self.sampling_record = _sampling.record(
+                            _asked, source=_sampling.REFUSED)
+                        yield StreamEvent(type="notice", text=(
+                            "\n⚠️ The endpoint refused the sampling "
+                            f"parameters ({', '.join(sorted(_asked))}). "
+                            "This session continues without them, and the "
+                            "run manifest records that they were refused "
+                            "rather than applied.\n"))
+                        _text_chunks = []
+                        _tool_calls = {}
+                        _round_in = 0
+                        finish_reason = None
+                        continue
+
                     # Context-window overflow is deterministic — retrying the
                     # same request just fails again. End the turn cleanly with a
                     # terminal stop instead of crashing the generator (which
@@ -35388,46 +36067,15 @@ class OpenAIClient(_BaseClient):
                                          "one returned"
                             })
                     elif is_mcp:
-                        # MCP tools skip _DocToolExecutor.execute(), so run the
-                        # SAME PreToolUse hooks + content-gate + audit/PostToolUse
-                        # here, keyed on the un-namespaced base name so a hook or
-                        # audit rule on e.g. `bash`/`write_file` also covers
-                        # `mcp__kit-coding__bash`. Shell-executing MCP tools run
-                        # REMOTELY and would otherwise bypass the native gate.
-                        _mcp_base = (fn_name.rsplit("__", 1)[-1]
-                                     if fn_name.startswith("mcp__") else fn_name)
-                        _refusal = _mcp_call_refusal(
-                            fn_name, fn_args, self._permissions)
-                        if _refusal is not None:
-                            result = _refusal
-                        else:
-                            try:
-                                from . import mcp_client as _mcp
-                                _ws = _hook_workspace(self._permissions)
-                                # JC2 target 2 (operator route): the agent
-                                # session id travels WITH EACH tools/call
-                                # request, not with the spawn — the server
-                                # is spawned during tool-list assembly,
-                                # before any dispatch, so a spawn-time id
-                                # is empty in a fresh process and, in the
-                                # agent service, another session's.  The
-                                # id this dispatch holds (same seam the
-                                # step journal reads) rides in the
-                                # request's `_meta`, read only by
-                                # DELFIN's own delfin-tools handler.
-                                _sid_mcp = str(
-                                    getattr(self._permissions,
-                                            "task_session_id", "") or "")
-                                result = _wrap_untrusted(
-                                    _mcp.get_registry(_ws).call(
-                                        fn_name, fn_args,
-                                        agent_session_id=_sid_mcp))
-                            except Exception as exc:
-                                result = json.dumps({
-                                    "error": f"MCP dispatch failed: {exc}"
-                                })
-                        _doc_executor._run_post_tool_hooks(
-                            _mcp_base, fn_args, self._permissions, result)
+                        # The ONE MCP dispatch (execute_mcp_call): the
+                        # gate, the call, the untrusted wrap and the
+                        # post-tool hooks. It used to stand here inline,
+                        # which is why a Code Mode program -- whose RPC
+                        # server calls the executor -- could reach no
+                        # MCP tool at all.
+                        result = execute_mcp_call(
+                            fn_name, fn_args, self._permissions,
+                            _doc_executor)
                     elif is_mcp_meta:
                         # MCP resource/prompt meta-tools also skip execute()'s
                         # role check — apply the same deny-by-default so a

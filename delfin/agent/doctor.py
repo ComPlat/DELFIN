@@ -43,6 +43,7 @@ _ICONS = {PASS: "✅", WARN: "⚠️", FAIL: "❌"}
 # values are looked up but NEVER printed.
 _PROVIDER_KEYS: tuple[tuple[str, str], ...] = (
     ("KIT", "KIT_TOOLBOX_API_KEY"),
+    ("Blablador", "BLABLADOR_API_KEY"),
     ("Anthropic", "ANTHROPIC_API_KEY"),
     ("OpenAI", "OPENAI_API_KEY"),
 )
@@ -1305,6 +1306,7 @@ _CHECK_ATTRS: tuple[tuple[str, str], ...] = (
     ("document backends", "_check_document_backends"),
     ("terminal window", "_check_tui"),
     ("MLIP", "_check_mlip"),
+    ("provider live", "_check_provider_live"),
 )
 
 
@@ -1375,6 +1377,65 @@ def _normalise(row: Any, group: str) -> dict:
         str(row.get("detail", "")), str(row.get("fix", "")),
         command=command.strip(), setting=setting,
     )
+
+
+def _check_provider_live(ctx: dict) -> list[dict]:
+    """Whether each stored key is accepted and the configured model ANSWERS.
+
+    Only on the network path (``delfin-agent doctor --live``). On a fast run
+    it is one row that says the question exists and how to ask it: a check
+    nobody is told about is a check nobody runs, which is how the KIT key
+    check before this one stayed callable by nothing in the product.
+
+    Two questions, because the first can be yes while the second is no --
+    measured 2026-11-23, when Blablador accepted the key, listed the model,
+    and answered every request with a sentence no model wrote. The answer
+    check reads the prompt tokens the endpoint reports, so it SENDS one
+    short prompt; nothing else here sends anything.
+    """
+    if ctx.get("fast", True):
+        return [_row(
+            "provider live", PASS,
+            "keys and models not asked (fast mode); "
+            "`delfin-agent doctor --live` asks each endpoint whether the "
+            "stored key is accepted and the configured model answers")]
+    from delfin import doctor as _live
+
+    def _as_row(result) -> dict:
+        detail = str(getattr(result, "detail", "") or "")
+        status = (PASS if result.status == _live.OK
+                  else WARN if "could not be checked" in detail else FAIL)
+        return _row("provider live", status,
+                    f"{result.name}: {detail}",
+                    str(getattr(result, "fix_hint", "") or ""))
+
+    rows = []
+    for provider, (_base, key_name) in sorted(_live._LIVE_PROVIDERS.items()):
+        if not _live._stored_key(key_name):
+            continue
+        check = {"kit": _live.check_kit_toolbox_key_live,
+                 "blablador": _live.check_blablador_key_live}.get(provider)
+        if check is not None:
+            rows.append(_as_row(check()))
+    settings = ctx.get("settings") or {}
+    if not settings:
+        try:
+            from delfin.user_settings import load_settings
+            settings = load_settings() or {}
+        except Exception:
+            settings = {}
+    agent_cfg = settings.get("agent") or {}
+    provider = str(agent_cfg.get("provider", "") or "kit")
+    model = str(agent_cfg.get("model", "") or "")
+    if not model:
+        rows.append(_row(
+            "provider live", WARN,
+            "no agent.model configured, so no model was asked to answer",
+            "set agent.model, or start a session with --model"))
+    else:
+        rows.append(_as_row(_live.check_model_answers_live(provider, model)))
+    return rows or [_row("provider live", WARN,
+                         "no stored provider key to check")]
 
 
 def run_doctor(

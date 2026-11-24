@@ -60,6 +60,7 @@ electron count as readily as a correct run.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -1499,3 +1500,224 @@ def judge_orca_run(input_file: Path, *, kind: Optional[str] = None) -> Verdict:
     if problem:
         return Verdict(True, False, "", problem)
     return Verdict(True, True, summary, "")
+
+def _application_spec(name: str) -> "Optional[dict]":
+    """The saved application's serialized pipeline, or None.
+
+    Read from DISK -- the built-in catalogue and
+    ``~/.delfin/applications/*.json`` -- never through the MCP server.
+    A gate that had to spawn a subprocess to decide would be a gate that
+    fails when the subprocess does, and this one is in front of every
+    call.
+    """
+    try:
+        from delfin.tools import applications as _apps
+    except Exception:                                   # noqa: BLE001
+        return None
+    # KEEP LOOKING. Two module attributes carry the same ``name``: the
+    # PipelineTemplate (`conformer_dG`) and the Application built from
+    # it (`conformer_dG_app`), and only the second has a serialized
+    # spec. dir() is alphabetical, so the template comes first --
+    # returning on the first name match found the one without a spec and
+    # read as "no such application", which silently kept every
+    # application on the dialog path.
+    for attr in dir(_apps):
+        if attr.startswith("_"):
+            continue
+        obj = getattr(_apps, attr, None)
+        if getattr(obj, "name", None) != name:
+            continue
+        spec = getattr(obj, "spec", None)
+        if isinstance(spec, dict) and spec.get("steps"):
+            return spec
+    try:
+        import json as _json
+        from pathlib import Path as _P
+        for f in sorted((_P.home() / ".delfin" / "applications").glob("*.json")):
+            data = _json.loads(f.read_text(encoding="utf-8"))
+            if str(data.get("name") or f.stem) == name:
+                spec = data.get("spec") if isinstance(data.get("spec"), dict) \
+                    else data
+                return spec if isinstance(spec, dict) else None
+    except Exception:                                   # noqa: BLE001
+        return None
+    return None
+
+
+def judge_application_run(name: str, cores: int, *,
+                          inputs: Optional[dict] = None,
+                          kind: Optional[str] = None) -> Optional[Verdict]:
+    """The verdict for delfin-tools ``run_application``/``submit_application``.
+
+    Input: the application name, the cores the call asks for, and the
+    call's own ``inputs``. Output: a Verdict, or None where the
+    application cannot be read -- which keeps today's behaviour exactly
+    (the dialog stays, and without a dialog the call is refused).
+
+    WHY THIS EXISTS. The checked route was the expensive one. Measured
+    in this gate: ``bash orca job.inp`` is admitted with no dialog once
+    the setup and the resources pass, and ``run_application`` returned
+    None here by design -- so in an unattended default-mode session the
+    ADAPTER route was refused while the hand route ran free, and
+    solo_agent.md told the model never to launch from bash. Three
+    mechanisms, three answers, and the model took the one that worked.
+    On a real 33-minute run that was 20 hand-written inputs, 46 bash
+    calls and 12 of 14 calculations abandoned.
+
+    WHAT IS CHECKED, and what is not:
+
+    * the RESOURCE request, against the same unasked limit the bash
+      path uses (``local_core_limit``). This is the dimension this
+      module exists for and the one a call carries directly.
+    * the STEPS, which must all name a capability the platform knows. A
+      spec naming something else is not judged here.
+    * the setup -- charge, spin, geometry -- only where the call's
+      ``inputs`` fill the spec's placeholders with values this can read.
+      Where they do not, the summary SAYS the setup was not read rather
+      than implying it passed. An unread check is never a pass; that
+      rule is the whole reason this module is trusted.
+    """
+    spec = _application_spec(str(name or ""))
+    if not spec:
+        return None
+    steps = spec.get("steps") if isinstance(spec.get("steps"), list) else None
+    if not steps:
+        return None
+
+    kind = kind or host_kind()
+    limit = local_core_limit(kind)
+    asked = max(1, int(cores or 1))
+    if asked > limit:
+        return Verdict(True, False, "", (
+            f"{name}: {asked} cores asked and this host gives {limit} "
+            f"without a dialog ({kind})"))
+
+    labels = [str(s.get("step") or "") for s in steps
+              if isinstance(s, dict)]
+    if not all(labels):
+        return None
+
+    # The setup: the molecule, its charge and -- where the application
+    # takes one -- its multiplicity, checked with the SAME functions the
+    # CONTROL.txt route uses (electrons_of, spin_allowed). One policy for
+    # every route; an unread check is not a pass, so whatever cannot be
+    # read sends the call to the dialog with the reason, and without a
+    # dialog it is refused -- exactly as an unreadable geometry is there.
+    given = dict(inputs or {})
+    smiles = str(given.get("smiles") or "").strip()
+    if not smiles:
+        return Verdict(True, False, "", (
+            f"{name}: no molecule was given (inputs.smiles), so its "
+            f"electrons -- and the spin parity the check requires -- "
+            f"could not be counted"))
+    symbols = _smiles_symbols(smiles)
+    if symbols is None:
+        return Verdict(True, False, "", (
+            f"{name}: the molecule {smiles!r} could not be read, so its "
+            f"electrons could not be counted"))
+    nuclear = electrons_of(symbols)
+    if nuclear is None:
+        return Verdict(True, False, "", (
+            f"{name}: the molecule {smiles!r} contains an element this "
+            f"check does not know"))
+    charge = _int(given.get("charge"))
+    if charge is None:
+        return Verdict(True, False, "", (
+            f"{name}: no whole-number charge was given (inputs.charge), "
+            f"so the electron count is not known"))
+    # Electrons are the nuclear charge minus the DECLARED charge, as on
+    # the bash route. The SMILES' own formal charge is deliberately not
+    # compared: a redox workflow passes the neutral molecule's SMILES with
+    # charge=+1, mult=2 for its radical cation, and that is correct.
+    n = nuclear - charge
+    if n < 0:
+        return Verdict(True, False, "", (
+            f"{name}: charge {charge} exceeds the molecule's nuclear "
+            f"charge {nuclear}"))
+    if "{mult}" in json.dumps(spec):
+        mult = _int(given.get("mult"))
+        if mult is None:
+            return Verdict(True, False, "", (
+                f"{name}: no whole-number multiplicity was given "
+                f"(inputs.mult), so spin parity could not be checked"))
+        if mult < 1 or not spin_allowed(n, mult - 1):
+            return Verdict(True, False, "", (
+                f"{name}: {n} electrons at charge {charge} cannot have "
+                f"multiplicity {mult}"))
+        spin = f"{n} electrons at charge {charge}, multiplicity {mult}"
+    else:
+        # The application takes no {mult}: the multiplicity is not an
+        # input, so it is not an unread check either -- and the summary
+        # does not claim a parity it did not test.
+        spin = (f"{n} electrons at charge {charge}; multiplicity chosen "
+                f"by the application")
+    summary = (f"{name}: {len(labels)} step(s) "
+               f"({', '.join(labels[:4])}{'...' if len(labels) > 4 else ''}), "
+               f"{asked} core(s) of {limit} unasked on this {kind}; {spin}")
+    return Verdict(True, True, summary, "")
+
+
+def _smiles_symbols(smiles: str) -> Optional[list]:
+    """Element symbols of a SMILES with its hydrogens made explicit.
+
+    None when it cannot be parsed, or when RDKit is not installed -- in
+    both cases the electrons are not known, and the caller treats that as
+    an unread check rather than as a pass.
+    """
+    try:
+        from rdkit import Chem, RDLogger
+    except Exception:
+        return None
+    RDLogger.DisableLog("rdApp.*")
+    try:
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            return None
+        return [a.GetSymbol() for a in Chem.AddHs(mol).GetAtoms()]
+    except Exception:
+        return None
+
+
+#: What a hand-started engine run is told about the route it bypassed.
+#:
+#: NOT a refusal. A probe no adapter covers, a bisection to find the
+#: keyword that broke a convergence and a one-off somebody asked for by
+#: hand are all real work, and a gate that blocks them is a gate people
+#: route around. What the run carries instead is the ONE fact the model
+#: could not otherwise know: that a checked route exists and what it
+#: would have added.
+#:
+#: Measured on a real 33-minute run (bench17 t13, 2026-11-23): the agent
+#: called write_file 20 times and bash 46 times to assemble and start
+#: ORCA by hand, 12 of its 14 calculations were abandoned, and the 26
+#: tools of the delfin-tools server -- offered on that request -- were
+#: called zero times. The tools were on the table and nothing said they
+#: were the way.
+_ADAPTER_ROUTE_NOTE = (
+    "started by hand: delfin-tools would run this with checked "
+    "parameters (resolve_spec fills the defaults and shows them, "
+    "validate_spec and scientific_lint judge the spec, run_application "
+    "runs it), and the workflow-operator sub-agent or `--mode workflow` "
+    "is that route. A by-hand run carries no declared parameters and "
+    "cannot be re-derived from a spec -- which is a cost, not a "
+    "prohibition, and yours to weigh"
+)
+
+
+def adapter_route_note(verdict: "Verdict") -> str:
+    """The note for *verdict*, or "" where it does not apply.
+
+    ONE QUESTION: did this start a calculation. An information call
+    (``orca --version`` asks a program what it is and starts nothing)
+    carries ``calculation = False`` by construction -- the Verdict's own
+    rule, "``information``: ... ``calculation`` is then False" -- so a
+    second check for it would be a guard no test can reach. This
+    function had one until a positive control showed that removing it
+    changed nothing: the whole suite stayed green, which is what a dead
+    guard looks like from the outside.
+    """
+    if verdict is None:
+        return ""
+    if not getattr(verdict, "calculation", False):
+        return ""
+    return _ADAPTER_ROUTE_NOTE

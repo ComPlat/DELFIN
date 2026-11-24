@@ -179,7 +179,7 @@ def test_the_written_module_is_the_one_the_skill_imports():
     assert proc.returncode == 0, proc.stderr
     printed = proc.stdout.strip()
     for name in code_mode.READ_ONLY_TOOLS:
-        assert name in printed, (name, printed)
+        assert code_mode._py_name(name) in printed, (name, printed)
     assert os.path.exists(stub)
 
 

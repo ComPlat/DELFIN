@@ -258,7 +258,7 @@ def test_it_is_dropped_without_a_spreadsheet_backend():
     assert tool_unavailable_reason(
         "sum_column", ToolSurfaceContext(has_office_libs=False)) is not None
     advertised = {t["function"]["name"] for t in advertisable_tools(
-        _DOC_TOOLS_OPENAI, ToolSurfaceContext(has_office_libs=True))}
+        _DOC_TOOLS_OPENAI, ToolSurfaceContext(has_office_libs=True), defer=False)}
     assert "sum_column" in advertised
 
 

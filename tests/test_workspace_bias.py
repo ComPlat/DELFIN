@@ -185,7 +185,8 @@ def _advertised_tool_names(workspace, monkeypatch) -> set:
     list(client.stream_message("sys", [{"role": "user", "content": "hallo"}],
                                max_tokens=32))
     assert "tools" in seen, "the client sent no request"
-    return {t.get("function", {}).get("name") for t in seen["tools"]}
+    from conftest import offered_tool_names
+    return {n for n in offered_tool_names(seen["tools"]) if n}
 
 
 def test_a_generic_workspace_is_offered_no_chemistry_tool(tmp_path,
