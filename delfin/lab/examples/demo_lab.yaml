@@ -39,6 +39,28 @@ modules:
           speed: {unit: rpm, min: 0, max: 1200, max_step: 600, level: benign}
           power: {states: [on, off], level: benign}
         safe_state: {speed: 0, power: off}
+      # The one device a closed loop can learn on: its `yield` reading is
+      # computed from setpoint and duration (delfin/lab/surface.py), so a
+      # measurement says something about the conditions that produced it.
+      # The windows below are the ENVELOPE the loop may search inside; a
+      # proposal outside them is refused by the kernel.
+      - id: reactor
+        driver: simulator
+        model: reactor
+        stale_after_s: 5
+        reads:
+          yield: {unit: "%"}
+          mean_temperature: {unit: degC}
+        writes:
+          setpoint: {unit: degC, min: 30, max: 110, max_step: 60,
+                     level: benign, tolerance: 0.01}
+          duration: {unit: min, min: 5, max: 85, level: benign,
+                     tolerance: 0.01}
+          run: {states: [idle, start], level: benign}
+        safe_state: {setpoint: 30, duration: 5, run: idle}
+        interlocks:
+          - when: "reactor.setpoint > 40 degC"
+            requires: "stirrer.power == on and fume_hood.power == on"
       - id: fume_hood
         driver: simulator
         model: plug

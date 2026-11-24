@@ -16,6 +16,8 @@ plug        power on/off                      power, power_w
 relay       power on/off                      power
 hotplate    setpoint degC, power on/off       temperature (first-order lag,
                                               tau 60 s), setpoint, power
+reactor     setpoint degC, duration min,      yield %, mean_temperature,
+            run idle/start                    setpoint, duration, run
 stirrer     speed rpm, power on/off           speed, power
 sensor      --                                temperature (follows the device
                                               named in ``address.follows``)
@@ -23,6 +25,11 @@ pump        flow mL/min, power on/off         flow, power
 analyser    run idle/measure                  run, signal, barcode
 reader      --                                barcode (container at position)
 ==========  ================================  ===============================
+
+``reactor`` is the one kind whose reading DEPENDS ON THE CONDITIONS: writing
+``run=start`` computes ``yield`` from the current ``setpoint`` and
+``duration`` with :mod:`delfin.lab.surface`, so a loop can measure a response
+surface on it. Every other kind answers what it was last told.
 
 Every write channel reads back under the same name. Device-side watchdog:
 ``arm_watchdog`` sets a deadline; past it the device applies its safe
@@ -40,6 +47,7 @@ import time
 from typing import Any
 
 from .. import store as _store
+from .. import surface as _surface
 from .base import Driver, DriverCapabilities, DriverError, Health, Reading
 
 AMBIENT_C = 20.0
@@ -49,12 +57,18 @@ _KIND_CHANNELS = {
     "plug": {"power": "off"},
     "relay": {"power": "off"},
     "hotplate": {"setpoint": AMBIENT_C, "power": "off"},
+    "reactor": {"setpoint": AMBIENT_C, "duration": 0.0, "run": "idle"},
     "stirrer": {"speed": 0.0, "power": "off"},
     "sensor": {},
     "pump": {"flow": 0.0, "power": "off"},
     "analyser": {"run": "idle"},
     "reader": {},
 }
+
+#: Kinds whose reading is COMPUTED from the conditions rather than remembered
+#: from the last write. Only these can be the target of a closed loop: for
+#: every other kind a measurement carries no information about the setpoint.
+CONDITIONAL_KINDS = frozenset({"reactor"})
 
 
 def _world():
@@ -69,7 +83,17 @@ def _entry(world: dict, device) -> dict:
         if kind not in _KIND_CHANNELS:
             raise DriverError(f"simulator has no kind {kind!r}")
         t = time.time()
-        e = {"kind": kind, "values": dict(_KIND_CHANNELS[kind]),
+        values = dict(_KIND_CHANNELS[kind])
+        if kind in CONDITIONAL_KINDS:
+            # A reactor starts at the conditions the manifest declares as its
+            # resting state, not at the kind's artificial default. Starting
+            # at 20 degC would put the device outside the envelope its own
+            # manifest declares (30..110 degC), and every first step would
+            # then be judged against a state the envelope does not admit.
+            for ch, sv in (device.safe_state or {}).items():
+                if ch in values:
+                    values[ch] = sv
+        e = {"kind": kind, "values": values,
              "temp": AMBIENT_C, "temp_ts": t, "ts": t, "fault": None,
              "watchdog": None, "watchdog_armed": None,
              "safe": dict(device.safe_state),
@@ -104,6 +128,29 @@ def _settle_temp(e: dict, t: float) -> None:
     dt = max(0.0, t - float(e.get("temp_ts", t)))
     e["temp"] = target + (float(e["temp"]) - target) * math.exp(-dt / TAU_S)
     e["temp_ts"] = t
+
+
+def _reactor_reading(e: dict, out: dict, ts: float) -> None:
+    """Add the reactor's computed readings to ``out``.
+
+    ``yield`` is what the LAST STARTED run produced, and it stays readable
+    after ``run`` returns to idle so a loop can read the result of the run it
+    started. A reactor that has never been started reports ``yield`` 0.0 --
+    nothing has been made yet, which is not the same as a failed run (a
+    failure is a refusal at the kernel, not a reading).
+
+    ``mean_temperature`` is reported alongside so a loop's record can say
+    which mean the surface was asked about, not just the setpoint.
+    """
+    at = e.get("yield_at") or {}
+    if at:
+        got = _surface.yield_percent(float(at["setpoint"]), float(at["duration"]))
+        mean = _surface.mean_temperature(float(at["setpoint"]),
+                                         float(at["duration"]))
+    else:
+        got, mean = 0.0, AMBIENT_C
+    out["yield"] = Reading(round(float(got), 6), "%", ts)
+    out["mean_temperature"] = Reading(round(float(mean), 6), "degC", ts)
 
 
 class SimulatorDriver(Driver):
@@ -147,6 +194,8 @@ class SimulatorDriver(Driver):
                 out["temperature"] = Reading(round(temp, 3), "degC", ts)
             if kind == "analyser":
                 out["signal"] = Reading(float(e.get("signal", 0.0)), "au", ts)
+            if kind == "reactor":
+                _reactor_reading(e, out, ts)
             if kind in ("analyser", "reader"):
                 out["barcode"] = Reading(str(e.get("barcode", "")), None, ts)
             return out
@@ -164,6 +213,15 @@ class SimulatorDriver(Driver):
                 if e["kind"] == "analyser" and channel == "run" \
                         and value == "measure":
                     e["signal"] = float(e.get("signal_next", 1.0))
+                if e["kind"] == "reactor" and channel == "run" \
+                        and value == "start":
+                    # The one place a measurement is computed from the
+                    # conditions. `yield_at` keeps the conditions the run was
+                    # started at, so a later setpoint write cannot retroactively
+                    # change a result that was already reported.
+                    e["yield_at"] = {
+                        "setpoint": float(e["values"].get("setpoint", 0.0)),
+                        "duration": float(e["values"].get("duration", 0.0))}
             if e.get("fault") != "stale":
                 e["ts"] = t
             e["cmd"] = int(e.get("cmd", 0)) + 1
