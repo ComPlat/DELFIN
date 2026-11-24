@@ -387,6 +387,46 @@ def _json_line(obj: dict) -> None:
     sys.stdout.flush()
 
 
+#: Providers measured to report token usage on every real answer, so a
+#: turn that produced text with zero input tokens was answered by no model.
+#: Measured 2026-11-23: KIT agents reported 4-8M input tokens per run and a
+#: Blablador run 10,602,162. Every OpenAI-compatible request ASKS for usage
+#: (stream_options.include_usage); whether a provider SENDS it is what this
+#: set records, and an unmeasured one is not judged by a zero.
+_USAGE_REPORTING_PROVIDERS = frozenset({"kit", "blablador"})
+
+
+def _answer_no_model_ran(engine, text: str, tool_calls, input_tokens: int,
+                         output_tokens: int) -> str:
+    """An error when the turn's answer came from no model, else "".
+
+    Measured 2026-11-23: twenty-two agents ended "done" within minutes,
+    each on the same line -- "There's an issue with the selected model
+    (alias-glm-5.3-flash). It may not exist or you may not have access to
+    it." -- with 0 input and 0 output tokens. The key was valid, the
+    endpoint up, the same call answered "OK" ninety minutes later: the
+    models were briefly not served, and the gateway said so as TEXT rather
+    than as an HTTP error. Counted as an answer, the outage read as
+    twenty-two finished agents.
+
+    The test is the token count and never the wording, which a gateway
+    can change any day: a model that answered has read the prompt. Only a
+    bare text answer with nothing spent, on a provider in
+    _USAGE_REPORTING_PROVIDERS; a turn with tool calls, a provider whose
+    usage was not measured, and an engine with no provider (a test
+    double) are left exactly as they were.
+    """
+    provider = str(getattr(engine, "provider", "") or "")
+    if (provider not in _USAGE_REPORTING_PROVIDERS or not text
+            or tool_calls or input_tokens or output_tokens):
+        return ""
+    return (f"the endpoint answered without running the model (0 input and "
+            f"0 output tokens on {provider}, which reports usage on every "
+            f"real answer). Its reply was: {text[:200]!r}. Usually the "
+            f"model is not being served right now: retry later, or pick "
+            f"another model; `delfin-agent doctor --live` checks it.")
+
+
 def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
                  memory_context: str = "",
                  emit: Any = None,
@@ -672,11 +712,18 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         getattr(engine, "client", None), "_turn_model_switches", None)
     model_switches = (list(_model_switches) if _model_switches else [])
 
+    _text = (full_text or "".join(chunks)).strip()
+    _in_tok = max(0, in_after - in_before)
+    _out_tok = max(0, out_after - out_before)
+    if not error:
+        error = _answer_no_model_ran(engine, _text, tool_calls,
+                                     _in_tok, _out_tok)
+
     return {
-        "text": (full_text or "".join(chunks)).strip(),
+        "text": _text,
         "tool_calls": tool_calls,
-        "input_tokens": max(0, in_after - in_before),
-        "output_tokens": max(0, out_after - out_before),
+        "input_tokens": _in_tok,
+        "output_tokens": _out_tok,
         "error": error,
         "model_switches": model_switches,
         **observer.summary(
@@ -4941,7 +4988,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     from . import doctor as _doc
 
     workspace = getattr(args, "workspace", "") or None
-    results = _doc.run_doctor(workspace)
+    # fast=False is the doctor's network path. No caller reached it before
+    # --live: MCP reachability and the live key checks existed and nothing
+    # in the product could run them.
+    results = _doc.run_doctor(
+        workspace, fast=not getattr(args, "live", False))
     if not getattr(args, "repair", False):
         print(_doc.format_doctor(results))
         return 1 if any(r.get("status") == "FAIL" for r in results) else 0
@@ -6551,6 +6602,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor.add_argument("--workspace", default="",
                         help="Workspace directory (default: current dir)")
+    doctor.add_argument("--live", action="store_true",
+                        help="Also ask the network: probe the MCP servers, "
+                             "check each stored provider key with its "
+                             "endpoint, and send the configured model one "
+                             "short prompt to see that it answers")
     doctor.add_argument("--repair", action="store_true",
                         help="Ask about, and apply with approval, every "
                              "step that fixes a WARN/FAIL; refuses when stdin "

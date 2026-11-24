@@ -14274,6 +14274,63 @@ _CLASSIFIED_NETWORK_TOOLS = frozenset({
 # _CLASSIFIER_PROBE_INTERVAL_S until it answers. Counted per model call,
 # not per action: a skipped call while down is not new evidence.
 _CLASSIFIER_RETRY_DELAY_S = 0.5
+
+#: The longest the watcher waits before its one retry when the SERVER
+#: stated a wait. The watcher sits in front of an action, so a longer
+#: stated wait is not sat out: the call fails as it always did and an
+#: action that leaves the workspace is held. Ten seconds covers the
+#: per-minute limits measured here ("Try again ... (in 1s)") with room.
+_CLASSIFIER_RETRY_WAIT_MAX_S = 10.0
+
+#: A 429 that states no wait: a per-minute bucket refilling, so the
+#: retry waits a short step rather than the half second meant for a
+#: dropped connection -- which meets the same limit again.
+_CLASSIFIER_RATE_LIMIT_STEP_S = 2.0
+
+#: The watcher's sleep, a seam like _classifier_clock: tests advance a
+#: virtual clock through it instead of sleeping.
+_classifier_sleep = time.sleep
+
+
+def _classifier_retry_delay(exc: BaseException) -> Optional[float]:
+    """Seconds before the watcher's ONE retry after *exc*, or None for none.
+
+    MEASURED 2026-11-23: six agents shared a KIT key whose binding limit is
+    60 requests a minute, and the watcher spends from the same allowance.
+    KIT answered "Try again at ... UTC (in 1s)", the watcher retried after
+    its fixed 0.5 s, met the same limit, and held the action for want of a
+    verdict. The main stream already lets the server's own wait outrank
+    the ladder; this is the same rule for the watcher:
+
+      * a wait the server STATES -- a Retry-After header, else KIT's
+        "(in Ns)" in the body -- is waited, plus a quarter second for the
+        rounding in "1s";
+      * a stated wait beyond _CLASSIFIER_RETRY_WAIT_MAX_S answers None:
+        not sat out in front of an action, so the call fails as before;
+      * a 429 stating no wait waits _CLASSIFIER_RATE_LIMIT_STEP_S;
+      * anything else keeps _CLASSIFIER_RETRY_DELAY_S.
+    """
+    stated: Optional[float] = None
+    try:
+        stated = _retry_after_stated_seconds(exc)
+    except Exception:
+        stated = None
+    if stated is None:
+        import re as _re
+        m = _re.search(r"\(in (\d+(?:\.\d+)?)\s*s\)", str(exc))
+        if m:
+            try:
+                stated = float(m.group(1))
+            except ValueError:
+                stated = None
+    if stated is not None:
+        if stated > _CLASSIFIER_RETRY_WAIT_MAX_S:
+            return None
+        return max(stated, _CLASSIFIER_RETRY_DELAY_S) + 0.25
+    status = getattr(exc, "status_code", None)
+    if status == 429 or "ratelimit" in type(exc).__name__.lower():
+        return _CLASSIFIER_RATE_LIMIT_STEP_S
+    return _CLASSIFIER_RETRY_DELAY_S
 _CLASSIFIER_BREAKER_FAILURES = 3
 _CLASSIFIER_PROBE_INTERVAL_S = 60.0
 _classifier_clock = time.monotonic
@@ -22223,10 +22280,15 @@ class _DocToolExecutor:
                     break  # this model timed out; no verdict
                 if "exc" in box:
                     if attempt == 1:
-                        # One short retry: a dropped connection or a 502
-                        # from the proxy is usually gone a moment later.
-                        time.sleep(_CLASSIFIER_RETRY_DELAY_S)
-                        continue
+                        # One retry: a dropped connection or a 502 from the
+                        # proxy is usually gone a moment later, and a rate
+                        # limit is waited for as long as the server said
+                        # (_classifier_retry_delay). A stated wait too long
+                        # to sit out in front of an action is not retried.
+                        _wait = _classifier_retry_delay(box["exc"])
+                        if _wait is not None:
+                            _classifier_sleep(_wait)
+                            continue
                     _reasons.append(type(box["exc"]).__name__)
                     failed.extend(_reasons)
                     # The model's own error, so the watcher's status names
