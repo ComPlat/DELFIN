@@ -349,6 +349,38 @@ def test_an_unknown_envelope_is_refused_before_any_write(lab):
         Loop(k, _actor(), device="no_such_device", rounds=1)
 
 
+def test_the_round_count_depends_on_the_length_scale_and_the_test_pins_it(lab):
+    """The comparison is only reproducible because the constant is pinned.
+
+    Measured while writing this: 4 rounds at the default 0.25, 5 at 0.10 and
+    10 at 0.50. A claim of "N rounds to the optimum" that did not name the
+    length scale would be a claim about an unpinned parameter, so this test
+    fails if the default moves -- which is the point of pinning a constant
+    that a result depends on.
+    """
+    from delfin.lab.loop import GPBayes, rounds_to
+    from delfin.lab import surface
+    lo, hi = (30.0, 5.0), (110.0, 85.0)
+    best, _at = surface.best_on(
+        surface.lattice((30.0, 5.0), (110.0, 85.0), (10.0, 10.0)))
+    target = 0.99 * best
+    assert GPBayes(lo, hi).length_scale == 0.25
+    got = {}
+    for scale in (0.25, 0.10, 0.50):
+        opt = GPBayes(lo, hi, length_scale=scale)
+        history = []
+        for n in range(15):
+            p = opt.propose(history)
+            history.append({"n": n + 1, "setpoint": p["setpoint"],
+                            "duration": p["duration"],
+                            "yield": surface.yield_percent(p["setpoint"],
+                                                           p["duration"])})
+        got[scale] = rounds_to({"rounds": history}, target)
+    assert got[0.25] == 4, got
+    assert got[0.10] == 5, got
+    assert got[0.50] == 10, got
+
+
 def test_the_optimiser_proposes_inside_the_envelope_it_was_given():
     """The one property every proposal must have, over many rounds."""
     from delfin.lab.loop import GPBayes
