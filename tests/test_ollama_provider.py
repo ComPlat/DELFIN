@@ -52,18 +52,33 @@ def test_create_client_ollama_appends_v1_when_missing(monkeypatch):
     assert str(client.client.base_url).rstrip("/").endswith("/v1")
 
 
-def test_create_client_ollama_explicit_host_via_api_key_arg(monkeypatch):
-    """``api_key='http://...'`` is interpreted as a host override —
-    handy for the headless CLI's ``--api-key`` channel."""
+def test_create_client_ollama_explicit_host(monkeypatch):
+    """``ollama_host`` names the server, before OLLAMA_HOST and the default."""
     monkeypatch.delenv("OLLAMA_HOST", raising=False)
     monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
     from delfin.agent.api_client import create_client
     client = create_client(
         backend="api", provider="ollama",
-        api_key="http://remote-gpu:11434",
+        ollama_host="http://remote-gpu:11434",
         model="qwen3-coder:32b",
     )
     assert "remote-gpu" in str(client.client.base_url)
+
+
+def test_the_key_parameter_is_never_read_as_the_host(monkeypatch):
+    """A key parameter that also carried the endpoint address let what it
+    holds reach every wait notice that prints the address (code scanning,
+    2026-11-24). An "http..." key is a key here, not a host."""
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    from delfin.agent.api_client import create_client
+    client = create_client(
+        backend="api", provider="ollama",
+        api_key="http://user:secret@remote-gpu:11434",
+        model="qwen3-coder:32b",
+    )
+    assert "remote-gpu" not in str(client.client.base_url)
+    assert "localhost:11434" in str(client.client.base_url)
 
 
 def test_create_client_ollama_attaches_kit_perms_sandbox(monkeypatch, tmp_path):

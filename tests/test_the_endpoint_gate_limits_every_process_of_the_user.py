@@ -190,6 +190,23 @@ def test_reporting_never_raises(runtime):
 
 # -- unit: slots -------------------------------------------------------------
 
+def test_a_wait_notice_shows_the_endpoint_without_its_credentials(runtime):
+    """The wait notice reaches the transcript and the stream; an endpoint
+    address with credentials in it (user:secret@) is shown without them, as
+    the timeout message already showed it (code scanning, 2026-11-24)."""
+    url = "https://user:s3cret@endpoint.example/v1"
+    first = G.EndpointGate(url, "m")
+    (first._dir() / "state.json").write_text(json.dumps({"limit": 1}))
+    assert first.acquire() == 0
+    second = G.EndpointGate(url, "m")
+    with pytest.raises(G.SlotWaitTimeout) as exc:
+        second.acquire(timeout_s=0.3)
+    first.release()
+    assert "endpoint.example" in second.wait_notice
+    for text in (second.wait_notice, str(exc.value)):
+        assert "s3cret" not in text and "user:" not in text, text
+
+
 def test_a_slot_blocks_a_second_holder(runtime):
     g = G.EndpointGate(URL, "m")
     monkeypatch_env = {"limit": 1}
