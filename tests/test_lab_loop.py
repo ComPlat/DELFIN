@@ -111,6 +111,44 @@ def test_the_loop_runs_and_every_round_is_recorded(lab):
         assert 0.0 <= r["yield"] <= 100.0, r
 
 
+def test_the_cli_entry_point_runs_the_loop_and_writes_a_record(lab, capsys):
+    """Driven through ``cli.main``, the call a person or a job makes.
+
+    A test that reached ``Loop.run`` directly would only measure that the
+    function exists. This goes through ``delfin-agent lab optimise``:
+    argument parsing, the kernel the CLI loads, the record under the lab
+    directory's loops/, and the exit code (0 only for a search that used its
+    budget; a stop is non-zero so a scheduled job notices).
+    """
+    import json
+
+    from delfin.agent import cli
+    from delfin.lab import store
+    _heat(_kernel())
+    rc = cli.main(["lab", "optimise", "--rounds", "4",
+                   "--loop-id", "cli-test"])
+    out = capsys.readouterr().out
+    assert rc == 0, out[-2000:]
+    record = json.loads(out[out.index("{"):out.rindex("}") + 1])
+    assert record["stopped"] == "budget", record
+    assert len([r for r in record["rounds"] if "yield" in r]) == 4
+    assert record["surface"]["lattice_best"] == pytest.approx(94.2985, abs=5e-4)
+    assert record["rounds_to_99pct"] is not None
+    written = store.lab_dir() / "loops" / "cli-test.json"
+    assert written.exists(), written
+    assert json.loads(written.read_text())["stopped"] == "budget"
+
+
+def test_the_cli_exits_non_zero_when_the_loop_is_stopped(lab, capsys):
+    """A stopped search must not look like a finished one to a job."""
+    from delfin.agent import cli
+    rc = cli.main(["lab", "optimise", "--rounds", "3",
+                   "--loop-id", "cli-stopped"])
+    out = capsys.readouterr().out
+    assert rc == 2, (rc, out[-2000:])
+    assert '"stopped": "refused"' in out, out[-1500:]
+
+
 def test_the_measurement_depends_on_the_conditions_it_was_given(lab):
     """The defining property: a different condition is a different reading.
 
