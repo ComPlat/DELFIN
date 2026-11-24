@@ -50,6 +50,7 @@ from delfin.tools.adapters.orca_sp_opi import (
     _validated_keyword,
     validate_method,
 )
+from delfin.tools.opi_chain import read_geometry_xyz
 
 logger = get_logger(__name__)
 
@@ -1072,18 +1073,38 @@ class OrcaOptOpiAdapter(StepAdapter):
     ) -> StepResult:
         kwargs.pop("_prev_artifacts", None)
         start = time.monotonic()
-        try:
-            elements = kwargs["elements"]
-            coordinates = kwargs["coordinates"]
-        except KeyError as exc:
-            return self._make_result(
-                self.name,
-                StepStatus.FAILED,
-                work_dir,
-                start,
-                error=f"missing required {exc}",
-                error_kind=ErrorKind.MISSING_PARAM,
-            )
+        # The geometry comes from the step before this one when the chain
+        # hands it over (``Pipeline.run`` passes the previous step's .xyz as
+        # ``geometry=``, which is what ``opi_opt_freq_dlpno`` and every spec
+        # the workflow builder emits for an OPI chain rely on); explicit
+        # ``elements``/``coordinates`` remain valid for a first step and win
+        # nothing over nothing -- the chained geometry is only consulted when
+        # the caller supplied none, so an explicit pair still decides.
+        if geometry is not None and not ("elements" in kwargs and "coordinates" in kwargs):
+            try:
+                elements, coordinates = read_geometry_xyz(geometry)
+            except (OSError, ValueError) as exc:
+                return self._make_result(
+                    self.name,
+                    StepStatus.FAILED,
+                    work_dir,
+                    start,
+                    error=f"cannot read the chained geometry {geometry}: {exc}",
+                    error_kind=ErrorKind.MISSING_PARAM,
+                )
+        else:
+            try:
+                elements = kwargs["elements"]
+                coordinates = kwargs["coordinates"]
+            except KeyError as exc:
+                return self._make_result(
+                    self.name,
+                    StepStatus.FAILED,
+                    work_dir,
+                    start,
+                    error=f"missing required {exc}",
+                    error_kind=ErrorKind.MISSING_PARAM,
+                )
         res = run_opt_freq(
             elements=elements,
             coordinates=coordinates,
