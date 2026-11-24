@@ -12,7 +12,7 @@ Two guards:
 import re
 from pathlib import Path
 
-from delfin.agent.socket_guard import _ARCH_DGRAM
+from delfin.agent.socket_guard import _ARCH_DGRAM, _ARCH_LISTEN
 
 _NAME_TO_NR = {
     "socket": {("x86_64", 41), ("aarch64", 198)},
@@ -22,6 +22,7 @@ _NAME_TO_NR = {
     "sendmsg": {("x86_64", 46), ("aarch64", 211)},
     "recvmsg": {("x86_64", 47), ("aarch64", 212)},
     "bind": {("x86_64", 49), ("aarch64", 200)},
+    "listen": {("x86_64", 50), ("aarch64", 201)},
     "sendmmsg": {("x86_64", 307), ("aarch64", 269)},
 }
 
@@ -85,3 +86,14 @@ def test_that_the_arch_rows_match_the_names():
                     assert row[idx] == n, (
                         f"_ARCH_DGRAM[{machine}][{idx}] = {row[idx]}, "
                         f"{name} is {n}")
+
+
+def test_that_the_listen_row_matches_the_name_and_the_header():
+    """listen() is notified since 2026-11-24 (the inbound half of the
+    guard); its number is held to the same two checks as the others."""
+    for machine, nr in _ARCH_LISTEN.items():
+        assert (machine, nr) in _NAME_TO_NR["listen"], (machine, nr)
+    table = _header_table()
+    machine = __import__("platform").machine()
+    if table is not None and machine in _ARCH_LISTEN and "listen" in table:
+        assert table["listen"] == _ARCH_LISTEN[machine]

@@ -22,7 +22,7 @@ instead of running it unconfined.
         [--net open|proxy|none] [--proxy-socket PATH] [--allow-tcp IP:PORT ...] \
         [--deny-socket DIR ...] [--read-only PATH ...] [--read DIR ...] \
         [--proxy-token-file PATH] [--guard 0] [--netns 1] \
-        [--own-listener INODE ...] -- /bin/bash -c CMD
+        [--own-listener INODE ...] [--inbound loopback|any] -- /bin/bash -c CMD
 
 ``--read-only`` (any number) keeps a path beneath a write root readable
 but not writable. ``--read`` (any number) confines reading to beneath those
@@ -35,7 +35,10 @@ a network namespace of its own. ``--own-listener`` (any number) names a
 listening socket of the session's own background jobs by inode: under the
 socket guard the command may connect to it on the loopback directly, as it
 may to a server its own process tree listens on
-(``socket_guard.owns_loopback``).
+(``socket_guard.owns_loopback``). ``--inbound`` is what the socket guard
+does with the command's binds: ``loopback`` (default) binds every internet
+socket to the loopback, ``any`` binds as asked (an open network inside a
+SLURM allocation of several nodes, where the job's other ranks connect).
 
 Unix sockets are guarded too (``socket_guard``): the command reaches them
 only beneath the write roots, the private temp directory and the cluster's
@@ -55,6 +58,13 @@ _SYS_RESTRICT_SELF = 446
 _CREATE_RULESET_VERSION = 1
 _RULE_PATH_BENEATH = 1
 _PR_SET_NO_NEW_PRIVS = 38
+_PR_SET_PDEATHSIG = 1
+
+#: Set in the environment of a command the socket guard holds. A DELFIN
+#: inside it (a workflow an agent's command starts) runs its programs
+#: without a guard of its own (``delfin.inbound_guard``): the kernel takes
+#: one notifying filter per process tree, and this one already holds them.
+GUARD_MARKER = "DELFIN_INBOUND_GUARD"
 
 _EXECUTE = 1 << 0
 _WRITE_FILE = 1 << 1
@@ -374,7 +384,8 @@ def _run_guarded(write: list[str], hide: list[str], allowed: list[str],
                  read: list[str] | None = None,
                  token_file: str = "", use_guard: bool = True,
                  netns: bool = False,
-                 own_listeners: list[str] | None = None) -> int:
+                 own_listeners: list[str] | None = None,
+                 inbound: str = "loopback") -> int:
     """Apply the filesystem policy (unless ``use_fs`` is off, inside
     bubblewrap), the socket guard and the network mode, and run the command.
 
@@ -472,6 +483,12 @@ def _run_guarded(write: list[str], hide: list[str], allowed: list[str],
             for key in _UNSET_VARS:
                 os.environ.pop(key, None)
             os.environ.update(env_updates)
+            os.environ[GUARD_MARKER] = "held"
+            # Without its supervisor the command can bind nothing and
+            # connect nowhere; it ends with it rather than run on.
+            _libc.prctl(_PR_SET_PDEATHSIG, 9, 0, 0, 0)
+            if os.getppid() == 1:
+                os._exit(126)
             os.execvp(command[0], command)
         except BaseException as exc:                # noqa: BLE001 - child must exit
             try:
@@ -522,9 +539,26 @@ def _run_guarded(write: list[str], hide: list[str], allowed: list[str],
         pass
     if forwarder is not None:
         forwarder.start()
+    # A caller that stops "the process" it started (terminate(), a timeout)
+    # reaches this supervisor: the signal goes on to the command, which
+    # stops as it would have without the guard in between.
+    import signal as _signal
+
+    def _forward(signum, _frame):
+        try:
+            os.kill(pid, signum)
+        except OSError:
+            pass
+
+    for _sig in (_signal.SIGTERM, _signal.SIGINT, _signal.SIGHUP):
+        try:
+            _signal.signal(_sig, _forward)
+        except (OSError, ValueError):
+            pass
     status = sg.Supervisor(listener, allowed, net_mode, allow_tcp,
                            denied=deny_socket or (),
-                           own_listeners=own_listeners or ()).serve(pid)
+                           own_listeners=own_listeners or (),
+                           inbound=inbound).serve(pid)
     return _exit_code(status)
 
 
@@ -590,6 +624,7 @@ def main(argv: list[str]) -> int:
     token_file = ""
     use_guard = True
     netns = False
+    inbound = "loopback"
     tmpdir = ""
     i = 0
     while i < len(argv) and argv[i] != "--":
@@ -627,6 +662,8 @@ def main(argv: list[str]) -> int:
             netns = value == "1"
         elif flag == "--own-listener":
             own_listeners.append(value)
+        elif flag == "--inbound":
+            inbound = "any" if value == "any" else "loopback"
         else:
             print(f"landlock_exec: unknown option {flag}", file=sys.stderr)
             return 126
@@ -655,7 +692,7 @@ def main(argv: list[str]) -> int:
                         deny_socket=deny_socket, read_only=read_only,
                         read=read, token_file=token_file,
                         use_guard=use_guard, netns=netns,
-                        own_listeners=own_listeners)
+                        own_listeners=own_listeners, inbound=inbound)
 
 
 if __name__ == "__main__":

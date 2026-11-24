@@ -95,6 +95,8 @@ import os
 import re
 import shutil
 import subprocess
+
+from delfin.inbound_guard import guarded
 import tempfile
 import time
 from pathlib import Path
@@ -734,7 +736,8 @@ def optimise_to_saddle(xyz_text: str, method: str = 'gfn2', *,
             # from working.
             with log.open('w', encoding='utf-8') as sink:
                 running = subprocess.Popen(
-                    [binary, 'in.inp'], cwd=str(folder), env=environment,
+                    guarded([binary, 'in.inp'], environment), cwd=str(folder),
+                    env=environment,
                     stdout=sink, stderr=subprocess.STDOUT, text=True)
                 ends = None if not timeout else started + float(timeout)
                 while running.poll() is None:
@@ -1469,7 +1472,8 @@ def neb_to_saddle(reactant: str, product: str, method: str = 'gfn2', *,
             # a pipe nobody drains stops the process it belongs to.
             with log.open('w', encoding='utf-8') as sink:
                 running = subprocess.Popen(
-                    [binary, 'in.inp'], cwd=str(folder), env=environment,
+                    guarded([binary, 'in.inp'], environment), cwd=str(folder),
+                    env=environment,
                     stdout=sink, stderr=subprocess.STDOUT, text=True)
                 ends = None if not timeout else started + float(timeout)
                 while running.poll() is None:

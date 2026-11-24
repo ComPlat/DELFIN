@@ -18,6 +18,8 @@ import re
 import shutil
 import signal
 import subprocess
+
+from delfin.inbound_guard import guarded
 import tempfile
 from contextlib import contextmanager
 
@@ -103,7 +105,7 @@ def probe_one(word: str, run_dir: str | None = None,
         # Own process group so the timeout kills ORCA and its children only.
         try:
             proc = subprocess.Popen(
-                ["nice", "-n", "19", binary, inp],
+                guarded(["nice", "-n", "19", binary, inp]),
                 cwd=fresh, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
@@ -318,7 +320,7 @@ def probe_input(text: str, look_for: list[str] | None = None,
             fh.write(text)
         try:
             proc = subprocess.Popen(
-                ["nice", "-n", "19", binary, inp],
+                guarded(["nice", "-n", "19", binary, inp]),
                 cwd=fresh, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 start_new_session=True)
         except OSError:

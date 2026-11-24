@@ -29791,6 +29791,13 @@ def _git_metadata_roots(workspace) -> list[str]:
 _SLURM_CONTROLLERS: Optional[list[str]] = None
 
 
+def _in_multi_node_allocation(env=None) -> bool:
+    """Whether this process runs inside a SLURM allocation of more than one
+    node: the one rule, ``delfin.inbound_guard.multi_node_allocation``."""
+    from delfin.inbound_guard import multi_node_allocation
+    return multi_node_allocation(env)
+
+
 def _sandbox_network_args(perms=None, allow_slurm: bool = True) -> tuple[list[str], str]:
     """Helper flags for an isolated command's network, and the directory of
     the egress proxy's socket ("" without one).
@@ -29818,6 +29825,11 @@ def _sandbox_network_args(perms=None, allow_slurm: bool = True) -> tuple[list[st
     if not allow_slurm and mode == "open":
         mode = "proxy"
     args = ["--net", mode]
+    if mode == "open" and _in_multi_node_allocation():
+        # The job's ranks on the other nodes connect to this one: its binds
+        # stay as asked. Everywhere else the socket guard binds every
+        # internet socket to the loopback (socket_guard.Supervisor._bind).
+        args += ["--inbound", "any"]
     proxy_dir = ""
     if mode == "proxy":
         try:

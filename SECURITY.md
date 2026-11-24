@@ -99,6 +99,9 @@ agent that executes model-written commands on the user's behalf. In scope:
   - egress — anything that lets an isolated command reach the network other
     than through the egress proxy and its allowed domains, or reach the cloud
     metadata address;
+  - ingress — anything that lets a program an isolated command starts be
+    reached from another host (a socket it binds or listens on beyond the
+    loopback);
   - credentials — the model provider's key or a stored credential reaching a
     command, a transcript or a bug report.
 - **The chemistry core** (CONTROL.txt, SMILES and geometry handling, job

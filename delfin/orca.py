@@ -22,6 +22,7 @@ from delfin.common import orca_input, orca_overrides
 from delfin.common.logging import get_logger
 from delfin.common.progress_display import ProgressDisplay
 from delfin.global_manager import get_global_manager
+from delfin.inbound_guard import guarded
 from .qm_runtime import find_tool_executable
 from delfin.orca_recovery import (
     OrcaErrorDetector,
@@ -601,13 +602,16 @@ def _run_orca_subprocess(
         with open(output_log, "w") as output_file:
             # Use Popen with process group to ensure all child processes can be killed
             # start_new_session creates a new process group, making cleanup easier
+            run_env = {**_prepare_orca_environment(scratch_subdir),
+                       # variables for this run only: a recovery's MPI settings
+                       **{str(k): str(v) for k, v in (extra_env or {}).items()}}
             process = subprocess.Popen(
-                [orca_path, input_file_path],
+                # MPI listens for its ranks on the loopback only, not on
+                # every interface of the host (delfin.inbound_guard).
+                guarded([orca_path, input_file_path], run_env),
                 stdout=output_file,
                 stderr=output_file,
-                env={**_prepare_orca_environment(scratch_subdir),
-                     # variables for this run only: a recovery's MPI settings
-                     **{str(k): str(v) for k, v in (extra_env or {}).items()}},
+                env=run_env,
                 start_new_session=True,  # Create new process group
                 cwd=str(working_dir) if working_dir is not None else None,
             )
