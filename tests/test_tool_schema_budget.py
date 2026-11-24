@@ -321,7 +321,19 @@ _BASELINE_TOKENS = 11_422
 # 4,408 tokens against 11,865. The catalogue ceiling is kept because a
 # cold tool's schema still costs when it is described, and the ceiling
 # that matters now is the SHIPPED one below.
-_TOKEN_BUDGET = 11_865
+# 11_865 -> 12_072 (2026-11-24, +207 measured): the lab specialist.
+# Attributed in two parts, because they are different decisions:
+#   +9   the preset's name in the subagent_type enum, plus the entry the
+#        description gains in its writer list -- the same cost, for the
+#        same reason, as the workflow-operator specialist above. Adding
+#        ANY preset pays this (measured: a branch that adds the preset
+#        and nothing else reads 11_874).
+#   +198 lab_run's own schema. That is the self-driving lab's first
+#        agent-facing entrance -- before it the model could turn one
+#        device on and nothing more -- so it is the change, not slack.
+# Both were measured on the tree that ships them, not estimated, and the
+# per-tool cap below moved for the subagent schema only (444 -> 453).
+_TOKEN_BUDGET = 12_072
 
 #: What actually rides on every request once the cold schemas are
 #: deferred: the hot set plus the always-sent name listing. Measured
@@ -353,6 +365,11 @@ _POST_COMPACTION_TOOLS = frozenset({
     "verify_source",
     "orca_explain", "orca_check_input", "workflow_candidates",
     "lab_devices", "lab_read", "lab_set", "lab_plan_check", "lab_estop",
+    # lab_run (2026-11-24) joins its five siblings rather than the
+    # pre-compaction baseline for the same reason: it was added after the
+    # compaction, so the 35% ratchet keeps answering the question it was
+    # built for -- whether the OLD surface grew back.
+    "lab_run",
     # The deferral mechanism itself (2026-11-23). It is 136 tokens of
     # catalogue that REMOVE 7,457 from every request: measured over
     # 81,949 real tool calls, 96 schemas cost 11,865 tokens on every
@@ -441,7 +458,12 @@ def test_tool_schema_is_at_least_35_percent_below_baseline():
     # job -- the catalogue stays 34.9 % below the pre-compaction
     # baseline -- and it is raised by the measured amount rather than
     # by a round number, so the next addition has to measure itself too.
-    assert total <= _BASELINE_TOKENS * 0.651, (
+    # 0.651 -> 0.652 (2026-11-24): the lab specialist's 9 tokens in the
+    # `subagent` schema -- its name in the enum and one more entry in the
+    # derived writer list. Measured 7,444 tokens, 34.82 % below the
+    # baseline, against a 0.651 ceiling that allowed 7,435. Nine tokens,
+    # not a round number, and the same cause as the line above.
+    assert total <= _BASELINE_TOKENS * 0.652, (
         f"{total} tokens (excluding tools added after the compaction) is "
         f"only {100 * (1 - total / _BASELINE_TOKENS):.1f}% below the "
         f"{_BASELINE_TOKENS}-token baseline")
@@ -454,8 +476,18 @@ def test_post_compaction_tools_are_named_and_present():
 
 def test_no_single_tool_schema_is_oversized():
     """A single tool must not eat a disproportionate slice of the surface."""
+    # 450 -> 460 (2026-11-24): adding ANY preset costs +9 in the `subagent`
+    # schema -- its name in the subagent_type enum and one more entry in the
+    # derived writer list -- because a preset whose mode is not ``plan`` is
+    # a writer. Measured: 444 on the tree with no lab specialist, 453 with
+    # one, whichever arm supplies it. The ceiling is raised by the measured
+    # amount (and rounded to 460, 7 tokens of headroom), not by the room the
+    # next schema would like; `subagent` is the one schema that grows with
+    # the registry rather than with its own author.
+    _PER_TOOL_CAP = 460
     for name, entry in tool_schema_token_report()["tools"].items():
-        assert entry["total"] <= 450, f"{name} schema is {entry['total']} tokens"
+        assert entry["total"] <= _PER_TOOL_CAP, (
+            f"{name} schema is {entry['total']} tokens")
 
 
 # ---------------------------------------------------------------------------

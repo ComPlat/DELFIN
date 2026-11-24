@@ -35,28 +35,28 @@ from delfin.agent import api_client
 
 # --- the recorded baseline; see the module docstring before moving one ---
 # count and name order: unmoved since origin/main 026eba8f0 until
-#   2026-11-23, when ONE tool was added: describe_native_tool.
-# content and token figures: re-taken 2026-11-23 for the same cause.
+#   2026-11-23, when ONE tool was added: describe_native_tool; then
+#   2026-11-24, when ONE more was added: lab_run (the self-driving lab's
+#   first agent-facing entrance -- a whole workflow judged, then run by the
+#   one coordinator).
+# content and token figures: re-taken 2026-11-24 for that same cause.
 #
-# THE DELIBERATE CAUSE, as this file requires it to be named: deferral.
-# Measured over 81,949 real tool calls in ~/.delfin/tool_traces, the 96
-# schemas cost 11,865 tokens on EVERY request, 27 of them cover 99% of
-# all calls, and 61 with fewer than ten calls each account for 6,799 of
-# those tokens. describe_native_tool returns a deferred tool's schema on
-# demand, so a request now carries 4,408 tokens instead of 11,865 -- 63%
-# less, 7,457 freed per request -- while every tool stays executable and
-# named. This file's figures count the CATALOGUE, which therefore GREW
-# by 136 tokens (the new tool's own schema); the number that ships is
-# ratcheted in tests/test_tool_schema_budget.py::_SHIPPED_BUDGET.
-PINNED_COUNT = 97
+# THE DELIBERATE CAUSE, as this file requires it to be named: the lab
+# specialist. Measured on the tree that ships it, in two parts: +9 tokens
+# for the preset (its name in the subagent_type enum and one more entry in
+# the derived writer list -- the same cost ANY added preset pays) and +198
+# for lab_run's own schema. This file's figures count the CATALOGUE; the
+# number that ships is ratcheted in
+# tests/test_tool_schema_budget.py::_SHIPPED_BUDGET, which did not move.
+PINNED_COUNT = 98
 PINNED_NAMES_SHA256 = (
-    "f408d5f11d9175d82cb4f288bbe4475428a6b8ffbd44332114ba42f3e4283933")
+    "7903960c5ec64ec468cbd81d93b4d3b4be10d1823ab2a4d7a18547fd5dfc449f")
 PINNED_BLOB_SHA256 = (
-    "24cb51ddf95f06af3069ddd7318e7be7f32b8198444f0cc91e8294c74fb94900")
-PINNED_ESTIMATE = 11954
+    "7c4f3e00e8c72e04d0a70207c1abf1eb0149d70956d70e8632bf5924b3096c8f")
+PINNED_ESTIMATE = 12162
 PINNED_REPORT_SHA256 = (
-    "371cb8551a189ba2a086e21ef8dabf67d1a262292a8f4c18927029e528073dbc")
-PINNED_REPORT_TOTAL_TOKENS = 11865
+    "c08b5eed8657869a7fc2b554a55b2a0e4836858886d94a7bb180f7a69bf53bb8")
+PINNED_REPORT_TOTAL_TOKENS = 12072
 
 
 def _names_sha256() -> str:
