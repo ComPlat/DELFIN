@@ -92,6 +92,10 @@ def test_a_square_planar_d8_centre_includes_the_diamagnetic_state():
     assert spin["first"] == 1, (
         "the diamagnetic state is the one that usually wins for d8, so it is "
         f"tried first; got first={spin['first']}")
+    assert f"try M={spin['first']} first" in spin["reason"], (
+        "the reason must nominate the same state `first` names, otherwise the "
+        f"proposal contradicts itself: first={spin['first']} "
+        f"reason={spin['reason']!r}")
 
 
 # ---------------------------------------------------------------------

@@ -1103,11 +1103,25 @@ def propose_spin_states_for_metal(
     # the skill's `check_contamination` branch is what inserts BS then.
     bs = n == 6
     row = "4d/5d" if heavy else "3d"
+    # The reason must name the SAME state `first` names, or the proposal
+    # contradicts itself: the earlier text said "which one wins is what
+    # the scan decides" even where `first` already picks one, and for d8
+    # that read as M=3-first while `first` was 1.
+    if heavy:
+        lead = "try M=1 first: a heavy centre's large Delta_o makes the low-spin occupancy the reference"
+    elif n == 8:
+        lead = "try M=1 first: square-planar d8 is diamagnetic, and the archive's d8-consistent nickel steps put M=1 ahead of M=3"
+    else:
+        lead = (f"try M={first} first, but which one wins is what the scan "
+                "decides: a first-row centre's Delta_o is not predictable "
+                "from the d-count alone")
+    # d0..d3 and d9..d10 collapse to ONE extreme (both coincide); naming it
+    # twice reads as "compute M=2 and M=2", which is not a comparison.
+    scan = (f"compute M={mults[0]}" if len(set(mults)) == 1
+            else f"compute M={mults[0]} and M={mults[-1]}")
     reason = (
         f"{symbol}({int(oxidation_state):+d}) is d{n} on a {row} centre: "
-        f"compute M={mults[0]} and M={mults[-1]}; "
-        + ("the low-spin occupancy is the reference for a heavy centre"
-           if heavy else "which one wins is what the scan decides")
+        f"{scan}; {lead}"
         + (", plus a broken-symmetry open-shell singlet" if bs else "")
     )
     return {
