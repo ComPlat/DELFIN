@@ -252,6 +252,29 @@ def rpc_socket_path(directory: str, token: str) -> str:
     return os.path.join(base, "rpc-%s.sock" % (token or uuid.uuid4().hex))
 
 
+#: Socket files bound in this process and not yet closed. The serve loop
+#: is a daemon thread that unlinks its socket when its idle window ends,
+#: but a process that exits first kills the thread before close() runs --
+#: measured 2026-11-23, 18 socket files had collected in /tmp/.code_mode_rpc,
+#: two days old and partly group-writable. One exit handler for all of
+#: them, rather than one handler registered per Code Mode command.
+_LIVE_SOCKETS: set = set()
+
+
+def _unlink_live_sockets() -> None:
+    for path in list(_LIVE_SOCKETS):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        _LIVE_SOCKETS.discard(path)
+
+
+import atexit as _atexit  # noqa: E402
+
+_atexit.register(_unlink_live_sockets)
+
+
 #: AF_UNIX paths are limited to 108 bytes on Linux (104 on macOS).
 #: Measured: Code Mode failed with "AF_UNIX path too long" for any
 #: workspace path of 78 characters or more, since the socket lives below
@@ -363,6 +386,7 @@ class RpcServer:
         # The directory is already 0700; the socket is narrowed as well so
         # that one widened mode never opens it on its own.
         os.chmod(socket_path, 0o600)
+        _LIVE_SOCKETS.add(socket_path)
         self._sock.listen(8)
         return socket_path
 
@@ -416,6 +440,7 @@ class RpcServer:
         path = self._socket_path
         if path:
             self._socket_path = None
+            _LIVE_SOCKETS.discard(path)
             try:
                 os.unlink(path)
             except FileNotFoundError:

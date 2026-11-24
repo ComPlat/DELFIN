@@ -161,18 +161,20 @@ def get_orca_override_hints(control_text: str) -> List[str]:
 
 def _collect_literal_list(lines: List[str], start_idx: int, initial_value: str) -> Tuple[List[Any], int]:
     """Collect a multi-line Python literal (list/dict) starting at start_idx."""
-    buffer = initial_value + "\n"
+    # Parts joined once: ``buffer += line`` copied the text so far on
+    # Python 3.11, quadratic in the length of the list.
+    parts = [initial_value + "\n"]
     depth = initial_value.count('[') - initial_value.count(']')
     idx = start_idx + 1
 
     while idx < len(lines) and depth > 0:
         line = lines[idx]
-        buffer += line
+        parts.append(line)
         depth += line.count('[') - line.count(']')
         idx += 1
 
     try:
-        parsed = ast.literal_eval(buffer)
+        parsed = ast.literal_eval("".join(parts))
     except Exception as exc:  # noqa: BLE001
         logger.error(f"Failed to parse list literal near line {start_idx + 1}: {exc}")
         parsed = []

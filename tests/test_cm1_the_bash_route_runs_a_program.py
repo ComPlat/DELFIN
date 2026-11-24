@@ -53,7 +53,12 @@ def _short_workspace():
     candidates = [tempfile.gettempdir(), "/tmp"]
     for base in sorted({c for c in candidates if c and os.path.isdir(c)},
                        key=len):
-        return tempfile.mkdtemp(prefix="cm1r_", dir=base)
+        # Removed at exit: these lived in /tmp and were never deleted --
+        # 78 of them collected over three days (2026-11-23).
+        _made = tempfile.mkdtemp(prefix="cm1r_", dir=base)
+        import atexit, shutil
+        atexit.register(shutil.rmtree, _made, True)
+        return _made
     raise RuntimeError("no temp directory available")
 
 
