@@ -76,6 +76,7 @@ from delfin.common.logging import get_logger
 from delfin.tools._base import StepAdapter
 from delfin.tools._registry import register
 from delfin.tools._types import ErrorKind, StepResult, StepStatus
+from delfin.tools.opi_chain import read_geometry_xyz
 
 logger = get_logger(__name__)
 
@@ -657,18 +658,40 @@ class OrcaDlpnoOpiAdapter(StepAdapter):
     ) -> StepResult:
         kwargs.pop("_prev_artifacts", None)
         start = time.monotonic()
-        try:
-            elements = kwargs["elements"]
-            coordinates = kwargs["coordinates"]
-        except KeyError as exc:
-            return self._make_result(
-                self.name,
-                StepStatus.FAILED,
-                work_dir,
-                start,
-                error=f"missing required {exc}",
-                error_kind=ErrorKind.MISSING_PARAM,
-            )
+        # The geometry comes from the step before this one when the chain
+        # hands it over (``Pipeline.run`` passes the previous step's .xyz as
+        # ``geometry=``, which is what ``opi_opt_freq_dlpno`` relies on for
+        # every step after the first). This adapter declares
+        # ``consumes = ("geometry",)``, so a chain that reaches it has always
+        # delivered one; reading only the kwargs made the last step of
+        # DELFIN's own OPI chain fail with "missing required 'elements'" and
+        # write no input. An explicit elements/coordinates pair still decides,
+        # so the historical meaning of that pair is unchanged.
+        if geometry is not None and not ("elements" in kwargs and "coordinates" in kwargs):
+            try:
+                elements, coordinates = read_geometry_xyz(geometry)
+            except (OSError, ValueError) as exc:
+                return self._make_result(
+                    self.name,
+                    StepStatus.FAILED,
+                    work_dir,
+                    start,
+                    error=f"unreadable chained geometry {geometry}: {exc}",
+                    error_kind=ErrorKind.MISSING_PARAM,
+                )
+        else:
+            try:
+                elements = kwargs["elements"]
+                coordinates = kwargs["coordinates"]
+            except KeyError as exc:
+                return self._make_result(
+                    self.name,
+                    StepStatus.FAILED,
+                    work_dir,
+                    start,
+                    error=f"missing required {exc}",
+                    error_kind=ErrorKind.MISSING_PARAM,
+                )
         res = run_dlpno(
             elements=elements,
             coordinates=coordinates,
