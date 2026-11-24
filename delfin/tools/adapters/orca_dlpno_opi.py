@@ -66,6 +66,7 @@ the ``.out`` text, where ORCA prints it (T1(DLPNO) line).
 from __future__ import annotations
 
 import re
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -302,6 +303,7 @@ def build_dlpno_input(
     cbs: Optional[tuple[str, str]] = None,
     extra_keywords: Optional[Sequence[str]] = None,
     mdci_options: Optional[dict] = None,
+    moread: Optional[str] = None,
     maxcore: int = 2000,
     ncores: int = 2,
     base_name: str = "dlpno",
@@ -327,7 +329,7 @@ def build_dlpno_input(
         raise ValueError("; ".join(errors))
 
     from opi.core import Calculator
-    from opi.input import Input
+    from opi.input import ArbitraryStringPos, Input
     from opi.input.blocks.block_mdci import BlockMdci
     from opi.input.simple_keywords.approximation import Approximation
     from opi.input.simple_keywords.base import SimpleKeyword
@@ -369,6 +371,22 @@ def build_dlpno_input(
     inp.memory = maxcore
     if mdci_options:
         inp.add_blocks(BlockMdci(**dict(mdci_options)))
+    if moread:
+        # MORead guess from the chain's upstream .gbw (manual 2.20.5, the
+        # same form ``run_opi_job`` writes: ``! moread`` + ``%moinp``).  The
+        # file is copied next to the input so ORCA finds it by name; a
+        # dangling reference is refused rather than written.
+        moread_src = Path(moread)
+        src = moread_src if moread_src.is_file() else moread_src.with_suffix(".gbw")
+        if not src.is_file():
+            raise FileNotFoundError(
+                f"MOREAD gbw {src} does not exist (refused to write a "
+                "dangling MORead reference)"
+            )
+        shutil.copy2(src, work_dir / f"{base_name}.gbw")
+        inp.add_simple_keywords("MOREAD")
+        inp.add_arbitrary_string(
+            f'%moinp "{base_name}.gbw"', ArbitraryStringPos.BEFORE_COORDS)
 
     atoms = [
         Atom(str(el), coordinates=(float(x), float(y), float(z)))
@@ -532,6 +550,7 @@ def run_dlpno(
     cbs: Optional[tuple[str, str]] = None,
     extra_keywords: Optional[Sequence[str]] = None,
     mdci_options: Optional[dict] = None,
+    moread: Optional[str] = None,
     maxcore: int = 2000,
     ncores: int = 2,
     base_name: str = "dlpno",
@@ -585,6 +604,7 @@ def run_dlpno(
         cbs=cbs,
         extra_keywords=extra_keywords,
         mdci_options=mdci_options,
+        moread=moread,
         maxcore=maxcore,
         ncores=ncores,
         base_name=base_name,
@@ -659,6 +679,7 @@ class OrcaDlpnoOpiAdapter(StepAdapter):
             cbs=kwargs.get("cbs"),
             extra_keywords=kwargs.get("extra_keywords"),
             mdci_options=kwargs.get("mdci_options"),
+            moread=kwargs.get("moread"),
             maxcore=kwargs.get("maxcore", 2000),
             ncores=cores,
             base_name=kwargs.get("base_name", "dlpno"),
