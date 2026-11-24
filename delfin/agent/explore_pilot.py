@@ -548,7 +548,7 @@ def _fake_run_once(engine, prompt, **kw):
     _ = engine  # the fake engine's wiring is installed but not driven
     return {"text": (
         "Answer with citations: delfin/agent/explore_pilot.py:37 "
-        "and delfin/config.py:569."),
+        "and delfin/config.py:571."),
             "tool_calls": [],
             "input_tokens": 0, "output_tokens": 0}
 

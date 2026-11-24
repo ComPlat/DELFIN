@@ -58,7 +58,12 @@ class _RecordingExecutor:
 def _short_workspace():
     """A workspace whose RPC socket path fits an AF_UNIX sockaddr."""
     bases = [b for b in (tempfile.gettempdir(), "/tmp") if b and os.path.isdir(b)]
-    return tempfile.mkdtemp(prefix="cm1r_", dir=min(bases, key=len))
+    # Removed at exit: these lived in /tmp and were never deleted --
+    # 78 of them collected over three days (2026-11-23).
+    _made = tempfile.mkdtemp(prefix="cm1r_", dir=min(bases, key=len))
+    import atexit, shutil
+    atexit.register(shutil.rmtree, _made, True)
+    return _made
 
 
 def _permissions(workspace):
@@ -201,9 +206,12 @@ def test_run_program_is_gone_and_the_hook_is_the_launcher():
     assert not hasattr(code_mode, "ProgramTimeout")
     assert not hasattr(code_mode, "ProgramError")
     # The surviving route is still the hook the bash tool calls.
+    # A workspace of its own: /tmp itself put the socket in the directory
+    # every user's runs share.
+    workspace = _short_workspace()
     assert api_client._code_mode_child_env(
-        "python3 -m delfin.agent.code_mode run prog.py", "/tmp",
-        _permissions("/tmp"), _RecordingExecutor())
+        "python3 -m delfin.agent.code_mode run prog.py", workspace,
+        _permissions(workspace), _RecordingExecutor())
 
 
 def test_serve_request_is_gone_and_the_server_is_the_only_request_path():
