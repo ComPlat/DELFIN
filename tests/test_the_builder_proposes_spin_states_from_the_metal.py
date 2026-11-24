@@ -97,6 +97,54 @@ def test_a_square_planar_d8_centre_includes_the_diamagnetic_state():
         f"proposal contradicts itself: first={spin['first']} "
         f"reason={spin['reason']!r}")
 
+def test_an_octahedral_d8_centre_does_not_start_on_the_diamagnetic_state():
+    """Ni(II) d8 stated as octahedral: M=3 leads, M=1 stays as the comparison.
+
+    Fails on the code that preceded this test: `first` was 1 for EVERY
+    d8 centre, because the square-planar archive statistic was applied to
+    the element and not to the geometry. That is a sample that does not
+    look like the user (rule 9): the 148 d8-consistent nickel steps are
+    dominated by square-planar systems, while an octahedral Ni(II) is
+    t2g^6 eg^2 -- genuinely high spin. A branch run through the real
+    product is what surfaced it: the agent answered that the rule "fires
+    on Ni(II) whether the complex is square planar or not", and that for
+    [Ni(H2O)6]2+ "first = 1 starts on the wrong side".
+
+    Fails if: `first` is 1 for an octahedral d8 centre, or M=1 drops out
+    of the scanned set (it must stay -- it is the comparison the scan
+    needs to rule out).
+    """
+    result = wb.build_workflow("Set up a Ni(II) d8 octahedral complex with OCCUPIER.")
+    spin = result["spin_states"]
+    assert spin is not None
+    assert spin["geometry"] == "octahedral", spin["geometry"]
+    assert spin["first"] == 3, (
+        "an octahedral d8 centre is t2g^6 eg^2, so the triplet leads; "
+        f"got first={spin['first']}")
+    assert spin["multiplicities"] == [1, 3], (
+        "M=1 must stay in the scan as the diamagnetic comparison, and M=3 "
+        f"is the high-spin state; got {spin['multiplicities']}")
+    assert "octahedral" in spin["reason"], spin["reason"]
+    assert f"try M={spin['first']} first" in spin["reason"], spin["reason"]
+
+
+def test_a_d8_centre_whose_geometry_is_unstated_says_so():
+    """Ni(II) with no geometry named: the archive majority leads, and the
+    reason states that the geometry is missing rather than pretending the
+    square-planar answer was established.
+
+    Fails if: the proposal silently assumes square planar (the defect the
+    octahedral test above pins) or drops the caveat from its reason.
+    """
+    result = wb.build_workflow("Set up a Ni(II) d8 complex with OCCUPIER.")
+    spin = result["spin_states"]
+    assert spin is not None
+    assert spin["geometry"] is None, spin["geometry"]
+    assert spin["first"] == 1, (
+        "with no geometry the archive majority leads, got "
+        f"first={spin['first']}")
+    assert "geometry is not stated" in spin["reason"], spin["reason"]
+
 
 # ---------------------------------------------------------------------
 # The control: nothing changes where no metal is named.

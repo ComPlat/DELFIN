@@ -1048,6 +1048,7 @@ def propose_spin_states_for_metal(
     oxidation_state: Optional[int],
     *,
     dcount: Optional[int] = None,
+    geometry: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Multiplicities and BS states to compute for one metal centre.
 
@@ -1059,7 +1060,10 @@ def propose_spin_states_for_metal(
     ``first`` is the multiplicity to try first: for a 4d/5d centre that is
     the low-spin one (large Delta_o), for a first-row centre the high-spin
     one (the ligand-field strength is what decides, so the scan is what
-    answers it, not a guess). ``broken_symmetry`` is True where an
+    answers it, not a guess). ``geometry`` is the coordination geometry the
+    request states (``"square-planar"``, ``"octahedral"``,
+    ``"tetrahedral"``) or None when it states none; it changes which d8
+    state leads, and nothing else. ``broken_symmetry`` is True where an
     antiferromagnetically coupled pair is worth starting: an even d-count
     with at least two unpaired electrons, where the low-spin closed shell
     and the BS open shell are different wave functions for the same
@@ -1082,16 +1086,27 @@ def propose_spin_states_for_metal(
     mults = _multiplicities_for_dcount(n)
     # Which one to try first. A heavy centre's low-spin occupancy is the
     # reference (large Delta_o), so M=1 leads. d8 is the other row where
-    # the answer is not "high spin first": square-planar d8 is
-    # diamagnetic, and the archive agrees -- of the 148 d8-consistent
-    # nickel steps, M=1 won 111 and M=3 won 35. Keeping the 3d default
-    # here would have the proposal say "M=3 first" while its own evidence
-    # says the singlet usually wins. Every other 3d centre is high-spin
-    # first, because Delta_o is not predictable from a d-count.
-    if heavy or n == 8:
-        first = mults[0]
+    # the answer is not "high spin first" -- but only where the geometry
+    # says so. Square-planar d8 is diamagnetic, and the archive agrees: of
+    # the 148 d8-consistent nickel steps, M=1 won 111 and M=3 won 35. That
+    # sample is dominated by square-planar systems, though, and an
+    # octahedral (t2g^6 eg^2) or tetrahedral Ni(II) is genuinely high
+    # spin -- applying the square-planar statistic to those would be a
+    # sample that does not look like the user. So the geometry the request
+    # states decides which side leads; when it states none, the archive
+    # majority leads and the reason says the geometry is unstated. Every
+    # other 3d centre is high-spin first, because Delta_o is not
+    # predictable from a d-count.
+    high_spin_first = mults[-1]
+    low_spin_first = mults[0]
+    if heavy:
+        first = low_spin_first
+    elif n == 8 and geometry in ("octahedral", "tetrahedral"):
+        first = high_spin_first
+    elif n == 8:
+        first = low_spin_first
     else:
-        first = mults[-1]
+        first = high_spin_first
     # Broken symmetry is proposed for d6 only, and the reason is narrow:
     # it is the even d-count whose low-spin state is a CLOSED shell
     # (t2g^6, M=1) while its high-spin state carries 4 unpaired electrons
@@ -1109,8 +1124,24 @@ def propose_spin_states_for_metal(
     # that read as M=3-first while `first` was 1.
     if heavy:
         lead = "try M=1 first: a heavy centre's large Delta_o makes the low-spin occupancy the reference"
+    elif n == 8 and geometry == "square-planar":
+        lead = ("try M=1 first: square-planar d8 is diamagnetic, and the "
+                "archive's d8-consistent nickel steps put M=1 ahead of M=3 "
+                "(111 to 35 of 148)")
+    elif n == 8 and geometry in ("octahedral", "tetrahedral"):
+        if geometry == "octahedral":
+            lead = (f"try M={first} first: an octahedral d8 centre is "
+                    "t2g^6 eg^2 with two unpaired electrons, so M=1 is kept "
+                    "only as the diamagnetic comparison")
+        else:
+            lead = (f"try M={first} first: a tetrahedral d8 centre is "
+                    "e^4 t2^4 with two unpaired electrons, so M=1 is kept "
+                    "only as the diamagnetic comparison")
     elif n == 8:
-        lead = "try M=1 first: square-planar d8 is diamagnetic, and the archive's d8-consistent nickel steps put M=1 ahead of M=3"
+        lead = (f"try M={first} first: the archive's d8-consistent nickel "
+                "steps favour it (111 to 35 of 148), but the geometry is "
+                "not stated here and an octahedral or tetrahedral d8 centre "
+                "is high spin, so M=3 is computed as well")
     else:
         lead = (f"try M={first} first, but which one wins is what the scan "
                 "decides: a first-row centre's Delta_o is not predictable "
@@ -1129,6 +1160,7 @@ def propose_spin_states_for_metal(
         "oxidation_state": int(oxidation_state),
         "dcount": n,
         "row": row,
+        "geometry": geometry,
         "multiplicities": mults,
         "first": first,
         "broken_symmetry": bs,
@@ -1164,6 +1196,35 @@ _METAL_OX_RE = re.compile(
     + _OXIDE_SUFFIX
     + r"|(?<![A-Za-z])(" + _SYMBOL_ALT + r")\s*([0-9])\+" + _OXIDE_SUFFIX,
 )
+
+
+_GEOMETRY_RE = re.compile(
+    r"square[\s-]*planar|octahedral|tetrahedral|trigonal[\s-]*bipyramidal"
+    r"|five[\s-]*coordinate|four[\s-]*coordinate|six[\s-]*coordinate",
+    re.IGNORECASE,
+)
+
+
+def parse_geometry_request(text: str) -> Optional[str]:
+    """The coordination geometry a request states, or None.
+
+    Only used to decide which d8 state leads: the metal alone cannot say
+    whether a d8 centre is square planar (diamagnetic) or octahedral /
+    tetrahedral (high spin), and the archive's nickel majority is the
+    square-planar case. A request that states no geometry leaves this
+    None, and the proposal then says so in its reason rather than
+    assuming the square-planar answer.
+    """
+    if not text:
+        return None
+    m = _GEOMETRY_RE.search(str(text))
+    if not m:
+        return None
+    word = m.group(0).lower().replace("-", " ")
+    word = re.sub(r"\s+", " ", word).replace(" ", "-")
+    if word in {"square-planar", "octahedral", "tetrahedral"}:
+        return word
+    return None
 
 
 def parse_metal_request(text: str) -> Optional[Dict[str, Any]]:
@@ -1213,4 +1274,5 @@ def propose_sequence_for_request(text: str) -> Optional[Dict[str, Any]]:
     if not parsed:
         return None
     return propose_spin_states_for_metal(parsed["metal"],
-                                         parsed["oxidation_state"])
+                                         parsed["oxidation_state"],
+                                         geometry=parse_geometry_request(text))
