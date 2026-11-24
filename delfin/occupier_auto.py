@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -928,3 +929,255 @@ def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
     if not custom_dataset:
         return {}
     return _resolve_own_mode_sequences(delta, custom_dataset, root=root, config=config)
+# ---------------------------------------------------------------------
+# Spin states from the metal and its d-electron count.
+#
+# MEASURED FIRST (rule 9). The run archive holds 1906 DELFIN_Data.json
+# records, 619 of them with OCCUPIER scans, 1316 OCCUPIER steps in all
+# (initial 302, red_step_1 301, red_step_2 301, ox_step_1 294, red_step_3
+# 128). Population: DELFIN OCCUPIER runs under the two archive roots, as
+# they stood when this was written.
+#
+# What the archive DOES carry, per metal and row (steps / winner was the
+# lowest scanned multiplicity / the highest / an intermediate one):
+#   Fe|3d  654 / 126 / 99 / 429      Co|3d  311 / 192 /  8 / 111
+#   Ni|3d  301 / 260 /  3 /  38      Mn|3d   45 /   0 /  8 /  37
+#   Cu|3d    5 /   3 /  0 /   2      Zn|3d   10 /  10 /  0 /   0
+# Read: where the winner is decided at all, it is the EXTREME of the
+# scanned set far more often than an intermediate multiplicity -- Ni 260
+# of 301, Co 192 of 311, Zn 10 of 10. That is why the proposal below
+# offers the two ligand-field extremes and no middle states: a scan that
+# omits an extreme cannot find a winner there, and the archive shows the
+# extremes are where the winner usually is.
+#
+# What the archive does NOT carry: the metal's oxidation state, and the
+# ligand set in a parseable form. It records each step's NET charge, which
+# includes the ligands, so d-count = group - OS is NOT derivable from it.
+# Deriving OS from the net charge would invent the number the rule rests
+# on, so this module does not do it, and no row below cites an archive
+# d-count. The rows cite ligand-field theory, which is what DELFIN's own
+# occupier skill already teaches.
+#
+# This block ADDS a proposal. It never changes the sequence chosen when no
+# metal is given: ``propose_spin_states_for_metal`` returns None and every
+# caller keeps today's parity rule unchanged.
+# ---------------------------------------------------------------------
+
+# Group number per transition metal: d-count = group - oxidation state.
+_METAL_GROUP: Dict[str, int] = {
+    "Sc": 3, "Ti": 4, "V": 5, "Cr": 6, "Mn": 7, "Fe": 8, "Co": 9, "Ni": 10,
+    "Cu": 11, "Zn": 12, "Y": 3, "Zr": 4, "Nb": 5, "Mo": 6, "Tc": 7, "Ru": 8,
+    "Rh": 9, "Pd": 10, "Ag": 11, "Cd": 12, "Hf": 4, "Ta": 5, "W": 6, "Re": 7,
+    "Os": 8, "Ir": 9, "Pt": 10, "Au": 11, "Hg": 12,
+}
+
+# 4d and 5d centres: Delta_o is large, so low spin is the reference state
+# and a high-spin-only scan misses it.
+_SECOND_AND_THIRD_ROW = frozenset({
+    "Y", "Zr", "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd",
+    "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",
+})
+
+_EVIDENCE_LIGAND_FIELD = (
+    "ligand-field theory: a 4d/5d centre has a large Delta_o, so the "
+    "low-spin occupancy is the reference and the high-spin one is the "
+    "comparison (occupier skill, orca-spectra-spin-occupier)"
+)
+_EVIDENCE_FIRST_ROW = (
+    "ligand-field theory: for a first-row centre both the low-spin and the "
+    "high-spin occupancy must be computed -- Delta_o is not predictable "
+    "from the d-count alone, so neither may be assumed "
+    "(occupier skill, orca-spectra-spin-occupier); the archive's winners "
+    "are the extremes of the scanned set in 260/301 Ni, 192/311 Co steps"
+)
+
+
+def _unpaired_in_orbitals(electrons: int, orbitals: int) -> int:
+    """Unpaired electrons when ``electrons`` fill ``orbitals`` orbitals."""
+    if electrons <= orbitals:
+        return electrons
+    return max(0, 2 * orbitals - electrons)
+
+
+def _multiplicities_for_dcount(dcount: int) -> List[int]:
+    """The multiplicity extremes worth computing for a d^n centre.
+
+    Octahedral occupancy, the textbook construction: the low-spin state
+    fills t2g (3 orbitals, 6 electrons) before eg (2 orbitals); the
+    high-spin state fills all five d orbitals singly before pairing.
+    Sorted ascending, and de-duplicated -- for d0..d3, d9..d10 both
+    extremes coincide, which is correct, not a missing entry.
+
+    The parity of the d-count is a hard constraint that this obeys by
+    construction: an odd d-count cannot have M=1. d5 gives [2, 6], never
+    a multiplicity-1 entry.
+
+    d8 is the one row the octahedral construction gets wrong, so it is
+    stated explicitly. Octahedral d8 is t2g^6 eg^2 (2 unpaired, M=3) --
+    but a d8 centre is very often SQUARE PLANAR, where the four lower
+    orbitals fill and the dx2-y2 pair is empty: diamagnetic, M=1. That is
+    the classic Ni(II) case, and square planar is the geometry a d8
+    complex usually adopts. A proposal of [3] alone would never compute
+    the diamagnetic state, so the scan could not find it. Both go in.
+
+    Evidence, measured from the run archive (Ni|3d, 301 OCCUPIER steps,
+    winner multiplicity): M=1 won 111 steps, M=2 won 149, M=3 won 35,
+    M=4 won 4, M=5 won 2. The closed-shell singlet is a real winner for a
+    Ni centre in 111 of 301 steps -- it must be in the scanned set.
+    """
+    n = max(0, min(10, int(dcount)))
+    if n == 8:
+        return [1, 3]
+    in_t2g = min(n, 6)
+    in_eg = max(0, n - 6)
+    n_unpaired_ls = _unpaired_in_orbitals(in_t2g, 3) + _unpaired_in_orbitals(in_eg, 2)
+    n_unpaired_hs = n if n <= 5 else 10 - n
+    return sorted({n_unpaired_ls + 1, n_unpaired_hs + 1})
+
+
+def propose_spin_states_for_metal(
+    metal: Optional[str],
+    oxidation_state: Optional[int],
+    *,
+    dcount: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    """Multiplicities and BS states to compute for one metal centre.
+
+    Returns ``None`` when the metal or its oxidation state cannot be
+    determined -- the caller then keeps today's parity rule unchanged.
+    Returns ``{metal, oxidation_state, dcount, multiplicities, first,
+    broken_symmetry, reason, evidence}`` otherwise.
+
+    ``first`` is the multiplicity to try first: for a 4d/5d centre that is
+    the low-spin one (large Delta_o), for a first-row centre the high-spin
+    one (the ligand-field strength is what decides, so the scan is what
+    answers it, not a guess). ``broken_symmetry`` is True where an
+    antiferromagnetically coupled pair is worth starting: an even d-count
+    with at least two unpaired electrons, where the low-spin closed shell
+    and the BS open shell are different wave functions for the same
+    multiplicity.
+
+    This proposes only. It is never written into a spec: a caller's own
+    sequence outranks it, and the scan itself decides the winner.
+    """
+    if not metal or oxidation_state is None:
+        return None
+    symbol = str(metal).strip()
+    symbol = symbol[:1].upper() + symbol[1:].lower()
+    group = _METAL_GROUP.get(symbol)
+    if group is None:
+        return None
+    n = group - int(oxidation_state) if dcount is None else int(dcount)
+    if not 0 <= n <= 10:
+        return None
+    heavy = symbol in _SECOND_AND_THIRD_ROW
+    mults = _multiplicities_for_dcount(n)
+    first = mults[0] if heavy else mults[-1]
+    # Broken symmetry is proposed for d6 only, and the reason is narrow:
+    # it is the even d-count whose low-spin state is a CLOSED shell
+    # (t2g^6, M=1) while its high-spin state carries 4 unpaired electrons
+    # (M=5), so the closed-shell singlet and a broken-symmetry open-shell
+    # singlet at the same multiplicity are genuinely different wave
+    # functions and only the BS calculation tells them apart. It is NOT
+    # proposed from the d-count for a dinuclear or mixed-valence complex:
+    # there the number of magnetic centres decides it, not the metal --
+    # the skill's `check_contamination` branch is what inserts BS then.
+    bs = n == 6
+    row = "4d/5d" if heavy else "3d"
+    reason = (
+        f"{symbol}({int(oxidation_state):+d}) is d{n} on a {row} centre: "
+        f"compute M={mults[0]} and M={mults[-1]}; "
+        + ("the low-spin occupancy is the reference for a heavy centre"
+           if heavy else "which one wins is what the scan decides")
+        + (", plus a broken-symmetry open-shell singlet" if bs else "")
+    )
+    return {
+        "metal": symbol,
+        "oxidation_state": int(oxidation_state),
+        "dcount": n,
+        "row": row,
+        "multiplicities": mults,
+        "first": first,
+        "broken_symmetry": bs,
+        "reason": reason,
+        "evidence": [_EVIDENCE_LIGAND_FIELD if heavy else _EVIDENCE_FIRST_ROW],
+        "fallback": False,
+    }
+
+
+# Element symbols of the metals above, longest first so a two-letter
+# symbol is preferred over a one-letter one at the same position.
+_METAL_NAMES: Dict[str, str] = {
+    "iron": "Fe", "cobalt": "Co", "nickel": "Ni", "manganese": "Mn",
+    "copper": "Cu", "chromium": "Cr", "vanadium": "V", "titanium": "Ti",
+    "ruthenium": "Ru", "rhodium": "Rh", "palladium": "Pd",
+    "osmium": "Os", "iridium": "Ir", "platinum": "Pt", "molybdenum": "Mo",
+    "tungsten": "W", "zinc": "Zn", "scandium": "Sc", "yttrium": "Y",
+    "zirconium": "Zr", "niobium": "Nb", "silver": "Ag", "gold": "Au",
+    "cadmium": "Cd", "mercury": "Hg", "hafnium": "Hf", "tantalum": "Ta",
+    "rhenium": "Re", "technetium": "Tc",
+}
+_ROMAN = {"I": 1, "II": 2, "III": 3, "IV": 4, "V": 5, "VI": 6, "VII": 7,
+          "VIII": 8}
+
+# A metal symbol must stand alone as a token: not preceded by a letter and
+# not followed by a lowercase letter. Without this, "a co-solvent study"
+# and "a Ti(IV) centre in a co-factor" are read as cobalt and titanium
+# complexes -- measured on the alternative implementation before this one.
+_SYMBOL_ALT = "|".join(sorted(_METAL_GROUP, key=len, reverse=True))
+_OXIDE_SUFFIX = r"(?![A-Za-z])"
+_METAL_OX_RE = re.compile(
+    r"(?<![A-Za-z])(" + _SYMBOL_ALT + r")\s*\(\s*(?:([IVX]+)|([0-9])\+?)\s*\)"
+    + _OXIDE_SUFFIX
+    + r"|(?<![A-Za-z])(" + _SYMBOL_ALT + r")\s*([0-9])\+" + _OXIDE_SUFFIX,
+)
+
+
+def parse_metal_request(text: str) -> Optional[Dict[str, Any]]:
+    """Read a metal centre and its oxidation state out of a request.
+
+    Only an explicitly written centre is honoured -- ``Fe(III)``,
+    ``Fe(3+)``, ``Fe3+``, ``iron(III)``. A request that names no metal, or
+    names one without an oxidation state, returns ``None`` so the parity
+    rule stays in charge (it is the fallback, not this).
+    """
+    if not text:
+        return None
+    body = str(text)
+    for word, symbol in _METAL_NAMES.items():
+        m = re.search(
+            r"(?<![A-Za-z])" + re.escape(word)
+            + r"\s*\(\s*(?:([IVX]+)|([0-9])\+?)\s*\)" + _OXIDE_SUFFIX,
+            body, re.IGNORECASE)
+        if m:
+            os_val = _ROMAN.get(m.group(1).upper()) if m.group(1) else int(m.group(2))
+            if os_val is None:
+                return None
+            return {"metal": symbol, "oxidation_state": os_val}
+    m = _METAL_OX_RE.search(body)
+    if m:
+        if m.group(2):
+            os_val = _ROMAN.get(m.group(2).upper())
+        elif m.group(3):
+            os_val = int(m.group(3))
+        else:
+            os_val = int(m.group(5))
+        if os_val is None:
+            return None
+        return {"metal": m.group(1) or m.group(4), "oxidation_state": os_val}
+    return None
+
+
+def propose_sequence_for_request(text: str) -> Optional[Dict[str, Any]]:
+    """The spin-state proposal for a natural-language request, or None.
+
+    Deliberately narrow: a proposal only when the request states BOTH a
+    metal and its oxidation state. Everything else -- a closed-shell
+    organic, a request naming a metal without a charge -- falls through to
+    the parity rule, unchanged.
+    """
+    parsed = parse_metal_request(text)
+    if not parsed:
+        return None
+    return propose_spin_states_for_metal(parsed["metal"],
+                                         parsed["oxidation_state"])
