@@ -1020,10 +1020,18 @@ def _multiplicities_for_dcount(dcount: int) -> List[int]:
     complex usually adopts. A proposal of [3] alone would never compute
     the diamagnetic state, so the scan could not find it. Both go in.
 
-    Evidence, measured from the run archive (Ni|3d, 301 OCCUPIER steps,
-    winner multiplicity): M=1 won 111 steps, M=2 won 149, M=3 won 35,
-    M=4 won 4, M=5 won 2. The closed-shell singlet is a real winner for a
-    Ni centre in 111 of 301 steps -- it must be in the scanned set.
+    Evidence, measured from the run archive. The population is the 301
+    OCCUPIER steps whose system contains nickel ("Ni|3d" in
+    scratch/population.json), and their winner multiplicities are
+    M=1 111, M=2 149, M=3 35, M=4 4, M=5 2. That row is per ELEMENT, and
+    an element is not a d-count: 153 of those winners sit at an even
+    multiplicity, which a d8 centre cannot have (8 d electrons leave an
+    even number unpaired, so the multiplicity is odd). Restricting to the
+    148 d8-CONSISTENT steps, M=1 won 111 (75 %) and M=3 won 35. So the
+    closed-shell singlet is a real winner for a nickel centre, and it
+    must be in the scanned set -- but the number that says so is 111 of
+    148, not 111 of 301, and the d-count itself is inferred from nickel,
+    never recorded by the archive.
     """
     n = max(0, min(10, int(dcount)))
     if n == 8:
@@ -1072,7 +1080,18 @@ def propose_spin_states_for_metal(
         return None
     heavy = symbol in _SECOND_AND_THIRD_ROW
     mults = _multiplicities_for_dcount(n)
-    first = mults[0] if heavy else mults[-1]
+    # Which one to try first. A heavy centre's low-spin occupancy is the
+    # reference (large Delta_o), so M=1 leads. d8 is the other row where
+    # the answer is not "high spin first": square-planar d8 is
+    # diamagnetic, and the archive agrees -- of the 148 d8-consistent
+    # nickel steps, M=1 won 111 and M=3 won 35. Keeping the 3d default
+    # here would have the proposal say "M=3 first" while its own evidence
+    # says the singlet usually wins. Every other 3d centre is high-spin
+    # first, because Delta_o is not predictable from a d-count.
+    if heavy or n == 8:
+        first = mults[0]
+    else:
+        first = mults[-1]
     # Broken symmetry is proposed for d6 only, and the reason is narrow:
     # it is the even d-count whose low-spin state is a CLOSED shell
     # (t2g^6, M=1) while its high-spin state carries 4 unpaired electrons

@@ -71,11 +71,16 @@ def test_a_d6_low_spin_4d_metal_does_not_get_a_high_spin_only_sequence():
 
 
 def test_a_square_planar_d8_centre_includes_the_diamagnetic_state():
-    """Ni(II) d8: square planar is diamagnetic, and it must be computable.
+    """Ni(II) d8: square planar is diamagnetic, and it must come first.
 
-    Fails if: the d8 row returns [3] alone (octahedral only). The archive
-    shows the closed-shell singlet winning 111 of 301 Ni steps, so a scan
-    that omits M=1 could not have found it.
+    Fails if: the d8 row returns [3] alone (octahedral only), or names the
+    triplet as the state to try first. The archive's nickel steps whose
+    winner is d8-CONSISTENT -- i.e. won at an ODD multiplicity, which an
+    even d-count requires -- number 148, and M=1 won 111 of them against
+    M=3's 35. A scan that omits M=1 could not have found it, and one that
+    tries M=3 first starts from the state that usually loses. The 301-step
+    whole-element row is NOT the population: 153 of its winners sit at an
+    even multiplicity, which no d8 centre can have.
     """
     result = wb.build_workflow("Set up a Ni(II) d8 square planar complex")
     spin = result["spin_states"]
@@ -84,6 +89,9 @@ def test_a_square_planar_d8_centre_includes_the_diamagnetic_state():
     assert 1 in spin["multiplicities"], (
         f"a square-planar d8 centre is diamagnetic; got {spin['multiplicities']}")
     assert 3 in spin["multiplicities"], "the octahedral triplet is the comparison"
+    assert spin["first"] == 1, (
+        "the diamagnetic state is the one that usually wins for d8, so it is "
+        f"tried first; got first={spin['first']}")
 
 
 # ---------------------------------------------------------------------
