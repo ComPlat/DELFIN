@@ -232,3 +232,121 @@ def test_two_samples_of_one_quantity_keep_their_own_file_names():
     for n in names:
         assert n.startswith("run-2s-")
         assert n.endswith("-signal.json")
+
+
+def test_a_repeat_measurement_keeps_the_data_file_the_analysis_names(finished_run):
+    """Every data file the container tree names must be IN the bundle.
+
+    a1's two-sample test asserts the tree's names are distinct, which a
+    repeat measurement satisfies too: two analyses of ONE sample and ONE
+    quantity were both named ``<run>-<sample>-<quantity>.json``, while the
+    bundle's per-measurement members carry a ``-<i>`` index. So the analysis
+    named a file that the bundle did not contain -- the link the whole
+    "analyses with their data files" requirement is about, broken, with a
+    green test over it.
+
+    This asserts the LINK, not the distinctness: whatever the tree names, the
+    person importing the bundle must be able to open it.
+    """
+    import zipfile
+
+    d = finished_run["dir"]
+    with zipfile.ZipFile(finished_run["bundle"]) as z:
+        members = set(z.namelist())
+        model = json.loads(z.read("chemotion_import.json"))
+
+    claimed = [at["filename"]
+               for s in model["samples"]
+               for an in s["container"]["children"]
+               for ds in an["children"]
+               for at in ds["attachments"]]
+    assert claimed, "the tree names no data file at all"
+    missing = [c for c in claimed if f"attachments/{c}" not in members]
+    assert not missing, (
+        f"an analysis names a data file that is not in the bundle: {missing}; "
+        f"bundle has {sorted(m for m in members if 'signal' in m)}")
+
+
+def test_two_measurements_of_one_sample_get_two_files():
+    """The case above, without a campaign: one sample, one quantity, twice.
+
+    Red on the arm before the fix for the named reason -- the two analyses
+    both name ``run-2m-S-001-signal.json`` and the bundle has ``-1``/``-2``.
+    """
+    from delfin.lab import chemotion
+
+    rec = {
+        "schema": "delfin.lab.run/1", "run_id": "run-2m",
+        "status": "completed", "installation": "demo-lab",
+        "manifest": {"version": 1, "checksum": "abc"},
+        "plan": {"id": "wf"}, "plan_digest": "d",
+        "actor": {"person": "alice"}, "started": None, "ended": None,
+        "steps": [], "deviations": [], "device_log": [],
+        "measurements": [
+            {"sample": "S-001", "device": "uvvis", "quantity": "signal",
+             "value": 0.42, "unit": "au", "container": "vial-7", "ts": 1},
+            {"sample": "S-001", "device": "uvvis", "quantity": "signal",
+             "value": 0.47, "unit": "au", "container": "vial-7", "ts": 2},
+        ],
+        "samples": {"S-001": {"container": "vial-7", "module": "a",
+                              "position": "A1"}},
+        "fair": {"identifier": "id", "creator": "alice", "license": None,
+                 "created": None, "provenance": {}},
+    }
+    model = chemotion.build_import(rec)
+    tree = [at["filename"]
+            for s in model["samples"]
+            for an in s["container"]["children"]
+            for ds in an["children"]
+            for at in ds["attachments"]]
+    bundle = set(chemotion.import_files(model))
+    assert len(tree) == 2, tree
+    assert len(set(tree)) == 2, f"two analyses share a file name: {tree}"
+    missing = [n for n in tree if f"attachments/{n}" not in bundle]
+    assert not missing, f"the tree names files the bundle lacks: {missing}"
+
+
+def test_a_campaign_that_measures_one_sample_twice_links_each_file(lab):
+    """The repeat case, driven through ``Coordinator.run`` (the real path).
+
+    ``test_two_measurements_of_one_sample_get_two_files`` proves the mapping;
+    this drives the campaign and reads the ZIP that a run actually left, so
+    the defect cannot come back through the mapping's callers instead.
+    """
+    import time
+    import zipfile
+
+    from delfin.lab.workflow import Coordinator, run_dir
+    from test_lab_edge_and_workflow import (WF, _approve_pending, _place_vial,
+                                            _setup)
+
+    # the demo campaign, with its single measurement taken twice
+    wf = json.loads(json.dumps(WF))
+    measure = [s for s in wf["steps"] if s["op"] == "measure"]
+    wf["steps"].append({**measure[0], "id": "uv2"})
+
+    clk = FakeClock(time.time())
+    manifest, edges, clients = _setup(clk)
+    _place_vial(clients)
+    coord = Coordinator(manifest, clients, person="alice", name="c1",
+                        clock=clk, sleep=clk.sleep)
+    cp = coord.run(wf, "run-repeat")
+    if cp["status"] == "waiting_approval":
+        _approve_pending(cp, clk)
+        cp = coord.run(wf, "run-repeat")
+    assert cp["status"] == "completed", cp["deviations"]
+
+    d = run_dir("run-repeat")
+    with zipfile.ZipFile(d / "chemotion_import.zip") as z:
+        members = set(z.namelist())
+        model = json.loads(z.read("chemotion_import.json"))
+
+    tree = [at["filename"]
+            for s in model["samples"]
+            for an in s["container"]["children"]
+            for ds in an["children"]
+            for at in ds["attachments"]]
+    assert len(tree) == 2, tree
+    assert len(set(tree)) == 2, tree
+    missing = [n for n in tree if f"attachments/{n}" not in members]
+    assert not missing, f"the tree names files the bundle lacks: {missing}"

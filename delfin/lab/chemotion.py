@@ -154,6 +154,28 @@ def _measurement_file(m: dict) -> str:
     return json.dumps(m, indent=1, sort_keys=True, default=str)
 
 
+def _data_filename(rec: dict, sample: str, measurement: dict, n: int,
+                   total: int) -> str:
+    """The name of one measurement's data file -- the ONE place it is decided.
+
+    Run, sample and quantity identify the analysis; a repeat measurement of
+    the same sample for the same quantity would repeat the name, so the
+    measurement's ordinal within that (sample, quantity) group is appended
+    when there is more than one. ``total`` is what makes the name stable per
+    record: the index appears for every measurement of a repeated pair and
+    for none of a single one, so a name never depends on which measurement
+    is being written.
+
+    Both the container tree and the bundle's attachments get their name from
+    here. They were computed separately before, and drifted: the tree said
+    ``<run>-<sample>-<quantity>.json`` while the bundle held
+    ``...-<i>.json``, so an analysis named a file the import did not contain.
+    """
+    base = (f"{rec.get('run_id')}-{sample or 'sample'}-"
+            f"{measurement.get('quantity') or 'measurement'}")
+    return f"{base}-{n}.json" if total > 1 else f"{base}.json"
+
+
 def _conditions(rec: dict) -> list[dict]:
     """The ``set`` steps of the run: what it held its devices at.
 
@@ -189,7 +211,8 @@ def _conditions(rec: dict) -> list[dict]:
     return out
 
 
-def analysis_container(measurement: dict, rec: dict) -> dict:
+def analysis_container(measurement: dict, rec: dict, n: int = 1,
+                       total: int = 1) -> dict:
     """One analysis as the container tree the ELN persists.
 
     The shape is the client's own (``analyses.json`` / ``dataset.json``), not
@@ -225,12 +248,12 @@ def analysis_container(measurement: dict, rec: dict) -> dict:
         "attachments": [{
             "id": str(uuid.uuid4()),
             "is_new": True,
-            # run AND sample AND quantity: two samples measured for the same
-            # quantity both produced "<run>-signal.json" before, so the file
-            # an analysis carries could not be told apart from its twin.
-            "filename": f"{rec.get('run_id')}-"
-                        f"{measurement.get('sample') or 'sample'}-"
-                        f"{measurement.get('quantity') or 'measurement'}.json",
+            # the ONE name both this tree and the bundle use (see
+            # _data_filename): it carries the sample so two samples of one
+            # quantity differ, and the ordinal so a repeat measurement of
+            # ONE sample differs from its twin.
+            "filename": _data_filename(
+                rec, measurement.get("sample"), measurement, n, total),
             "content_type": "application/json",
             "checksum": hashlib.md5(
                 _measurement_file(measurement).encode("utf-8")).hexdigest(),
@@ -374,6 +397,20 @@ def build_import(rec: dict) -> dict:
     for m in rec.get("measurements") or []:
         by_sample.setdefault(m.get("sample"), []).append(m)
 
+    def _repeat_index(sid: str, m: dict) -> tuple[int, int]:
+        """Where ``m`` sits among this sample's measurements of its quantity.
+
+        The count is per (sample, quantity): two measurements of ``signal`` on
+        S-001 are a repeat, two measurements of different quantities are not.
+        The position is found by IDENTITY, not equality: two measurements that
+        happen to carry the same values are still two measurements, and
+        ``list.index`` would give both the same ordinal.
+        """
+        same = [x for x in by_sample.get(sid, [])
+                if x.get("quantity") == m.get("quantity")]
+        n = next((i + 1 for i, x in enumerate(same) if x is m), 1)
+        return n, len(same)
+
     samples = []
     for sid, s in (rec.get("samples") or {}).items():
         measurements = by_sample.get(sid, [])
@@ -390,7 +427,7 @@ def build_import(rec: dict) -> dict:
                 "container_type": "root",
                 "extended_metadata": {"report": True},
                 "attachments": [],
-                "children": [analysis_container(m, rec)
+                "children": [analysis_container(m, rec, *_repeat_index(sid, m))
                              for m in measurements],
             },
             "analyses": [
@@ -432,12 +469,14 @@ def build_import(rec: dict) -> dict:
         _attachment("fair.json",
                     json.dumps(_fair(rec), indent=1, sort_keys=True)),
     ]
-    # one data file per measurement, the bytes of the analysis that carries it
+    # one data file per measurement, the bytes of the analysis that carries it;
+    # the NAME comes from _data_filename so it matches the one the container
+    # tree gives that analysis (they were named separately and drifted).
     for sid in sorted(by_sample):
-        for i, m in enumerate(by_sample[sid], start=1):
+        for m in by_sample[sid]:
+            n, total = _repeat_index(sid, m)
             attachments.append(_attachment(
-                f"{rec.get('run_id')}-{sid}-{m.get('quantity') or 'm'}-{i}.json",
-                _measurement_file(m)))
+                _data_filename(rec, sid, m, n, total), _measurement_file(m)))
 
     products = [{"sample": s["name"], "container": s.get("external_label"),
                  "location": s.get("location"), "module": (
