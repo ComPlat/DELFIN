@@ -52,7 +52,11 @@ def test_build_import_maps_record_to_research_plan():
     from delfin.lab.chemotion import build_import
 
     model = build_import(_record())
-    assert model["format"] == "delfin.lab.chemotion/1"
+    # The format string moved with the payload: the model now also carries the
+    # reaction with its conditions, the container tree each analysis lives in,
+    # the provenance and the FAIR slots, so it is a different format rather
+    # than the same one with more keys.
+    assert model["format"] == "delfin.lab.chemotion-import/1"
     elem = model["element"]
     assert elem["type"] == "research_plan"
     assert elem["name"] == "Automated run run-42"
