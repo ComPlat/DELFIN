@@ -140,6 +140,63 @@ def test_both_of_two_fast_jobs_are_announced_with_their_real_exit_code(
             f"held a code")
 
 
+def test_the_notice_never_says_none_when_the_process_holds_a_code(
+        box, perms):
+    """Deterministic form of the race above, which only lands half the time.
+
+    The window (child reaped, watchdog not yet written) is real but short:
+    on the unfixed tree this file's first test is red in only 6 of 12 runs,
+    which is a weak red. So the state is CONSTRUCTED instead of raced: a
+    real job is started and really finishes, and then the persisted record
+    is rewound to what it looks like in that window -- ``finished_at`` and
+    ``exit_code`` cleared, the pid already dead -- while this process still
+    holds the code in memory. That is exactly the state the defect
+    mishandled, reached without waiting for it.
+
+    What makes this fail is the announced ``None``: the drain must ask the
+    process that started the job rather than announce a status it has.
+    """
+    out, raw = _call("bash_background",
+                     {"command": "echo hi; exit 3",
+                      "description": "a job that ends non-zero"}, perms)
+    ids = _ids(out)
+    assert ids, f"bash_background started no job: {raw[:400]}"
+    jid = ids[0]
+
+    # Let it really finish, so the in-memory job knows its code.
+    known = None
+    for _ in range(600):
+        job = bash_jobs._REGISTRY._jobs.get(jid)
+        if job is not None:
+            known = job.poll()
+            if known is not None:
+                break
+        time.sleep(0.02)
+    assert known is not None, (
+        f"job {jid} never finished in this process, so its code cannot be "
+        f"held; the test cannot construct the window")
+
+    # Rewind the persisted record to the mid-window state.
+    reg = bash_jobs._load_registry_file(str(box))
+    rec = reg["jobs"][jid]
+    rec["exit_code"] = None
+    rec["finished_at"] = None
+    rec["claimed_at"] = 0.0
+    rec["acknowledged"] = False
+    bash_jobs._atomic_write_json(bash_jobs._registry_path(str(box)), reg)
+
+    events = [e for e in bash_jobs.drain_finished_events(str(box)) or ()
+              if e.get("job_id") == jid]
+
+    # Either the drain waits (no event yet, which is the honest "not known
+    # yet") or it reports the code it holds -- never None.
+    for e in events:
+        assert e.get("exit_code") == known, (
+            f"the drain announced exit_code={e.get('exit_code')!r} for a job "
+            f"this process knows ended {known}: a notice that says the status "
+            f"is unknown while it is in hand")
+
+
 def test_the_announced_code_and_the_recorded_code_agree(box, perms):
     """The notice and ``bash_output`` may not contradict each other.
 
