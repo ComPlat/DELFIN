@@ -74,8 +74,14 @@ def waves(tmp_path, monkeypatch):
     subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
     member = tmp_path / "member.py"
     member.write_text(_MEMBER)
-    cfg = dict(wave._DEFAULTS, waves_root=str(root), min_available_gb=0, max_load_per_core=1e9)
+    # A slice of the test's own: the shipped name is the live swarm's, and an
+    # emergency stop in a test stopped it, ending a running wave (2026-11-24).
+    cfg = dict(wave._DEFAULTS, waves_root=str(root), min_available_gb=0, max_load_per_core=1e9,
+               slice=f"delfin-test-{os.getpid()}.slice")
     monkeypatch.setattr(wave, "settings", lambda: dict(cfg))
+    systemctl = []
+    monkeypatch.setattr(guard, "_systemctl", lambda *a: systemctl.append(list(a))
+                        or subprocess.CompletedProcess(a, 0, "", ""))
     monkeypatch.setattr(wave, "_scoped", lambda cmd, cfg: cmd)
     monkeypatch.setattr(wave, "_refuse_on_a_login_node", lambda: None)
     monkeypatch.setattr(wave, "member_argv", lambda run, task, session="", cfg=None, python=None:
@@ -83,7 +89,7 @@ def waves(tmp_path, monkeypatch):
                          "--cwd", str(wave.run_dir(run) / task["id"])]
                         + (["--session", session] if session else []))
     monkeypatch.setattr(guard, "_attention", lambda *a, **k: None)
-    return {"root": root, "repo": repo}
+    return {"root": root, "repo": repo, "systemctl": systemctl}
 
 
 def _wait_ended(run, tid, timeout=30):
@@ -323,6 +329,27 @@ def test_a_member_ended_by_the_endpoint_is_resumed_not_finished(waves, monkeypat
     assert after[0]["did"] == "asked for a real run"      # the stage goes on as usual
 
 
+def test_a_member_killed_from_outside_is_resumed_not_finished(waves, monkeypatch):
+    """A session with no result line was killed (a stopped slice, an OOM
+    kill), not finished: asking it for real runs and then marking it final
+    turned ten killed integrators into ten empty finals (2026-11-24)."""
+    import signal
+    wave.start("r31", [_task("a", "sleep:60")], waves["repo"], wait=False)
+    a = wave.load_state("r31")["agents"]["a"]
+    os.kill(int(a["pid"]), signal.SIGKILL)
+    _wait_ended("r31", "a")
+    assert wave._last_result(Path(a["log"])) == {}
+    resumed = []
+    monkeypatch.setattr(wave, "resume", lambda run, tid, note="", **k: resumed.append(note))
+    monkeypatch.setattr(stages, "ERROR_RESUME_AFTER_S", 0)
+    for _ in range(stages.MAX_ERROR_RESUMES):
+        assert stages.advance("r31")[0]["did"] == "resumed after being ended from outside"
+    assert "ended from outside" in resumed[0]
+    assert not (wave.run_dir("r31") / "a.final").exists()
+    after = stages.advance("r31", start_real_run=lambda *x: None)
+    assert after[0]["did"] == "asked for a real run"      # then the stage goes on as usual
+
+
 def test_a_real_run_request_is_checked():
     import tempfile
     with tempfile.TemporaryDirectory() as d:
@@ -394,6 +421,42 @@ def test_the_tick_loop_outlives_a_tick_that_raises(waves, monkeypatch):
     assert "tick failed: RuntimeError: disk gone" in lines[1]
     last = json.loads(lines[2])
     assert last["runs"] == 2 and last["moved"] == {"q": ["ended", "started"]}   # a quiet run is not listed
+
+
+def test_an_emergency_stop_in_a_test_never_reaches_the_live_slice(waves):
+    guard.emergency_stop("test")
+    guard.clear_stop()
+    assert waves["systemctl"] == [["stop", f"delfin-test-{os.getpid()}.slice"]]
+    assert wave._DEFAULTS["slice"] not in json.dumps(waves["systemctl"])
+
+
+def test_a_second_tick_while_one_runs_does_nothing(waves):
+    with wave._flock(wave.root() / ".tick.lock") as held:
+        assert held
+        assert guard.tick() == {"runs": {}, "stopped": None, "busy": True}
+    assert "busy" not in guard.tick()
+
+
+def test_two_looks_at_once_record_each_event_once(waves):
+    """The service's tick and an orchestrator's watch observe the same run;
+    run side by side, an ended member is still one event."""
+    import threading
+    wave.start("r30", [_task("a", "write x")], str(waves["repo"]), wait=True)
+    _wait_ended("r30", "a")
+    got, errors = [], []
+    def look():
+        try:
+            got.extend(wave.observe("r30"))
+        except Exception as exc:
+            errors.append(exc)
+    threads = [threading.Thread(target=look) for _ in range(8)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    assert not errors
+    assert [e["kind"] for e in wave.events("r30")["events"]].count("ended") == 1
+    assert not list(wave.run_dir("r30").glob("*.tmp"))
 
 
 def _fake_systemctl(monkeypatch, manager=True):

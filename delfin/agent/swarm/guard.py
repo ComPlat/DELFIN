@@ -68,7 +68,7 @@ def _load() -> dict:
 def _save(st: dict) -> None:
     p = _state_file()
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(st))
     os.replace(tmp, p)
 
@@ -157,7 +157,7 @@ def emergency_stop(why: str) -> dict:
         wave.record(run, "emergency_stop", why=why)
     try:
         slice_name = wave.settings()["slice"]
-        subprocess.run(["systemctl", "--user", "stop", slice_name], capture_output=True, timeout=60)
+        _systemctl("stop", slice_name)
     except (OSError, subprocess.SubprocessError):
         pass
     flag = _flag()
@@ -177,7 +177,16 @@ def clear_stop() -> bool:
 
 
 def tick(*, start_tasks: bool = True) -> dict:
-    """One pass; returns what it did and saw."""
+    """One pass; returns what it did and saw. One pass at a time: while
+    another runs (the service's, one run by hand), this one returns
+    ``{"busy": True}`` at once and does nothing."""
+    with wave._flock(wave.root() / ".tick.lock", wait=False) as mine:
+        if not mine:
+            return {"runs": {}, "stopped": None, "busy": True}
+        return _tick(start_tasks)
+
+
+def _tick(start_tasks: bool) -> dict:
     did: dict = {"runs": {}, "stopped": None}
     st = _load()
     flag = _flag()
@@ -282,7 +291,7 @@ def loop(every_s: float = 60, *, ticks: int = 0, sleep=time.sleep, log=print) ->
                      for r, d in runs.items()}
             log(json.dumps({"t": time.strftime("%Y-%m-%d %H:%M:%S"), "runs": len(runs),
                             "moved": {r: k for r, k in moved.items() if k},
-                            "held": bool(did.get("held")),
+                            "held": bool(did.get("held")), "busy": bool(did.get("busy")),
                             "stopped": bool(did.get("stopped"))}))
         except Exception as exc:
             log(f"tick failed: {type(exc).__name__}: {str(exc)[:300]}")

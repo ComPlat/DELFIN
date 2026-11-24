@@ -97,7 +97,12 @@ def advance(run: str, busy: set | None = None, *, start_real_run=None) -> list[d
             continue
         wt = Path(a["worktree"])
         res = wave._last_result(Path(a["log"]))
-        if res.get("stop_reason") == "error" and not (wt / "scratch" / "PR.md").is_file():
+        # No result line at all: the session was killed (a stopped slice, an
+        # OOM kill, a reboot), not finished. That is an outage like an
+        # endpoint error; counted as an ending, ten killed integrators were
+        # asked for real runs, killed again and marked final (2026-11-24).
+        killed = not res.get("stop_reason")
+        if (res.get("stop_reason") == "error" or killed) and not (wt / "scratch" / "PR.md").is_file():
             counter = d / f"{tid}.error_resumes"
             n = int(counter.read_text() or 0) if counter.exists() else 0
             try:
@@ -107,9 +112,13 @@ def advance(run: str, busy: set | None = None, *, start_real_run=None) -> list[d
             if n < MAX_ERROR_RESUMES:
                 if quiet_s >= ERROR_RESUME_AFTER_S:
                     counter.write_text(str(n + 1))
-                    wave.resume(run, tid, "Your session ended on an endpoint error "
-                                f"({(res.get('error') or '')[:200]}). Continue where you stopped.")
-                    done.append({"id": tid, "did": "resumed after an endpoint error", "n": n + 1})
+                    why = ("was ended from outside (no result line)" if killed else
+                           f"ended on an endpoint error ({(res.get('error') or '')[:200]})")
+                    wave.resume(run, tid, f"Your session {why}; nothing you did caused it. "
+                                "Continue where you stopped.")
+                    done.append({"id": tid, "did": "resumed after an endpoint error"
+                                 if not killed else "resumed after being ended from outside",
+                                 "n": n + 1})
                 continue
         if task.get("no_realrun"):
             _mark(run, tid, "final", "ended; no real run asked of it\n")

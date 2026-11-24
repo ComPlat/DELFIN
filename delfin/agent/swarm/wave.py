@@ -134,13 +134,24 @@ def _state_lock(run: str):
     """The run's state for one change: taken, read fresh, given back. A lock
     held for a starter's whole life deadlocked the stage that resumes its
     members (measured 2026-11-24)."""
+    with _flock(run_dir(run) / ".state.lock"):
+        yield
+
+
+@contextlib.contextmanager
+def _flock(path: Path, *, wait: bool = True):
+    """An exclusive lock on ``path`` for the block; yields False instead of
+    waiting when ``wait`` is false and another process holds it."""
     import fcntl
-    d = run_dir(run)
-    d.mkdir(parents=True, exist_ok=True)
-    with open(d / ".state.lock", "w") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as fh:
         try:
-            yield
+            fcntl.flock(fh, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
         finally:
             fcntl.flock(fh, fcntl.LOCK_UN)
 
@@ -681,7 +692,16 @@ def observe(run: str, *, silent_min: float = 60.0) -> list[dict]:
     """Record what changed since the last look, once each: a member that
     ended (with how), one whose log has not grown for ``silent_min``, a
     traceback in a member's log, a stage marker, every task final.
-    Returns the new events."""
+    Returns the new events.
+
+    One look at a time per run: the tick (a service), ``watch`` and a tick
+    run by hand all call it, and two looks at once recorded each event
+    twice and collided on the cursor file (seen 2026-11-24)."""
+    with _flock(run_dir(run) / ".observe.lock"):
+        return _observe(run, silent_min)
+
+
+def _observe(run: str, silent_min: float) -> list[dict]:
     d = run_dir(run)
     seen_p = d / ".observed.json"
     try:
@@ -732,7 +752,7 @@ def observe(run: str, *, silent_min: float = 60.0) -> list[dict]:
             seen["all_final"] = time.time()
     except (OSError, ValueError, KeyError):
         pass
-    tmp = seen_p.with_suffix(".tmp")
+    tmp = seen_p.with_name(f".observed.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(seen))
     os.replace(tmp, seen_p)
     return new
