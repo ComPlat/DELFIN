@@ -188,3 +188,10 @@ test-only	role_tool_surface_report	delfin/agent/api_client.py:12107
 # build one. The row stays until a grading path needs to pin the template
 # by name; then workflow_is is the function that does it.
 test-only	workflow_is	delfin/agent/pack/benchmark/accept/w20_common.py:15
+
+# calibration_record (swarm/land.py) is test-only by design, measured
+# 2026-11-24: the gate opens on a calibrated PAIR (pair_calibration_record),
+# and the per-model record is the reading rule a pair is built on -- fresh,
+# same corpus, same question -- which its tests pin. Ported unchanged with the
+# landing gate from the orchestrator's script, where it was test-only too.
+test-only	calibration_record	delfin/agent/swarm/land.py:636

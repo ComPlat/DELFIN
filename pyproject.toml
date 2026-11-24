@@ -445,6 +445,9 @@ include = ["delfin*"]
 "delfin.notebooks" = ["*.ipynb"]
 # The simulated demo lab: the smoke check and the tests load it as data.
 "delfin.lab" = ["examples/*.yaml"]
+# The landing review gate's calibration corpus: real diffs whose verdict is
+# known, the instrument a reviewer is measured with before it is trusted.
+"delfin.agent.swarm" = ["review_corpus.tar.gz"]
 "delfin.manta" = ["*.md", "data/*.tsv", "data/*.json"]
 "delfin.voila_assets" = ["login_templates/*.html", "jupyter_data/nbconvert/templates/delfin/*"]
 

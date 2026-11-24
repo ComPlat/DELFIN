@@ -44,3 +44,34 @@ latency, not speed.
   frame and the chemistry core are not deliverables).
 - Permission mode is never bypass.
 - Auto-answers are logged; escalated items wait for you.
+
+## Waves: many agents on one task list
+
+The whole method, with the reasons behind each step, is in
+docs/ORCHESTRATING_WAVES.md; `wave_compose` builds the task list of the
+shape every wave has had (arms of different families, an integrator per
+package, a lander, four reviewers of another family, a fixer).
+
+A wave is for the orchestrator who runs many agents at once on work it
+already split: a task list, one caged agent session per task in its own
+worktree and branch, started as soon as what it waits for has ended.
+
+1. Write the tasks: `[{"id", "brief", "base", "provider", "model",
+   "after", "after_min", "after_wait_s", "collect", "no_realrun"}]`.
+   `after` names `run/tid` (or `run/tid.final`); `collect` copies another
+   member's `scratch/` into `scratch/arms/<tid>/`.
+2. `delfin-agent swarm wave start RUN tasks.json --repo .` starts what is
+   ready; `delfin-agent swarm wave guard install` lets the scheduler
+   daemon run the tick every minute, which starts the rest, runs the
+   stage (real runs outside the cage, the resume that reads them, the
+   final mark), records events and guards the host.
+3. `delfin-agent swarm wave watch RUN` waits for the next events (a
+   member ended, went silent, crashed, became final); `review` shows a
+   member's PR.md, commits and real runs; `resume --note` steers it.
+4. `delfin-agent swarm wave emergency-stop "why"` stops every member and
+   holds until a person runs `clear-stop`.
+5. `delfin-agent swarm wave mcp` serves all of it over MCP (`wave_start`,
+   `wave_watch`, `wave_review`, ...), for an orchestrator that is itself
+   an agent.
+
+Members commit and cannot push: review the branch, then land it.
