@@ -385,8 +385,12 @@ def build_dlpno_input(
             )
         shutil.copy2(src, work_dir / f"{base_name}.gbw")
         inp.add_simple_keywords("MOREAD")
+        # ``pos`` is keyword-only in OPI 2.0.0
+        # (``add_arbitrary_string(self, string, /, *, pos=None)``); passing it
+        # positionally raises TypeError the first time a chain really wires
+        # orbitals into this step.
         inp.add_arbitrary_string(
-            f'%moinp "{base_name}.gbw"', ArbitraryStringPos.BEFORE_COORDS)
+            f'%moinp "{base_name}.gbw"', pos=ArbitraryStringPos.BEFORE_COORDS)
 
     atoms = [
         Atom(str(el), coordinates=(float(x), float(y), float(z)))
