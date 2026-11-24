@@ -100,8 +100,12 @@ def identity_email() -> str:
 def check(wt: Path, base: str = "origin/main") -> tuple[bool, str]:
     if git(["log", "--oneline", f"{base}..HEAD"], wt).stdout.strip() == "":
         return False, f"no commits beyond {base}"
+    # scratch/ is the member's own notes; .delfin/ is the state DELFIN keeps
+    # in every workspace it works in, ignored in DELFIN's own repository but
+    # untracked in any other (measured 2026-11-24 on a throwaway repository:
+    # every member branch was refused for it).
     dirty = [l for l in git(["status", "--short"], wt).stdout.splitlines()
-             if not l[3:].startswith("scratch/")]
+             if not l[3:].startswith(("scratch/", ".delfin/"))]
     if dirty:
         return False, "uncommitted changes: " + ", ".join(l[3:] for l in dirty[:5])
     msgs = git(["log", "--format=%an <%ae>%n%B", f"{base}..HEAD"], wt).stdout

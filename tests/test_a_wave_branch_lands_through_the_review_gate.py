@@ -209,12 +209,23 @@ def test_a_passed_review_is_what_lets_the_push_happen(swarm, no_push, replies, c
 
 
 def monkeypatch_check(swarm):
-    """Replace the branch checks above the gate with a pass.
+    """Replace the branch checks above the gate with a pass, for this test.
 
     They run tests on delfin-ci against the real repository; this file is
-    about the gate, and the fixture's worktree is not that repository.
+    about the gate, and the fixture's worktree is not that repository. The
+    real ``check`` comes back after the test (``_restore_check``): assigned
+    for good, the stub answered every later test's ``check`` with a pass.
     """
     pr_bot.check = lambda wt, base="origin/main": (True, "1 passed (stubbed)")
+
+
+_REAL_CHECK = pr_bot.check
+
+
+@pytest.fixture(autouse=True)
+def _restore_check():
+    yield
+    pr_bot.check = _REAL_CHECK
 
 
 # --- 2. independence is mechanical, and the gate fails closed --------------
@@ -918,3 +929,18 @@ def test_the_pair_asks_two_different_models(swarm, replies):
     assert len(asked) == 2 and len(set(asked)) == 2, asked
     assert set(asked) == set(rec["reviewers"]), (
         "the models recorded are the models asked")
+
+
+def test_the_state_delfin_keeps_in_a_workspace_is_not_uncommitted_work(swarm, monkeypatch):
+    """A member's worktree holds .delfin/ (DELFIN's own workspace state) in a
+    repository that does not ignore it; that is not work left uncommitted.
+    A real untracked file still is."""
+    wt = swarm["wt"]
+    (wt / ".delfin").mkdir()
+    (wt / ".delfin" / "state.json").write_text("{}")
+    monkeypatch.setattr(pr_bot, "PYCI", sys.executable)
+    ok, why = pr_bot.check(wt)
+    assert "uncommitted" not in why, why
+    (wt / "stray.py").write_text("x = 1\n")
+    ok, why = pr_bot.check(wt)
+    assert not ok and "uncommitted changes: stray.py" in why
