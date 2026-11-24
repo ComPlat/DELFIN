@@ -451,6 +451,43 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "lab_run",
+            "description": (
+                "A whole lab workflow {id, samples, steps}: judged against the "
+                "pinned manifest, then run by the coordinator. dry_run=true "
+                "(the default) writes nothing. A hazardous step stops the run "
+                "for a person's approval: it answers status=waiting_approval "
+                "and the request id."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "workflow": {
+                        "type": "object",
+                        "description": (
+                            "{id, samples: {sid: {container, module, position}}, "
+                            "steps: [{id, op: set|wait|transfer|measure, ...}]}"
+                        ),
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "the workflow document, when not inline",
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "true (default): judge only, no write",
+                    },
+                    "run_id": {
+                        "type": "string",
+                        "description": "names the run record; one is generated",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "lab_estop",
             "description": (
                 "E-stop: all devices, or one module, to safe state; a "

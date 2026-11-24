@@ -69,6 +69,18 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Workstation fallback: run in the background with a "
                         "pid file in the lab directory")
     sub.add_parser("smoke", help="Simulator plan end to end; prints ok")
+    run = sub.add_parser(
+        "run", help="Judge a workflow document, and run it (--dry-run judges "
+                     "only)")
+    run.add_argument("plan", help="the workflow JSON document")
+    run.add_argument("--dry-run", action="store_true",
+                     help="judge it and write nothing (the default for a plan "
+                          "nobody has reviewed is to read it first)")
+    run.add_argument("--run-id", default="",
+                     help="names the run record; a slug of the experiment")
+    run.add_argument("--resume", action="store_true",
+                     help="continue a run that stopped for an approval, from "
+                          "the step it stopped at")
     return p
 
 
@@ -168,7 +180,65 @@ def main(argv=None) -> int:
     if args.cmd == "smoke":
         from . import smoke
         return smoke.main([])
+    if args.cmd == "run":
+        return _run_command(args)
     return 2
+
+
+def _run_command(args) -> int:
+    """`lab run`: judge a workflow, and run it unless --dry-run.
+
+    The person's own entrance to the same two steps the `lab_run` tool
+    takes, so an experiment can be proposed, read and then released without
+    a model in the loop at all. It is not a second implementation: the
+    judging is ``lab.plan.validate`` and the running is the ONE coordinator.
+    """
+    from . import plan as _plan
+    from . import store
+    from .safety import Kernel
+    k = Kernel.load()
+    if k.manifest is None:
+        print(k.load_error, file=sys.stderr)
+        return 1
+    try:
+        doc = _plan.load(args.plan)
+    except ValueError as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 1
+    proposal = _plan.validate(k.manifest, doc, k)
+    out = proposal.as_dict()
+    out["ran"] = False
+    if not proposal.ok:
+        _print(out)
+        print(f"refused: {len(proposal.problems)} problem(s); nothing was run",
+              file=sys.stderr)
+        return 1
+    if args.dry_run and not args.resume:
+        _print(out)
+        print("judged ok; nothing was written (drop --dry-run to run it)")
+        return 0
+    run_id = args.run_id or str(doc.get("id") or "run")
+    try:
+        cp = _plan.run(k.manifest, proposal, run_id, person=store.person())
+    except ValueError as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 1
+    out.update({"ran": True, "run_id": run_id, "status": cp.get("status"),
+                "done": cp.get("done"), "deviations": cp.get("deviations"),
+                "measurements": cp.get("measurements"),
+                "pending": cp.get("pending")})
+    _print(out)
+    if cp.get("status") == "waiting_approval":
+        req = (cp.get("pending") or {}).get("approval")
+        print(f"stopped: step {(cp.get('pending') or {}).get('step')!r} needs a "
+              "person. It has NOT run.", file=sys.stderr)
+        if req:
+            print(f"  delfin-agent lab approve {req}", file=sys.stderr)
+            print(f"  then: delfin-agent lab run {args.plan} --run-id {run_id}"
+                  " --resume", file=sys.stderr)
+        return 0
+    return 0 if cp.get("status") == "completed" else 1
+
 
 
 def _detach(args) -> int:
