@@ -584,7 +584,7 @@ class EndpointGate:
             if not announced:
                 announced = True
                 self.wait_notice = (
-                    f"waiting for a slot on {self.base_url or 'endpoint'}:"
+                    f"waiting for a slot on {display_url(self.base_url) or 'endpoint'}:"
                     f" {in_use} in use")
             if should_stop is not None:
                 try:

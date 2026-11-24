@@ -37814,6 +37814,7 @@ def create_client(
     confirm_write_dirs: list[str] | None = None,
     effort: str = "",
     kit_confirm_callback: Optional[Callable[[str, dict, str], bool]] = None,
+    ollama_host: str = "",
 ) -> _BaseClient:
     """Create the appropriate client backend.
 
@@ -37900,17 +37901,20 @@ def create_client(
         # while-loop + KIT-style sandbox / hooks / failure-log machinery
         # as the KIT-Toolbox provider — only the base_url and (no) api
         # key differ. Endpoint resolution order:
-        #   1. caller-supplied api_key  (treated as "host" if it starts with http)
+        #   1. the caller's ``ollama_host``
         #   2. OLLAMA_HOST env var      (canonical Ollama convention)
         #   3. OLLAMA_BASE_URL env var  (LM-Studio convention)
         #   4. default http://localhost:11434
+        # The key parameter is never read as a host. It was ("http..." in
+        # api_key meant the host), so a parameter that holds credentials
+        # flowed into the endpoint address every wait notice prints --
+        # code scanning found the path on 2026-11-24 (py/clear-text-logging-
+        # sensitive-data); nothing in DELFIN passed a host that way.
         ollama_host = (
-            api_key if api_key and api_key.startswith("http")
-            else (
-                os.environ.get("OLLAMA_HOST")
-                or os.environ.get("OLLAMA_BASE_URL")
-                or "http://localhost:11434"
-            )
+            ollama_host
+            or os.environ.get("OLLAMA_HOST")
+            or os.environ.get("OLLAMA_BASE_URL")
+            or "http://localhost:11434"
         )
         if not ollama_host.rstrip("/").endswith("/v1"):
             ollama_host = ollama_host.rstrip("/") + "/v1"
