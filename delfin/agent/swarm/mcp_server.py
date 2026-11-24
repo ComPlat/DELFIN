@@ -13,7 +13,7 @@ scripts of its own around DELFIN's internals:
   wave_emergency_stop, wave_clear_stop                the brake
   wave_friction                                       what the members ran into
   wave_land                                           checked, reviewed, opened as a PR
-  wave_guard_install, wave_guard_remove               the tick in the scheduler
+  wave_guard_install, wave_guard_remove               the tick as a service or schedule
 
 ``delfin-agent swarm wave mcp`` serves them on stdio. The handlers are
 plain functions returning JSON text, testable without the ``mcp``
@@ -218,12 +218,14 @@ def h_land(runs: list | None = None, member: str = "", push: bool = False) -> st
     return _answer(land_them)
 
 
-def h_guard_install(every_minutes: int = 1) -> str:
+def h_guard_install(every_minutes: int = 1, systemd: bool = False) -> str:
+    if systemd:
+        return _answer(guard.install_unit, int(every_minutes) * 60)
     return _answer(guard.install_entry, int(every_minutes))
 
 
 def h_guard_remove() -> str:
-    return _answer(lambda: {"removed": guard.remove_entry()})
+    return _answer(lambda: {"removed": guard.remove_entry(), "unit_removed": guard.remove_unit()})
 
 
 # -- the stdio server ----------------------------------------------------------------
@@ -342,13 +344,14 @@ def run_server(argv: list[str] | None = None) -> None:
         return h_land(runs, member, push)
 
     @mcp.tool()
-    def wave_guard_install(every_minutes: int = 1) -> str:
-        """Let the scheduler daemon run the tick every N minutes (idempotent)."""
-        return h_guard_install(every_minutes)
+    def wave_guard_install(every_minutes: int = 1, systemd: bool = False) -> str:
+        """Run the tick every N minutes (idempotent): with systemd=true as a user service
+        that survives a reboot, otherwise as an entry of the scheduler daemon."""
+        return h_guard_install(every_minutes, systemd)
 
     @mcp.tool()
     def wave_guard_remove() -> str:
-        """Remove the tick from the scheduler."""
+        """Remove the tick: the scheduler entry and the user service."""
         return h_guard_remove()
 
     mcp.run()
