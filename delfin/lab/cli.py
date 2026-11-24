@@ -10,6 +10,11 @@ DEV``, ``estop --clear``, ``manifest pin``, ``node keygen NODE``.
 ``estop`` itself is allowed for everyone, an agent included: stopping is
 always permitted, starting again is not.
 
+``optimise`` runs the closed loop on the simulator (``--device``, whose
+reading depends on the conditions), writing its record under
+``<lab_dir>/loops/``: the measurement decides the next conditions, and any
+kernel refusal stops the loop.
+
 Daemons: ``daemon --role estop|deadman|both`` (the systemd units run this;
 on a workstation run it in a terminal or with ``--detach``). ``smoke`` runs
 the simulator plan end to end in a scratch directory and prints
@@ -68,6 +73,26 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--detach", action="store_true",
                    help="Workstation fallback: run in the background with a "
                         "pid file in the lab directory")
+    o = sub.add_parser(
+        "optimise",
+        help="Closed loop on the simulator: measure, choose the next "
+             "conditions, repeat. Stops on any kernel refusal")
+    o.add_argument("--device", default="reactor",
+                   help="the device whose reading depends on the conditions")
+    o.add_argument("--rounds", type=int, default=15,
+                   help="how many runs at most (default 15)")
+    o.add_argument("--optimiser", choices=("gp", "grid"), default="gp",
+                   help="gp: expected improvement on a Gaussian process "
+                        "(default); grid: a plain lattice walk, the control")
+    o.add_argument("--step", type=float, default=10.0,
+                   help="lattice step for --optimiser grid, in each channel's "
+                        "unit (default 10)")
+    o.add_argument("--setpoint-channel", default="setpoint")
+    o.add_argument("--duration-channel", default="duration")
+    o.add_argument("--loop-id", default="", help="record name under loops/")
+    o.add_argument("--prepare-heating", action="store_true",
+                   help="switch the stirrer and fume hood on first (what a "
+                        "reactor interlock above 40 degC requires)")
     sub.add_parser("smoke", help="Simulator plan end to end; prints ok")
     return p
 
@@ -165,10 +190,83 @@ def main(argv=None) -> int:
             return _detach(args)
         return watchdog.serve(args.role, interval=args.interval,
                               once=args.once)
+    if args.cmd == "optimise":
+        return _optimise(args)
     if args.cmd == "smoke":
         from . import smoke
         return smoke.main([])
     return 2
+
+
+def _optimise(args) -> int:
+    """``delfin-agent lab optimise``: the closed loop, recorded under loops/.
+
+    This is the entry point a person or a scheduled job reaches; the loop
+    itself is :mod:`delfin.lab.loop`, and every write in it goes through the
+    safety kernel. The record is written whether the loop finished or was
+    stopped, because a refusal is data.
+    """
+    import time as _time
+
+    from . import surface as _surface
+    from .loop import GridSearch, Loop, best_measured, rounds_to
+    from .safety import Actor, Kernel
+
+    kernel = Kernel.load()
+    if kernel.manifest is None:
+        print(kernel.load_error, file=sys.stderr)
+        return 1
+    if args.loop_id:
+        session = f"loop-{args.loop_id}"
+    else:
+        from . import store as _store
+        session = f"loop-{_store.now():.0f}"
+    actor = Actor.here(session)
+    if args.prepare_heating:
+        for dev in ("stirrer", "fume_hood"):
+            out = kernel.set(actor, dev, "power", "on")
+            if not out.get("ok"):
+                _print(out)
+                return 2
+    loop = Loop(kernel, actor, device=args.device,
+                setpoint_channel=args.setpoint_channel,
+                duration_channel=args.duration_channel, rounds=args.rounds,
+                sleep=_time.sleep)
+    lo, hi = loop.envelope()
+    if args.optimiser == "grid":
+        loop.optimiser = GridSearch(
+            _surface.lattice(lo, hi, (args.step, args.step)))
+    record = loop.run()
+    lattice = _surface.lattice(lo, hi, (args.step, args.step))
+    best_lattice, best_point = _surface.best_on(lattice)
+    record["surface"] = {"lattice_best": best_lattice,
+                         "lattice_best_at": list(best_point),
+                         "lattice_points": int(len(lattice)),
+                         "step": args.step}
+    record["rounds_to_99pct"] = rounds_to(record, 0.99 * best_lattice)
+    record["best"] = best_measured(record)
+    path = _next_record_path(args.loop_id or session)
+    path.write_text(json.dumps(record, indent=1, sort_keys=True, default=str),
+                    encoding="utf-8")
+    record["record"] = str(path)
+    _print(record)
+    # A stop is reported as a non-zero exit so a scheduled job notices: a
+    # search halted at an interlock must not be read as a finished one.
+    return 0 if record.get("stopped") == "budget" else 2
+
+
+def _next_record_path(name: str):
+    """A free path under ``<lab_dir>/loops/``: an earlier record is never
+    overwritten, because it is a measurement somebody may still be reading."""
+    from . import store as _store
+    d = _store.ensure_lab_dir() / "loops"
+    d.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = d / f"{name}.json"
+    n = 1
+    while path.exists():
+        n += 1
+        path = d / f"{name}-{n}.json"
+    return path
 
 
 def _detach(args) -> int:
