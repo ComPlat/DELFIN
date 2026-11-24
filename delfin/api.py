@@ -173,8 +173,25 @@ def pipeline_prepare(
     *,
     capture: bool = True,
 ) -> CommandResult:
-    """Generate a CONTROL template via ``delfin --define <file>``."""
-    argv = ["--define", control_file]
+    """Write a CONTROL template, and an empty input file beside it.
+
+    ``control_file`` names the CONTROL file to WRITE, which is what the word
+    and this tool's own parameter name say, and where the caller asks for it.
+    The first version passed it to ``delfin --define <control_file>`` --
+    and ``--define`` names the INPUT file (``delfin/cli_helpers.py:127``,
+    ``nargs="?"``). So the requested path became an empty input file and the
+    template went to ``CONTROL.txt`` in whatever directory the process ran in:
+    a caller that asked for a template in its workspace got an empty file
+    there and the real one in DELFIN's own checkout, reported only in passing
+    between two "has been created (empty)" lines.
+
+    ``--control`` is the option that names the CONTROL file
+    (``delfin/cli_helpers.py:141``); ``--define`` keeps naming the input, and
+    the input belongs beside the CONTROL file (``delfin/define.py:393-403``).
+    """
+    workspace = Path(control_file).expanduser().resolve().parent
+    argv = [str(workspace), "--control", str(control_file),
+            "--define", "input.txt"]
     if overwrite:
         argv.append("--overwrite")
     return _run_cli(argv, capture=capture)
