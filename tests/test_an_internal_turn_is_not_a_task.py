@@ -99,10 +99,35 @@ def _built_solo_prompt() -> str:
 
 
 def test_the_solo_prompt_no_longer_forbids_its_own_tools():
+    """2026-11-23: the residue of the September fix is gone too.
+
+    That fix moved "Never run real ORCA/xTB/SLURM -- only pytest" out of
+    Directory permissions, where both models had named it a
+    contradiction with the submit and pipeline tools in the same prompt,
+    and left a narrower one standing: "never by launching ORCA, xTB or
+    SLURM from bash".
+
+    That residue contradicts the gate. Measured in api_client: a checked
+    `bash orca job.inp` is ADMITTED with no dialog once calc_policy has
+    read the setup and the resources (`calculation_admitted`), while the
+    adapter route was refused unattended for want of a dialog. So the
+    prompt forbade the route the gate rewarded and named neither the
+    building blocks nor the specialist -- and on a measured 33-minute
+    run the model wrote 20 inputs by hand.
+
+    One answer now, and it matches the gate: both routes named, bash
+    allowed and gate-checked, and what a by-hand run does not carry. A
+    prompt that forbids what the gate permits teaches that its rules are
+    decoration, which is what the operators said in September about the
+    sentence this one replaces.
+    """
     prompt = _built_solo_prompt()
     assert "only pytest" not in prompt
-    assert "never by launching ORCA, xTB or SLURM from bash" in prompt
-    # The rule for DELFIN's own code survives, where it belongs.
+    assert "never by launching ORCA, xTB or SLURM from bash" not in prompt
+    assert "building blocks or the CONTROL.txt route" in prompt
+    assert "gate-checked" in prompt
+    # The rule for DELFIN's own code survives, where it belongs: testing
+    # a code change is not the same question as performing a calculation.
     assert "never launch a real ORCA, xTB or SLURM job to test a change" in prompt
 
 

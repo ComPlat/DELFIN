@@ -387,6 +387,46 @@ def _json_line(obj: dict) -> None:
     sys.stdout.flush()
 
 
+#: Providers measured to report token usage on every real answer, so a
+#: turn that produced text with zero input tokens was answered by no model.
+#: Measured 2026-11-23: KIT agents reported 4-8M input tokens per run and a
+#: Blablador run 10,602,162. Every OpenAI-compatible request ASKS for usage
+#: (stream_options.include_usage); whether a provider SENDS it is what this
+#: set records, and an unmeasured one is not judged by a zero.
+_USAGE_REPORTING_PROVIDERS = frozenset({"kit", "blablador"})
+
+
+def _answer_no_model_ran(engine, text: str, tool_calls, input_tokens: int,
+                         output_tokens: int) -> str:
+    """An error when the turn's answer came from no model, else "".
+
+    Measured 2026-11-23: twenty-two agents ended "done" within minutes,
+    each on the same line -- "There's an issue with the selected model
+    (alias-glm-5.3-flash). It may not exist or you may not have access to
+    it." -- with 0 input and 0 output tokens. The key was valid, the
+    endpoint up, the same call answered "OK" ninety minutes later: the
+    models were briefly not served, and the gateway said so as TEXT rather
+    than as an HTTP error. Counted as an answer, the outage read as
+    twenty-two finished agents.
+
+    The test is the token count and never the wording, which a gateway
+    can change any day: a model that answered has read the prompt. Only a
+    bare text answer with nothing spent, on a provider in
+    _USAGE_REPORTING_PROVIDERS; a turn with tool calls, a provider whose
+    usage was not measured, and an engine with no provider (a test
+    double) are left exactly as they were.
+    """
+    provider = str(getattr(engine, "provider", "") or "")
+    if (provider not in _USAGE_REPORTING_PROVIDERS or not text
+            or tool_calls or input_tokens or output_tokens):
+        return ""
+    return (f"the endpoint answered without running the model (0 input and "
+            f"0 output tokens on {provider}, which reports usage on every "
+            f"real answer). Its reply was: {text[:200]!r}. Usually the "
+            f"model is not being served right now: retry later, or pick "
+            f"another model; `delfin-agent doctor --live` checks it.")
+
+
 def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
                  memory_context: str = "",
                  emit: Any = None,
@@ -672,11 +712,18 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         getattr(engine, "client", None), "_turn_model_switches", None)
     model_switches = (list(_model_switches) if _model_switches else [])
 
+    _text = (full_text or "".join(chunks)).strip()
+    _in_tok = max(0, in_after - in_before)
+    _out_tok = max(0, out_after - out_before)
+    if not error:
+        error = _answer_no_model_ran(engine, _text, tool_calls,
+                                     _in_tok, _out_tok)
+
     return {
-        "text": (full_text or "".join(chunks)).strip(),
+        "text": _text,
         "tool_calls": tool_calls,
-        "input_tokens": max(0, in_after - in_before),
-        "output_tokens": max(0, out_after - out_before),
+        "input_tokens": _in_tok,
+        "output_tokens": _out_tok,
         "error": error,
         "model_switches": model_switches,
         **observer.summary(
@@ -1122,6 +1169,12 @@ def _end_session(engine, sid: str, repo: Path, *, task: str, failed: bool,
                 or getattr(client, "model", None),
                 "provider": getattr(engine_, "provider", None)
                 or getattr(client, "provider", None),
+                # What the request actually asked of the model. The
+                # client records it when it builds the payload, so the
+                # manifest states "nobody set one, the provider's
+                # default applied" instead of leaving the field
+                # unresolved -- which read as an oversight.
+                "sampling": getattr(client, "sampling_record", None),
                 "temperature": getattr(engine_, "temperature", None)
                 or getattr(client, "temperature", None),
                 "seed": getattr(engine_, "seed", None)
@@ -2798,6 +2851,27 @@ def cmd_chat(args: argparse.Namespace) -> int:
                 pass
 
 
+def _run_oracle_subcommand(args: argparse.Namespace) -> int:
+    """The `oracle` subcommand: compare a run's numbers to a reference set.
+
+    Exit 0 where nothing disagreed, 1 where something did, 2 where the
+    reference file held nothing usable. An AMBIGUOUS row does not fail
+    the command -- an open assignment is a question, not a disagreement
+    -- and it is printed first so nobody misses it.
+    """
+    from . import reference_oracle
+    report = reference_oracle.compare_file(
+        args.workspace or ".", args.references)
+    if args.json:
+        import json as _json
+        print(_json.dumps(report.as_dict(), indent=2))
+    else:
+        print(reference_oracle.render(report))
+    if not report.verdicts:
+        return 2
+    return 1 if report.of(reference_oracle.DIFFERS) else 0
+
+
 def _run_replay_subcommand(args: argparse.Namespace) -> int:
     """The `replay` subcommand body: check one run manifest.
 
@@ -2829,6 +2903,28 @@ def _run_replay_subcommand(args: argparse.Namespace) -> int:
         print(json.dumps(report.as_dict(), indent=1, ensure_ascii=False))
     else:
         print(run_replay.render(report))
+
+    # The real replay, only when asked: it costs the same compute the
+    # original run did, so it is never part of a plain check.
+    if getattr(args, "rerun", False):
+        from . import run_rerun
+        # The workspace the manifest recorded, unless the caller named
+        # another: a run that was moved is re-run where it now lives.
+        ws = getattr(args, "workspace", "") or ""
+        if not ws:
+            try:
+                stored = json.loads(target.read_text(encoding="utf-8"))
+                ws = str((stored.get("workspace") or {}).get("root") or "")
+            except Exception:                           # noqa: BLE001
+                ws = ""
+        rr = run_rerun.rerun(
+            ws or ".",
+            max_steps=int(getattr(args, "rerun_steps", 1) or 0),
+            timeout_s=float(getattr(args, "rerun_timeout", 1800.0)))
+        print()
+        print(run_rerun.render(rr))
+        if rr.reproduced() is False:
+            return 1
     if not report.checks:
         return 2
     return 0 if report.reproduced() else 1
@@ -4892,7 +4988,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     from . import doctor as _doc
 
     workspace = getattr(args, "workspace", "") or None
-    results = _doc.run_doctor(workspace)
+    # fast=False is the doctor's network path. No caller reached it before
+    # --live: MCP reachability and the live key checks existed and nothing
+    # in the product could run them.
+    results = _doc.run_doctor(
+        workspace, fast=not getattr(args, "live", False))
     if not getattr(args, "repair", False):
         print(_doc.format_doctor(results))
         return 1 if any(r.get("status") == "FAIL" for r in results) else 0
@@ -5383,12 +5483,14 @@ def cmd_prompt_size(args: argparse.Namespace) -> int:
     # the test/override path and expects pack/ inside it.
     loader = PromptLoader()
     # An unknown role composes an empty prompt without complaint, which
-    # would print a table of zeros that reads as a measurement. The
-    # role prompt file is the registry: a role exists exactly when its
-    # agents/<role>.md does.
-    if not (loader.agent_dir / "agents" / f"{role}.md").is_file():
-        print(f"ERROR: unknown role {role!r} -- no "
-              f"agents/{role}.md in the pack", file=sys.stderr)
+    # would print a table of zeros that reads as a measurement. Asked
+    # through loader.role_exists, not of the directory: a mode's route
+    # may name a subagent preset instead of a pack file, and the
+    # directory test refused a role the engine runs.
+    if not loader.role_exists(role):
+        print(f"ERROR: unknown role {role!r} -- no agents/{role}.md in "
+              f"the pack and no subagent preset of that name",
+              file=sys.stderr)
         return 2
     try:
         report = loader.prompt_size_report(
@@ -5561,8 +5663,8 @@ def _add_agent_flags(p: argparse.ArgumentParser, *,
     # `choices=`. Named modes only, and an unknown one falls back to solo
     # rather than failing, which is what the engine already does.
     p.add_argument("--mode", default=mode_default,
-                   help="Agent mode: solo / dashboard / office / research "
-                        "(plan is a permission profile, not a mode)")
+                   help="Agent mode: solo / dashboard / office / research / "
+                        "workflow (plan is a permission profile, not a mode)")
     p.add_argument("--backend", default="", choices=["", "api", "cli"],
                    help="api (direct Anthropic) or cli (subprocess)")
     p.add_argument("--provider", default="",
@@ -5835,21 +5937,69 @@ def build_parser() -> argparse.ArgumentParser:
         help="Reviewer branch that must be merged in; repeatable")
     prcheck.set_defaults(func=_run_prcheck_subcommand)
 
-    # replay — check a stored run manifest against what derives again now
-    replay_p = sub.add_parser(
-        "replay",
-        help="Check a run manifest against what can be derived again now")
-    replay_p.add_argument(
-        "manifest",
-        help="Path to a <session>.manifest.json, or a session id")
-    replay_p.add_argument(
+    # oracle — compare a run's own numbers against published references.
+    #
+    # The reference set is an ARGUMENT and is never shipped: QUESTDB and
+    # its kind are CC-BY-SA-4.0 while this repository is LGPL-3.0, so
+    # the data stays outside the tree (LICENSE_GUARD.md section 0). That
+    # is also what makes the comparator work with any reference set
+    # rather than with one.
+    oracle_p = sub.add_parser(
+        "oracle",
+        help="Compare a run's computed values against a reference set")
+    oracle_p.add_argument(
+        "references",
+        help="Path to a JSON file of reference values (the fields are in "
+             "delfin/agent/reference_oracle.py)")
+    oracle_p.add_argument(
         "--workspace", default="",
-        help="Check against this directory instead of the recorded one "
-             "(for a run that was moved or copied)")
-    replay_p.add_argument(
+        help="The run's workspace (default: the current directory)")
+    oracle_p.add_argument(
         "--json", action="store_true",
         help="The report as JSON instead of lines")
-    replay_p.set_defaults(func=_run_replay_subcommand)
+    oracle_p.set_defaults(func=_run_oracle_subcommand)
+
+    # verify — check a stored run manifest against what derives again now.
+    #
+    # NOT "replay". In this field replay means RE-EXECUTION: ReproZip,
+    # Nextflow -resume, Snakemake, AiiDA all re-run the work. This
+    # command re-derives metadata and compares it, and calling that
+    # replay claims something it does not do -- a reviewer who reads
+    # "replayable" and finds no engine was run has caught us
+    # overstating. `replay` stays as an alias so nothing that already
+    # scripts it breaks.
+    for _name, _help in (
+        ("verify", "Check a run manifest against what can be derived "
+                   "again now"),
+        ("replay", "Alias of `verify` (kept for existing scripts; this "
+                   "command re-derives metadata, it does not re-execute)"),
+    ):
+        _p = sub.add_parser(_name, help=_help)
+        _p.add_argument(
+            "manifest",
+            help="Path to a <session>.manifest.json, or a session id")
+        _p.add_argument(
+            "--workspace", default="",
+            help="Check against this directory instead of the recorded one "
+                 "(for a run that was moved or copied)")
+        _p.add_argument(
+            "--json", action="store_true",
+            help="The report as JSON instead of lines")
+        _p.add_argument(
+            "--rerun", action="store_true",
+            help="Also RE-EXECUTE the run's inputs and compare the "
+                 "energies. ORCA and xtb are deterministic for a fixed "
+                 "binary and input, so this is the real replay -- and it "
+                 "costs the same compute the original did")
+        _p.add_argument(
+            "--rerun-steps", type=int, default=1, metavar="N",
+            help="How many steps --rerun may execute (default 1; 0 for "
+                 "every step in the workspace)")
+        _p.add_argument(
+            "--rerun-timeout", type=float, default=1800.0, metavar="S",
+            help="Seconds one re-run may take before it is reported as "
+                 "not comparable (default 1800)")
+        _p.set_defaults(func=_run_replay_subcommand)
 
     # bench — canned-task benchmark suite
     bench = sub.add_parser(
@@ -6452,6 +6602,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor.add_argument("--workspace", default="",
                         help="Workspace directory (default: current dir)")
+    doctor.add_argument("--live", action="store_true",
+                        help="Also ask the network: probe the MCP servers, "
+                             "check each stored provider key with its "
+                             "endpoint, and send the configured model one "
+                             "short prompt to see that it answers")
     doctor.add_argument("--repair", action="store_true",
                         help="Ask about, and apply with approval, every "
                              "step that fixes a WARN/FAIL; refuses when stdin "

@@ -135,7 +135,7 @@ def test_a_sub_agent_inherits_the_lists_it_was_started_under(workspace):
 def test_the_advertised_surface_drops_what_the_executor_would_refuse(workspace):
     ctx = ToolSurfaceContext(session_denied=frozenset({"read_file"}))
     names = {t["function"]["name"]
-             for t in advertisable_tools(A._DOC_TOOLS_OPENAI, ctx)}
+             for t in advertisable_tools(A._DOC_TOOLS_OPENAI, ctx, defer=False)}
     assert "read_file" not in names
     assert "write_file" in names
 
@@ -144,7 +144,7 @@ def test_an_allow_list_leaves_only_what_it_names_on_the_surface():
     ctx = ToolSurfaceContext(
         session_allowed=frozenset({"read_file", "grep_file"}))
     names = {t["function"]["name"]
-             for t in advertisable_tools(A._DOC_TOOLS_OPENAI, ctx)}
+             for t in advertisable_tools(A._DOC_TOOLS_OPENAI, ctx, defer=False)}
     assert names <= {"read_file", "grep_file"}
     assert "read_file" in names
 
@@ -184,7 +184,7 @@ def test_an_empty_allow_list_means_no_restriction_not_no_tools(workspace):
         assert _tool_denied_for_session(perms, name) is None
     names = {t["function"]["name"]
              for t in advertisable_tools(A._DOC_TOOLS_OPENAI,
-                                         ToolSurfaceContext())}
+                                         ToolSurfaceContext(), defer=False)}
     assert "bash" in names and "read_file" in names
 
 
@@ -212,7 +212,7 @@ def test_the_lists_narrow_and_never_widen_a_roles_surface(workspace):
                              session_allowed=frozenset({"bash"}))
     assert tool_unavailable_reason("bash", ctx) is not None
     names = {t["function"]["name"]
-             for t in advertisable_tools(A._DOC_TOOLS_OPENAI, ctx)}
+             for t in advertisable_tools(A._DOC_TOOLS_OPENAI, ctx, defer=False)}
     assert "bash" not in names
 
 

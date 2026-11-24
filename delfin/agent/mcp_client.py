@@ -331,7 +331,9 @@ class MCPTool:
         return f"{_NAMESPACE_PREFIX}{self.server}__{self.name}"
 
 
-def advertised_description(tool: "MCPTool") -> tuple[str, list[str]]:
+def advertised_description(tool: "MCPTool", *,
+                           first_party: bool = False,
+                           ) -> tuple[str, list[str]]:
     """The description the model is shown for ``tool``, and why it was
     withheld ([] when it was not).
 
@@ -345,11 +347,42 @@ def advertised_description(tool: "MCPTool") -> tuple[str, list[str]]:
     notice naming the tool and the kinds, and the findings. The tool stays
     on the surface either way: its calls pass the MCP gate like any other.
 
+    ``first_party`` turns the fence off, and the CALLER decides it from
+    ``MCPRegistry.source_of(server) == "built-in"`` -- the one place that
+    knows whether a name still resolves to DELFIN's own entry or to a
+    config that replaced it. The default is False, so a caller that does
+    not know gets the fence.
+
+    WHY A FIRST-PARTY EXEMPTION. ``delfin-tools`` and ``delfin-ops`` are
+    spawned as ``sys.executable -m delfin.{tools.mcp_server,ops_server}``:
+    their descriptions are this repository's own text, at this commit,
+    written by the same authors as the native tools' -- which are not
+    fenced. Fencing them labelled DELFIN's own guidance as "data, not
+    instructions", and the one sentence that tells a model where to start
+    ("Read this first: the short recipe for building, validating and
+    running") was the sentence most affected. Measured on
+    ``delfin-tools``: 3,588 of 15,177 characters were fence, 23% of that
+    server's whole surface, and all 26 tools carried it.
+
+    The exemption is narrow by construction. A user who REPLACES a
+    built-in entry in their own config changes ``source_of`` to that
+    file's path, so the fence returns -- which is the case the override
+    exists for. A project config may disable a built-in but may not
+    redefine one (see ``_load_configs_with_sources``), so a folder cannot
+    buy itself an exemption.
+
+    The instruction-shape check still runs on first-party text, and still
+    withholds. It has to: if our own description ever carries a shape
+    this flags, the right answer is to rewrite the description, not to
+    exempt it from the check that found it. Measured today: 0 of our 128
+    own tool descriptions are withheld.
+
     Rejected: refusing the tool (a server with one odd sentence would lose
     every tool); pinning descriptions by hash and asking on a change (a
     store and a dialog per server -- the fence and the shape check are the
     part that holds on every host). Cost: 186 characters plus the server
-    name per tool, paid from the MCP schema budget."""
+    name per tool, paid from the MCP schema budget -- and nothing for a
+    first-party one."""
     raw = str(getattr(tool, "description", "") or "").strip() or tool.name
     from . import untrusted
     found = untrusted.instruction_shapes(raw)
@@ -358,6 +391,8 @@ def advertised_description(tool: "MCPTool") -> tuple[str, list[str]]:
         return (f"(The description of {tool.name} from MCP server "
                 f"{tool.server} was withheld: it carries text shaped as an "
                 f"instruction ({kinds}).)", found)
+    if first_party:
+        return raw, []
     from .project_memory import _fence_nonce
     return (untrusted.wrap_as("tool_description", f"mcp:{tool.server}", raw,
                               nonce=_fence_nonce(raw)), [])

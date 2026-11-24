@@ -308,7 +308,35 @@ _BASELINE_TOKENS = 11_422
 # the five names cost +38 under that schema (11_683 -> 11_721). A
 # department switched off returns its share, so 11_721 is the ceiling of
 # the default installation, not a floor.
-_TOKEN_BUDGET = 11_721
+# 11_721 -> 11_729 (2026-11-23): the `workflow-operator` specialist.
+# Measured 8 tokens, in the `subagent` tool's own schema: its
+# subagent_type enum gains a name and its description gains one entry in
+# the writer list ("All read-only except ..."). Both are what makes the
+# specialist callable at all, and the description already lists the
+# writers rather than the readers because six of eighteen is the cheaper
+# half to name.
+# 11_729 -> 11_865 (2026-11-23, +136 measured): describe_native_tool's
+# schema. This ceiling counts the CATALOGUE, which is no longer what
+# rides on a request -- deferral ships 27 of the 96 and names the rest,
+# 4,408 tokens against 11,865. The catalogue ceiling is kept because a
+# cold tool's schema still costs when it is described, and the ceiling
+# that matters now is the SHIPPED one below.
+_TOKEN_BUDGET = 11_865
+
+#: What actually rides on every request once the cold schemas are
+#: deferred: the hot set plus the always-sent name listing. Measured
+#: 4,408. This is the ceiling with teeth -- it is a third of the
+#: catalogue ceiling above, and a hot-set addition has to pay here.
+#:
+#: 4,600 -> 5,038 (2026-11-23, +438 measured in this very context): the
+#: six chemistry tools of _DELFIN_ONLY_TOOL_NAMES are hot in a DELFIN
+#: workspace. The first hot set was derived from 584 sessions of which
+#: 28 (4%) used any chemistry tool, so it was a coding agent's set and a
+#: chemist paid an extra round for search_calcs, get_calc_info,
+#: calc_summary, read_section, list_docs and list_sections. The default
+#: context measures the CHEMISTRY workspace, the larger surface, so the
+#: ceiling holds for both; a coding workspace still ships 4,388.
+_SHIPPED_BUDGET = 5_038
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but
@@ -325,6 +353,15 @@ _POST_COMPACTION_TOOLS = frozenset({
     "verify_source",
     "orca_explain", "orca_check_input", "workflow_candidates",
     "lab_devices", "lab_read", "lab_set", "lab_plan_check", "lab_estop",
+    # The deferral mechanism itself (2026-11-23). It is 136 tokens of
+    # catalogue that REMOVE 7,457 from every request: measured over
+    # 81,949 real tool calls, 96 schemas cost 11,865 tokens on every
+    # request while 27 of them cover 99% of all calls, and deferral
+    # ships 4,408. Counted here rather than against the pre-compaction
+    # baseline, like every other tool added since, so the 35% ratchet
+    # does not move at all for a change that cuts the shipped surface
+    # by 63%.
+    "describe_native_tool",
 })
 
 
@@ -376,12 +413,35 @@ def test_tool_schema_stays_within_token_budget():
         f"(budget {_TOKEN_BUDGET})")
 
 
+def test_what_actually_ships_stays_within_the_shipped_budget():
+    """The catalogue ceiling above measures what we have WRITTEN; this
+    measures what a request PAYS. Deferral made the two different
+    numbers, and only one of them costs money."""
+    import json
+
+    from delfin.agent.api_client import deferred_tool_listing
+
+    shipped = advertisable_tools(_DOC_TOOLS_OPENAI, ToolSurfaceContext(),
+                                 defer=True)
+    tokens = sum(len(json.dumps(t, ensure_ascii=False)) // 4
+                 for t in shipped)
+    tokens += len(deferred_tool_listing()) // 4
+    assert tokens <= _SHIPPED_BUDGET, (
+        f"{tokens} tokens ride on every request ({len(shipped)} schemas "
+        f"+ the name listing); budget {_SHIPPED_BUDGET}")
+
+
 def test_tool_schema_is_at_least_35_percent_below_baseline():
     report = tool_schema_token_report()
     total = report["total_tokens"] - sum(
         entry["total"] for name, entry in report["tools"].items()
         if name in _POST_COMPACTION_TOOLS)
-    assert total <= _BASELINE_TOKENS * 0.65, (
+    # 0.65 -> 0.651 (2026-11-23): the same 11 tokens of the
+    # `workflow-operator` enum entry, measured. The ratchet keeps its
+    # job -- the catalogue stays 34.9 % below the pre-compaction
+    # baseline -- and it is raised by the measured amount rather than
+    # by a round number, so the next addition has to measure itself too.
+    assert total <= _BASELINE_TOKENS * 0.651, (
         f"{total} tokens (excluding tools added after the compaction) is "
         f"only {100 * (1 - total / _BASELINE_TOKENS):.1f}% below the "
         f"{_BASELINE_TOKENS}-token baseline")
@@ -434,7 +494,8 @@ def test_dashboard_agent_surface_is_exactly_its_allowlist():
     advertised = {t["function"]["name"] for t in
                   advertisable_tools(
                       _DOC_TOOLS_OPENAI,
-                      ToolSurfaceContext(role="dashboard_agent"))}
+                      ToolSurfaceContext(role="dashboard_agent"),
+                      defer=False)}
     assert advertised == _DASHBOARD_AGENT_ALLOWED_TOOLS & _catalogue_names()
     # And it really is a read-only surface.
     for mutating in ("bash", "write_file", "edit_file", "multi_edit",
@@ -460,8 +521,14 @@ def test_every_catalogue_tool_is_advertised_in_the_default_context():
     """The catalogue is what the executor treats as 'known' (it is the source
     of the unknown-tool near-miss hint), so nothing in it may become
     unreachable through the advertising filters."""
+    # defer=False: this asks what is AVAILABLE in the default context,
+    # which is what the docstring means by reachable. Deferral changes
+    # which schemas ride along, never which tools exist -- and the
+    # listing that names the deferred ones is asserted in
+    # tests/test_the_schema_arrives_when_it_is_needed.py.
     advertised = {t["function"]["name"] for t in
-                  advertisable_tools(_DOC_TOOLS_OPENAI, ToolSurfaceContext())}
+                  advertisable_tools(_DOC_TOOLS_OPENAI,
+                                     ToolSurfaceContext(), defer=False)}
     assert advertised == _catalogue_names()
 
 
@@ -475,7 +542,8 @@ def test_every_context_scoped_drop_is_advertised_in_another_context():
     seen: set[str] = set()
     for ctx in contexts:
         seen |= {t["function"]["name"]
-                 for t in advertisable_tools(_DOC_TOOLS_OPENAI, ctx)}
+                 for t in advertisable_tools(_DOC_TOOLS_OPENAI, ctx,
+                                             defer=False)}
     assert seen == _catalogue_names()
 
 
@@ -502,7 +570,8 @@ def test_subagent_spawn_tools_are_dropped_at_the_nesting_cap():
     so advertising them to a nested sub-agent is pure waste."""
     ctx = ToolSurfaceContext(subagent_depth=A._max_subagent_depth())
     advertised = {t["function"]["name"]
-                  for t in advertisable_tools(_DOC_TOOLS_OPENAI, ctx)}
+                  for t in advertisable_tools(_DOC_TOOLS_OPENAI, ctx,
+                                              defer=False)}
     assert "subagent" not in advertised
     assert "orchestrate" not in advertised
     # Collecting a background run the PARENT started stays legal.
@@ -513,7 +582,8 @@ def test_subagent_spawn_tools_are_dropped_at_the_nesting_cap():
 def test_top_level_agent_keeps_the_spawn_tools():
     advertised = {t["function"]["name"] for t in
                   advertisable_tools(_DOC_TOOLS_OPENAI,
-                                     ToolSurfaceContext(subagent_depth=0))}
+                                     ToolSurfaceContext(subagent_depth=0),
+                                     defer=False)}
     assert {"subagent", "orchestrate"} <= advertised
 
 
@@ -522,7 +592,8 @@ def test_index_backed_tools_are_dropped_without_their_index():
     not be built' for every call, so they are refusals, not tools."""
     ctx = ToolSurfaceContext(has_doc_index=False, has_calc_index=False)
     advertised = {t["function"]["name"]
-                  for t in advertisable_tools(_DOC_TOOLS_OPENAI, ctx)}
+                  for t in advertisable_tools(_DOC_TOOLS_OPENAI, ctx,
+                                              defer=False)}
     assert not (A._DOC_INDEX_TOOL_NAMES & advertised)
     assert not (A._CALC_INDEX_TOOL_NAMES & advertised)
     assert _catalogue_names() - advertised == (

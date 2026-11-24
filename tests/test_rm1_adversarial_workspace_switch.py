@@ -32,7 +32,7 @@ def test_research_role_denies_shell_on_the_api_path():
     ctx = ToolSurfaceContext(role="research_agent")
     catalogue = [{"function": {"name": "bash", "description": "x",
                                "parameters": {}}}]
-    assert advertisable_tools(catalogue, ctx) == [], (
+    assert advertisable_tools(catalogue, ctx, defer=False) == [], (
         "bash is advertised to a research session; the user was told "
         "there are no shell commands")
 

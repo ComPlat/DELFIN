@@ -1516,9 +1516,79 @@ class PromptLoader:
 
     def load_role_prompt(self, role_id: str) -> str:
         """Load agents/{role_id}.md, with its workspace blocks selected
-        and its generated blocks filled."""
+        and its generated blocks filled.
+
+        A role with no file of its own falls back to the SUBAGENT PRESET
+        of the same name. That is what lets one definition have two
+        entry points: `workflow-operator` is a preset the generalist
+        delegates to, and `--mode workflow` routes to the same name, so
+        the prompt a person gets directly is the prompt the delegate
+        gets -- not a fifth hand-maintained copy in the pack.
+
+        The preset's frontmatter is dropped and its body kept, because
+        the body IS the role prompt; the frontmatter's tools and mode
+        are read by the registry and by _role_allowlist, which is where
+        they belong.
+        """
+        path = self.agent_dir / "agents" / f"{role_id}.md"
+        if path.is_file():
+            return self._fill_generated_blocks(
+                self._select_workspace_blocks(self._cached_read(path)))
+        body = self._preset_body(role_id)
+        if body:
+            return self._fill_generated_blocks(
+                self._select_workspace_blocks(body))
+        # Neither: read the missing file so the error is the one a
+        # reader expects from a bad role id, unchanged from before.
         return self._fill_generated_blocks(self._select_workspace_blocks(
-            self._cached_read(self.agent_dir / "agents" / f"{role_id}.md")))
+            self._cached_read(path)))
+
+    def role_exists(self, role_id: str) -> bool:
+        """Whether *role_id* is a role this loader can compose a prompt for.
+
+        TWO SOURCES, ONE ANSWER. A role used to exist exactly when
+        ``agents/<role>.md`` did, and callers tested that path directly.
+        Since a mode's route may name a subagent preset instead
+        (`--mode workflow` -> `workflow-operator`, one definition with
+        two entry points), the directory is no longer the registry, and
+        a caller still asking it refuses a role the engine would happily
+        run -- which is what `prompt-size --role workflow-operator`
+        reported before this existed.
+        """
+        if not role_id:
+            return False
+        if (self.agent_dir / "agents" / f"{role_id}.md").is_file():
+            return True
+        return bool(self._preset_body(role_id))
+
+    def _preset_body(self, role_id: str) -> str:
+        """The markdown body of the subagent preset *role_id*, or "".
+
+        Read from the same search dirs the registry reads, so a preset
+        dropped into ~/.delfin/subagents/ is routable by mode exactly as
+        it is delegable.
+        """
+        try:
+            from .subagents import _md_preset_search_dirs
+            dirs = list(_md_preset_search_dirs())
+        except Exception:                               # noqa: BLE001
+            return ""
+        for d in dirs:
+            for name in (f"{role_id}_subagent.md", f"{role_id}.md"):
+                p = Path(d) / name
+                if not p.is_file():
+                    continue
+                try:
+                    text = p.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                # Drop the YAML frontmatter; keep the body.
+                if text.startswith("---"):
+                    parts = text.split("---", 2)
+                    if len(parts) == 3:
+                        return parts[2].lstrip("\n")
+                return text
+        return ""
 
     # ------- Generated blocks (one list, one renderer) --------------------
 

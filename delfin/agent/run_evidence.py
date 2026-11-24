@@ -182,6 +182,44 @@ def _orca_run_seconds(text: str) -> Optional[float]:
     return None
 
 
+def _declared_names(control: Dict[str, Any]) -> List[str]:
+    """The stages this run's CONTROL declares, or [] where there is none.
+
+    An ABSENT CONTROL declares nothing. ``calc_initial`` defaults to
+    "yes" for the pipeline, so asking the reader about an empty mapping
+    would answer ``["initial"]`` -- one stage, for a workspace that has
+    no pipeline and no such file. An agent session's workspace would
+    then be measured against a plan nobody wrote.
+    """
+    if not control:
+        return []
+    try:
+        from delfin.config import declared_redox_steps
+        return list(declared_redox_steps(control))
+    except Exception:                                   # noqa: BLE001
+        return []
+
+
+def _belongs_to(step: Dict[str, Any], declared: List[str]) -> bool:
+    """Whether *step*'s files sit in one of the *declared* stages.
+
+    Matched against every path component and the file's stem, because
+    the pipeline writes a stage either as a file (``red_step_1.out``) or
+    as a directory (``red_step_1_OCCUPIER/``), and a stage name is a
+    prefix of the directory it owns.
+    """
+    for key in ("output", "input"):
+        raw = str(step.get(key) or "")
+        if not raw:
+            continue
+        parts = list(Path(raw).parts) + [Path(raw).stem]
+        for part in parts:
+            for name in declared:
+                if part == name or part.startswith(name + "_"):
+                    return True
+    return False
+
+
 def contract(ev: "Evidence", *, expected_steps: Optional[int] = None,
              egress_events: Optional[List[Any]] = None) -> Contract:
     """The execution contract of one collected run.
@@ -233,16 +271,82 @@ def contract(ev: "Evidence", *, expected_steps: Optional[int] = None,
         engine_invoked = True
 
     # --- grid_complete
-    ended_badly = [s for s in steps
+    #
+    # JUDGED OVER THE STEPS THE RUN DECLARED, where it declared any.
+    #
+    # CONTROL.txt is where a DELFIN pipeline states its own plan:
+    # calc_initial, oxidation_steps, reduction_steps. Those stages are
+    # the grid. Everything else in the workspace is exploration -- an
+    # agent trying five settings and keeping the one that converges -- and
+    # an abandoned trial is not a failed calculation. Counting it as one
+    # made this flag report False on every competent exploratory run,
+    # which is the same defect as a check that fires on correct work.
+    #
+    # Where CONTROL declares nothing, every step is judged, exactly as
+    # before: without a declaration there is no basis for the
+    # distinction, and inventing one would be a guess.
+    declared = _declared_names(ev.control)
+    judged = steps
+    explored: List[Dict[str, Any]] = []
+    if declared:
+        matched = [s for s in steps if _belongs_to(s, declared)]
+        if matched:
+            judged = matched
+            explored = [s for s in steps if s not in matched]
+            notes.append(
+                f"CONTROL declares {len(declared)} stage(s) "
+                f"({', '.join(declared)}); the grid is judged over the "
+                f"{len(matched)} step(s) that belong to them")
+        else:
+            # The CONTROL declares stages and NOTHING in the workspace
+            # carries their names. Judging over the matches would judge
+            # over nothing and come out complete, so every step is
+            # judged and the mismatch is reported.
+            notes.append(
+                f"CONTROL declares {len(declared)} stage(s) and no file "
+                "in the workspace carries their names, so every step is "
+                "judged instead")
+    if explored:
+        bad_explored = [s for s in explored
+                        if s.get("terminated_normally") is not True]
+        if bad_explored:
+            notes.append(
+                f"{len(bad_explored)} step(s) outside the declared "
+                "stages did not end normally "
+                + ", ".join(sorted(str(s.get("output"))
+                                   for s in bad_explored))
+                + " -- reported, and not counted against the grid: a "
+                  "trial that was abandoned is not a failed calculation")
+
+    if expected_steps is None and declared:
+        # The plan was in the run's own CONTROL all along, so no caller
+        # has to pass it. This is what left grid_complete unjudged for
+        # every pipeline run.
+        expected_steps = len(declared)
+        notes.append(
+            f"the required number was taken from CONTROL "
+            f"({expected_steps} declared stage(s))")
+
+    ended_badly = [s for s in judged
                    if s.get("terminated_normally") is False]
-    unknown_end = [s for s in steps
+    unknown_end = [s for s in judged
                    if s.get("terminated_normally") is None]
-    done = [s for s in steps if s.get("terminated_normally") is True]
+    done = [s for s in judged if s.get("terminated_normally") is True]
     if ended_badly:
         grid_complete = False
-        problems.append(
-            f"{len(ended_badly)} step(s) did not end normally: "
-            + ", ".join(sorted(str(s.get("output")) for s in ended_badly)))
+        # Names what SUCCEEDED as well. "12 step(s) did not end normally"
+        # was literally true of a run whose two production calculations
+        # both finished, and read as a failed run. A sentence that lists
+        # only the failures invites the wrong conclusion from a reader
+        # who cannot see the directory.
+        msg = (f"{len(ended_badly)} of {len(judged)} step(s) did not end "
+               "normally: "
+               + ", ".join(sorted(str(s.get("output"))
+                                  for s in ended_badly)))
+        if done:
+            msg += ("; the ones that did: "
+                    + ", ".join(sorted(str(s.get("output")) for s in done)))
+        problems.append(msg)
     elif unknown_end:
         grid_complete = False
         problems.append(
@@ -292,6 +396,89 @@ def contract(ev: "Evidence", *, expected_steps: Optional[int] = None,
                     problems=problems, notes=notes)
 
 
+# ---------------------------------------------------------------------------
+# The egress half, which the files cannot answer
+# ---------------------------------------------------------------------------
+
+#: Audit-record tools and security-event kinds that mean data left the
+#: machine or tried to. Taken from security_events.known_kinds(), where
+#: they are declared; ``network`` is included because a command whose
+#: network was held by the proxy is a reach for the network either way.
+EGRESS_KINDS: frozenset = frozenset({
+    "egress", "egress_asked", "egress_blocked", "egress_payload_refused",
+    "egress_sent", "egress_upload", "egress_upload_refused", "network",
+})
+
+
+def _record_ts(rec: Dict[str, Any]) -> Optional[float]:
+    """An audit record's timestamp as a POSIX float, or None."""
+    raw = str(rec.get("ts") or "")
+    if not raw:
+        return None
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(raw.rstrip("Z"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:                                   # noqa: BLE001
+        return None
+
+
+def egress_in_window(start: float, end: float, *,
+                     log_path: Optional[Any] = None,
+                     limit: int = 100000) -> Optional[List[Dict[str, Any]]]:
+    """Egress records in ``[start, end]``, or None when not judgeable.
+
+    Input: a time window as POSIX seconds and an optional audit-log
+    path. Output: the matching records, or ``None``.
+
+    NONE IS THE ANSWER WHENEVER ABSENCE CANNOT BE DEMONSTRATED, and that
+    is the whole value of this function. An empty list says "the log
+    covers this window and holds no egress in it". None says "this
+    cannot be judged", which keeps ``no_egress`` unjudged and
+    ``certified`` False. The two must never be confused: an empty
+    bounded read looks exactly like a quiet run.
+
+    None is returned when the log is absent or unreadable, and when the
+    log's own oldest record is NEWER than ``start`` -- the window then
+    reaches back before anything this log can speak about, which happens
+    after a rotation. A caller that treated that as "no egress" would
+    certify a run on a log that had been rotated away.
+    """
+    try:
+        from . import audit_log
+    except Exception:                                   # noqa: BLE001
+        return None
+    try:
+        kwargs = {"log_path": Path(log_path)} if log_path else {}
+        records = audit_log.read_last_n(limit, **kwargs)
+    except Exception:                                   # noqa: BLE001
+        return None
+    if not records:
+        # No readable record at all: absence of a log is not absence of
+        # egress.
+        return None
+
+    stamps = [ts for ts in (_record_ts(r) for r in records) if ts is not None]
+    if not stamps:
+        return None
+    if min(stamps) > start:
+        # The log begins after the run did; what happened before its
+        # first record is outside what it can testify to.
+        return None
+
+    out: List[Dict[str, Any]] = []
+    for rec in records:
+        ts = _record_ts(rec)
+        if ts is None or not (start <= ts <= end):
+            continue
+        kind = str(rec.get("kind") or rec.get("tool") or "")
+        if kind in EGRESS_KINDS:
+            out.append(rec)
+    return out
+
+
 def _wallclock(ev: "Evidence", steps: List[Dict[str, Any]]):
     """(flag, problems, notes) for the wall-clock half of the contract.
 
@@ -299,8 +486,18 @@ def _wallclock(ev: "Evidence", steps: List[Dict[str, Any]]):
 
     1. an output older than its own input cannot have been produced by
        it (an output carried in from elsewhere);
-    2. the engine's own stated run time cannot exceed the span the
+    2. a single step's stated run time cannot exceed the span the
        workspace's files occupy.
+
+    Check 2 takes the LONGEST step and not the sum. Summing would
+    require knowing the steps ran one after another, and DELFIN runs
+    engine jobs in parallel by design: four one-hour jobs started
+    together claim four hours against a one-hour span, and an honest run
+    would be reported as implausible. The files carry no schedule, so
+    the only parallelism-safe statement is about one step at a time.
+    Weaker on purpose: a check that fails on correct work is worse than
+    a check that passes on some incorrect work, because the first one
+    gets switched off.
 
     Where neither can be evaluated the flag is None: these checks can
     contradict a claimed run, never confirm one.
@@ -312,7 +509,8 @@ def _wallclock(ev: "Evidence", steps: List[Dict[str, Any]]):
     ok = True
 
     stamps: List[float] = []
-    claimed = 0.0
+    claimed = 0.0          # the LONGEST single step, never the sum
+    longest = ""
     for step in steps:
         out_rel, in_rel = step.get("output"), step.get("input")
         out = ws / str(out_rel) if out_rel else None
@@ -331,7 +529,8 @@ def _wallclock(ev: "Evidence", steps: List[Dict[str, Any]]):
                 secs = _orca_run_seconds(out.read_text(errors="replace"))
                 if secs is not None:
                     judged = True
-                    claimed += secs
+                    if secs > claimed:
+                        claimed, longest = secs, str(out_rel)
 
     if claimed and len(stamps) >= 2:
         span = max(stamps) - min(stamps)
@@ -339,9 +538,9 @@ def _wallclock(ev: "Evidence", steps: List[Dict[str, Any]]):
         if claimed > span + 60:
             ok = False
             problems.append(
-                f"the engine states {claimed:.0f} s of run time while the "
-                f"workspace's files span {span:.0f} s: the run time "
-                "claimed did not happen here")
+                f"{longest} states {claimed:.0f} s of run time while the "
+                f"workspace's files span {span:.0f} s: that one step's "
+                "run time did not fit in this workspace's lifetime")
     if not judged:
         notes.append(
             "wall-clock is not judged: no output with both its input and "
@@ -373,11 +572,39 @@ def collect(workspace) -> Evidence:
         }
 
     steps: List[Dict[str, Any]] = []
+    seen_outputs: set = set()
     for inp in sorted(ws.rglob("*.inp")):
-        steps.append(_collect_orca_step(ws, inp))
+        step = _collect_orca_step(ws, inp)
+        if step.get("output"):
+            seen_outputs.add(str(step["output"]))
+        steps.append(step)
     for log in sorted(ws.rglob("xtb*.out")):
         if log.suffix == ".out" and log.name.startswith("xtb"):
+            seen_outputs.add(str(log.relative_to(ws)))
             steps.append(_collect_xtb_step(ws, log))
+
+    # AN OUTPUT WITHOUT A MATCHING INPUT IS STILL A RESULT.
+    #
+    # Steps used to be anchored on .inp files alone, so an output whose
+    # input has a different name was invisible. Measured on a real run:
+    # the agent edited tddft_pbe0.inp and wrote tddft_pbe0_v2.out, and
+    # BOTH production calculations -- the only two that terminated
+    # normally -- were missing from the evidence. The contract then
+    # reported "12 of 12 steps did not end normally" over a run that had
+    # delivered its results. That is not a strict judgement, it is
+    # blindness to the result, and it would void a correct run.
+    #
+    # Such a step carries input=None: its termination can be read, and
+    # it cannot be re-executed, which run_rerun already requires a pair
+    # for. The .inp-anchored pass runs first so a paired output is never
+    # collected twice.
+    for out in sorted(ws.rglob("*.out")):
+        rel = str(out.relative_to(ws))
+        if rel in seen_outputs or out.name.startswith("xtb"):
+            continue
+        if out.with_suffix(".inp").is_file():
+            continue
+        steps.append(_collect_orphan_output(ws, out))
 
     slurm_records = _collect_slurm_records(ws)
 
@@ -414,6 +641,28 @@ def _collect_orca_step(ws: Path, inp: Path) -> Dict[str, Any]:
             ORCA_TERMINATED_NORMALLY in out.read_text(errors="replace")
         )
     return step
+
+
+def _collect_orphan_output(ws: Path, out: Path) -> Dict[str, Any]:
+    """A step known only by its output: no input of that name exists.
+
+    The engine and the termination are readable; the input-derived
+    fields are not, and are left None rather than guessed from the
+    output's own echo of the keywords -- a step whose input cannot be
+    pointed at must not look as though it could be re-run.
+    """
+    text = out.read_text(errors="replace")
+    return {
+        "input": None,
+        "output": str(out.relative_to(ws)),
+        "program": "orca",
+        "charge": None,
+        "multiplicity": None,
+        "functional": None,
+        "basis": None,
+        "terminated_normally": ORCA_TERMINATED_NORMALLY in text,
+        "input_known": False,
+    }
 
 
 def _charge_mult(text: str) -> Optional[tuple]:

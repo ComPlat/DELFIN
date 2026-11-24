@@ -49,8 +49,15 @@ def test_the_skill_loads_through_the_existing_loader():
     assert Path(sk.source).resolve() == SKILL_FILE
     assert sk.domains == ("code",)
     assert 0 < len(sk.description) <= A._SKILL_LISTING_DESC_CHARS
-    listing = A._skill_listing(S.discover_skills(domain="code"))
-    assert f"{sk.name} — {sk.description}" in listing
+    skills = list(S.discover_skills(domain="code"))
+    listing = A._skill_listing(skills)
+    # Two tiers under one ceiling: described while the budget lasts,
+    # then named. What must hold for every skill is that its NAME is
+    # there -- before, the ceiling decided by alphabet and 46 of 67 were
+    # reduced to a bare count, so they could not be called at all.
+    assert sk.name in listing
+    for other in skills:
+        assert other.name in listing, other.name
 
 
 @pytest.mark.parametrize("rule", [

@@ -66,9 +66,23 @@ def test_the_skill_loads_through_the_existing_loader():
     assert sk.domains == ("code",)
     assert sk.applies_to("code") and not sk.applies_to("office")
     assert 0 < len(sk.description) <= A._SKILL_LISTING_DESC_CHARS
-    listing = A._skill_listing(S.discover_skills(domain="code"))
+    skills = list(S.discover_skills(domain="code"))
+    listing = A._skill_listing(skills)
+    # The listing has two tiers under one ceiling: described while the
+    # budget lasts, then NAMED. What must hold for every skill -- and
+    # what did not hold before, when the ceiling decided by alphabet and
+    # 46 of 67 were reduced to a count -- is that its name is there, so
+    # it can be called at all.
+    assert sk.name in listing
+    assert "\n" not in listing
+    for other in skills:
+        assert other.name in listing, (
+            f"{other.name} is installed and not nameable from the "
+            f"listing, so nothing can call it")
+    # and a described entry still has the shape it had
     entry = f"{sk.name} — {sk.description}"
-    assert entry in listing and "\n" not in entry
+    assert entry in listing or f"{sk.name}," in listing \
+        or listing.rstrip().endswith(sk.name)
 
 
 def test_every_section_has_a_trigger_and_every_trigger_a_section():

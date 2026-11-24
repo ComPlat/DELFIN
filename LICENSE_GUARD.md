@@ -13,6 +13,23 @@ licensed database, must never be committed here.
 
 ## Rule families
 
+### 0. Share-alike reference databases (LC2)
+
+A published reference set is INPUT to this software, never content of
+it. The case that prompted the rule: QUESTDB, the obvious source of
+reference vertical excitation energies (GitHub pfloos/QUESTDB, Zenodo
+10.5281/zenodo.15671385; Loos, Boggio-Pasqua, Blondel, Lipparini and
+Jacquemin, J. Chem. Theory Comput. 2025, 21, 8010) is CC-BY-SA-4.0.
+Share-alike plus this repository's LGPL-3.0 is the conflict the
+principle above forbids, and EU database rights apply on top.
+
+So `delfin/agent/reference_oracle.py` takes its references as an
+ARGUMENT -- a path to a file the user supplies -- and
+`tests/test_a_reference_the_agent_cannot_author.py` asserts the module
+embeds no data of its own. The forbidden pattern is a PATH rule and
+deliberately not a content rule: the comparator CITES the database, and
+a citation is not a copy.
+
 ### 1. CCDC/CSD (existing)
 
 CCDC/CSD data is licensed and used ONLY INTERNALLY (validation,

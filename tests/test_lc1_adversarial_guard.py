@@ -23,7 +23,11 @@ ORCA_VERSION_LINE = " Program Version 6.1.1  -  RELEASE   -"
 @pytest.fixture
 def scan(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(license_guard, "_report", lambda violations: violations)
+    # Two parameters: _report also prints the single-signature
+    # advisories (QM_DISTINCT_REQUIRED). A double that hard-codes the
+    # old arity fails the call rather than the assertion.
+    monkeypatch.setattr(license_guard, "_report",
+                        lambda violations, advisories=None: violations)
 
     def run(name: str, body: str) -> list[str]:
         p = Path("fixture") / name

@@ -80,7 +80,18 @@ def test_every_registry_call_site_is_guarded():
     raw += code.count("_ws = (self._permissions.workspace\n"
                       "                                       if self._permissions else None)")
     assert raw == 0, "an MCP registry is still built from the raw workspace"
-    assert code.count("_hook_workspace(self._permissions)") >= 3
+    # The third site moved into api_client.execute_mcp_call, the one MCP
+    # dispatcher the agent loop and Code Mode share, where the guard is a
+    # module-level call on the session's permissions. Counted by spelling
+    # for both forms, and the dispatcher must offer NO workspace override:
+    # an optional one was there once, unused, and was a way round this.
+    guarded = (code.count("_hook_workspace(self._permissions)")
+               + code.count("ws = _hook_workspace(permissions)"))
+    assert guarded >= 3, guarded
+    import inspect
+    params = inspect.signature(A.execute_mcp_call).parameters
+    assert "workspace" not in params, (
+        "the MCP dispatcher accepts a workspace that bypasses the guard")
 
 
 # ---------------------------------------------------------------------------

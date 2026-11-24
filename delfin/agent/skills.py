@@ -96,14 +96,49 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
     block = rest[:end]
     body = rest[end + 4 :].lstrip("\n")
     meta: dict[str, str] = {}
-    for line in block.splitlines():
-        line = line.strip()
+    # A FOLDED BLOCK SCALAR IS ITS CONTINUATION LINES, not the two
+    # characters that announce it. `description: >-` with the text
+    # beneath was read as the literal ">-" by the line-based reader, so
+    # three shipped skills (orca-spectra-ir-raman, -spin-occupier,
+    # -uvvis-esd) carried ">-" as their whole description -- and the
+    # text it hid is the best metadata in the set: "Use when the user
+    # asks for an absorption spectrum, excitation energies, or an
+    # excited state of a small molecule." A skill is retrieved by its
+    # description (skill_pointers), so that text being dropped made
+    # those three reachable by nothing but their exact name.
+    #
+    # Folded, not literal: the continuation lines join with spaces,
+    # which is what `>` means in YAML. `|` keeps newlines, and joining
+    # those with spaces too is the right call for a one-line
+    # description -- nothing here wants the line breaks.
+    key: str = ""
+    folding: list[str] = []
+
+    def _flush() -> None:
+        if key and folding:
+            meta[key] = " ".join(x.strip() for x in folding if x.strip())
+
+    for raw_line in block.splitlines():
+        line = raw_line.strip()
+        if folding:
+            # Inside a block scalar: an indented line continues it, a
+            # `key:` at column zero ends it.
+            if raw_line[:1] in (" ", "\t") and line and not line.startswith("#"):
+                folding.append(line)
+                continue
+            _flush()
+            key, folding = "", []
         if not line or line.startswith("#"):
             continue
         if ":" not in line:
             continue
         k, _, v = line.partition(":")
-        meta[k.strip()] = v.strip().strip("\"").strip("'")
+        v = v.strip().strip("\"").strip("'")
+        if v in _BLOCK_INDICATORS:
+            key, folding = k.strip(), [""]
+            continue
+        meta[k.strip()] = v
+    _flush()
     return meta, body
 
 
@@ -123,12 +158,51 @@ def _parse_domains(raw: object) -> tuple[str, ...]:
     return tuple(p for p in parts if p)
 
 
+#: What a YAML block scalar opens with. The front-matter reader is
+#: line-based, so these are never a value -- they announce one.
+_BLOCK_INDICATORS = frozenset({">", ">-", ">+", "|", "|-", "|+"})
+
+
 def _first_heading(body: str) -> str:
-    for line in body.splitlines():
+    """The skill's own one-line statement of what it is FOR.
+
+    The ``>`` line first, the ``#`` heading after it. 28 of the 67
+    shipped skills carry no ``description:`` key and open like this:
+
+        # CASSCF setup
+        > Set up a CASSCF/NEVPT2 calculation with a justified active
+          space -- every keyword grounded in the manual.
+
+    Taking the heading left those skills describable only by their
+    title, so their whole retrievable vocabulary was {casscf, setup}:
+    the words that say WHEN to reach for the playbook -- nevpt2, active
+    space -- were in the file and never read. A heading names the
+    document; the quoted line names the situation, which is what a
+    reader and a matcher both need (delfin/agent/skill_pointers.py).
+
+    BOTH when both exist, heading first: "CASSCF setup -- Set up a
+    CASSCF/NEVPT2 calculation with a justified active space". The title
+    alone is too thin to retrieve on and the quoted line alone drops the
+    name a person scanning a list looks for.
+
+    Taken by PREFERENCE, not in file order: the heading is written above
+    the quoted line in every shipped skill, so reading the first of
+    either would always return the heading and never the line -- which
+    is the bug this docstring replaced.
+    """
+    heading = ""
+    cue = ""
+    for line in body.splitlines()[:40]:
         line = line.strip()
-        if line.startswith("#"):
-            return line.lstrip("#").strip()
-    return ""
+        if not heading and line.startswith("#"):
+            heading = line.lstrip("#").strip()
+        elif not cue and line.startswith(">"):
+            cue = line.lstrip(">").strip()
+        if heading and cue:
+            break
+    if heading and cue:
+        return f"{heading} -- {cue}"
+    return cue or heading
 
 
 # Built-in "curated set" skills shipped with the package.
@@ -285,6 +359,15 @@ def _load_one(path: Path) -> Skill | None:
     if not _SKILL_NAME_RE.match(name):
         return None
     description = (meta.get("description") or "").strip()
+    if description in _BLOCK_INDICATORS:
+        # `description: >-` opens a YAML folded block whose text is on
+        # the following lines, and the front-matter reader takes one
+        # `key: value` per line -- so three shipped skills
+        # (orca-spectra-ir-raman, -spin-occupier, -uvvis-esd) were
+        # described by the two characters ">-" and could be retrieved by
+        # nothing. Treated as absent, which falls back to the heading
+        # and the `>` cue below.
+        description = ""
     if not description:
         description = _first_heading(body)
     return Skill(
