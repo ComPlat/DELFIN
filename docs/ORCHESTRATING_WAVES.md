@@ -68,8 +68,11 @@ member's brief.
 ## Running and watching
 
 1. `wave_start(run, tasks, repo)` starts what is ready.
-2. `wave_guard_install()` lets the scheduler daemon run the tick every
-   minute. The tick:
+2. `wave_guard_install(systemd=true)` runs the tick every minute as a
+   systemd user service, which restarts when it fails and comes back after a
+   reboot. Without systemd, `wave_guard_install()` makes it an entry of the
+   scheduler daemon, and `delfin-agent swarm wave tick --every 60` runs it
+   under any supervisor (tmux on a login node, a batch job). The tick:
    - starts tasks as their dependencies end;
    - runs the stage: real runs outside the member's cage, the resume that
      reads them, the final mark;

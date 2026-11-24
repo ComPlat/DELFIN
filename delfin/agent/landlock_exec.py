@@ -605,6 +605,26 @@ def _run_held(write, hide, read_only, command, strict, *, use_fs, forwarder,
     return _exit_code(status)
 
 
+OOM_SCORE_ADJ = 1000
+
+
+def prefer_as_oom_victim(path: str = "/proc/self/oom_score_adj") -> bool:
+    """Make this process, and the command it becomes, the first the kernel
+    kills when memory runs out: before the agent that started it, and before
+    anything else of anyone's on a shared host. Raising the value needs no
+    privilege; where there is no such file (not Linux) nothing changes.
+
+    A full test suite an agent ran outgrew its memory limit and the kill
+    took the agent with it (2026-11-24); with this the command dies and the
+    agent reads exit 137."""
+    try:
+        with open(path, "w") as fh:
+            fh.write(str(OOM_SCORE_ADJ))
+        return True
+    except OSError:
+        return False
+
+
 def main(argv: list[str]) -> int:
     if argv[:1] == ["--probe"]:
         print(abi_version())
@@ -680,6 +700,7 @@ def main(argv: list[str]) -> int:
             os.environ[key] = os.path.join(tmpdir, sub)
     roots = [w for w in write if w]
     write.append("/dev")
+    prefer_as_oom_victim()
     try:
         _sg = _load_socket_guard()
         sg_defaults = (list(_sg.DEFAULT_ALLOWED)

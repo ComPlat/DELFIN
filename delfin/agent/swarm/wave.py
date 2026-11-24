@@ -60,7 +60,7 @@ _DEFAULTS = {
     "max_parallel": 4,
     "provider_caps": {},
     "member_cpu": "200%",
-    "member_memory": "6G",
+    "member_memory": "12G",
     # 256 was too few: the egress proxy's threads in a busy member failed
     # with "can't start new thread" (two crashes, 2026-11-23/24).
     "member_tasks": 1024,
@@ -134,13 +134,24 @@ def _state_lock(run: str):
     """The run's state for one change: taken, read fresh, given back. A lock
     held for a starter's whole life deadlocked the stage that resumes its
     members (measured 2026-11-24)."""
+    with _flock(run_dir(run) / ".state.lock"):
+        yield
+
+
+@contextlib.contextmanager
+def _flock(path: Path, *, wait: bool = True):
+    """An exclusive lock on ``path`` for the block; yields False instead of
+    waiting when ``wait`` is false and another process holds it."""
     import fcntl
-    d = run_dir(run)
-    d.mkdir(parents=True, exist_ok=True)
-    with open(d / ".state.lock", "w") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as fh:
         try:
-            yield
+            fcntl.flock(fh, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
         finally:
             fcntl.flock(fh, fcntl.LOCK_UN)
 
@@ -339,12 +350,18 @@ def member_argv(run: str, task: dict, *, session: str = "", cfg: dict | None = N
 
 def _scoped(cmd: list[str], cfg: dict) -> list[str]:
     """The member in a scope of the swarm slice where a user service manager
-    runs one, at the lowest CPU and I/O priority everywhere."""
+    runs one, at the lowest CPU and I/O priority everywhere.
+
+    ``OOMPolicy=continue``: a command the member runs that outgrows the
+    scope's memory is killed, and the member lives on to read exit 137. The
+    default (stop) ended the whole scope on that kill, so a full test suite
+    run by an integrator killed the integrator (w42i, 2026-11-24)."""
     nice = ["nice", "-n", "15"] + (["ionice", "-c", "3"] if shutil.which("ionice") else [])
     if shutil.which("systemd-run") and os.environ.get("XDG_RUNTIME_DIR"):
         return ["systemd-run", "--user", "--scope", "--quiet", f"--slice={cfg['slice']}",
                 "-p", f"CPUQuota={cfg['member_cpu']}", "-p", f"MemoryMax={cfg['member_memory']}",
-                "-p", f"TasksMax={int(cfg['member_tasks'])}", *nice, *cmd]
+                "-p", f"TasksMax={int(cfg['member_tasks'])}", "-p", "OOMPolicy=continue",
+                *nice, *cmd]
     return [*nice, *cmd]
 
 
@@ -681,7 +698,16 @@ def observe(run: str, *, silent_min: float = 60.0) -> list[dict]:
     """Record what changed since the last look, once each: a member that
     ended (with how), one whose log has not grown for ``silent_min``, a
     traceback in a member's log, a stage marker, every task final.
-    Returns the new events."""
+    Returns the new events.
+
+    One look at a time per run: the tick (a service), ``watch`` and a tick
+    run by hand all call it, and two looks at once recorded each event
+    twice and collided on the cursor file (seen 2026-11-24)."""
+    with _flock(run_dir(run) / ".observe.lock"):
+        return _observe(run, silent_min)
+
+
+def _observe(run: str, silent_min: float) -> list[dict]:
     d = run_dir(run)
     seen_p = d / ".observed.json"
     try:
@@ -732,7 +758,7 @@ def observe(run: str, *, silent_min: float = 60.0) -> list[dict]:
             seen["all_final"] = time.time()
     except (OSError, ValueError, KeyError):
         pass
-    tmp = seen_p.with_suffix(".tmp")
+    tmp = seen_p.with_name(f".observed.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(seen))
     os.replace(tmp, seen_p)
     return new

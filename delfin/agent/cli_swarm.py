@@ -160,15 +160,19 @@ def configure_parser(
     w = wsub.add_parser("stop", help="End a run's members (or one)")
     w.add_argument("run")
     w.add_argument("member", nargs="?", default="")
-    wsub.add_parser("tick", help="One pass: start, advance, record, guard")
+    w = wsub.add_parser("tick", help="One pass: start, advance, record, guard")
+    w.add_argument("--every", type=float, default=0, metavar="SECONDS",
+                   help="Tick forever at this interval (default: one pass)")
     w = wsub.add_parser("emergency-stop", help="Stop every member of every run and hold")
     w.add_argument("why")
     wsub.add_parser("clear-stop", help="Lift an emergency stop (a person's decision)")
     w = wsub.add_parser("friction", help="What the members ran into, counted")
     w.add_argument("runs", nargs="*")
-    w = wsub.add_parser("guard", help="Install or remove the tick in the scheduler")
+    w = wsub.add_parser("guard", help="Install or remove the tick (scheduler or systemd)")
     w.add_argument("action", choices=("install", "remove"))
     w.add_argument("--every", type=int, default=1, help="Minutes between ticks")
+    w.add_argument("--systemd", action="store_true",
+                   help="As a systemd user service that survives a reboot")
     w = wsub.add_parser("land", help="Check, review and (with --push) open members' PRs",
                         description="delfin/agent/swarm/land.py: --calibrate [MODEL ...] and "
                                     "--calibrate-pair [A B] measure the reviewers first.")
@@ -269,6 +273,10 @@ def _cmd_wave(args: argparse.Namespace) -> int:
     elif verb == "stop":
         out = M.h_stop(args.run, args.member)
     elif verb == "tick":
+        if args.every:
+            from delfin.agent.swarm import guard
+            guard.loop(max(10.0, args.every))
+            return 0
         out = M.h_tick()
     elif verb == "emergency-stop":
         out = M.h_emergency_stop(args.why)
@@ -277,7 +285,8 @@ def _cmd_wave(args: argparse.Namespace) -> int:
     elif verb == "friction":
         out = M.h_friction(args.runs or None)
     elif verb == "guard":
-        out = M.h_guard_install(args.every) if args.action == "install" else M.h_guard_remove()
+        out = (M.h_guard_install(args.every, args.systemd) if args.action == "install"
+               else M.h_guard_remove())
     else:
         print("delfin-agent swarm wave VERB -- see --help")
         return 2
