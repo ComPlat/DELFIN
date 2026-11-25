@@ -213,6 +213,22 @@ def test_the_shipped_ops_surface_is_still_read_in_full():
     assert len(names) > 50, len(names)
 
 
+def test_the_operating_knowledge_layer_is_counted():
+    """The failing input: a glob of ``knowledge/*.md`` only.
+
+    Ten operating notes live one level down and reach an agent's turn, so the
+    old count reported that layer as zero -- the same "absent reads as zero"
+    defect as the unreadable root, in a smaller place.
+    """
+    from pathlib import Path
+
+    from delfin.agent.commit_metrics import _packs_row
+
+    row = _packs_row(Path(__file__).resolve().parents[1])
+    assert row["knowledge_operating"] > 0, row
+    assert row["skills"] > 0 and row["agents"] > 0, row
+
+
 # ---------------------------------------------------------------------------
 # (5) every role that can run a session is in the row
 # ---------------------------------------------------------------------------

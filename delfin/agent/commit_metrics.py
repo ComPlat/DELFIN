@@ -31,12 +31,13 @@ first number, and this module does not import it:
 3. worse, it would make the PRODUCT depend on the SUITE -- a metrics command
    that fails on an installation without pytest is not a measurement.
 
-So the scan is a faithful copy here, and ``tests/
-test_a_commit_row_measures_every_agent.py`` pins it against the original:
-where both exist, ``definitions()`` and ``mentions()`` must answer
-identically, and the unmounted count must equal the ratchet's. Divergence is
-a defect of this module, not of the ratchet. The same pattern and the same
-three reasons are already recorded in ``scripts/ab_task_pools.py``.
+So the scan is a faithful copy here, and
+``tests/test_the_metrics_scan_agrees_with_the_ratchet.py`` pins it against
+the original: the definitions, the unmounted SET (not only its size) and each
+name's tier must agree with what the ratchet computes, so the two cannot
+drift apart while both suites stay green. Divergence is a defect of this
+module, not of the ratchet. The same pattern and the same three reasons are
+already recorded in ``scripts/ab_task_pools.py``.
 
 What the OFFERED count includes, and why that is not
 ``role_tool_surface_report``
@@ -112,6 +113,11 @@ _BINARY_SUFFIXES = frozenset({
 
 _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _DOTTED = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+")
+
+#: The key that marks which repeat (which run FILE) a result row came from.
+#: Added by ``load_bench_runs`` when it reads several files, so the quality
+#: half can count repeats instead of pooling every row into one sample.
+_REPEAT_KEY = "_metrics_repeat"
 
 
 # ---------------------------------------------------------------------------
@@ -365,8 +371,10 @@ def _ops_server_names(tree_root: Optional[Path] = None) -> frozenset[str]:
     decorator (``@mcp.tool(name="x")``) and the functional registration
     (``mcp.tool(name="x")(fn)``). Only ``name=`` is read, since a tool named
     after a wrapped function is not how this server registers anything --
-    if that ever changes, the count drops and `test_every_ops_tool_is_counted`
-    fails rather than the surface quietly shrinking.
+    if that ever changes, the count drops and
+    ``tests/test_a_metrics_row_measures_what_the_product_writes.py``
+    (``test_the_shipped_ops_surface_is_still_read_in_full``) fails rather
+    than the surface quietly shrinking.
     """
     if tree_root is not None:
         path = Path(tree_root) / "delfin" / "ops_server" / "server.py"
@@ -641,18 +649,31 @@ def _per_agent_from_bench_rows(
     every row is unmeasured the profile gets no sample at all rather than a
     zero -- ``is_result`` stays false and the caller sees ``n: 0``.
     """
-    per_profile: dict[str, list[float]] = {}
+    per_profile: dict[str, list[tuple[int, float]]] = {}
     for row in runs:
         if not isinstance(row, dict) or row.get("quality_0_100") is None:
             continue
         if row.get("unmeasured"):
             continue
         who = str(row.get("profile_name") or row.get("model") or "default")
-        per_profile.setdefault(who, []).append(float(row["quality_0_100"]))
-    # One sample per profile: this file is one repeat of the suite.
-    return ({who: [sum(values) / len(values)]
-             for who, values in per_profile.items() if values},
-            "profile_name")
+        # The file this row came from IS the repeat. Without the index every
+        # row of every file pooled into a single sample, so three run files
+        # came out as one repeat and the noise rule could never be reached
+        # for a real benchmark. Measured 2026-11-25: three files recorded
+        # `n: 1` over the mean of all six rows.
+        repeat = int(row.get(_REPEAT_KEY, 0))
+        per_profile.setdefault(who, []).append(
+            (repeat, float(row["quality_0_100"])))
+    out: dict[str, list[float]] = {}
+    for who, pairs in per_profile.items():
+        by_repeat: dict[int, list[float]] = {}
+        for repeat, value in pairs:
+            by_repeat.setdefault(repeat, []).append(value)
+        # One sample per FILE: the mean over that repeat's tasks, so a file
+        # that covered more tasks cannot outweigh one that covered fewer.
+        out[who] = [sum(values) / len(values)
+                    for _r, values in sorted(by_repeat.items()) if values]
+    return out, "profile_name"
 
 
 def delegation_accuracy(runs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -742,18 +763,18 @@ def compare_number(name: str, old: Optional[dict], new: Optional[dict],
                     f"{_MIN_REPEATS} are needed before a difference can be "
                     "told from the spread"))
         return out
-    # A MISSING spread is not a zero spread. A row read back from the kept
-    # history, or written by a caller that supplied a mean and an n but no
-    # stderr, has no spread to compare against; reading the absent value as
-    # 0.0 would let it through the zero-spread branch below as if its
-    # repeats had agreed, which is the opposite of what an absent value
-    # means. Measured 2026-11-25: `stderr: None` and `stderr: 0.0` took the
-    # same path.
+    # A MISSING spread is not a zero spread. `spread()` reports a known
+    # dispersion as a `stderr` number -- 0.0 when every repeat agreed -- and
+    # reports the ABSENCE of one by leaving `stderr` None and omitting
+    # `stdev`. A row read back from the kept history, or written by a caller
+    # that supplied a mean and an n but no repeats, is the second case;
+    # reading its absent value as 0.0 would send it through the zero-spread
+    # branch below as if its repeats had agreed, which is the opposite of
+    # what an absent value means. Measured 2026-11-25: `stderr: None` and
+    # `stderr: 0.0` took the same path.
     missing = [side for side, entry in (("old", old), ("new", new))
-               if entry.get("stderr") is None]
-    if missing and not all(
-            entry.get("n", 0) >= _MIN_REPEATS and (entry.get("max") == entry.get("min"))
-            for entry in (old, new)):
+               if entry.get("stderr") is None and "stdev" not in entry]
+    if missing:
         out.update(
             verdict="not a result",
             reason=(f"{' and '.join(missing)} side carries no spread, so no "
@@ -960,14 +981,29 @@ def _packs_row(tree_root: Path) -> dict[str, Any]:
     Reported because a prompt can grow without a tool changing: skills,
     agent prompts and knowledge notes all land in the system prompt. Counting
     them separately is what makes such a growth visible in a diff of rows.
+
+    ``knowledge/operating/`` is counted too. It was 0 before, because the
+    glob was ``knowledge/*.md`` while ten notes live one level down -- and
+    those ten DO reach an agent's turn, so a row that counted only the top
+    level reported the note layer as ten files smaller than it is. The two
+    levels are kept apart rather than summed: the taxonomy is flat by
+    design (``knowledge.global_dir`` reads ``*.md``) and the operating notes
+    are a separate layer, so a reader can see which one moved.
+
+    A missing directory reports ``None``, not 0: "this tree has no skills"
+    and "this tree has no ``pack/`` I could read" are different answers, and
+    the second one is a defect in the measurement.
     """
     pack = tree_root / "delfin" / "agent" / "pack"
-    out: dict[str, int] = {}
+    out: dict[str, Any] = {}
     for name, sub in (("agents", "agents"), ("skills", "skills"),
                       ("knowledge", "knowledge"), ("shared", "shared")):
         directory = pack / sub
         out[name] = (len(list(directory.glob("*.md")))
-                     if directory.is_dir() else 0)
+                     if directory.is_dir() else None)
+    operating = pack / "knowledge" / "operating"
+    out["knowledge_operating"] = (len(list(operating.glob("*.md")))
+                                  if operating.is_dir() else None)
     return out
 
 
@@ -1038,10 +1074,12 @@ def load_bench_runs(path: Path) -> list[dict[str, Any]]:
     fewer rows is a measurement of the wrong population.
     """
     runs: list[dict[str, Any]] = []
+    repeat = 0
     for one in str(path).split(","):
         one = one.strip()
         if not one:
             continue
+        repeat += 1
         file_path = Path(one)
         text = file_path.read_text(encoding="utf-8")
         stripped = text.strip()
@@ -1049,7 +1087,8 @@ def load_bench_runs(path: Path) -> list[dict[str, Any]]:
             continue
         if stripped.startswith("["):
             data = json.loads(stripped)
-            runs.extend(d for d in data if isinstance(d, dict))
+            runs.extend({**d, _REPEAT_KEY: repeat}
+                        for d in data if isinstance(d, dict))
             continue
         for number, line in enumerate(stripped.splitlines(), 1):
             line = line.strip()
@@ -1066,7 +1105,7 @@ def load_bench_runs(path: Path) -> list[dict[str, Any]]:
                 continue
             if "run_header" in parsed and len(parsed) == 1:
                 continue
-            runs.append(parsed)
+            runs.append({**parsed, _REPEAT_KEY: repeat})
     return runs
 
 
