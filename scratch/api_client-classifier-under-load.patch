@@ -26,7 +26,19 @@
          # The user said yes to exactly this action earlier in the session:
          # not asked again. The per-turn ``allowed`` set forgot it at the
          # next message, so one game server was asked about three times
-@@ -22174,13 +22190,13 @@
+@@ -22153,7 +22169,10 @@
+             if by_user:
+                 perms.record_denied_action("classifier", key)
+             else:
+-                state["refused"].add(key)
++                # The MODEL's refusal is cached on the workspace-scoped key, the
++                # same one the cache reads use; the user's no above stays on
++                # ``key`` (a human's no is about the session).
++                state["refused"].add(vkey)
+             state["refusals"] = int(state.get("refusals") or 0) + 1
+             who = ("the user refused it when asked" if by_user
+                    else "the action classifier refused it")
+@@ -22174,13 +22193,13 @@
                  "session, asked after the action classifier's second "
                  "opinion. It stays refused and is not asked again -- ask the "
                  "user what to do instead.")
@@ -42,7 +54,7 @@
              return None
  
          task, earlier = _classifier_context_users(users)
-@@ -22309,6 +22325,27 @@
+@@ -22309,6 +22328,27 @@
          # sees every step in the transcript. A verdict the model gives
          # with a reason is unaffected.
          on_error = ("ask" if can_ask else "refuse") if leaves else "allow"
@@ -70,7 +82,7 @@
          try:
              # The broad scope is the user asking for a second opinion on
              # everything: there a shell command keeps the model.
-@@ -22323,6 +22360,7 @@
+@@ -22323,6 +22363,7 @@
                             or _ac.Verdict(
                                 "allow", "screened without the model."))
                  decision, reason = verdict.decision, str(verdict.reason or "")
@@ -78,7 +90,7 @@
                  # A screened verdict is not a model's opinion: it is a
                  # deterministic allow (or a user rule), so no second-family
                  # confirmation is owed for it.
-@@ -22331,6 +22369,9 @@
+@@ -22331,6 +22372,9 @@
                      action, context, model=_ask, runner=_bounded,
                      rules=cfg["rules"], default_on_error=on_error)
                  decision, reason = verdict.decision, str(verdict.reason or "")
@@ -88,7 +100,7 @@
                  # "allow needs two families": the first model's own refuse/ask
                  # stands (decision is not "allow"), but an ALLOW is confirmed
                  # by a model of another family before it is granted. Gate the
-@@ -22342,13 +22383,27 @@
+@@ -22342,13 +22386,27 @@
                  # allowed on one vote when a second family was available; a
                  # lone allow stands only when _confirm was empty from the
                  # start (one family served, today's behaviour).
@@ -118,7 +130,7 @@
                              continue  # this confirm gave no verdict; try next
                          decision, reason = (vc.decision,
                                              str(vc.reason or ""))
-@@ -22365,6 +22420,7 @@
+@@ -22365,6 +22423,7 @@
          except Exception as exc:
              failed.append(type(exc).__name__)
              decision, reason = on_error, f"classifier error: {exc}"
@@ -126,7 +138,7 @@
          watcher_failed = bool(failed) or reason.startswith(_ac.ERROR_PREFIX)
          if called:
              # Only a real model call is evidence about the watcher; a call
-@@ -22378,6 +22434,13 @@
+@@ -22378,6 +22437,13 @@
          if not reason.endswith((".", "!", "?")):
              reason += "."
  
@@ -140,7 +152,7 @@
          if watcher_failed and decision == "refuse":
              # Nobody to ask and an action that leaves the workspace: held,
              # not judged. Not cached, not counted towards the lockout.
-@@ -22398,7 +22461,7 @@
+@@ -22398,7 +22464,7 @@
                  "still needed.")
  
          if decision == "allow":
@@ -149,7 +161,7 @@
              return None
          if decision == "refuse":
              _record_security_event(
-@@ -22436,7 +22499,7 @@
+@@ -22436,7 +22502,7 @@
          except Exception as exc:
              return f"confirm_callback raised: {exc}"
          if ok:
