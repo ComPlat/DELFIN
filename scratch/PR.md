@@ -50,11 +50,14 @@ red for the wrong line.
 ### Why a2's guard over a1's — the measurement that decided it
 
 The package asks the test to "list **each** offender file:line". Given a file with two
-undefined escapes, the two instruments disagree:
+undefined escapes, the two instruments disagree. The file is a temporary fixture
+(`two_escape.py:55` writes `two_bad.py` into a `tempfile.TemporaryDirectory()`), not a
+path in this repository; each line number is the opening line of one docstring, which
+is the line CPython blames for an escape written inside it:
 
 ```
-two-escape file -> a1 reports: ["two_bad.py:2: invalid escape sequence '\ '"]
-two-escape file -> a2 reports: [(2, "invalid escape sequence '\ '"), (5, "invalid escape sequence '\ '")]
+two-escape fixture -> a1 reports: ["two_bad.py:2: invalid escape sequence '\ '"]
+two-escape fixture -> a2 reports: [(2, "invalid escape sequence '\ '"), (5, "invalid escape sequence '\ '")]
 ```
 
 a1 runs one `simplefilter("error")` compile per file, which stops at the first warning;
