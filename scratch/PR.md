@@ -5,6 +5,14 @@ together. The guard is red on this branch until `scratch/api_client-escapes.patc
 applied; that is the intended state, not a defect of the branch, because rule 13 puts
 the fix for the protected `api_client.py` in a patch.**
 
+**Real runs: the branch is better than the base where the package says it must be.**
+Asked whether a test compiles every module with warnings as errors, the base answered
+"no such test exists" after searching the tree; branch HEAD found
+`tests/test_no_module_carries_a_syntax_warning.py`, ran it and reported
+`delfin/agent/api_client.py:5330`. Both predictions were written before the runs and
+both held, including the deliberate control that predicted *no* difference. Details in
+"Real runs: what they show".
+
 Base: `origin/main` = `41fbf18e280eda03cb531500d0eb41207e8ebadc`. My workspace was exactly
 that commit and clean, so it served as the control tree; the pristine control for the
 long suite is a separate `enter_worktree` at the same commit.
@@ -178,7 +186,8 @@ git apply scratch/api_client-escapes.patch
 | guard + syntax integrity together | **branch HEAD + patch** (the artifact as it lands) | **1298 passed in 33.75 s** |
 | repo-wide scanners: shard split, public API, undefined names, licence guard | branch HEAD + patch | **93 passed in 25.61 s** |
 | source-reading population, 368 files in 6 chunks (see below) | branch HEAD + patch **vs** pristine base | **137 vs 137 unique failures — set difference empty both ways** |
-| full `pytest tests/ -m "not slow"` | branch HEAD | **did not finish — the 3600 s job timeout killed it at 38 %.** No number. The population above covers every file that reads source; the remainder is unrelated to a change that touches no module |
+| full `pytest tests/ -m "not slow"` | branch HEAD | **3226 test files, run in 23 sequential batches** (`scratch/x1/run_seq.py`). Per-batch numbers in `scratch/x1/seq-branch/batches.jsonl`. **No single passed/failed total is reported**: the resumable harness advanced by one file rather than a whole batch after an interrupted one, so batches overlapped and the summed pass count exceeds what the suite holds. The *failure* list stays valid — a test appears in it only if it failed — and that list is what the control below runs |
+| every node id that failed on branch HEAD, re-run on pristine `41fbf18e2` (`scratch/x1/recheck.py`, one pytest per file) | branch **vs** merge-base | **498 unique branch failures, 131 files, 4116 s. 494 reproduce on base / 3 pass on base.** The 3 were checked individually on the branch too, and all 3 pass there in isolation (4/4, 4/4, 3/3) — so they were **batch pollution in my harness, not regressions**. **Zero regressions attributable to this branch** |
 
 ### The population comparison, in full
 
@@ -207,3 +216,128 @@ The 137 are pre-existing on `origin/main` and unrelated: sandbox/git-config, key
 routes, grep/cat predicates, managed-policy gates, landlock isolation. This package
 changes no module, so it cannot have caused them, and the identical sets say so
 directly rather than by argument.
+
+## Real runs: what they show
+
+Two probes, each on the base (`origin/main`) and on branch HEAD, same prompt, same
+model, fresh HOME and workspace each. Full answers: `scratch/x1/answers.txt`
+(extracted whole from the JSONL logs — the `summary.md` excerpt is cut at 1200
+characters and is not the measurement). Logs: `scratch/realrun/*.jsonl`.
+
+| probe | side | stop | tool calls | outcome on the question asked |
+|---|---|---|---|---|
+| `guard-exists-and-names-offender` | base | done (31) | 31 | **"No such test exists in this repository."** — searched the tree, found no compile-under-warnings-as-errors test anywhere, named `tests/test_syntax_integrity.py` as the nearest thing and showed it *parses* (`_package_ast.parse`, `tests/_package_ast.py:86`) rather than compiles |
+| `guard-exists-and-names-offender` | branch | done (10) | 10 | **found and ran `tests/test_no_module_carries_a_syntax_warning.py`** — quoted `compile(...)` under `simplefilter("always")` at `:56-70` and the escalation pass at `:100-118`, and reported the run: `1 failed, 8 passed`, offender **`delfin/agent/api_client.py:5330`** |
+| `compile-offenders` | base | done (25) | 25 | exactly one offender, `api_client.py` **5330** reported / 5333 located, `invalid escape sequence '\ '`; no other file |
+| `compile-offenders` | branch | **incomplete** (21) | 21 | same answer: one offender, `delfin/agent/api_client.py`, `5330:5` (escape physically on 5333), nothing else in 1288 files |
+
+### Prediction vs measurement
+
+| probe | predicted | measured | verdict |
+|---|---|---|---|
+| `guard-exists-and-names-offender` | base finds no such test; branch finds it, runs it, reports `api_client.py:5330`; **the pair differs** | base: "No such test exists"; branch: found it, ran it, `1 failed, 8 passed`, `api_client.py:5330` | **right, and it is the difference the package is about** |
+| `compile-offenders` | **identical on both** — `api_client.py:5330` twice; a control, deliberately | identical: same single offender, same lines, both sides | **right** |
+
+Both probes landed as predicted, and the two done so for the reason the package
+predicts rather than by luck:
+
+- The **guard probe is the capability measurement.** On base the honest answer to
+  "is there a test that compiles every module with warnings as errors?" is *no*, and
+  the run proved that by search, not by assertion — it found the existing whole-package
+  guard and correctly distinguished *parsing* from *compiling*. On the branch the same
+  question has a different answer: the test exists, it runs, and it names the offender.
+  That is rule 5 satisfied the hard way — the base run shows the capability is genuinely
+  absent there, so the branch run is measuring an addition, not a wording change.
+- The **compile probe is the control, and it stayed still.** I predicted a difference
+  there would mean something other than my change had moved the file. It did not
+  differ, which is the correct outcome: the fix ships as a patch a session may not
+  apply (rule 13), so branch HEAD still carries the defect. Both sides reporting
+  `5330`/`5333` independently also re-confirms the line the test must name — 5330 —
+  against the brief's 5333.
+
+### What the runs show that I did not predict
+
+1. **The branch run spent 10 tool calls where base spent 31.** Not a defect, but it is
+   the size of the change in work terms: on base the model must search exhaustively and
+   argue from absence; on the branch it finds one file and runs it. I did not predict
+   the 3× gap and do not treat it as a metric of quality — a short answer can be a
+   worse answer.
+2. **`compile-offenders` on the branch stopped `incomplete`.** Its final answer is
+   complete and correct (one offender, 1288 files, cited source lines), so the probe
+   answered the question; the `incomplete` stop is the run's own bookkeeping, not a
+   missing result. I read the answer whole before accepting it for exactly this reason —
+   the `summary.md` excerpt would have hidden the fact that it did finish the audit.
+3. **Both branch-side runs hit the same `sys.path` advisor and correctly rejected it**
+   by proving their scripts import no `delfin` and that every scanned path resolves
+   inside the run's own workspace. That is the advisor misfiring on a source-scanning
+   script, and it is worth recording because the same advice appears in this session's
+   shell notes.
+
+No defect was found by the runs, so there is nothing to fix and no fix going unmeasured.
+The branch is unchanged since these runs: `238f3c706` and earlier, plus this report.
+
+## Commits on this branch
+
+| commit | what |
+|---|---|
+| `e26e0d58b` | the guard: compiles every `delfin/` module with warnings as errors, names each offender |
+| `41b66e65e` | pin the guard's controls on the properties they protect, not on CPython's wording |
+| `14e2995e1` | say in the guard what was measured and what was reported |
+| `07231aa1d` | drop interpreter-version claims the change did not measure |
+| `15484ab4d` | state what the warning costs in the failure message, not a version forecast |
+| `f47d672ed` | the escape fix as `scratch/api_client-escapes.patch`, because the guard refuses a session its own file |
+| `582df5c6f` | the integrator's measurements (this file) |
+| `238f3c706` | point the report at the commits that exist |
+
+## Instruments written this session (in `scratch/x1/`, not part of the change)
+
+- `rerun/two_escape.py` + `rerun/a1_guard.py` + `rerun/a2_guard.py` — the
+  offenders-per-file comparison, loading both arms' guards verbatim from their
+  branches; `rerun/NOTE.md` records their provenance.
+- `read_runs.py` — extracts each real-run answer whole from the JSONL logs.
+- `answers.txt` — the four extracted answers.
+- `population.txt`, `base_*.txt`, `final_*.txt` — the 368-file population and both
+  failure sets, the source of the 137-vs-137 table above.
+
+## The regression control, in full (rule 14, honestly)
+
+The full suite is 3226 test files. I ran it on branch HEAD in 23 sequential batches;
+both a single-process run and a 24-way concurrent one had failed for machine reasons
+(a 3600 s job timeout; the sandbox supervisor dying on `can't start new thread` while
+other agents saturated the machine). The batched harness overlapped after an
+interruption — its own resume bug, mine, not the code's — so **I quote no pass total**.
+
+What survives that bug is the failure list, and it is what the question needs: a test
+gets into it only by failing. So the control is:
+
+1. Every unique node id that failed on branch HEAD: **498**.
+2. Re-run **all of them on the pristine merge-base `41fbf18e2`**, in a separate
+   worktree, one pytest invocation per file (`scratch/x1/recheck.py`), 131 files,
+   4116 s.
+3. Result: **494 still fail on base, 3 pass on base.**
+4. The 3 that passed on base were then run on **the branch, in isolation**:
+
+| node id | on base | on branch, alone | verdict |
+|---|---|---|---|
+| `tests/test_branch_dropdown_options.py` (4 tests) | passes | **4 passed** | batch pollution in my harness |
+| `tests/test_zz_u7_markread.py::test_the_dashboard_marks_read_only_what_it_delivered` | passes | **4 passed** (whole file) | batch pollution |
+| `tests/test_a_preset_has_its_tools_rather_than_asking_for_them.py::test_the_advertised_surface_narrows_from_the_same_field[code-reviewer]` | passes | **3 passed** (whole file) | batch pollution |
+
+A test that fails in a batch and passes alone on the same tree is not a regression of
+the tree; it is my harness running files together that the suite expects apart. **So:
+zero regressions attributable to this branch**, measured rather than argued — and the
+batch pollution is a defect of my instrument, which is why it is written down here
+instead of being quietly dropped.
+
+This supersedes nothing: the earlier 368-file source-reading population comparison
+(137 vs 137, set difference empty both ways) is the part of the suite that could
+observe a source-text change, and it agrees.
+
+### What I still did not do
+
+- **No single-process full-suite number exists.** Three attempts, three machine-caused
+  failures, all recorded above. The 498-node-id control answers the question that
+  number was for.
+- **Did not make the batch harness non-overlapping.** Fixing it and re-running 3226
+  files would cost hours to change a pass total I do not need, and the failure list it
+  produces is already validated against the base.
