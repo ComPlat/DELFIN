@@ -195,3 +195,57 @@ test-only	workflow_is	delfin/agent/pack/benchmark/accept/w20_common.py:15
 # same corpus, same question -- which its tests pin. Ported unchanged with the
 # landing gate from the orchestrator's script, where it was test-only too.
 test-only	calibration_record	delfin/agent/swarm/land.py:636
+# ---------------------------------------------------------------------------
+# Rows added 2026-11-25 by the widening of the census to delfin/tools/.
+# Measured on the tree BEFORE that widening: delfin/tools/ held 591
+# module-level callables the census had never looked at, 5 unreached. Two of
+# those five are gone -- write_co2_scan_opi_input is mounted on the
+# co2_coordinator_opi step (tests/test_co2_step_writes_both_classic_inputs.py)
+# and _kind_name was deleted (delfin/tools/scaffold.py): the product never
+# infers a kind from a name, because new-adapter takes --kind as an argparse
+# choices with default "program" (delfin/agent/cli_new_adapter.py:29-31) and
+# build_scaffold refuses anything outside _KINDS (scaffold.py:159). Three stay.
+# ---------------------------------------------------------------------------
+# normalise_esd_inp STAYS, and it carries a finding rather than an excuse.
+# It is the only caller of the five ESD block normalisers (_normalise_tddft_
+# block, _normalise_esd_block, _normalise_geom_block, _normalise_basis_block,
+# _normalise_output_block, esd_opi.py:48-135), and the ESD parity test does
+# not use it: test_esd_input_parity normalises with the SHARED
+# delfin.tools.occupier_opi.normalise_inp (tests/test_opi_esd_parity.py:48 and
+# 279-282), which parses no %tddft / %esd / %basis / %output block. Measured
+# directly: two inputs differing ONLY in `%tddft nroots 5` vs `6` come back
+# equivalent under normalise_inp (empty diff list) and differ under
+# normalise_esd_inp ("block 'tddft' option 'nroots': 5 != 6"). So the parity
+# test, which its module docstring says proves the OPI inputs equivalent "over
+# the repo's CONTROL matrix", cannot see a difference inside those blocks at
+# all. The mount is one line (swap normalise_inp for normalise_esd_inp at
+# tests/test_opi_esd_parity.py:280) and was deliberately NOT taken here: it
+# changes what the parity test asserts instead of adding a product caller, the
+# test is behind pytest.importorskip("opi") so it cannot be shown green on a
+# host without OPI, and it can turn red on real historic differences nobody
+# has read yet. It is named as a probe in the wave report for whoever decides
+# whether OPI's ESD inputs currently match the classic ones.
+nowhere	normalise_esd_inp	delfin/tools/esd_opi.py:131
+# esd_inputs_equivalent is the other half of the same pair and stays for a
+# different reason: a parity comparator has no product caller by nature. The
+# product writes an ESD input through the classic driver
+# (delfin/esd_input_generator.py, reached from cli.py) and never compares two
+# inputs at runtime -- the parity proof IS the suite. Its tier is therefore
+# correct, and note that the row above is what makes this one weaker than it
+# looks: the comparator runs, on normalised inputs that drop the ESD blocks.
+test-only	esd_inputs_equivalent	delfin/tools/esd_opi.py:181
+# validate_relspin STAYS: mounting it would change no answer. The live path
+# (OrcaRelSpinOpiAdapter.execute -> run_rel_sp/run_zfs/run_soc_tddft ->
+# build_*_input) already runs every check it performs -- validate_method,
+# _check_mult_triplet, _basis_check_error, the ZFS singlet refusal
+# (orca_relspin_opi.py:606-611) and the SOC-TDDFT nroots refusal (733-737) --
+# and each has a test that asserts the refusal (tests/test_opi_orca_relspin.py
+# :245, 253, 261, 305, 314, 345). Mounting it as the adapter's validate_params
+# hook (called at _runner.py:59, before the work dir exists) would therefore
+# only refuse the same calls earlier, and would do so WEAKER: its elements
+# default of None retires the electron-count parity branch of
+# _check_mult_triplet, and it takes no extra_keywords, so a keyword the live
+# builders validate would pass a pre-flight that the run itself refuses.
+# Deleting it is not right either: it is the only callable that states all the
+# relspin rules in one place, and 17 test call sites exercise it directly.
+test-only	validate_relspin	delfin/tools/adapters/orca_relspin_opi.py:220
