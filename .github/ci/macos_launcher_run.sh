@@ -45,8 +45,8 @@ wait_for 120 grep -q 'dashboard on 127.0.0.1:' "$work/local.log" || { cat "$work
 port=$(sed -n 's/.*dashboard on 127\.0\.0\.1:\([0-9]*\),.*/\1/p' "$work/local.log" | head -n 1)
 record() { "$env/bin/python" -I -c 'import json, sys; from delfin.agent import where; r = where.dashboard(); print(r.get("token", "") if r.get("running") and int(r.get("port", 0)) == int(sys.argv[1]) else "")' "$port"; }
 wait_for 180 test -n "$(record)" || { cat "$work/local.log"; fail 'the dashboard did not come up'; }
-token=$(record)
-code=$(curl -s -o /dev/null -w '%{http_code}' -L --max-redirs 5 "http://127.0.0.1:$port/?token=$token")
+dashboard_key=$(record)
+code=$(curl -s -o /dev/null -w '%{http_code}' -L --max-redirs 5 "http://127.0.0.1:$port/?token=$dashboard_key")
 [ "$code" = 200 ] || fail "with the token: HTTP $code"
 code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/voila/render/delfin_dashboard.ipynb")
 case $code in 302|401|403) ;; *) fail "without the token: HTTP $code" ;; esac
