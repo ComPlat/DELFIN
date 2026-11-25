@@ -13,11 +13,12 @@ All app text, terminal messages and instructions are in English.
 
 ## What happens when you start
 
-1. A short Windows OpenSSH connection checks the launcher's two server scripts
+1. One Windows OpenSSH connection checks the launcher's two server scripts
    (`remote_bootstrap.sh`, `remote_launcher.py`) in
-   `~/.cache/delfin-launcher/<version>/` on the server. If they are missing or
-   differ, Windows `scp` copies them there as plain files (once per launcher
-   version). Then the dashboard connection opens and runs them from there.
+   `~/.cache/delfin-launcher/<version>/` on the server and, when they are
+   there, runs the dashboard from them on that same connection. Only when they
+   are missing or differ (once per launcher version) does Windows `scp` copy
+   them there as plain files, and the dashboard connection opens once more.
    Enter your password and OTP when the server requests them. The app does
    not store credentials or bypass MFA.
 2. DELFIN and its environment are discovered automatically. A verified existing
@@ -30,11 +31,12 @@ All app text, terminal messages and instructions are in English.
    Windows window, not two separately authenticated Windows SSH windows.
 
 With **Remember login** (on by default) only the first connection to a server
-asks for the password: the short check, and once per launcher version the
-copy, log in with the remembered key afterwards. Without a key (first login,
-Remember login off, or a server that also requires a password/OTP for keys),
-OpenSSH asks once for the check, once for a copy when one is needed, and once
-for the dashboard connection. The server can still request multiple
+asks for the password; later connections log in with the remembered key.
+Without a key (first login, Remember login off, or a server that also requires
+a password/OTP for keys, such as a cluster with one-time codes), OpenSSH asks
+once per start. Only after a launcher update, when the server scripts are
+copied, does one start ask three times: the dashboard connection that finds
+no copy, the copy, and the dashboard connection again. The server can still request multiple
 authentication factors, retries or jump-host logins.
 Closing the browser does not close SSH or stop the dashboard.
 
@@ -140,8 +142,12 @@ is merged, update the server checkout using your normal update process
 (`git pull --ff-only` for a clean checkout on main).
 
 Automatic discovery also checks the current user's `~/software/delfin`,
-`~/software/DELFIN`, `~/delfin` and `~/DELFIN` when no usable environment was found
-in the login environment or current directory. A local `.venv`/`venv` does not
+`~/software/DELFIN`, `~/delfin` and `~/DELFIN`, and a Conda or micromamba
+environment named `delfin` or `delfin-voila` under `$MAMBA_ROOT_PREFIX`,
+`~/micromamba`, `~/miniforge3`, `~/mambaforge`, `~/miniconda3` or `~/anaconda3`,
+when no usable environment was found in the login environment or current
+directory. Of these environments, one that can serve the dashboard (has voila)
+is preferred over one that only imports DELFIN. A local `.venv`/`venv` does not
 need to be activated permanently. Source checkouts work without an editable
 package install when their environment has the required dependencies. Multiple
 usable conventional installations require an explicit location in Advanced.
@@ -194,8 +200,13 @@ installation procedure in the existing DELFIN environment when necessary.
    scripts as blocked, use Properties → Unblock only after verifying their
    origin and contents. Do not bypass organization policies.
 3. **Double-click `Install.cmd`** in the extracted `windows-launcher` folder.
-   It runs the checks first, then installs the app. The window stays open so
-   you can read the result. No PowerShell commands need to be typed.
+   It runs the checks first, then installs the app, and finally asks whether
+   to start DELFIN right away. No PowerShell commands need to be typed.
+   - Started from inside the ZIP (not extracted), it says so and installs nothing.
+   - Without Windows' SSH client (OpenSSH Client), it says where to add it and
+     opens that Settings page.
+   - If DELFIN is open (an update), it asks before closing it; open connections
+     end, a session kept on the server stays there. Without a yes nothing changes.
    PowerShell remains the underlying Windows runtime; this wrapper does not
    bypass script blocking, SmartScreen, or organization policies.
 
@@ -245,7 +256,15 @@ venv, Conda or module activation to run. It checks:
 2. An active `VIRTUAL_ENV` or `CONDA_PREFIX`.
 3. `.venv`, `venv`, `env` or `.env` in the working/repository directory and its
    parent directories, using Python environments that can import DELFIN.
-4. `delfin-voila`, `python` or `python3` available through PATH with DELFIN.
+4. The conventional locations and environments named `delfin` listed above.
+5. `delfin-voila`, `python` or `python3` available through PATH with DELFIN. A
+   `delfin-voila` that is a link (for example `/usr/local/bin/delfin-voila` to
+   `/opt/<environment>/bin/delfin-voila`) is followed to its environment.
+
+When the only DELFIN found is too old for the launcher (it has no agent
+dashboard), or the chosen environment lacks voila and so cannot serve the
+dashboard, the message names it before anything starts, so you know which
+installation to update.
 
 A discovered conventional venv is activated. The dashboard starts through
 `delfin.cli_voila` using its Python interpreter; a fixed console-script path is
@@ -388,15 +407,20 @@ uncheck **Working shell (Ctrl+B, then N)** and save/connect to use dashboard-onl
 
 ## Uninstall
 
-Close the app and its SSH terminal window. If you also want to stop the
-server dashboard, stop it in its actual dashboard terminal beforehand.
 Uninstalling this Windows app does not stop or uninstall anything on the server.
+If you also want to stop the server dashboard, stop it in its dashboard
+terminal beforehand.
 
 Use Windows Settings → Apps → Installed apps → **DELFIN SSH Launcher** → Uninstall,
-or **double-click `Uninstall.cmd`** in the extracted ZIP folder. Confirm with
-**Y** to remove the local app and saved connections; **N** cancels. The result
-window stays open. You can also use the installed `Uninstall.cmd` under
-`%LOCALAPPDATA%\DELFIN Launcher`.
+or **double-click `Uninstall.cmd`** (in the extracted ZIP folder or in
+`%LOCALAPPDATA%\DELFIN Launcher`). Both open the same window and ask once:
+
+- **Y** removes the app and its saved connections,
+- **K** removes the app and keeps the saved connections for a later install,
+- **N** cancels.
+
+If DELFIN is still open, the uninstaller asks before closing it. The result
+window stays open until you press a key.
 
 Alternatively, run this from the extracted ZIP folder:
 
