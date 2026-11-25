@@ -69,6 +69,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Workstation fallback: run in the background with a "
                         "pid file in the lab directory")
     sub.add_parser("smoke", help="Simulator plan end to end; prints ok")
+    w = sub.add_parser("run", help="Run a workflow (multi-module campaign)")
+    w.add_argument("workflow", help="workflow document (.yaml/.json)")
+    w.add_argument("--run-id", default=None,
+                   help="run id (default: the workflow's id); resuming the "
+                        "same id continues it instead of starting over")
+    w.add_argument("--parallel", type=int, default=1, metavar="N",
+                   help="run up to N steps at once (default 1: document "
+                        "order, one at a time); steps that share a device "
+                        "never run together, and `after` is always honoured")
     return p
 
 
@@ -168,7 +177,86 @@ def main(argv=None) -> int:
     if args.cmd == "smoke":
         from . import smoke
         return smoke.main([])
+    if args.cmd == "run":
+        return _run_workflow(args)
     return 2
+
+
+def _load_workflow(path: str) -> dict:
+    import yaml
+    text = open(path, encoding="utf-8").read()
+    wf = json.loads(text) if path.endswith(".json") else yaml.safe_load(text)
+    if not isinstance(wf, dict) or not wf.get("steps"):
+        raise ValueError(f"{path}: a workflow needs a `steps` list")
+    seen = set()
+    for st in wf["steps"]:
+        sid = st.get("id")
+        if not sid or sid in seen:
+            raise ValueError(f"{path}: every step needs a unique id "
+                             f"({sid!r} is missing or repeated)")
+        seen.add(sid)
+    return wf
+
+
+def _run_workflow(args) -> int:
+    """``delfin-agent lab run WF [--parallel N]``: the person's entry point to
+    a multi-module campaign.
+
+    The coordinator takes the module locks and drives every device through the
+    edge's kernel, exactly as an agent's lab_set does; nothing here bypasses a
+    limit. A hazardous write stops the run at ``waiting_approval``: a person
+    runs ``lab approve <id>`` and the same command resumes it. Approving a
+    whole plan in one step is phase 5 (docs/design/lab-control.md §4) and is
+    deliberately not implemented here.
+    """
+    from . import edge, estop, manifest as _manifest, store, workflow
+    from .safety import Kernel
+    try:
+        wf = _load_workflow(args.workflow)
+    except (OSError, ValueError) as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 1
+    man_path = store.manifest_path()
+    try:
+        man = _manifest.load(man_path)
+    except _manifest.ManifestError as exc:
+        for prob in exc.problems:
+            print(f"problem: {prob}", file=sys.stderr)
+        return 1
+    stop = estop.status()
+    if stop.get("active"):
+        print(f"refused: e-stop is active ({stop.get('reason')}); a person "
+              "clears it with `delfin-agent lab estop --clear`", file=sys.stderr)
+        return 2
+    run_id = args.run_id or str(wf.get("id") or "run")
+    person = store.person()
+    keys, clients = {}, {}
+    for node in man.nodes:
+        keys[node] = edge.load_key(node)
+        clients[node] = edge.EdgeClient(
+            node, keys[node], transport=edge.EdgeNode(node, key=keys[node]).handle,
+            manifest_checksum=man.checksum, coordinator="lab-run",
+            clock=Kernel.load(node=node).clock)
+    coord = workflow.Coordinator(man, clients, person=person, name="lab-run")
+    cp = coord.run(wf, run_id, parallel=max(1, int(args.parallel)))
+    _print({"run_id": cp.get("run_id"), "status": cp.get("status"),
+            "done": cp.get("done"), "pending": cp.get("pending"),
+            "waiting": cp.get("waiting") or {},
+            "deviations": cp.get("deviations"),
+            "measurements": cp.get("measurements"),
+            "parallel": max(1, int(args.parallel))})
+    if cp.get("status") == "waiting_approval":
+        # A parallel run can park MORE than one step: `pending` names the one
+        # this pass reported last, `waiting` every step still owed a grant.
+        # Printing only `pending` would send a person to approve one of two
+        # and leave the other waiting on an id nobody was told about.
+        waiting = cp.get("waiting") or {}
+        names = " ".join(sorted({str(a) for a in waiting.values() if a})) \
+            or cp["pending"]["approval"]
+        print(f"waiting for a person: approve {names} with `delfin-agent lab "
+              "approve <id>`, then rerun the same command", file=sys.stderr)
+        return 4
+    return 0 if cp.get("status") == "completed" else 1
 
 
 def _detach(args) -> int:

@@ -208,6 +208,17 @@ class Kernel:
                                     f"takes one of {', '.join(channel.states)}"
                                     f", not {value!r}")
             return v, None
+        if channel.text:
+            # A container slot: the value is a name, compared for equality
+            # against what the position reports. It is bounded by the check
+            # that it is a non-empty string -- a slot set to "" would read
+            # back as "empty rack" and let a sample be filed under whatever
+            # the instrument last saw, so an empty name is refused, not stored.
+            v = _manifest.state_str(value)
+            if not v.strip():
+                return None, refuse("bad_value", f"{device.id}.{channel.name} "
+                                    f"takes a container name, not {value!r}")
+            return v, None
         if isinstance(value, bool):
             return None, refuse("bad_value", "a number is required")
         try:
@@ -289,7 +300,7 @@ class Kernel:
         if channel.name not in device.safe_state:
             return False
         sv = device.safe_state[channel.name]
-        if channel.is_state:
+        if channel.is_state or channel.text:
             return str(value) == str(sv)
         return abs(float(value) - float(sv)) <= 1e-9
 
@@ -306,7 +317,7 @@ class Kernel:
             if v is _expr.UNKNOWN or v is None:
                 return False
             v = v[0]
-            if spec.is_state:
+            if spec.is_state or spec.text:
                 if str(v) != str(sv):
                     return False
             elif abs(float(v) - float(sv)) > max(spec.tolerance, 1e-9):
@@ -447,7 +458,7 @@ class Kernel:
             return self._refused(actor, d.id, refuse(
                 "rate", f"{key}: at most one write per {ch.min_interval_s:g} s"))
         fresh = self._fresh(d)
-        if ch.max_step is not None and not ch.is_state:
+        if ch.max_step is not None and not ch.is_state and not ch.text:
             cur = fresh.get(ch.readback or ch.name, _expr.UNKNOWN)
             if cur is _expr.UNKNOWN or "__error__" in fresh:
                 return self._refused(actor, d.id, refuse(
@@ -545,7 +556,7 @@ class Kernel:
         after = self._fresh(d)
         rb = after.get(ch.readback or ch.name, _expr.UNKNOWN)
         good = rb is not _expr.UNKNOWN and "__error__" not in after and (
-            str(rb[0]) == str(num) if ch.is_state
+            str(rb[0]) == str(num) if (ch.is_state or ch.text)
             else abs(float(rb[0]) - num) <= ch.tolerance + 1e-9)
         _audit.record("readback", device=d.id, channel=ch.name,
                       expected=num, got=None if rb is _expr.UNKNOWN else rb[0],

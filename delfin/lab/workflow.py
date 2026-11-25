@@ -58,6 +58,7 @@ from typing import Callable, Optional
 from delfin.agent import state_file
 
 from . import audit as _audit
+from . import expr as _expr
 from . import store as _store
 from . import units as _units
 
@@ -134,7 +135,48 @@ class Coordinator:
                 mods.append(dev.module)
         return mods
 
-    def run(self, wf: dict, run_id: str) -> dict:
+    def _carrier_for(self, module_id: str, position: str):
+        """(client, device) of the device that HOLDS a container at ``position``.
+
+        A hand-over has to be made true of the world, and the only device that
+        can make it true is one that (a) declares this position in its
+        ``address`` and (b) has a writable ``container`` slot -- a rack slot.
+        Returns ``(None, None)`` when the module has no such device, which the
+        caller reports as a registry-only hand-over rather than silently
+        claiming a move. More than one such device is a mis-wired manifest, and
+        the first in document order is used so the outcome is deterministic
+        rather than dependent on dict order at run time.
+        """
+        mod = self.manifest.modules.get(module_id)
+        if mod is None:
+            return None, None
+        for dev_id in mod.devices:
+            dev = self.manifest.devices.get(dev_id)
+            if dev is None or (dev.address or {}).get("position") != position:
+                continue
+            if "container" not in dev.writes:
+                continue
+            client, d = self._client_for_device(dev_id)
+            if client is not None:
+                return client, d
+        return None, None
+
+    def run(self, wf: dict, run_id: str, *, parallel: int = 1) -> dict:
+        """Run (or resume) a workflow.
+
+        ``parallel=1`` (the default) keeps the original contract: the steps in
+        document order, one at a time. ``parallel=N`` runs up to N steps at
+        once, with two hard rules:
+
+        * a step starts only when every ``after`` predecessor is done, and
+        * two steps never hold one device at the same time.
+
+        The second rule is what keeps the kernel's actor model intact. The
+        kernel takes a per-device lock for the actor that writes, and refuses a
+        second actor, so concurrent steps must be given different devices --
+        which is exactly the shape of a parallel campaign (four reactors, four
+        pumps, four instruments).
+        """
         actor = {"person": self.person, "session": run_id}
         try:
             cp = load_checkpoint(run_id)
@@ -181,6 +223,8 @@ class Coordinator:
                 return cp
         cp["status"] = "running"
         _save(run_id, cp)
+        if parallel and parallel > 1:
+            return self._run_parallel(wf, cp, actor, int(parallel))
         for st in wf.get("steps") or []:
             sid = st["id"]
             if sid in cp["done"]:
@@ -188,24 +232,9 @@ class Coordinator:
             missing = [a for a in st.get("after") or [] if a not in cp["done"]]
             if missing:
                 return self._fail(cp, sid, f"predecessors not done: {missing}")
-            outcome = self._step(st, actor, cp)
-            cp["log"].append({"step": sid, "op": st.get("op"), "ts":
-                              self.clock(), "outcome": outcome})
-            _audit.record("run_step", run=run_id, step=sid,
-                          ok=bool(outcome.get("ok")),
-                          code=outcome.get("code"), person=self.person,
-                          session=run_id)
-            if outcome.get("code") == "approval_required":
-                cp["status"] = "waiting_approval"
-                cp["pending"] = {"step": sid,
-                                 "approval": outcome.get("approval_request")}
-                _save(run_id, cp)
-                return cp
-            if not outcome.get("ok"):
-                return self._fail(cp, sid, outcome.get("reason", "failed"))
-            cp["done"].append(sid)
-            cp["pending"] = None
-            _save(run_id, cp)
+            out = self._dispatch_step(st, cp, actor)
+            if out is not None:
+                return out
             self._heartbeat(actor)
         cp["status"] = "completed"
         cp["ended"] = self.clock()
@@ -213,6 +242,231 @@ class Coordinator:
             node = self.manifest.modules[mod].node
             self.clients[node].call("unlock_module", actor, module=mod)
         _save(run_id, cp)
+        from . import record as _record
+        _record.write(cp, self.manifest)
+        return cp
+
+    def _dispatch_step(self, st: dict, cp: dict, actor: dict):
+        """Run one step and fold its outcome into the checkpoint.
+
+        Returns ``None`` when the run may go on, or the finished checkpoint
+        when the run stops here (a failed step, or a step waiting for a
+        person's approval). The sequential loop and the parallel scheduler
+        both come through this function, so they cannot drift apart on what
+        counts as done, what a refusal does, or what is written down.
+        """
+        sid = st["id"]
+        outcome = self._step(st, actor, cp)
+        cp["log"].append({"step": sid, "op": st.get("op"), "ts":
+                          self.clock(), "outcome": outcome})
+        _audit.record("run_step", run=cp["run_id"], step=sid,
+                      ok=bool(outcome.get("ok")),
+                      code=outcome.get("code"), person=self.person,
+                      session=cp["run_id"])
+        if outcome.get("code") == "approval_required":
+            cp["status"] = "waiting_approval"
+            cp["pending"] = {"step": sid,
+                             "approval": outcome.get("approval_request")}
+            _save(cp["run_id"], cp)
+            return cp
+        if not outcome.get("ok"):
+            return self._fail(cp, sid, outcome.get("reason", "failed"))
+        cp["done"].append(sid)
+        # Only this step's own request may be cleared: in a parallel run another
+        # worker can file a request while this one succeeds, and clearing it
+        # would leave the run waiting on an approval id nobody can read.
+        if (cp.get("pending") or {}).get("step") == sid:
+            cp["pending"] = None
+        _save(cp["run_id"], cp)
+        return None
+
+    def _step_devices(self, st: dict) -> set:
+        """Every device a step will touch: the device, its reader and, for a
+        ``set``, the devices its interlocks may read.
+
+        Two steps that share a device must not run at once: the kernel takes
+        one actor's lock per device and refuses the next, so a scheduler that
+        ignored this would turn a legitimate campaign into a stream of
+        ``locked`` refusals. Interlock references are included because reading
+        a device is cheap but a write to one the other step is reading is the
+        race worth preventing.
+        """
+        out = set()
+        for key in ("device", "reader"):
+            if st.get(key):
+                out.add(str(st[key]))
+        dev = self.manifest.devices.get(str(st.get("device") or ""))
+        if dev is not None and st.get("op") == "set":
+            ch = dev.writes.get(str(st.get("channel") or ""))
+            if ch is not None:
+                for il in dev.interlocks:
+                    for text in (il.when, il.requires):
+                        try:
+                            tree = _expr.parse(text)
+                        except (_expr.ExprError, _units.UnitError):
+                            continue
+                        out.update(r.device for r in _expr.refs(tree))
+        return out
+
+    def _run_parallel(self, wf: dict, cp: dict, actor: dict, workers: int):
+        """Steps whose predecessors are done, up to ``workers`` at a time, and
+        never two on one device."""
+        steps = [st for st in (wf.get("steps") or [])
+                 if st.get("id") not in cp["done"]]
+        if not steps:
+            return self._finish(cp)
+        import threading
+
+        lock = threading.Lock()          # guards the checkpoint
+        # Writes are serialised; dwells and waits are not. A kernel write is a
+        # handful of milliseconds (and on real hardware the bus is one-at-a-
+        # time anyway), while the time a campaign spends is in the dwells and
+        # the waits. Overlapping the first buys nothing and races the driver's
+        # own store; overlapping the second is the whole point. A 4-lane
+        # campaign therefore costs one lane's dwells plus 4x its writes.
+        # A re-entrant lock: a worker holds it across a write, and the
+        # heartbeat it takes on the way in must not deadlock against it.
+        write_lock = threading.RLock()
+        done = set(cp["done"])
+        busy: set = set()                # devices a live worker holds
+        stop_state: list = []            # the checkpoint the run ended on
+        results: dict = {}               # step id -> outcome, None while live
+        live: list = []                  # threads this scheduler started
+
+        def worker(st):
+            # The grant this step was resumed with. Read from the per-step map
+            # and not from `cp["pending"]`: in a parallel pass several steps
+            # can park, and `pending` keeps only the last one -- so a worker
+            # resumed with its own grant would otherwise hand the kernel a
+            # request id belonging to a different step.
+            grant = (cp.get("waiting") or {}).get(st["id"])
+            try:
+                if st.get("op") in ("set", "measure", "transfer"):
+                    with write_lock:
+                        outcome = self._step(st, actor, cp, approval=grant)
+                else:
+                    # hold / wait: the part that takes the time
+                    outcome = self._step(st, actor, cp)
+            except Exception as exc:     # a driver error is a step failure
+                outcome = {"ok": False, "code": "error", "reason": str(exc)}
+            with lock:
+                results[st["id"]] = outcome
+                sid = st["id"]
+                cp["log"].append({"step": sid, "op": st.get("op"), "ts":
+                                  self.clock(), "outcome": outcome})
+                _audit.record("run_step", run=cp["run_id"], step=sid,
+                              ok=bool(outcome.get("ok")),
+                              code=outcome.get("code"), person=self.person,
+                              session=cp["run_id"])
+                if outcome.get("code") == "approval_required":
+                    cp["status"] = "waiting_approval"
+                    cp["pending"] = {"step": sid, "approval":
+                                     outcome.get("approval_request")}
+                    # Every parked step keeps its own id, so a resume hands
+                    # each worker the grant that was filed for it.
+                    cp.setdefault("waiting", {})[sid] = \
+                        outcome.get("approval_request")
+                    _save(cp["run_id"], cp)
+                    stop_state.append(cp)
+                elif not outcome.get("ok"):
+                    stop_state.append(self._fail(
+                        cp, sid, outcome.get("reason", "failed")))
+                else:
+                    cp["done"].append(sid)
+                    if (cp.get("pending") or {}).get("step") == sid:
+                        cp["pending"] = None
+                    (cp.get("waiting") or {}).pop(sid, None)
+                    done.add(sid)
+                    _save(cp["run_id"], cp)
+                busy.difference_update(self._step_devices(st))
+                for i, th in enumerate(live):
+                    if th.ident == threading.get_ident():
+                        del live[i]
+                        break
+
+        def startable():
+            """The next step whose predecessors are done and whose devices are
+            free, in document order."""
+            for st in steps:
+                if st["id"] in done or st["id"] in results:
+                    continue
+                if any(a not in done for a in st.get("after") or []):
+                    continue
+                if self._step_devices(st) & busy:
+                    continue
+                return st
+            return None
+
+        while True:
+            with lock:
+                if stop_state:
+                    return self._join(stop_state[0], live, lock)
+            started = 0
+            while started < workers:
+                with lock:
+                    if stop_state:
+                        return self._join(stop_state[0], live, lock)
+                    st = startable()
+                    if st is None:
+                        break
+                    results[st["id"]] = None       # claimed, not yet finished
+                    busy.update(self._step_devices(st))
+                # Heartbeat under the write lock: two kernels stamping
+                # `now` microseconds apart would let one see a heartbeat dated
+                # in its own future, which the dead-man reads as a backwards
+                # clock jump and trips on ("no heartbeat for -0 s").
+                with write_lock:
+                    self._heartbeat(actor)
+                t = threading.Thread(target=worker, args=(st,), daemon=True)
+                # Registered BEFORE it starts: a fast worker removes itself on
+                # its way out, and appending after start() would re-add a
+                # thread that has already gone.
+                with lock:
+                    live.append(t)
+                t.start()
+                started += 1
+            with lock:
+                if stop_state:
+                    return self._join(stop_state[0], live, lock)
+                pending = [st for st in steps
+                           if st["id"] not in done and st["id"] not in results
+                           or results.get(st["id"]) is None]
+                if not pending:
+                    return self._finish(cp)
+                # Nothing running and nothing startable is a cycle, or an
+                # `after` that names a step that will never be done.
+                if started == 0 and not live:
+                    stuck = [st["id"] for st in steps
+                             if st["id"] not in done]
+                    return self._fail(
+                        cp, stuck[0] if stuck else None,
+                        f"no step can start: predecessors or device locks "
+                        f"never free for {stuck}")
+            self.sleep(0.01)
+
+    def _join(self, cp: dict, live: list, lock):
+        """Let the workers already in flight finish, then hand back ``cp``.
+
+        The caller holds ``lock``; it is RELEASED before joining, because a
+        worker needs it to record its own outcome. A worker blocked on it would
+        be waited for forever, with the run's devices in an unknown state.
+        """
+        lock.release()
+        try:
+            for t in list(live):
+                t.join()
+        finally:
+            lock.acquire()
+        return cp
+
+    def _finish(self, cp: dict):
+        actor = {"person": self.person, "session": cp["run_id"]}
+        for mod in self._modules(cp.get("workflow") or {}):
+            node = self.manifest.modules[mod].node
+            self.clients[node].call("unlock_module", actor, module=mod)
+        cp["status"] = "completed"
+        cp["ended"] = self.clock()
+        _save(cp["run_id"], cp)
         from . import record as _record
         _record.write(cp, self.manifest)
         return cp
@@ -259,17 +513,22 @@ class Coordinator:
             except Exception:
                 pass
 
-    def _step(self, st: dict, actor: dict, cp: dict) -> dict:
+    def _step(self, st: dict, actor: dict, cp: dict, approval=None) -> dict:
         op = st.get("op")
         if op == "set":
             client, d = self._client_for_device(st.get("device", ""))
             if client is None:
                 return {"ok": False, "code": "unknown_device",
                         "reason": f"no edge for device {st.get('device')!r}"}
-            approval = None
-            pend = cp.get("pending") or {}
-            if pend.get("step") == st["id"]:
-                approval = pend.get("approval")
+            if approval is None:
+                # Sequential runs: the checkpoint names the one step that is
+                # waiting. A parallel run passes its own grant in explicitly,
+                # because here `cp["pending"]` is shared state two workers
+                # write to -- and the grant one of them was resumed with must
+                # not be replaced by another step's request id.
+                pend = cp.get("pending") or {}
+                if pend.get("step") == st["id"]:
+                    approval = pend.get("approval")
             return client.call("set", actor, device=st["device"],
                                channel=st.get("channel"),
                                value=st.get("value"), unit=st.get("unit"),
@@ -297,6 +556,27 @@ class Coordinator:
                             f"{st.get('cmp', '>=')} {st['value']} in time"}
                 self._heartbeat(actor)
                 self.sleep(float(st.get("poll_s", 5)))
+        if op == "hold":
+            # A dwell: the reaction (or the column) needs time, nothing needs
+            # to be written. Sleeping here without heartbeating would trip the
+            # dead-man on every device this run controls (design §5: "a turn
+            # does not heartbeat"), so the dwell heartbeats as it goes. It is
+            # also the op a parallel run overlaps: four holds side by side cost
+            # their duration once, not four times.
+            seconds = float(st.get("seconds", 0))
+            if not seconds >= 0:
+                return {"ok": False, "code": "bad_step",
+                        "reason": f"hold needs seconds >= 0, not {seconds!r}"}
+            deadline = self.clock() + seconds
+            poll = max(0.01, min(float(st.get("poll_s", 5)), seconds or 1.0))
+            beats = 0
+            while True:
+                left = deadline - self.clock()
+                if left <= 0:
+                    return {"ok": True, "held_s": seconds, "heartbeats": beats}
+                self._heartbeat(actor)
+                beats += 1
+                self.sleep(min(poll, left))
         if op == "transfer":
             sample = cp["samples"].get(st.get("sample"))
             if sample is None:
@@ -321,8 +601,39 @@ class Coordinator:
                 {"from": sample.get("module"), "position": sample.get(
                     "position"), "ts": self.clock()}]
             sample["module"], sample["position"] = st["to"], st["position"]
-            return {"ok": True, "sample": st["sample"], "at":
-                    f"{st['to']}:{st['position']}"}
+            # A hand-over is a physical move, not a bookkeeping one. The
+            # registry above says where the sample is; the destination's
+            # position must then HOLD it, or the next module's measure step
+            # reads an empty rack and reports a mix-up for a campaign that was
+            # carried out correctly. The carrier is the device that declares
+            # this position and can hold a container (a rack slot); a module
+            # whose positions have no carrier is a registry-only hand-over, and
+            # says so rather than claiming a move it did not make.
+            carrier, cdev = self._carrier_for(st["to"], st["position"])
+            if carrier is None:
+                moved = {"registry_only": True,
+                         "why": f"{st['to']}:{st['position']} has no device that "
+                                f"holds a container"}
+            else:
+                res = carrier.call("set", actor, device=cdev.id,
+                                   channel="container",
+                                   value=sample.get("container"))
+                if not res.get("ok"):
+                    return {"ok": False, "code": res.get("code") or "handover",
+                            "reason": f"hand-over to {st['to']}:{st['position']}"
+                                      f" did not place {sample.get('container')}"
+                                      f": {res.get('reason')}"}
+                # Read the slot back: the move is the world's, not the report's.
+                back = carrier.call("read", actor, device=cdev.id)
+                held = ((back.get("readings") or {}).get("container") or {})
+                if held.get("value") != sample.get("container"):
+                    return {"ok": False, "code": "handover", "reason":
+                            f"hand-over to {st['to']}:{st['position']} read "
+                            f"back {held.get('value')!r}, not "
+                            f"{sample.get('container')!r}"}
+                moved = {"placed_on": cdev.id}
+            return {"ok": True, "sample": st["sample"],
+                    "at": f"{st['to']}:{st['position']}", **moved}
         if op == "measure":
             sid = st.get("sample")
             sample = cp["samples"].get(sid)
@@ -333,6 +644,20 @@ class Coordinator:
                 return {"ok": False, "code": "sample", "reason":
                         f"sample {sid} is registered in {sample.get('module')}"
                         f", not at {d.module}"}
+            # An instrument serves ONE position. Without this check a rack of
+            # four instruments takes whichever barcode it happens to read and
+            # files it under the sample being measured: fine when a module
+            # holds one sample, silently wrong the moment two run in parallel.
+            served = (d.address or {}).get("position")
+            if served is None:
+                return {"ok": False, "code": "instrument", "reason":
+                        f"{d.id} declares no address.position, so it cannot be "
+                        f"shown to serve the position {sid} occupies"}
+            if served != sample.get("position"):
+                return {"ok": False, "code": "position", "reason":
+                        f"instrument mismatch: {d.id} serves position {served}"
+                        f", but {sid} is at {sample.get('position')} in "
+                        f"{d.module}"}
             reader = st.get("reader") or st["device"]
             res = client.call("read", actor, device=reader)
             bc = (res.get("readings") or {}).get("barcode") or {}

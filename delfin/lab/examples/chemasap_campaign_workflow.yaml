@@ -1,0 +1,435 @@
+# A four-sample campaign through a ChemASAP-shaped platform, in the simulator.
+#
+# Companion to `chemasap_campaign.yaml` (the manifest with the devices, units,
+# ranges, interlocks and approval levels). Copy that manifest to
+# <lab_dir>/manifest.yaml, keep this file anywhere you like, then:
+#
+#   delfin-agent lab manifest pin
+#   delfin-agent lab run chemasap_campaign_workflow.yaml --parallel 4
+#
+# Each of the four samples occupies one lane: storage drawer -> reactor ->
+# purification column -> rack position. Lanes share no device except the fume
+# hood, which is switched on once before any heating starts. So --parallel 4
+# runs the whole campaign in about the time of one lane, and the sequential
+# default runs exactly the same steps in document order.
+#
+# The hazardous writes (each reactor's setpoint above 40 degC, each column's
+# timed purge) pause the run at `waiting_approval` until a person approves
+# them, one grant per action. A person may pre-approve the whole plan with
+# `--approve-plan`; an agent session may not.
+id: chemasap-campaign
+samples:
+  S-001:
+    container: vial-1
+    module: storage
+    position: ST1
+  S-002:
+    container: vial-2
+    module: storage
+    position: ST2
+  S-003:
+    container: vial-3
+    module: storage
+    position: ST3
+  S-004:
+    container: vial-4
+    module: storage
+    position: ST4
+steps:
+  - id: drawer-open-1
+    op: set
+    device: storage_drawer_1
+    channel: power
+    value: "open"
+  - id: drawer-open-2
+    op: set
+    device: storage_drawer_2
+    channel: power
+    value: "open"
+  - id: drawer-open-3
+    op: set
+    device: storage_drawer_3
+    channel: power
+    value: "open"
+  - id: drawer-open-4
+    op: set
+    device: storage_drawer_4
+    channel: power
+    value: "open"
+  - id: to-reactor-1
+    op: transfer
+    sample: S-001
+    to: synthesis
+    position: R1
+    "from": storage
+    after: [drawer-open-1]
+  - id: to-reactor-2
+    op: transfer
+    sample: S-002
+    to: synthesis
+    position: R2
+    "from": storage
+    after: [drawer-open-2]
+  - id: to-reactor-3
+    op: transfer
+    sample: S-003
+    to: synthesis
+    position: R3
+    "from": storage
+    after: [drawer-open-3]
+  - id: to-reactor-4
+    op: transfer
+    sample: S-004
+    to: synthesis
+    position: R4
+    "from": storage
+    after: [drawer-open-4]
+  - id: hood-on
+    op: set
+    device: fume_hood
+    channel: power
+    value: "on"
+  - id: stir-1
+    op: set
+    device: stirrer_1
+    channel: power
+    value: "on"
+    after: [to-reactor-1, hood-on]
+  - id: reactor-power-1
+    op: set
+    device: reactor_1
+    channel: power
+    value: "on"
+    after: [stir-1]
+  - id: heat-1
+    op: set
+    device: reactor_1
+    channel: setpoint
+    value: 80
+    unit: degC
+    after: [reactor-power-1]
+  - id: hold-1
+    op: hold
+    seconds: 60
+    after: [heat-1]
+  - id: cool-1
+    op: set
+    device: reactor_1
+    channel: setpoint
+    value: 20
+    unit: degC
+    after: [hold-1]
+  - id: stir-off-1
+    op: set
+    device: stirrer_1
+    channel: power
+    value: "off"
+    after: [cool-1]
+  - id: stir-2
+    op: set
+    device: stirrer_2
+    channel: power
+    value: "on"
+    after: [to-reactor-2, hood-on]
+  - id: reactor-power-2
+    op: set
+    device: reactor_2
+    channel: power
+    value: "on"
+    after: [stir-2]
+  - id: heat-2
+    op: set
+    device: reactor_2
+    channel: setpoint
+    value: 80
+    unit: degC
+    after: [reactor-power-2]
+  - id: hold-2
+    op: hold
+    seconds: 60
+    after: [heat-2]
+  - id: cool-2
+    op: set
+    device: reactor_2
+    channel: setpoint
+    value: 20
+    unit: degC
+    after: [hold-2]
+  - id: stir-off-2
+    op: set
+    device: stirrer_2
+    channel: power
+    value: "off"
+    after: [cool-2]
+  - id: stir-3
+    op: set
+    device: stirrer_3
+    channel: power
+    value: "on"
+    after: [to-reactor-3, hood-on]
+  - id: reactor-power-3
+    op: set
+    device: reactor_3
+    channel: power
+    value: "on"
+    after: [stir-3]
+  - id: heat-3
+    op: set
+    device: reactor_3
+    channel: setpoint
+    value: 80
+    unit: degC
+    after: [reactor-power-3]
+  - id: hold-3
+    op: hold
+    seconds: 60
+    after: [heat-3]
+  - id: cool-3
+    op: set
+    device: reactor_3
+    channel: setpoint
+    value: 20
+    unit: degC
+    after: [hold-3]
+  - id: stir-off-3
+    op: set
+    device: stirrer_3
+    channel: power
+    value: "off"
+    after: [cool-3]
+  - id: stir-4
+    op: set
+    device: stirrer_4
+    channel: power
+    value: "on"
+    after: [to-reactor-4, hood-on]
+  - id: reactor-power-4
+    op: set
+    device: reactor_4
+    channel: power
+    value: "on"
+    after: [stir-4]
+  - id: heat-4
+    op: set
+    device: reactor_4
+    channel: setpoint
+    value: 80
+    unit: degC
+    after: [reactor-power-4]
+  - id: hold-4
+    op: hold
+    seconds: 60
+    after: [heat-4]
+  - id: cool-4
+    op: set
+    device: reactor_4
+    channel: setpoint
+    value: 20
+    unit: degC
+    after: [hold-4]
+  - id: stir-off-4
+    op: set
+    device: stirrer_4
+    channel: power
+    value: "off"
+    after: [cool-4]
+  - id: to-column-1
+    op: transfer
+    sample: S-001
+    to: purification
+    position: P1
+    "from": synthesis
+    after: [stir-off-1]
+  - id: to-column-2
+    op: transfer
+    sample: S-002
+    to: purification
+    position: P2
+    "from": synthesis
+    after: [stir-off-2]
+  - id: to-column-3
+    op: transfer
+    sample: S-003
+    to: purification
+    position: P3
+    "from": synthesis
+    after: [stir-off-3]
+  - id: to-column-4
+    op: transfer
+    sample: S-004
+    to: purification
+    position: P4
+    "from": synthesis
+    after: [stir-off-4]
+  - id: valve-open-1
+    op: set
+    device: column_valve_1
+    channel: power
+    value: "on"
+    after: [to-column-1]
+  - id: purge-1
+    op: set
+    device: column_pump_1
+    channel: flow
+    value: 2
+    unit: mL/min
+    after: [valve-open-1]
+  - id: purge-hold-1
+    op: hold
+    seconds: 30
+    after: [purge-1]
+  - id: purge-off-1
+    op: set
+    device: column_pump_1
+    channel: flow
+    value: 0
+    unit: mL/min
+    after: [purge-hold-1]
+  - id: valve-close-1
+    op: set
+    device: column_valve_1
+    channel: power
+    value: "off"
+    after: [purge-off-1]
+  - id: valve-open-2
+    op: set
+    device: column_valve_2
+    channel: power
+    value: "on"
+    after: [to-column-2]
+  - id: purge-2
+    op: set
+    device: column_pump_2
+    channel: flow
+    value: 2
+    unit: mL/min
+    after: [valve-open-2]
+  - id: purge-hold-2
+    op: hold
+    seconds: 30
+    after: [purge-2]
+  - id: purge-off-2
+    op: set
+    device: column_pump_2
+    channel: flow
+    value: 0
+    unit: mL/min
+    after: [purge-hold-2]
+  - id: valve-close-2
+    op: set
+    device: column_valve_2
+    channel: power
+    value: "off"
+    after: [purge-off-2]
+  - id: valve-open-3
+    op: set
+    device: column_valve_3
+    channel: power
+    value: "on"
+    after: [to-column-3]
+  - id: purge-3
+    op: set
+    device: column_pump_3
+    channel: flow
+    value: 2
+    unit: mL/min
+    after: [valve-open-3]
+  - id: purge-hold-3
+    op: hold
+    seconds: 30
+    after: [purge-3]
+  - id: purge-off-3
+    op: set
+    device: column_pump_3
+    channel: flow
+    value: 0
+    unit: mL/min
+    after: [purge-hold-3]
+  - id: valve-close-3
+    op: set
+    device: column_valve_3
+    channel: power
+    value: "off"
+    after: [purge-off-3]
+  - id: valve-open-4
+    op: set
+    device: column_valve_4
+    channel: power
+    value: "on"
+    after: [to-column-4]
+  - id: purge-4
+    op: set
+    device: column_pump_4
+    channel: flow
+    value: 2
+    unit: mL/min
+    after: [valve-open-4]
+  - id: purge-hold-4
+    op: hold
+    seconds: 30
+    after: [purge-4]
+  - id: purge-off-4
+    op: set
+    device: column_pump_4
+    channel: flow
+    value: 0
+    unit: mL/min
+    after: [purge-hold-4]
+  - id: valve-close-4
+    op: set
+    device: column_valve_4
+    channel: power
+    value: "off"
+    after: [purge-off-4]
+  - id: to-rack-1
+    op: transfer
+    sample: S-001
+    to: analysis
+    position: A1
+    "from": purification
+    after: [valve-close-1]
+  - id: to-rack-2
+    op: transfer
+    sample: S-002
+    to: analysis
+    position: A2
+    "from": purification
+    after: [valve-close-2]
+  - id: to-rack-3
+    op: transfer
+    sample: S-003
+    to: analysis
+    position: A3
+    "from": purification
+    after: [valve-close-3]
+  - id: to-rack-4
+    op: transfer
+    sample: S-004
+    to: analysis
+    position: A4
+    "from": purification
+    after: [valve-close-4]
+  - id: measure-1
+    op: measure
+    device: hplc_1
+    sample: S-001
+    reader: rack_scanner_1
+    after: [to-rack-1]
+  - id: measure-2
+    op: measure
+    device: hplc_2
+    sample: S-002
+    reader: rack_scanner_2
+    after: [to-rack-2]
+  - id: measure-3
+    op: measure
+    device: hplc_3
+    sample: S-003
+    reader: rack_scanner_3
+    after: [to-rack-3]
+  - id: measure-4
+    op: measure
+    device: hplc_4
+    sample: S-004
+    reader: rack_scanner_4
+    after: [to-rack-4]
