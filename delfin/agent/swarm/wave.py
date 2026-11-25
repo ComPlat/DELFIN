@@ -168,6 +168,19 @@ def runs() -> list[str]:
     return [p.name for p in sorted(found, key=lambda p: p.stat().st_mtime, reverse=True)]
 
 
+def runs_oldest_first() -> list[str]:
+    """Every run, the one whose first member started earliest first; a run
+    with no member yet comes last. The tick starts members in this order, so
+    a run that is further along gets a free place before a newer one: by the
+    newest state file first, three new runs took every place while an older
+    run's integrators waited behind them (2026-11-25)."""
+    def age(run: str) -> tuple:
+        began = [float(a["started"]) for a in load_state(run).get("agents", {}).values()
+                 if isinstance(a, dict) and a.get("started")]
+        return (min(began) if began else float("inf"), run)
+    return sorted(runs(), key=age)
+
+
 # -- tasks -----------------------------------------------------------------------
 
 def validate_tasks(tasks: Any) -> list[dict]:
