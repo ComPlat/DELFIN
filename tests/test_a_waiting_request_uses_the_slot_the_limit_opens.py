@@ -48,9 +48,6 @@ import pytest
 from conftest import child_env
 from delfin.agent import endpoint_gate as G
 
-pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"),
-                                reason="flock slot files are the POSIX gate")
-
 
 URL = "https://waitslot.example.org/api/v1"
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
