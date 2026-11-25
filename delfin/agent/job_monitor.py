@@ -968,12 +968,24 @@ def check_agent_jobs(
                 continue
             status = job.status_dict()
             rc = status.get("exit_code")
+            # The state is the only field a renderer shows besides the
+            # description, and it used to drop the code this dict carries:
+            # a real run handed the agent "- bash 89dc4f48 [FINISHED]" for a
+            # job that exited 3, beside a line that said "exit code 3". A
+            # reader taking the glance line read a failure as a clean
+            # finish. A non-zero code is therefore named here, in the same
+            # reading order the shell row uses; a clean exit stays quiet.
+            state = ("FINISHED (children still running)"
+                     if status.get("children_running") else "FINISHED")
+            if rc not in (0, None):
+                state = f"FINISHED, exit {rc}"
+                if status.get("children_running"):
+                    state += " (children still running)"
             done.append({
                 "job_id": jid,
                 "kind": "bash",
                 "description": entry.get("description", ""),
-                "state": ("FINISHED (children still running)"
-                          if status.get("children_running") else "FINISHED"),
+                "state": state,
                 "ok": rc == 0 and not status.get("children_running"),
                 "exit_code": rc,
                 "signatures": [],
