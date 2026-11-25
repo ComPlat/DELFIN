@@ -18867,6 +18867,18 @@ class _DocToolExecutor:
         if limit <= 0:
             limit = 200
         start = offset - 1
+        # Past the end of the file is an ANSWER about the call, not about
+        # the file: the empty string it used to return was byte-identical
+        # to reading a 0-byte file, so a wrong offset looked like an empty
+        # file and the model went on to describe content it never saw. A
+        # file with no lines at all is a legitimate read and keeps
+        # returning "".
+        if start and start >= len(lines):
+            return json.dumps({"error": (
+                f"{rel_path} has {len(lines)} lines; offset {offset} is "
+                "past the end. Read from a line that exists (grep_file "
+                "prints the line numbers), or call read_file with no "
+                "offset for the whole file.")})
         selected = lines[start:start + limit]
         result = "\n".join(f"{start + i + 1}  {line}"
                             for i, line in enumerate(selected))
@@ -20118,7 +20130,7 @@ class _DocToolExecutor:
         root = perms.workspace if perms is not None else self._repo_root()
         try:
             from .memory_store import delete_typed_memory
-            deleted = delete_typed_memory(root, name)
+            deleted = delete_typed_memory(root, name, scope="all")
         except Exception as exc:
             return json.dumps({"error": f"could not delete memory: {exc}"})
         if deleted is None:
@@ -20273,6 +20285,13 @@ class _DocToolExecutor:
         max_results = _as_int(arguments.get("max_results"), 30)
         if max_results <= 0:
             max_results = 30
+        # Scan for ONE hit past the cap, so "there were more" is a fact and
+        # not an assumption. Breaking AT the cap and then asking whether
+        # len(matches) == max_results cannot tell "exactly max_results hits
+        # in the whole tree" from "the tree holds thousands": both stop at
+        # the same list, and the note would then be a claim about the corpus
+        # that nothing measured.
+        _scan_cap = max_results + 1
 
         # Read-gate on the search root: secret-deny is hard, outside-workspace
         # needs user confirm. (Per-file deny still applies inside the loop.)
@@ -20337,13 +20356,23 @@ class _DocToolExecutor:
                             except ValueError:
                                 rel_match = fp
                             matches.append(f"{rel_match}:{i + 1}: {line.rstrip()[:200]}")
-                            if len(matches) >= max_results:
+                            if len(matches) >= _scan_cap:
                                 break
             except Exception:
                 continue
-            if len(matches) >= max_results:
+            if len(matches) >= _scan_cap:
                 break
+        _capped = len(matches) > max_results
+        if _capped:
+            matches = matches[:max_results]
         out = "\n".join(matches) if matches else "No matches found."
+        if _capped:
+            # The line must not start like a hit ("path:line:"):
+            # _paths_in_grep_output reads every such line as a file the agent
+            # demonstrably saw, so a note shaped like one would put a file in
+            # the observed-files ledger that was never shown.
+            out += (f"\n[grep stopped at max_results={max_results}; more "
+                    "may exist. Narrow the pattern or raise max_results.]")
         if links_outside:
             out += (f"\n[{links_outside} symlink(s) pointing outside the "
                     "searched folder were not read. Name such a file "
@@ -20395,9 +20424,18 @@ class _DocToolExecutor:
             # (no directory component) matches nested files as users expect.
             if fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(fp.name, pattern):
                 matches.append(rel)
-                if len(matches) >= 50:
+                if len(matches) > 50:
                     break
-        return "\n".join(matches) if matches else "No files matching pattern."
+        _capped = len(matches) > 50
+        if _capped:
+            matches = matches[:50]
+        out = "\n".join(matches) if matches else "No files matching pattern."
+        if _capped:
+            # A listing that stopped at 50 read as one that found 50 -- on
+            # this repository, 50 of 4565 .py files, with nothing said.
+            out += ("\n[listing stopped at 50 entries; more may exist. "
+                    "Narrow the pattern or the path.]")
+        return out
 
     # -- Coding-agent helpers (sandbox + permission gating) -------------------
 
