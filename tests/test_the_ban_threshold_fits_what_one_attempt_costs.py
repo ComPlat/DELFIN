@@ -29,8 +29,10 @@ HARDEN = (ROOT / "scripts" / "pi" / "pi_harden_host.sh").read_text(
 APP = (ROOT / "tools" / "windows-launcher" / "DELFIN.ps1").read_text(
     encoding="utf-8")
 
-#: Connections one click makes, each with its own password prompt: the
-#: script check and the copy (Sync-ServerScripts) and the dashboard.
+#: Connections one click makes at most, each with its own password prompt:
+#: on a new launcher version the dashboard connection finds no script copy,
+#: the copy (Copy-ServerScripts) follows, then the dashboard again. Every
+#: later click is one connection.
 CONNECTIONS_PER_CLICK = 3
 
 
@@ -49,11 +51,11 @@ def _seconds(value: str) -> int:
 
 def test_one_click_really_does_cost_three_prompts():
     """The number above, read from the launcher rather than asserted."""
-    check_and_copy = APP.count("Sync-ServerScripts ")
-    assert "Invoke-OpenSSH $ssh" in APP and "Invoke-OpenSSH $scp" in APP, (
-        "the check and the copy are the two connections before the "
-        "dashboard; if that changed, so must CONNECTIONS_PER_CLICK")
-    assert check_and_copy >= 1
+    assert "Invoke-OpenSSH $scp" in APP and "Invoke-OpenSSH $ssh" not in APP, (
+        "the copy is the one connection besides the dashboard; if that "
+        "changed, so must CONNECTIONS_PER_CLICK")
+    assert "Copy-ServerScripts ([string]$p.Target)" in APP
+    assert "$scriptsCopied" in APP, "the dashboard is started again at most once"
     assert "Get-RemoteCommand $p 'dashboard'" in APP
 
 

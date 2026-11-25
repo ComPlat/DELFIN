@@ -70,14 +70,14 @@ foreach ($kind in @('Dashboard','Terminal')) {
     Assert-That ($options -contains 'ClearAllForwardings=yes' -and $options -notcontains '-L') 'Connections without a tunnel must not inherit forwarding settings.'
     Assert-That ($options[0] -eq '-tt') 'SSH sessions need a terminal.'
 }
-foreach ($kind in @('Check','Copy')) {
+foreach ($kind in @('Copy')) {
     $options=@(Get-SSHOptions $kind)
     foreach ($required in @('StrictHostKeyChecking=ask','ForwardAgent=no','ForwardX11=no','ClearAllForwardings=yes','PermitLocalCommand=no','ControlMaster=no','ControlPath=none')) {
         Assert-That ($options -contains $required) "Missing SSH protection for ${kind}: $required"
     }
     Assert-That ($options -notcontains '-tt' -and $options -notcontains '-L') "$kind must not ask for a terminal or a tunnel."
 }
-Assert-That ((@(Get-SSHOptions 'Check'))[0] -eq '-T' -and (@(Get-SSHOptions 'Copy')) -notcontains '-T') 'Only the ssh check disables the terminal; scp reads -T differently.'
+Assert-That ((@(Get-SSHOptions 'Copy')) -notcontains '-T') 'scp reads -T differently; the copy must not carry it.'
 # The server half travels as two plain files into a content-addressed folder.
 $version = Get-ScriptVersion
 Assert-That ($version.Folder -match '^\.cache/delfin-launcher/[a-f0-9]{32}$') 'Script folder must be named by the scripts digests.'
@@ -88,7 +88,8 @@ Assert-That ($check.StartsWith("bash -c 'umask 077") -and $check.EndsWith(' delf
 Assert-That (-not $check.Contains('"')) 'Script check must not contain double quotes.'
 $commandProfile = Normalize-Profile $testProfile
 $remote = Get-RemoteCommand $commandProfile 'dashboard' '' '' $version
-Assert-That ($remote.StartsWith("bash -ilc '. ~/" + $version.Folder + "/remote_bootstrap.sh' delfin 0 ")) 'The login shell must source the copied bootstrap file.'
+Assert-That ($remote.StartsWith($check + " && bash -ilc '. ~/" + $version.Folder + "/remote_bootstrap.sh' delfin 0 ")) 'One connection: the script check, then the login shell on the copied bootstrap.'
+Assert-That ($check.Contains('echo DELFIN_SCRIPTS_MISSING; exit 10')) 'A missing copy must be reported by marker and exit code 10.'
 Assert-That ($remote.Contains("'~/" + $version.Folder + "/remote_launcher.py' 'dashboard'")) 'The bootstrap must get the path of the copied launcher.'
 Assert-That (-not $remote.Contains('"') -and -not $remote.Contains('base64') -and -not $remote.Contains('eval')) 'The remote command must carry paths and data only.'
 Assert-Rejected { Get-RemoteCommand $commandProfile 'dashboard' '' '' ([pscustomobject]@{ Folder='.cache/delfin-launcher/../../x' }) }

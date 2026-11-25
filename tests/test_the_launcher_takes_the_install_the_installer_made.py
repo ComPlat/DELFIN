@@ -25,6 +25,9 @@ def _install(repo: pathlib.Path) -> pathlib.Path:
     (repo / "delfin/agent/where.py").write_text("")
     (repo / "delfin/dashboard/session.py").write_text("")
     (repo / "delfin/cli_voila.py").write_text("def main(argv):\n    print('--strict-port')\n")
+    # voila serves the dashboard; the bootstrap refuses an environment without it.
+    (repo / "voila").mkdir(exist_ok=True)
+    (repo / "voila/__init__.py").write_text("")
     bin_dir = repo / ".venv" / "bin"
     bin_dir.mkdir(parents=True)
     (bin_dir / "python").symlink_to(sys.executable)

@@ -13,6 +13,9 @@ set -euo pipefail
 #   delfin-people --attach NAME    watch that person's dashboard tmux session
 #   delfin-people --keys           the launcher keys that may log in
 #   delfin-people --add-key NAME   let a new PC in (public key on stdin)
+#   delfin-people --invite NAME    one file that lets a new person in by
+#                                  themselves: ~/invites/DELFIN-NAME.zip
+#                                  [--host HOST] [--hours N, default 48]
 #
 # They are one Unix user: this is an overview, not a boundary between them.
 # ============================================================================
@@ -62,6 +65,131 @@ add_key() {
             >> "$HOME/.ssh/authorized_keys")
     echo "added for $name. Revoke by deleting its delfin-launcher-$name line."
 }
+
+# -- an invitation: one file, and a new person is in --------------------------
+# --add-key needs a round trip: the person presses Start, it fails, they send
+# a file, the owner runs a command, they press Start again -- and on the
+# first real login OpenSSH still asks them to compare a host fingerprint.
+#
+# --invite NAME builds DELFIN-NAME.zip: the Windows launcher package plus
+#   invite.json  the server (user@host) and this machine's host keys, so the
+#                first login asks nothing (the key is pinned, not trusted on
+#                first use);
+#   invite_key   a key made for this invitation only.
+# Its line in authorized_keys can do exactly one thing: run --enroll, which
+# reads the new PC's own launcher key from stdin, adds it with the launcher's
+# restriction, and removes the invitation. restrict (no pty, no forwarding),
+# a forced command, and an expiry time: unused, it stops working by itself.
+# Whoever holds the file before the person uses it can enroll ONE PC; that is
+# what an invitation is, so hand it over like a temporary password.
+invite_hours=48
+invite() {
+    local name="$1" host="${2:-}" hours="${3:-$invite_hours}" package work key expiry line self out
+    if [[ ! "$name" =~ ^[a-z0-9_][a-z0-9_-]{0,31}$ ]]; then
+        echo "usage: delfin-people --invite NAME [--host HOST] [--hours N]" >&2
+        echo "NAME: a-z, 0-9, _ and - (it labels the PC's key)" >&2
+        exit 2
+    fi
+    [[ "$hours" =~ ^[0-9]{1,4}$ && "$hours" -ge 1 ]] || { echo "--hours: a whole number of hours" >&2; exit 2; }
+    if [[ -f "$HOME/.config/delfin/launcher-no-keys.conf" ]]; then
+        echo "this account refuses launcher keys (launcher-no-keys.conf)" >&2
+        exit 1
+    fi
+    if [[ -z "$host" ]]; then
+        host="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)"
+    fi
+    [[ "$host" =~ ^[A-Za-z0-9][A-Za-z0-9.-]{0,200}$ ]] || { echo "no usable address; pass --host NAME-OR-IP" >&2; exit 1; }
+    package="${DELFIN_LAUNCHER_ZIP:-}"
+    if [[ -z "$package" ]]; then
+        for candidate in "$HOME/delfin/src/tools/delfin-windows-launcher.zip" \
+                         "$(dirname "$(readlink -f "$0")")/../../tools/delfin-windows-launcher.zip"; do
+            if [[ -f "$candidate" ]]; then package="$candidate"; break; fi
+        done
+    fi
+    [[ -f "$package" ]] || { echo "launcher package not found; set DELFIN_LAUNCHER_ZIP" >&2; exit 1; }
+    work="$(mktemp -d)"
+    key="$work/invite_key"
+    ssh-keygen -q -t ed25519 -N '' -C "delfin-invite-$name" -f "$key"
+    expiry="$(date -u -d "+$hours hours" +%Y%m%d%H%MZ)"
+    # The command is this very script: the one that made the invitation
+    # takes it in, wherever it is installed.
+    self="$(readlink -f "$0")"
+    line="restrict,command=\"$self --enroll $name\",expiry-time=\"$expiry\" $(cut -d' ' -f1-2 "$key.pub") delfin-invite-$name"
+    out="$HOME/invites"
+    (umask 077 && mkdir -p "$out" "$HOME/.ssh")
+    if ! DELFIN_INVITE_TARGET="$(id -un)@$host" DELFIN_INVITE_NAME="$name" DELFIN_INVITE_EXPIRY="$expiry" \
+        DELFIN_HOST_KEYS="${DELFIN_HOST_KEYS:-/etc/ssh/ssh_host_*_key.pub}" \
+        python3 - "$package" "$key" "$out/DELFIN-$name.zip" <<'PY'
+import glob, json, os, sys, zipfile
+package, key, out = sys.argv[1:4]
+keys = []
+for path in sorted(glob.glob(os.environ['DELFIN_HOST_KEYS'])):
+    parts = open(path).read().split()
+    if len(parts) >= 2:
+        keys.append(parts[0] + ' ' + parts[1])
+if not keys:
+    sys.exit('no host keys found (' + os.environ['DELFIN_HOST_KEYS'] + ')')
+invite = {'target': os.environ['DELFIN_INVITE_TARGET'], 'name': os.environ['DELFIN_INVITE_NAME'],
+          'expires': os.environ['DELFIN_INVITE_EXPIRY'], 'host_keys': keys}
+os.umask(0o077)
+with zipfile.ZipFile(package) as source, zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as target:
+    for item in source.infolist():
+        target.writestr(item, source.read(item))
+    target.writestr('windows-launcher/invite.json', json.dumps(invite, indent=2) + '\n')
+    target.writestr('windows-launcher/invite_key', open(key).read())
+PY
+    then
+        rm -rf "$work"
+        exit 1
+    fi
+    rm -rf "$work"
+    (umask 077 && printf '%s\n' "$line" >> "$HOME/.ssh/authorized_keys")
+    echo "Invitation for $name: $out/DELFIN-$name.zip"
+    echo "  Server: $(id -un)@$host. Valid once, until $expiry (UTC)."
+    echo "  Give the file to $name like a temporary password. They extract it,"
+    echo "  double-click Install.cmd, and press Start in DELFIN. Nothing else."
+    echo "  Withdraw it: delete the delfin-invite-$name line (delfin-people --keys lists it)."
+}
+
+# The forced command of an invitation's key (above): never run by hand.
+enroll() {
+    local name="$1" line body file tmp
+    [[ "$name" =~ ^[a-z0-9_][a-z0-9_-]{0,31}$ ]] || { echo "invalid invitation" >&2; exit 2; }
+    file="$HOME/.ssh/authorized_keys"
+    IFS= read -r line || true
+    line="${line%$'\r'}"
+    if ! printf '%s\n' "$line" \
+        | grep -Eq '^ssh-ed25519 [A-Za-z0-9+/]+={0,2}( [A-Za-z0-9@._-]{1,64})?$'; then
+        echo "not one ed25519 public key line; nothing was added" >&2
+        exit 1
+    fi
+    body="$(printf '%s' "$line" | cut -d' ' -f2)"
+    if ! grep -qsF " $body" "$file"; then
+        (umask 077 && printf 'restrict,port-forwarding,pty %s delfin-launcher-%s\n' \
+            "$(printf '%s' "$line" | cut -d' ' -f1-2)" "$name" >> "$file")
+    fi
+    # Used once: the invitation's own line goes.
+    tmp="$(mktemp "$HOME/.ssh/authorized_keys.XXXXXX")"
+    grep -v " delfin-invite-$name\$" "$file" > "$tmp" || true
+    chmod 600 "$tmp"
+    mv -f "$tmp" "$file"
+    echo "DELFIN_ENROLLED"
+}
+
+if [[ "${1:-}" == "--invite" ]]; then
+    name="${2:-}"; host=""; hours="$invite_hours"
+    if [[ $# -ge 2 ]]; then shift 2; else shift $#; fi
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --host) host="${2:-}"; shift 2 ;;
+            --hours) hours="${2:-}"; shift 2 ;;
+            *) echo "unknown option: $1" >&2; exit 2 ;;
+        esac
+    done
+    invite "$name" "$host" "$hours"
+    exit 0
+fi
+if [[ "${1:-}" == "--enroll" ]]; then enroll "${2:-}"; exit 0; fi
 
 if [[ "${1:-}" == "--add-key" ]]; then add_key "${2:-}"; exit 0; fi
 

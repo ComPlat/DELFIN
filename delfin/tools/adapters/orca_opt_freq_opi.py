@@ -91,8 +91,10 @@ class OrcaOptOpiAdapter(StepAdapter):
             coordinates=coordinates,
             charge=kwargs.get("charge", 0),
             mult=kwargs.get("mult", 1),
-            functional=kwargs.get("functional", "r2SCAN-3c"),
-            basis=kwargs.get("basis", "def2-SVP"),
+            # See the OPT step above: the chain template names the method with
+            # dft_method/dft_basis, so those keys are honoured too.
+            functional=kwargs.get("functional") or kwargs.get("dft_method") or "r2SCAN-3c",
+            basis=kwargs.get("basis") or kwargs.get("dft_basis") or "def2-SVP",
             ri=kwargs.get("ri", ""),
             aux_basis=kwargs.get("aux_basis", ""),
             dispersion=kwargs.get("dispersion", "D4"),
@@ -162,8 +164,13 @@ class OrcaFreqOpiAdapter(StepAdapter):
             coordinates=coordinates,
             charge=kwargs.get("charge", 0),
             mult=kwargs.get("mult", 1),
-            functional=kwargs.get("functional", "r2SCAN-3c"),
-            basis=kwargs.get("basis", "def2-SVP"),
+            # The template that reaches these steps (opi_opt_freq_dlpno)
+            # names the method with its own keys, dft_method/dft_basis; reading
+            # only functional/basis silently ran the default for a request of a
+            # different functional. The adapter's own names win when both are
+            # given.
+            functional=kwargs.get("functional") or kwargs.get("dft_method") or "r2SCAN-3c",
+            basis=kwargs.get("basis") or kwargs.get("dft_basis") or "def2-SVP",
             ri=kwargs.get("ri", ""),
             aux_basis=kwargs.get("aux_basis", ""),
             dispersion=kwargs.get("dispersion", "D4"),
@@ -233,8 +240,13 @@ class OrcaOptFreqOpiAdapter(StepAdapter):
             coordinates=coordinates,
             charge=kwargs.get("charge", 0),
             mult=kwargs.get("mult", 1),
-            functional=kwargs.get("functional", "r2SCAN-3c"),
-            basis=kwargs.get("basis", "def2-SVP"),
+            # The template that reaches these steps (opi_opt_freq_dlpno)
+            # names the method with its own keys, dft_method/dft_basis; reading
+            # only functional/basis silently ran the default for a request of a
+            # different functional. The adapter's own names win when both are
+            # given.
+            functional=kwargs.get("functional") or kwargs.get("dft_method") or "r2SCAN-3c",
+            basis=kwargs.get("basis") or kwargs.get("dft_basis") or "def2-SVP",
             ri=kwargs.get("ri", ""),
             aux_basis=kwargs.get("aux_basis", ""),
             dispersion=kwargs.get("dispersion", "D4"),
