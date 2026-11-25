@@ -45,7 +45,7 @@ that). So each probe and side also records:
   ``tool_calls``;
 * ``reached`` -- ``yes`` / ``no`` / ``unknown``: whether a function the
   branch changed was executed. The changed functions' qualified names come
-  from the branch's diff against its base (``_changed_names``: the diff's
+  from the branch's diff against its base (``changed_functions``: the diff's
   hunks intersected with the base and branch syntax trees); execution is
   observed by ``_PROBE`` below, which the child loads through a
   ``sitecustomize`` on its ``PYTHONPATH`` (measured: ``sitecustomize``
