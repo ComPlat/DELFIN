@@ -90,19 +90,29 @@ function Get-ScriptVersion {
 }
 function Get-ScriptCheckCommand($version) {
     # Exit 0: both files are present with these digests. Exit 10: missing or
-    # different (the folder now exists, owner-only). Exit 11: no folder.
+    # different (the folder now exists, owner-only); it also prints
+    # DELFIN_SCRIPTS_MISSING. Exit 11: no folder.
     # $1 is the folder below HOME, $2 and $3 the digests (hex only).
-    $checkScript = 'umask 077 && cd && mkdir -p $1 && cd $1 || exit 11; printf ''%s  %s\n'' $2 remote_bootstrap.sh $3 remote_launcher.py | sha256sum -c --status 2>/dev/null || exit 10'
+    $checkScript = 'umask 077 && cd && mkdir -p $1 && cd $1 || exit 11; printf ''%s  %s\n'' $2 remote_bootstrap.sh $3 remote_launcher.py | sha256sum -c --status 2>/dev/null || { echo DELFIN_SCRIPTS_MISSING; exit 10; }'
     if ($version.Folder -notmatch '^\.cache/delfin-launcher/[a-f0-9]{32}$' -or $version.Bootstrap -notmatch '^[a-f0-9]{64}$' -or $version.Launcher -notmatch '^[a-f0-9]{64}$') { throw 'Invalid launcher script version.' }
     return 'bash -c ' + (Shell-Quote $checkScript) + ' delfin ' + $version.Folder + ' ' + $version.Bootstrap + ' ' + $version.Launcher
 }
 function Get-RemoteCommand($p, [string]$role, [string]$tunnelPath = '', [string]$publicKey = '', $version) {
+    # ONE SSH connection: the check of the server's copy, then -- only when
+    # it is exact -- the login shell on the copied bootstrap. A separate
+    # check connection cost one more password and OTP on every start; on a
+    # cluster with one-time codes that was two codes for every connection.
+    # A missing or changed copy ends the connection with exit 10 and
+    # DELFIN_SCRIPTS_MISSING: the app copies the files (scp) and connects
+    # again. '&&' reads the same in sh, bash, zsh and tcsh, so the account's
+    # login shell does not matter. The check runs in a bash of its own: its
+    # umask does not reach the dashboard.
     # The login shell sources the copied bootstrap; its positional parameters
     # are the arguments after 'delfin'. Only file paths and data travel.
-    if ($version.Folder -notmatch '^\.cache/delfin-launcher/[a-f0-9]{32}$') { throw 'Invalid launcher script version.' }
+    $check = Get-ScriptCheckCommand $version
     $bootstrap = '. ~/' + $version.Folder + '/remote_bootstrap.sh'
     $launcher = '~/' + $version.Folder + '/remote_launcher.py'
-    return 'bash -ilc ' + (Shell-Quote $bootstrap) + ' delfin ' + [int]$p.Port + ' ' + (Shell-Quote $p.Directory) + ' ' + (Shell-Quote $p.Executable) + ' ' + (Shell-Quote $launcher) + ' ' + (Shell-Quote $role) + ' ' + (Shell-Quote $tunnelPath) + ' ' + $(if ($p.KeepSession) { '1' } else { '0' }) + ' ' + $(if ($p.OpenWorkingTerminal) { '1' } else { '0' }) + ' ' + (Shell-Quote (Get-PersonName)) + ' ' + (Shell-Quote $publicKey)
+    return $check + ' && ' + 'bash -ilc ' + (Shell-Quote $bootstrap) + ' delfin ' + [int]$p.Port + ' ' + (Shell-Quote $p.Directory) + ' ' + (Shell-Quote $p.Executable) + ' ' + (Shell-Quote $launcher) + ' ' + (Shell-Quote $role) + ' ' + (Shell-Quote $tunnelPath) + ' ' + $(if ($p.KeepSession) { '1' } else { '0' }) + ' ' + $(if ($p.OpenWorkingTerminal) { '1' } else { '0' }) + ' ' + (Shell-Quote (Get-PersonName)) + ' ' + (Shell-Quote $publicKey)
 }
 function Get-FreeLocalPort([int]$preferred) {
     $candidates = if ($preferred -eq 0) { @(0) } else { @($preferred..([Math]::Min(65535,$preferred+100))) + @(0) }
@@ -119,9 +129,8 @@ function Get-SSHOptions([string]$kind, [int]$local = 0, [int]$remote = 0, [strin
     $privateTunnel = $kind -eq 'Dashboard' -and $local -ge 1024 -and $local -le 65535 -and $tunnelPath -match '^/tmp/delfin-win-tunnel-[a-f0-9-]{36}/dashboard.sock$'
     $forwardingPolicy = if ($hasTunnel -or $privateTunnel) { 'ClearAllForwardings=no' } else { 'ClearAllForwardings=yes' }
     $options = @('-o','StrictHostKeyChecking=ask','-o','ForwardAgent=no','-o','ForwardX11=no','-o',$forwardingPolicy,'-o','PermitLocalCommand=no','-o','ServerAliveInterval=30','-o','ServerAliveCountMax=3','-o','ControlMaster=no','-o','ControlPath=none')
-    # ssh sessions get a terminal (-tt); the short check runs without one (-T);
-    # scp ('Copy') takes neither.
-    if ($kind -eq 'Dashboard' -or $kind -eq 'Terminal') { $options = @('-tt') + $options } elseif ($kind -eq 'Check') { $options = @('-T') + $options }
+    # ssh sessions get a terminal (-tt); scp ('Copy') takes none.
+    if ($kind -eq 'Dashboard' -or $kind -eq 'Terminal') { $options = @('-tt') + $options }
     if ($hasTunnel) {
         $options += @('-o','GatewayPorts=no','-o','ExitOnForwardFailure=yes','-L',"127.0.0.1:${local}:127.0.0.1:${remote}")
     }
@@ -165,22 +174,16 @@ function Invoke-OpenSSH([string]$program, [string[]]$arguments) {
         return $script:sshProcess.ExitCode
     } finally { $script:sshProcess.Dispose(); $script:sshProcess = $null }
 }
-function Sync-ServerScripts([string]$target, [string[]]$identity) {
-    # A short SSH call checks the server's copy; only a missing or different
-    # copy is sent, with Windows OpenSSH's scp, as two plain files.
-    $version = Get-ScriptVersion
-    $ssh = Join-Path $env:SystemRoot 'System32\OpenSSH\ssh.exe'
+function Copy-ServerScripts([string]$target, [string[]]$identity, $version) {
+    # The start reported a missing or different copy (exit 10): the two
+    # scripts go over as plain files with Windows OpenSSH's scp, once per
+    # launcher version.
     $scp = Join-Path $env:SystemRoot 'System32\OpenSSH\scp.exe'
-    Write-Host 'Checking the DELFIN launcher scripts on the server...'
-    $code = Invoke-OpenSSH $ssh (@(Get-SSHOptions 'Check') + $identity + @($target, (Get-ScriptCheckCommand $version)))
-    if ($code -eq 0) { return $version }
-    if ($code -ne 10) { throw "Could not check the launcher scripts on the server (exit code $code)." }
     if (-not (Test-Path -LiteralPath $scp)) { throw 'Windows OpenSSH scp.exe is missing. See README.' }
     Write-Host 'Copying the DELFIN launcher scripts to the server (once per launcher version).'
     Write-Host 'Without a remembered login, OpenSSH asks for the password and OTP again for this copy.'
     $code = Invoke-OpenSSH $scp (@('-q') + @(Get-SSHOptions 'Copy') + $identity + @('remote_bootstrap.sh','remote_launcher.py',($target + ':' + $version.Folder + '/')))
     if ($code -ne 0) { throw "Could not copy the launcher scripts to the server (exit code $code)." }
-    return $version
 }
 
 if ($Mode -eq 'Validate') { return }
@@ -233,10 +236,44 @@ if ($Mode -ne 'App') {
         # like a refused password. Measured 2026-11-19: that server offers
         # publickey,password and allows three attempts.
         if ($loginKey) { $options += @('-o','IdentitiesOnly=yes','-i',$loginKey.Key); $identity = @('-o','IdentitiesOnly=yes','-i',$loginKey.Key); $publicKey = $loginKey.Public }
+        # An invitation (Install.ps1 kept its key as invite-<id>.key): one
+        # short connection with that key, whose only power on the server is
+        # to add this PC's own key (delfin-people --enroll). Afterwards the
+        # invitation key is deleted and every login uses the PC's own key --
+        # no password, and no fingerprint question (the server's keys came
+        # with the invitation).
+        $inviteKeyFile = Join-Path $store ('invite-' + $p.Id + '.key')
+        if ($loginKey -and (Test-Path -LiteralPath $inviteKeyFile)) {
+            Write-Host 'Registering this PC with the server (once, no password needed)...'
+            $enrollInfo = New-Object Diagnostics.ProcessStartInfo
+            $enrollInfo.FileName = $ssh
+            $enrollArgs = @('-T') + @(Get-SSHOptions 'Copy') + @('-o','BatchMode=yes','-o','IdentitiesOnly=yes','-i',$inviteKeyFile,[string]$p.Target)
+            $enrollInfo.Arguments = ($enrollArgs | ForEach-Object { Quote-NativeArgument $_ }) -join ' '
+            $enrollInfo.UseShellExecute = $false
+            $enrollInfo.RedirectStandardInput = $true
+            $enrollInfo.RedirectStandardOutput = $true
+            $enrollInfo.RedirectStandardError = $true
+            $enrollProcess = [Diagnostics.Process]::Start($enrollInfo)
+            $enrollProcess.StandardInput.WriteLine($loginKey.Public)
+            $enrollProcess.StandardInput.Close()
+            $enrollOut = $enrollProcess.StandardOutput.ReadToEndAsync()
+            $enrollErr = $enrollProcess.StandardError.ReadToEndAsync()
+            if (-not $enrollProcess.WaitForExit(60000)) { $enrollProcess.Kill() }
+            if ($enrollOut.Result -match 'DELFIN_ENROLLED') {
+                Remove-Item -LiteralPath $inviteKeyFile -Force
+                Write-Host 'This PC is registered. From now on it logs in by itself.' -ForegroundColor Green
+            } else {
+                $detail = ([string]$enrollErr.Result).Trim()
+                if ($detail) { Write-Host $detail }
+                Write-Host 'The invitation could not be used (expired, used already, or the server is not reachable).' -ForegroundColor Yellow
+                Write-Host 'Ask whoever runs the server for a new one. Trying the normal login instead.'
+            }
+            $enrollProcess.Dispose()
+        }
         if ($Mode -eq 'Terminal') {
             Write-Host 'Working terminal. Password and OTP prompts are handled exclusively by OpenSSH.'
             Write-Host 'To paste a password here: right-click in this window. Ctrl+V does not paste into this console; it sends a control character, and the server sees a wrong password.'
-            $version = Sync-ServerScripts ([string]$p.Target) $identity
+            $version = Get-ScriptVersion
             $terminalCommand = Get-RemoteCommand $p 'terminal' '' $publicKey $version
             $terminalInfo = New-Object Diagnostics.ProcessStartInfo
             $terminalInfo.FileName = $ssh
@@ -246,25 +283,34 @@ if ($Mode -ne 'App') {
             $sshProcess = [Diagnostics.Process]::Start($terminalInfo)
             [string]$sshProcess.Id | Set-Content -LiteralPath $readyFile -Encoding ASCII
             $sshProcess.WaitForExit()
+            if ($sshProcess.ExitCode -eq 10 -and -not $disconnectRequested) {
+                $sshProcess.Dispose()
+                $sshProcess = $null
+                Copy-ServerScripts ([string]$p.Target) $identity $version
+                $sshProcess = [Diagnostics.Process]::Start($terminalInfo)
+                [string]$sshProcess.Id | Set-Content -LiteralPath $readyFile -Encoding ASCII
+                $sshProcess.WaitForExit()
+            }
             Write-Host "SSH ended (exit code $($sshProcess.ExitCode))."
         } else {
             # The two things that make a first login fail for someone who
             # did nothing wrong: pasting with Ctrl+V, which this console
             # turns into a control character so that a CORRECT password is
             # refused, and being asked two or three times -- one prompt per
-            # SSH connection (check, copy, dashboard) -- which reads as the
-            # password having been rejected. Both are said HERE, before the
+            # SSH connection (dashboard; on a new launcher version also copy
+            # and dashboard again) -- which reads as the password having been
+            # rejected. Both are said HERE, before the
             # first prompt and short enough to be read, instead of in a
             # paragraph among six other lines.
             Write-Host ''
-            Write-Host '  You may be asked for the password up to three times. That is normal:' -ForegroundColor Cyan
+            Write-Host '  The first time, you may be asked for the password up to three times. That is normal:' -ForegroundColor Cyan
             Write-Host '  one question per connection, not a refusal.' -ForegroundColor Cyan
             Write-Host '  TYPE the password. Ctrl+V does not work here - paste with a RIGHT-CLICK.' -ForegroundColor Cyan
             if ($loginKey) { Write-Host '  After this once, this PC is known and no password is asked again.' -ForegroundColor Cyan }
             Write-Host ''
             Write-Host 'Password and OTP are handled by OpenSSH itself; this app never sees them.'
             Write-Host 'On first login, compare the host fingerprint with the official server fingerprint.'
-            $version = Sync-ServerScripts ([string]$p.Target) $identity
+            $version = Get-ScriptVersion
             $remote = Get-RemoteCommand $p 'dashboard' $tunnelPath $publicKey $version
             Write-Host 'The browser signs in automatically.'
             if ($p.KeepSession) {
@@ -275,6 +321,9 @@ if ($Mode -ne 'App') {
             }
             Write-Host 'Ctrl+C in the dashboard explicitly stops it, even with Keep session ON.'
             # Password/OTP use the inherited console; stdout is pumped without logging.
+            # At most two starts: the second follows a copy of the scripts.
+            $scriptsCopied = $false
+            while ($true) {
             $info = New-Object Diagnostics.ProcessStartInfo
             $info.FileName = $ssh
             $allArgs = @($options) + @([string]$p.Target, $remote)
@@ -286,6 +335,7 @@ if ($Mode -ne 'App') {
             [string]$sshProcess.Id | Set-Content -LiteralPath $readyFile -Encoding ASCII
             $browserReadyFile = Join-Path $store ('connection-' + $connection + '.browser-ready')
             $opened = $false
+            $scriptsMissing = $false
             while ($true) {
                 Update-WorkerControls
                 $readTask = $sshProcess.StandardOutput.ReadLineAsync()
@@ -294,6 +344,7 @@ if ($Mode -ne 'App') {
                 }
                 $line = $readTask.Result
                 if ($null -eq $line) { break }
+                if ($line -eq 'DELFIN_SCRIPTS_MISSING') { $scriptsMissing = $true; continue }
                 if ($line -match '^DELFIN_BROWSER:([A-Za-z0-9+/=]+)$') {
                     $url = Get-BrowserUrl $Matches[1] 0
                     $remoteUri = [Uri]$url
@@ -327,6 +378,18 @@ if ($Mode -ne 'App') {
                     break
                 }
                 [Console]::WriteLine($line)
+            }
+            if ($scriptsMissing -and -not $opened -and -not $scriptsCopied -and -not $disconnectRequested) {
+                $sshProcess.WaitForExit()
+                if ($sshProcess.ExitCode -eq 10) {
+                    $sshProcess.Dispose()
+                    $sshProcess = $null
+                    Copy-ServerScripts ([string]$p.Target) $identity $version
+                    $scriptsCopied = $true
+                    continue
+                }
+            }
+            break
             }
             if ($opened) {
                 # Read one decoded character so a short final marker cannot wait for a full buffer.
