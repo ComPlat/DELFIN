@@ -1,0 +1,172 @@
+--- a/delfin/agent/api_client.py
++++ b/delfin/agent/api_client.py
+@@ -22127,9 +22127,25 @@
+             key = hashlib.sha256(json.dumps(
+                 [base, args], sort_keys=True, default=str).encode(
+                     "utf-8", "replace")).hexdigest()
++            # The MODEL's verdict cache gets its own key, with the workspace in
++            # it. ``classifier_state`` reaches a sub-agent through
++            # ``dataclasses.replace`` as the SAME dict object, so a key naming
++            # only [tool, args] let a verdict judged in one workspace answer an
++            # identical action in ANOTHER one with no model call (measured
++            # 2026-11-25: extra_model_calls=0, allowed_without_a_call). The
++            # user's own yes/no is deliberately NOT scoped this way: a human's
++            # yes is a statement about the session, and it stays on ``key``.
++            vkey = hashlib.sha256(json.dumps(
++                [base, args, str(getattr(perms, "workspace", "") or "")],
++                sort_keys=True, default=str).encode(
++                    "utf-8", "replace")).hexdigest()
+         except Exception:
+             key = hashlib.sha256(repr((base, args)).encode(
+                 "utf-8", "replace")).hexdigest()
++            vkey = hashlib.sha256(repr((base, args,
++                                        str(getattr(perms, "workspace", "") or "")
++                                        )).encode(
++                "utf-8", "replace")).hexdigest()
+         # The user said yes to exactly this action earlier in the session:
+         # not asked again. The per-turn ``allowed`` set forgot it at the
+         # next message, so one game server was asked about three times
+@@ -22153,7 +22169,10 @@
+             if by_user:
+                 perms.record_denied_action("classifier", key)
+             else:
+-                state["refused"].add(key)
++                # The MODEL's refusal is cached on the workspace-scoped key, the
++                # same one the cache reads use; the user's no above stays on
++                # ``key`` (a human's no is about the session).
++                state["refused"].add(vkey)
+             state["refusals"] = int(state.get("refusals") or 0) + 1
+             who = ("the user refused it when asked" if by_user
+                    else "the action classifier refused it")
+@@ -22174,13 +22193,13 @@
+                 "session, asked after the action classifier's second "
+                 "opinion. It stays refused and is not asked again -- ask the "
+                 "user what to do instead.")
+-        if key in state["refused"]:
++        if vkey in state["refused"]:
+             _record_security_event("denied_again", base, shown)
+             return (
+                 f"'{base}' ({shown}) was already refused by the action "
+                 "classifier since the user's last message. It is not judged "
+                 "again until the user has written -- ask the user.")
+-        if key in state["allowed"]:
++        if vkey in state["allowed"]:
+             return None
+ 
+         task, earlier = _classifier_context_users(users)
+@@ -22309,6 +22328,27 @@
+         # sees every step in the transcript. A verdict the model gives
+         # with a reason is unaffected.
+         on_error = ("ask" if can_ask else "refuse") if leaves else "allow"
++        _judged = False   # did a classifier (model or screen) actually decide?
++        # A no-verdict already established for THIS action, in THIS workspace,
++        # in this turn: the endpoint has proved it cannot answer inside the
++        # wait, and an identical action must not pay that wait again (N
++        # identical watched actions held the gate for N x the wait, which is
++        # the shape of the queue stalls). Only the UNATTENDED path is
++        # memoised: a held action needs no dialog to reproduce, while an
++        # attended one is supposed to put the question in front of the human
++        # every time. Only a NON-ALLOW outcome is ever stored, so a timeout
++        # can never become an allow through this memo -- and the entry dies
++        # with the turn (``state.clear()`` when the user writes) and is keyed
++        # with the workspace, so the next turn and the next workspace judge
++        # normally.
++        _memo = state.setdefault("no_verdict", {})
++        if not can_ask and vkey in _memo:
++            _record_security_event("classifier_no_verdict_reused", base, shown)
++            return _refused(
++                "the action classifier gave no verdict for this action "
++                "earlier in this turn and nobody can be asked here, so it "
++                "stays refused; the wait is not paid a second time.")
++
+         try:
+             # The broad scope is the user asking for a second opinion on
+             # everything: there a shell command keeps the model.
+@@ -22323,6 +22363,7 @@
+                            or _ac.Verdict(
+                                "allow", "screened without the model."))
+                 decision, reason = verdict.decision, str(verdict.reason or "")
++                _judged = True   # a deterministic screen DID decide
+                 # A screened verdict is not a model's opinion: it is a
+                 # deterministic allow (or a user rule), so no second-family
+                 # confirmation is owed for it.
+@@ -22331,6 +22372,9 @@
+                     action, context, model=_ask, runner=_bounded,
+                     rules=cfg["rules"], default_on_error=on_error)
+                 decision, reason = verdict.decision, str(verdict.reason or "")
++                # ``complete`` is False when the classifier did not judge and
++                # ``decision`` is only the caller's fallback (see NoVerdict).
++                _judged = bool(getattr(verdict, "complete", True))
+                 # "allow needs two families": the first model's own refuse/ask
+                 # stands (decision is not "allow"), but an ALLOW is confirmed
+                 # by a model of another family before it is granted. Gate the
+@@ -22342,13 +22386,27 @@
+                 # allowed on one vote when a second family was available; a
+                 # lone allow stands only when _confirm was empty from the
+                 # start (one family served, today's behaviour).
+-                if decision == "allow" and _confirm:
++                #
++                # A FALLBACK is not a vote. When no family at all answered,
++                # ``verdict`` is a NoVerdict and ``decision`` is the documented
++                # no-verdict behaviour (``on_error``: workspace work keeps the
++                # rule result, docs/SECURITY_MODEL.md). Asking a second family
++                # to confirm a fallback turned that documented outcome into a
++                # HOLD after three waits -- an unattended session's workspace
++                # write or pytest run waiting for a person who is not there,
++                # the opposite of the contract. ``complete`` is a property of
++                # the verdict the classifier returned, NOT a reading of its
++                # reason text: reason is model output, so a model could mark
++                # its own allow as "no verdict" and drop the second family
++                # (measured: base asked 3 families and held, the reason-text
++                # test allowed on ONE model call).
++                if decision == "allow" and _confirm and verdict.complete:
+                     confirmed = False
+                     for cm in _confirms:
+                         vc = _ac.judge(
+                             action, context, model=cm, runner=_bounded,
+                             rules=cfg["rules"], default_on_error=on_error)
+-                        if str(vc.reason or "").startswith(_ac.ERROR_PREFIX):
++                        if not vc.complete:
+                             continue  # this confirm gave no verdict; try next
+                         decision, reason = (vc.decision,
+                                             str(vc.reason or ""))
+@@ -22365,6 +22423,7 @@
+         except Exception as exc:
+             failed.append(type(exc).__name__)
+             decision, reason = on_error, f"classifier error: {exc}"
++            _judged = False
+         watcher_failed = bool(failed) or reason.startswith(_ac.ERROR_PREFIX)
+         if called:
+             # Only a real model call is evidence about the watcher; a call
+@@ -22378,6 +22437,13 @@
+         if not reason.endswith((".", "!", "?")):
+             reason += "."
+ 
++        # Remember a no-verdict outcome for the identical action in this turn
++        # (see the check above). Stored ONLY when the classifier did not judge
++        # -- a real ask/refuse from a model is already cached on its own -- and
++        # NEVER an allow, so the memo cannot weaken the gate.
++        if not _judged and decision != "allow":
++            _memo[vkey] = "refuse" if not can_ask else "ask"
++
+         if watcher_failed and decision == "refuse":
+             # Nobody to ask and an action that leaves the workspace: held,
+             # not judged. Not cached, not counted towards the lockout.
+@@ -22398,7 +22464,7 @@
+                 "still needed.")
+ 
+         if decision == "allow":
+-            state["allowed"].add(key)
++            state["allowed"].add(vkey)
+             return None
+         if decision == "refuse":
+             _record_security_event(
+@@ -22436,7 +22502,7 @@
+         except Exception as exc:
+             return f"confirm_callback raised: {exc}"
+         if ok:
+-            state["allowed"].add(key)
++            state["allowed"].add(vkey)
+             _user_yes.add(key)
+             return None
+         if self._confirm_timed_out(perms):

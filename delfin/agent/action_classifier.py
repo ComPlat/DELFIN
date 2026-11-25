@@ -51,10 +51,47 @@ AGENT_SESSION_ENV = "DELFIN_AGENT_SESSION"
 DEFAULT_MODEL = "kit.deepseek-v4-flash"
 
 Verdict = namedtuple("Verdict", ("decision", "reason"))
+#: ``complete`` separates WHAT the classifier said from WHETHER it said
+#: anything. True on a Verdict: the model answered, a rule decided, or a plain
+#: read was screened -- a judgement. False on a :class:`NoVerdict`: the
+#: classifier did not judge at all and ``decision`` is only the caller's
+#: documented fallback ("ask"/"refuse"/"allow").
+#:
+#: It is an attribute on the CLASS, not a third tuple field, on purpose. A
+#: ``Verdict`` is a 2-tuple that callers unpack (``decision, reason = v``) and
+#: compare to a pair (``v == ("allow", "why")``); a third field breaks both,
+#: silently, wherever a caller does it. Adding the flag as a class attribute
+#: leaves the tuple contract exactly as it was and still gives the gate a
+#: structural way to tell "the model allowed this" from "no model answered, so
+#: the fallback said allow".
+Verdict.complete = True
 
 # Every verdict that is the classifier FAILING, not judging, starts with this:
 # the wiring records such a verdict as an error, not as an opinion.
 ERROR_PREFIX = "classifier error:"
+
+
+class NoVerdict(Verdict):
+    """A verdict the classifier did NOT judge: ``decision`` is the caller's
+    fallback, copied from ``default_on_error`` because no model produced one.
+
+    The distinction is what keeps a timeout from being weaker than a judgement.
+    The gate may let a workspace action keep its rule result when nobody could
+    answer (that is the documented fallback), but it must never treat that
+    fallback as a vote: a fallback is not confirmed by a second family, and a
+    fallback allow is never remembered as if the model had allowed the action.
+
+    Not derived from the REASON text. ``reason`` is model output
+    (``_parse_answer``) for every complete verdict, so "the reason starts with
+    ERROR_PREFIX" is something a model can make true about itself by writing
+    ``REASON: classifier error: ...`` beside ``DECISION: allow`` -- which turns
+    a single model vote into an allow and drops the second family. Measured on
+    the gate 2026-11-25: base asked three families and held, the
+    reason-prefix test allowed on ONE model call (scratch/PR.md, C3).
+    """
+
+    __slots__ = ()
+    complete = False
 
 
 # ---------------------------------------------------------------------------
@@ -858,9 +895,11 @@ def judge(action: dict, context: dict, *, model: str = DEFAULT_MODEL,
     try:
         answer = runner(prompt, model)
     except Exception as exc:
-        return Verdict(default_on_error,
-                       f"{ERROR_PREFIX} the model gave no answer "
-                       f"({type(exc).__name__}: {str(exc)[:120]})")
+        # NoVerdict, not Verdict: nobody judged this action, so ``decision``
+        # is the caller's fallback and the gate must not use it as a vote.
+        return NoVerdict(default_on_error,
+                         f"{ERROR_PREFIX} the model gave no answer "
+                         f"({type(exc).__name__}: {str(exc)[:120]})")
     parsed = _parse_answer(answer)
     if parsed is None:
         # No readable verdict is the model failing, like a timeout: the
@@ -875,6 +914,6 @@ def judge(action: dict, context: dict, *, model: str = DEFAULT_MODEL,
             "cut": "the model's reply stopped before any decision",
             "unreadable": "the model returned no clear verdict",
         }[no_verdict_shape(answer)]
-        return Verdict(default_on_error, f"{ERROR_PREFIX} {detail}")
+        return NoVerdict(default_on_error, f"{ERROR_PREFIX} {detail}")
     decision, reason = parsed
     return Verdict(decision, reason)
