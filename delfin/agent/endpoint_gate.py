@@ -101,6 +101,15 @@ _STATE_LOCK_TIMEOUT_S = 5.0
 #: transient-retry ladder takes over.
 _SLOT_WAIT_TIMEOUT_S = 900.0
 
+#: How often a WAITING request re-resolves the shared limit. A waiting
+#: request used to size its slot pool ONCE, at entry, so a limit that
+#: recovered while it waited was invisible to it: the peers' congestion
+#: halving lifted (or the user raised the setting) and the request still
+#: scanned only the slots it had seen at entry, sitting out the rest of its
+#: deadline beside a slot nobody held. Half a second is the poll's own
+#: granularity, so this costs no extra wakeup.
+_SLOT_REFRESH_S = 0.5
+
 
 
 def display_url(url: str) -> str:
@@ -256,6 +265,30 @@ class _FileLock:
 # ---------------------------------------------------------------------------
 # The gate itself
 # ---------------------------------------------------------------------------
+
+def _pool(interactive: Optional[bool], n_slots: int) -> list:
+    """The slot indices a request of this session kind may scan.
+
+    One definition, because the reservation is applied twice: when a wait
+    begins, and again whenever :data:`_SLOT_REFRESH_S` re-resolves the
+    limit to a different size. Two copies of this rule drifting apart is
+    exactly how a person ends up behind the headless runs the slot-0
+    reservation exists to keep off them.
+
+      - ``None``  the endpoint-wide cap gate: no reservation, every slot --
+                  it protects the endpoint's total, not a queueing position;
+      - ``True``  a person's session: slot-0 first, then any free slot, so
+                  two of the person's sessions use two slots;
+      - ``False`` headless: slots ``1 .. n_slots-1`` only, so the reserved
+                  slot stays free even under full headless load. A single
+                  slot has no second one to reserve.
+    """
+    if interactive is None:
+        return list(range(n_slots))
+    if interactive:
+        return [*range(1), *range(1, n_slots)]
+    return list(range(1, n_slots)) if n_slots > 1 else list(range(n_slots))
+
 
 class EndpointGate:
     """One endpoint's shared semaphore, resolved fresh per call.
@@ -544,20 +577,28 @@ class EndpointGate:
             # The endpoint-wide cap gate: no reservation, full capacity for
             # whoever loads it -- it protects the endpoint's total, not a
             # person's queueing position.
-            my_slots = range(n_slots)
+            my_slots = _pool(None, n_slots)
         elif interactive:
             # A person's session: slot-0 first, then any free slot, so two
             # sessions of the person use two slots rather than queueing on
             # the single reserved one.
-            my_slots = [*range(1), *range(1, n_slots)]
+            my_slots = _pool(True, n_slots)
         else:
             # Headless: slots 1..N-1 only. With more than one slot it never
             # takes slot-0 -- even under saturation, so headless can never
             # put the person behind them again. A single slot (N==1) has no
             # second slot to reserve; everyone shares it.
-            my_slots = range(1, n_slots) if n_slots > 1 else range(n_slots)
+            my_slots = _pool(False, n_slots)
         announced = False
+        next_refresh = 0.0
         while True:
+            now = time.monotonic()
+            if now >= next_refresh:
+                next_refresh = now + _SLOT_REFRESH_S
+                fresh = self.current_limit(dirpath)
+                if fresh > 0 and fresh != n_slots:
+                    n_slots = fresh
+                    my_slots = _pool(interactive, n_slots)
             in_use = 0
             for i in my_slots:
                 slot = dirpath / f"slot-{i}"
