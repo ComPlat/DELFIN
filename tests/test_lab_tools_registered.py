@@ -25,15 +25,23 @@ from conftest import child_env
 
 REPO = Path(__file__).resolve().parents[1]
 LAB_TOOLS = {"lab_devices", "lab_read", "lab_set", "lab_plan_check",
-             "lab_estop"}
+             "lab_estop", "lab_run"}
 
 
-def test_the_five_tools_are_in_the_catalogue():
+def test_the_six_tools_are_in_the_catalogue():
+    """Six: `lab_run` joined them when the self-driving-lab loop got an
+    agent-facing entrance (a plan is judged, then run by the coordinator).
+
+    The exact-set assertion is the one that matters here: a name added to
+    `TOOL_NAMES` without a catalogue schema, or the other way round, is a
+    tool the model is told about and cannot call.
+    """
     from delfin.agent import api_client as A
     names = {t["function"]["name"] for t in A._DOC_TOOLS_OPENAI}
     assert LAB_TOOLS <= names
     from delfin.lab.tools import TOOL_NAMES
     assert TOOL_NAMES == LAB_TOOLS
+
 
 
 def test_a_tool_call_reaches_the_kernel(lab):

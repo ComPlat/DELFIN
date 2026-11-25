@@ -290,7 +290,11 @@ def test_a_foreign_workspace_receives_less_than_the_delfin_tree(stack):
         # the row with the broadest cue. Trading every other
         # specialist's cue for this one's row would buy the tokens by
         # spending the thing they pay for.
-        ("solo_agent", "solo", ["solo_agent"], 11736),
+        # 11736 -> 11757 (2026-11-24): the same, once more, for the
+        # `lab-specialist`. Measured 21 tokens and not payable for the
+        # same reason -- the cue is what makes the role get chosen. The
+        # row is one line of a table every specialist must have.
+        ("solo_agent", "solo", ["solo_agent"], 11757),
         ("dashboard_agent", "dashboard", ["dashboard_agent"], 10400),
     ],
 )

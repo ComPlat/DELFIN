@@ -5664,7 +5664,8 @@ def _add_agent_flags(p: argparse.ArgumentParser, *,
     # rather than failing, which is what the engine already does.
     p.add_argument("--mode", default=mode_default,
                    help="Agent mode: solo / dashboard / office / research / "
-                        "workflow (plan is a permission profile, not a mode)")
+                        "workflow / lab (plan is a permission profile, not a "
+                        "mode)")
     p.add_argument("--backend", default="", choices=["", "api", "cli"],
                    help="api (direct Anthropic) or cli (subprocess)")
     p.add_argument("--provider", default="",

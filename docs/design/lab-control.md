@@ -22,7 +22,7 @@ does not read the permission mode at all.
 | simulator driver with physics, faults and a device-side timer | SiLA 2 and OPC UA LADS drivers, discovery: phase 4 |
 | the coordinator–edge interface (signed envelopes, replay window, manifest pin) | an mTLS transport and node enrolment: phase 3 |
 | modules, a sequential/graph workflow, sample hand-over, resume, run record | parallel scheduler across many modules: phase 5 |
-| five agent tools; `delfin-agent lab ...`; systemd units for the Pi | Chemotion upload (export file only now); operator view in the dashboard: phase 5 |
+| six agent tools (`lab_run` judges a whole workflow, then runs it through the ONE coordinator); `delfin-agent lab ...`, including `lab run`; systemd units for the Pi | Chemotion upload (export file only now); operator view in the dashboard: phase 5 |
 
 The reference case is a modular Materials Acceleration Platform such as KIT's
 ChemASAP: storage, synthesis, purification and analysis modules for automated,

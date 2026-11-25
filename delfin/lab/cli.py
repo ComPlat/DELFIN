@@ -94,11 +94,18 @@ def build_parser() -> argparse.ArgumentParser:
                    help="switch the stirrer and fume hood on first (what a "
                         "reactor interlock above 40 degC requires)")
     sub.add_parser("smoke", help="Simulator plan end to end; prints ok")
-    w = sub.add_parser("run", help="Run a workflow (multi-module campaign)")
+    w = sub.add_parser(
+        "run", help="Judge a workflow document, and run it (--dry-run judges "
+                    "only)")
     w.add_argument("workflow", help="workflow document (.yaml/.json)")
-    w.add_argument("--run-id", default=None,
-                   help="run id (default: the workflow's id); resuming the "
-                        "same id continues it instead of starting over")
+    w.add_argument("--dry-run", action="store_true",
+                   help="judge it and write nothing (the default for a plan "
+                        "nobody has reviewed is to read it first)")
+    w.add_argument("--run-id", default="",
+                   help="names the run record (default: the document's id)")
+    w.add_argument("--resume", action="store_true",
+                   help="continue a run that stopped for an approval, from "
+                        "the step it stopped at")
     w.add_argument("--parallel", type=int, default=1, metavar="N",
                    help="run up to N steps at once (default 1: document "
                         "order, one at a time); steps that share a device "
@@ -205,11 +212,18 @@ def main(argv=None) -> int:
         from . import smoke
         return smoke.main([])
     if args.cmd == "run":
-        return _run_workflow(args)
+        return _run_command(args)
     return 2
 
 
+
 def _load_workflow(path: str) -> dict:
+    """The document the CLI takes: JSON or YAML, with the ids a resume needs.
+
+    The unique-id check is here rather than in :func:`delfin.lab.plan.validate`
+    because a duplicate id makes a RESUME ambiguous, and the resume reads the
+    checkpoint this command writes -- the complaint belongs at the door.
+    """
     import yaml
     text = open(path, encoding="utf-8").read()
     wf = json.loads(text) if path.endswith(".json") else yaml.safe_load(text)
@@ -225,65 +239,76 @@ def _load_workflow(path: str) -> dict:
     return wf
 
 
-def _run_workflow(args) -> int:
-    """``delfin-agent lab run WF [--parallel N]``: the person's entry point to
-    a multi-module campaign.
+def _run_command(args) -> int:
+    """``delfin-agent lab run WF``: judge a workflow, then run it.
 
-    The coordinator takes the module locks and drives every device through the
-    edge's kernel, exactly as an agent's lab_set does; nothing here bypasses a
-    limit. A hazardous write stops the run at ``waiting_approval``: a person
-    runs ``lab approve <id>`` and the same command resumes it. Approving a
-    whole plan in one step is phase 5 (docs/design/lab-control.md §4) and is
-    deliberately not implemented here.
+    One verb, two halves. The document is judged first -- structurally by
+    :mod:`delfin.lab.plan`, and every write by the kernel's own dry run -- and
+    a document that does not pass is not run: an advisory check on the path to
+    a hotplate is a comment. ``--dry-run`` stops after the judgement.
+
+    The runner is the ONE coordinator. ``--parallel N`` overlaps steps that
+    share no device, with ``after`` always honoured; the default is document
+    order, one at a time. A hazardous write stops the run at
+    ``waiting_approval``: a person runs ``lab approve <id>`` and then the same
+    command with ``--resume``.
     """
-    from . import edge, estop, manifest as _manifest, store, workflow
+    from . import plan as _plan
+    from . import store
     from .safety import Kernel
     try:
-        wf = _load_workflow(args.workflow)
+        doc = _load_workflow(args.workflow)
     except (OSError, ValueError) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 1
-    man_path = store.manifest_path()
-    try:
-        man = _manifest.load(man_path)
-    except _manifest.ManifestError as exc:
-        for prob in exc.problems:
-            print(f"problem: {prob}", file=sys.stderr)
+    k = Kernel.load()
+    if k.manifest is None:
+        print(k.load_error, file=sys.stderr)
         return 1
-    stop = estop.status()
-    if stop.get("active"):
-        print(f"refused: e-stop is active ({stop.get('reason')}); a person "
-              "clears it with `delfin-agent lab estop --clear`", file=sys.stderr)
-        return 2
-    run_id = args.run_id or str(wf.get("id") or "run")
-    person = store.person()
-    keys, clients = {}, {}
-    for node in man.nodes:
-        keys[node] = edge.load_key(node)
-        clients[node] = edge.EdgeClient(
-            node, keys[node], transport=edge.EdgeNode(node, key=keys[node]).handle,
-            manifest_checksum=man.checksum, coordinator="lab-run",
-            clock=Kernel.load(node=node).clock)
-    coord = workflow.Coordinator(man, clients, person=person, name="lab-run")
-    cp = coord.run(wf, run_id, parallel=max(1, int(args.parallel)))
-    _print({"run_id": cp.get("run_id"), "status": cp.get("status"),
-            "done": cp.get("done"), "pending": cp.get("pending"),
-            "waiting": cp.get("waiting") or {},
-            "deviations": cp.get("deviations"),
-            "measurements": cp.get("measurements"),
-            "parallel": max(1, int(args.parallel))})
+    proposal = _plan.validate(k.manifest, doc, k)
+    out = proposal.as_dict()
+    out["ran"] = False
+    if not proposal.ok:
+        _print(out)
+        print(f"refused: {len(proposal.problems)} problem(s); nothing was run",
+              file=sys.stderr)
+        return 1
+    if args.dry_run and not args.resume:
+        _print(out)
+        print("judged ok; nothing was written (drop --dry-run to run it)")
+        return 0
+    run_id = (args.run_id or str(doc.get("id") or "")).strip() or "run"
+    try:
+        cp = _plan.run(k.manifest, proposal, run_id, person=store.person(),
+                       parallel=max(1, int(args.parallel)))
+    except ValueError as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 1
+    out.update({"ran": True, "run_id": run_id, "status": cp.get("status"),
+                "done": cp.get("done"), "pending": cp.get("pending"),
+                "waiting": cp.get("waiting") or {},
+                "deviations": cp.get("deviations"),
+                "measurements": cp.get("measurements"),
+                "parallel": max(1, int(args.parallel))})
+    _print(out)
     if cp.get("status") == "waiting_approval":
         # A parallel run can park MORE than one step: `pending` names the one
         # this pass reported last, `waiting` every step still owed a grant.
         # Printing only `pending` would send a person to approve one of two
         # and leave the other waiting on an id nobody was told about.
         waiting = cp.get("waiting") or {}
-        names = " ".join(sorted({str(a) for a in waiting.values() if a})) \
-            or cp["pending"]["approval"]
-        print(f"waiting for a person: approve {names} with `delfin-agent lab "
-              "approve <id>`, then rerun the same command", file=sys.stderr)
-        return 4
+        reqs = " ".join(sorted({str(a) for a in waiting.values() if a})) \
+            or str((cp.get("pending") or {}).get("approval") or "")
+        print(f"stopped: step {(cp.get('pending') or {}).get('step')!r} needs a "
+              "person. It has NOT run.", file=sys.stderr)
+        for req in reqs.split():
+            print(f"  delfin-agent lab approve {req}", file=sys.stderr)
+        print(f"  then: delfin-agent lab run {args.workflow} --run-id {run_id}"
+              " --resume", file=sys.stderr)
+        return 0
     return 0 if cp.get("status") == "completed" else 1
+
+
 def _optimise(args) -> int:
     """``delfin-agent lab optimise``: the closed loop, recorded under loops/.
 
@@ -353,6 +378,7 @@ def _next_record_path(name: str):
         n += 1
         path = d / f"{name}-{n}.json"
     return path
+
 
 
 def _detach(args) -> int:
