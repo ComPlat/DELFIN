@@ -6,7 +6,8 @@ your API key, start. Plain text, because a .md file has no reliable handler
 on Windows. This page is the full reference behind it.
 
 Copy this entire folder to your Windows PC. DELFIN and calculations stay on your
-Linux server. Windows does not need Python or a local DELFIN installation.
+Linux server, or run in WSL on this PC (see Local mode below). Windows does not
+need Python or a Windows DELFIN installation.
 The app includes the DELFIN logo, a desktop shortcut, saved SSH connections,
 automatic environment discovery, automatic port selection, and uninstall support.
 All app text, terminal messages and instructions are in English.
@@ -229,6 +230,79 @@ installation procedure in the existing DELFIN environment when necessary.
 Saved connections contain no passwords or tokens. They are stored in
 `%LOCALAPPDATA%\DELFIN Launcher\profiles.json`. **New** clears the form for a new
 connection. **Save** saves changes; starting also saves automatically.
+
+## Local mode: DELFIN on this PC (WSL)
+
+Without a Linux server, DELFIN runs in WSL (Windows Subsystem for Linux) on
+this PC. DELFIN itself does not run on Windows; WSL gives it the Linux it
+needs, including the agent's shell isolation (Landlock in the WSL2 kernel).
+
+### Automatic setup (Install.cmd)
+
+At the end, `Install.cmd` asks **Set up DELFIN on this PC too? [Y/N]**. With
+**Y**, `Setup-Wsl.ps1` does the rest; every step can run again, what is there
+is kept:
+
+1. **WSL itself**, if it is missing: Windows asks once for administrator
+   approval (`wsl --install --no-distribution`), then Windows must restart.
+   After the restart and the next sign-in, setup continues by itself, once
+   (a `RunOnce` entry under `HKCU`, which Windows deletes before running it;
+   nothing stays in the autostart).
+2. **A distribution of its own, `DELFIN`** (Ubuntu 24.04,
+   `wsl --install Ubuntu-24.04 --name DELFIN --no-launch`). Other
+   distributions on the PC are not touched.
+3. **As root** (`wsl -u root`, no password): tmux, git, curl and a compiler
+   from apt, and the Linux user `delfin` (without a password; it is the
+   distribution's default user).
+4. **As `delfin`**: DELFIN from GitHub, installed by its `install.sh
+   --profile standard --no-orca --no-openmpi`: DELFIN with the agent, xtb,
+   g-xTB, CREST, MOPAC, DFTB+ and sTDA. No ORCA (it cannot be downloaded for
+   you, licence) and so no OpenMPI, which only ORCA uses. To add ORCA later:
+   `wsl -d DELFIN`, then `bash ~/DELFIN/install.sh --orca <ORCA tarball>`; that
+   also builds the OpenMPI that ORCA build names.
+5. The saved connection **This PC (WSL DELFIN)** in the app.
+
+Then open DELFIN, choose **This PC (WSL DELFIN)** and click **Start**.
+
+What stops the setup, with a message saying so: Windows older than Windows 10
+version 2004 (build 19041); virtualization switched off in the firmware
+(BIOS/UEFI); administrator approval declined or not available (on a work PC,
+IT can install WSL); no internet connection. The server mode (SSH) works
+in all of these cases.
+
+Uninstalling removes the app and a pending `RunOnce` entry. Where the
+distribution `DELFIN` exists, it asks whether to delete it too, with
+everything in it; Enter keeps it (`Uninstall.ps1 -RemoveWslDistribution`
+deletes it without asking).
+
+### By hand
+
+1. WSL with a Linux distribution (`wsl --install`, as administrator, then
+   restart Windows). Windows 10 (2004 or later) or Windows 11, with
+   virtualization enabled.
+2. tmux (`sudo apt install tmux`) and DELFIN's `install.sh` in that
+   distribution. The launcher finds that install by itself
+   (`~/.delfin_env.sh`).
+3. In the app, choose **This PC (WSL)** next to the target field. The
+   distribution field is filled with the first WSL distribution; change it
+   if DELFIN lives in another one.
+
+### How it connects
+
+Start works as with a server, without a login: `wsl.exe` runs the same check
+and start in the distribution's login shell, the two launcher scripts are
+copied into it over stdin (once per launcher version), and the dashboard runs
+in tmux there. There is no SSH tunnel: WSL forwards the dashboard's
+`127.0.0.1` port to this PC's `127.0.0.1` (never to the network). Before the
+browser gets the access token, the app checks that the port is served by
+WSL's own relay (`wslrelay.exe` in WSL's install folder) or by no Windows
+program at all (mirrored networking), and refuses any other program there.
+Closing the dashboard window or **Disconnect** ends `wsl.exe`; with Keep session
+off, the dashboard stops, as over SSH.
+
+If `localhostForwarding=false` is set in `%USERPROFILE%\.wslconfig`, the
+browser cannot reach the dashboard; remove that line or use mirrored
+networking. **Remember login** and people mode do not apply to local mode.
 
 ## Optional advanced settings
 

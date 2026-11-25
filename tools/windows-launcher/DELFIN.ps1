@@ -7,7 +7,9 @@ $store = Join-Path $env:LOCALAPPDATA 'DELFIN Launcher'
 $profilesFile = Join-Path $store 'profiles.json'
 
 function Normalize-Profile($value) {
-    $defaults = [ordered]@{ Id=[guid]::NewGuid().ToString(); Name=''; Target=''; Directory=''; Executable=''; Port=0; KeepSession=$false; OpenWorkingTerminal=$false; RememberLogin=$true }
+    # Transport: 'SSH' (Target = SSH alias or user@host) or 'WSL' (Target =
+    # a WSL distribution on this PC). Connections saved before WSL are SSH.
+    $defaults = [ordered]@{ Id=[guid]::NewGuid().ToString(); Name=''; Transport='SSH'; Target=''; Directory=''; Executable=''; Port=0; KeepSession=$false; OpenWorkingTerminal=$false; RememberLogin=$true }
     foreach ($key in @($defaults.Keys)) {
         $property = $value.PSObject.Properties[$key]
         if ($null -ne $property -and $null -ne $property.Value) { $defaults[$key] = $property.Value }
@@ -21,9 +23,20 @@ function Read-Profiles {
         foreach ($value in $loaded) { if ($null -ne $value) { Normalize-Profile $value } }
     }
 }
+function Get-Transport($p) {
+    # 'SSH' for a connection saved before WSL existed (no Transport field).
+    $property = $p.PSObject.Properties['Transport']
+    if ($null -eq $property -or -not [string]$property.Value) { return 'SSH' }
+    return [string]$property.Value
+}
 function Check-Profile($p) {
     if ($p.Id -notmatch '^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$') { throw 'Invalid connection ID.' }
-    if ($p.Target -notmatch '^[a-zA-Z0-9][a-zA-Z0-9_.@-]{0,200}$') { throw 'Enter an SSH alias or user@hostname (no options).' }
+    $transport = Get-Transport $p
+    if ($transport -cne 'SSH' -and $transport -cne 'WSL') { throw 'Invalid connection type.' }
+    if ($transport -eq 'WSL') {
+        # A distribution name as wsl.exe -l lists it; it travels as one argument.
+        if ($p.Target -notmatch '^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$') { throw 'Choose a WSL distribution (for example Ubuntu).' }
+    } elseif ($p.Target -notmatch '^[a-zA-Z0-9][a-zA-Z0-9_.@-]{0,200}$') { throw 'Enter an SSH alias or user@hostname (no options).' }
     foreach ($field in @('Directory','Executable')) {
         $path = ([string]$p.$field).Trim()
         if ($path.Length -ge 2 -and (($path.StartsWith('"') -and $path.EndsWith('"')) -or ($path.StartsWith("'") -and $path.EndsWith("'")))) { $path = $path.Substring(1,$path.Length-2).Trim() }
@@ -97,7 +110,7 @@ function Get-ScriptCheckCommand($version) {
     if ($version.Folder -notmatch '^\.cache/delfin-launcher/[a-f0-9]{32}$' -or $version.Bootstrap -notmatch '^[a-f0-9]{64}$' -or $version.Launcher -notmatch '^[a-f0-9]{64}$') { throw 'Invalid launcher script version.' }
     return 'bash -c ' + (Shell-Quote $checkScript) + ' delfin ' + $version.Folder + ' ' + $version.Bootstrap + ' ' + $version.Launcher
 }
-function Get-RemoteCommand($p, [string]$role, [string]$tunnelPath = '', [string]$publicKey = '', $version) {
+function Get-RemoteCommand($p, [string]$role, [string]$tunnelPath = '', [string]$publicKey = '', $version, [string]$localId = '') {
     # ONE SSH connection: the check of the server's copy, then -- only when
     # it is exact -- the login shell on the copied bootstrap. A separate
     # check connection cost one more password and OTP on every start; on a
@@ -112,7 +125,73 @@ function Get-RemoteCommand($p, [string]$role, [string]$tunnelPath = '', [string]
     $check = Get-ScriptCheckCommand $version
     $bootstrap = '. ~/' + $version.Folder + '/remote_bootstrap.sh'
     $launcher = '~/' + $version.Folder + '/remote_launcher.py'
-    return $check + ' && ' + 'bash -ilc ' + (Shell-Quote $bootstrap) + ' delfin ' + [int]$p.Port + ' ' + (Shell-Quote $p.Directory) + ' ' + (Shell-Quote $p.Executable) + ' ' + (Shell-Quote $launcher) + ' ' + (Shell-Quote $role) + ' ' + (Shell-Quote $tunnelPath) + ' ' + $(if ($p.KeepSession) { '1' } else { '0' }) + ' ' + $(if ($p.OpenWorkingTerminal) { '1' } else { '0' }) + ' ' + (Shell-Quote (Get-PersonName)) + ' ' + (Shell-Quote $publicKey)
+    # $localId (WSL only) names the closing marker of a connection without
+    # a tunnel; bootstrap $11.
+    if ($localId -and $localId -notmatch '^delfin-win-local-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$') { throw 'Invalid local connection.' }
+    $local = if ($localId) { ' ' + (Shell-Quote $localId) } else { '' }
+    return $check + ' && ' + 'bash -ilc ' + (Shell-Quote $bootstrap) + ' delfin ' + [int]$p.Port + ' ' + (Shell-Quote $p.Directory) + ' ' + (Shell-Quote $p.Executable) + ' ' + (Shell-Quote $launcher) + ' ' + (Shell-Quote $role) + ' ' + (Shell-Quote $tunnelPath) + ' ' + $(if ($p.KeepSession) { '1' } else { '0' }) + ' ' + $(if ($p.OpenWorkingTerminal) { '1' } else { '0' }) + ' ' + (Shell-Quote (Get-PersonName)) + ' ' + (Shell-Quote $publicKey) + $local
+}
+function Get-WslProgram {
+    $wsl = Join-Path $env:SystemRoot 'System32\wsl.exe'
+    if (-not (Test-Path -LiteralPath $wsl)) { throw 'WSL is not installed on this PC. See README (Local mode).' }
+    return $wsl
+}
+function Get-WslArguments([string]$distribution, [string]$command) {
+    # The WSL counterpart of "ssh <target> <command>": wsl.exe hands the
+    # command to the distribution's login shell ($SHELL -c), just as sshd
+    # does, so the same check-and-bootstrap command runs unchanged. --cd ~
+    # starts in the Linux home instead of the Windows folder.
+    # wsl.exe reads its own raw command line, not Windows argv: a quoted
+    # "-d" is not an option (measured 2026-11-25, WSL 2.4.13: bash then ran
+    # "-d"), and everything after -- reaches the shell verbatim. So this is
+    # the whole argument string: checked plain options, then the command
+    # as is -- no Windows quoting around it.
+    if ($distribution -notmatch '^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$') { throw 'Choose a WSL distribution (for example Ubuntu).' }
+    if ($command -match "[`r`n`0]") { throw 'Invalid WSL command.' }
+    return '-d ' + $distribution + ' --cd ~ -- ' + $command
+}
+function Get-WslDistributions {
+    # wsl.exe -l -q writes UTF-16 unless WSL_UTF8=1; NULs are dropped as
+    # well, for a wsl.exe too old to know WSL_UTF8. Only plain names count.
+    $wsl = Join-Path $env:SystemRoot 'System32\wsl.exe'
+    if (-not (Test-Path -LiteralPath $wsl)) { return @() }
+    $info = New-Object Diagnostics.ProcessStartInfo
+    $info.FileName = $wsl
+    $info.Arguments = '-l -q'
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true
+    $info.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
+    $info.EnvironmentVariables['WSL_UTF8'] = '1'
+    $listing = [Diagnostics.Process]::Start($info)
+    $text = $listing.StandardOutput.ReadToEnd()
+    if (-not $listing.WaitForExit(15000)) { $listing.Kill(); return @() }
+    if ($listing.ExitCode -ne 0) { return @() }
+    return @(ConvertFrom-WslListing $text)
+}
+function ConvertFrom-WslListing([string]$text) {
+    foreach ($line in ($text.Replace([string][char]0,'').Replace([string][char]0xFEFF,'') -split "`r?`n")) {
+        $name = $line.Trim()
+        if ($name -match '^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$' -and $name -notmatch '^docker-desktop') { $name }
+    }
+}
+function Test-TrustedListener([string]$transport, $owners, [int]$connectionProcess) {
+    # Who may answer on the browser's 127.0.0.1 port before the token goes
+    # there. SSH: the connection's own ssh.exe (its tunnel). WSL: WSL's
+    # port relay (wslrelay.exe, in WSL's install folder, which takes
+    # administrator rights to write), or no Windows process at all (WSL's
+    # mirrored networking answers from the Linux side). Any other Windows
+    # program on that port is refused: it would receive the token.
+    $owners = @($owners | Where-Object { $null -ne $_ })
+    if ($transport -ne 'WSL') { return ($owners -contains $connectionProcess) }
+    foreach ($owner in $owners) {
+        $process = Get-Process -Id ([int]$owner) -ErrorAction SilentlyContinue
+        if ($null -eq $process -or $process.ProcessName -ne 'wslrelay') { return $false }
+        $path = [string]$process.Path
+        $folders = @((Join-Path $env:ProgramFiles 'WSL'), (Join-Path $env:SystemRoot 'System32'))
+        if (-not ($folders | Where-Object { [IO.Path]::GetDirectoryName($path) -eq $_ })) { return $false }
+    }
+    return $true
 }
 function Get-FreeLocalPort([int]$preferred) {
     $candidates = if ($preferred -eq 0) { @(0) } else { @($preferred..([Math]::Min(65535,$preferred+100))) + @(0) }
@@ -185,6 +264,31 @@ function Copy-ServerScripts([string]$target, [string[]]$identity, $version) {
     $code = Invoke-OpenSSH $scp (@('-q') + @(Get-SSHOptions 'Copy') + $identity + @('remote_bootstrap.sh','remote_launcher.py',($target + ':' + $version.Folder + '/')))
     if ($code -ne 0) { throw "Could not copy the launcher scripts to the server (exit code $code)." }
 }
+function Copy-WslScripts([string]$distribution, $version) {
+    # The WSL counterpart of Copy-ServerScripts: each file goes over stdin
+    # into the folder the check made (owner-only), one wsl.exe per file.
+    # The folder is the checked, hex-only name below HOME; it and the file
+    # name travel as arguments of sh, never inside the script.
+    if ($version.Folder -notmatch '^\.cache/delfin-launcher/[a-f0-9]{32}$') { throw 'Invalid launcher script version.' }
+    $wsl = Get-WslProgram
+    Write-Host 'Copying the DELFIN launcher scripts into WSL (once per launcher version).'
+    $copyScript = 'umask 077 && mkdir -p "$HOME/$1" && cat > "$HOME/$1/$2"'
+    foreach ($name in @('remote_bootstrap.sh','remote_launcher.py')) {
+        $info = New-Object Diagnostics.ProcessStartInfo
+        $info.FileName = $wsl
+        $info.Arguments = Get-WslArguments $distribution ('sh -c ' + (Shell-Quote $copyScript) + ' delfin ' + $version.Folder + ' ' + $name)
+        $info.UseShellExecute = $false
+        $info.RedirectStandardInput = $true
+        $copy = [Diagnostics.Process]::Start($info)
+        try {
+            $bytes = [IO.File]::ReadAllBytes((Join-Path $PSScriptRoot $name))
+            $copy.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
+            $copy.StandardInput.Close()
+            $copy.WaitForExit()
+            if ($copy.ExitCode -ne 0) { throw "Could not copy the launcher scripts into WSL (exit code $($copy.ExitCode))." }
+        } finally { $copy.Dispose() }
+    }
+}
 
 if ($Mode -eq 'Validate') { return }
 
@@ -210,21 +314,37 @@ if ($Mode -ne 'App') {
         if ($matchingProfiles.Count -ne 1) { throw 'Connection not found.' }
         $p = $matchingProfiles[0]
         Check-Profile $p
-        $ssh = Join-Path $env:SystemRoot 'System32\OpenSSH\ssh.exe'
-        if (-not (Test-Path $ssh)) { throw 'Windows OpenSSH Client is missing. See README.' }
-        $Host.UI.RawUI.WindowTitle = "SSH $Mode - $($p.Name)"
+        # WSL: DELFIN runs in a Linux distribution on this PC, reached with
+        # wsl.exe instead of ssh.exe. No login, no tunnel, no key.
+        $isWsl = (Get-Transport $p) -eq 'WSL'
+        if ($isWsl) {
+            if ($Mode -ne 'Dashboard') { throw 'A WSL connection starts the dashboard only.' }
+            $ssh = Get-WslProgram
+        } else {
+            $ssh = Join-Path $env:SystemRoot 'System32\OpenSSH\ssh.exe'
+            if (-not (Test-Path $ssh)) { throw 'Windows OpenSSH Client is missing. See README.' }
+        }
+        $Host.UI.RawUI.WindowTitle = "$(if ($isWsl) { 'WSL' } else { 'SSH' }) $Mode - $($p.Name)"
         if ($ConnectionId -and ($ConnectionId -notmatch '^[a-f0-9-]{36}$' -or ($Mode -eq 'Terminal' -and ($LocalPort -lt 1024 -or $RemotePort -lt 1024)))) { throw 'Invalid tunnel request.' }
         $connection = if ($ConnectionId) { $ConnectionId } else { [guid]::NewGuid().ToString() }
         $readyFile = Join-Path $store ('connection-' + $connection + '.json')
         $stopFile = Join-Path $store ('connection-' + $connection + '.stop')
         $tunnelPath = ''
+        $localId = ''
         if ($Mode -eq 'Dashboard') {
             $LocalPort = Get-FreeLocalPort ([int]$p.Port)
-            $tunnelPath = '/tmp/delfin-win-tunnel-' + [guid]::NewGuid().ToString() + '/dashboard.sock'
+            if ($isWsl) {
+                # WSL forwards the dashboard's 127.0.0.1 port to the same
+                # port on Windows' 127.0.0.1: the dashboard starts its search
+                # at a port that is free here.
+                $localId = 'delfin-win-local-' + [guid]::NewGuid().ToString()
+            } else {
+                $tunnelPath = '/tmp/delfin-win-tunnel-' + [guid]::NewGuid().ToString() + '/dashboard.sock'
+            }
         }
-        $options = @(Get-SSHOptions $Mode $LocalPort $RemotePort $tunnelPath)
+        $options = if ($isWsl) { @() } else { @(Get-SSHOptions $Mode $LocalPort $RemotePort $tunnelPath) }
         $loginKey = $null
-        if ($p.RememberLogin) { try { $loginKey = Get-LoginKey } catch { $loginKey = $null } }
+        if ($p.RememberLogin -and -not $isWsl) { try { $loginKey = Get-LoginKey } catch { $loginKey = $null } }
         $publicKey = ''
         $identity = @()
         # IdentitiesOnly: offer THIS key and no other. Without it, -i adds
@@ -302,16 +422,23 @@ if ($Mode -ne 'App') {
             # rejected. Both are said HERE, before the
             # first prompt and short enough to be read, instead of in a
             # paragraph among six other lines.
-            Write-Host ''
-            Write-Host '  The first time, you may be asked for the password up to three times. That is normal:' -ForegroundColor Cyan
-            Write-Host '  one question per connection, not a refusal.' -ForegroundColor Cyan
-            Write-Host '  TYPE the password. Ctrl+V does not work here - paste with a RIGHT-CLICK.' -ForegroundColor Cyan
-            if ($loginKey) { Write-Host '  After this once, this PC is known and no password is asked again.' -ForegroundColor Cyan }
-            Write-Host ''
-            Write-Host 'Password and OTP are handled by OpenSSH itself; this app never sees them.'
-            Write-Host 'On first login, compare the host fingerprint with the official server fingerprint.'
+            if ($isWsl) {
+                Write-Host "Starting DELFIN in the WSL distribution $($p.Target) on this PC. No login is needed."
+            } else {
+                Write-Host ''
+                Write-Host '  The first time, you may be asked for the password up to three times. That is normal:' -ForegroundColor Cyan
+                Write-Host '  one question per connection, not a refusal.' -ForegroundColor Cyan
+                Write-Host '  TYPE the password. Ctrl+V does not work here - paste with a RIGHT-CLICK.' -ForegroundColor Cyan
+                if ($loginKey) { Write-Host '  After this once, this PC is known and no password is asked again.' -ForegroundColor Cyan }
+                Write-Host ''
+                Write-Host 'Password and OTP are handled by OpenSSH itself; this app never sees them.'
+                Write-Host 'On first login, compare the host fingerprint with the official server fingerprint.'
+            }
             $version = Get-ScriptVersion
-            $remote = Get-RemoteCommand $p 'dashboard' $tunnelPath $publicKey $version
+            # WSL: the dashboard's port search starts at the port found free
+            # on Windows (this loaded copy of the profile only; nothing saved).
+            if ($isWsl) { $p.Port = $LocalPort }
+            $remote = Get-RemoteCommand $p 'dashboard' $tunnelPath $publicKey $version $localId
             Write-Host 'The browser signs in automatically.'
             if ($p.KeepSession) {
                 Write-Host 'Keep session ON: close this SSH window or detach with Ctrl+B, then D. Reconnect: start the app again.'
@@ -326,8 +453,12 @@ if ($Mode -ne 'App') {
             while ($true) {
             $info = New-Object Diagnostics.ProcessStartInfo
             $info.FileName = $ssh
-            $allArgs = @($options) + @([string]$p.Target, $remote)
-            $info.Arguments = ($allArgs | ForEach-Object { Quote-NativeArgument $_ }) -join ' '
+            if ($isWsl) {
+                $info.Arguments = Get-WslArguments ([string]$p.Target) $remote
+            } else {
+                $allArgs = @($options) + @([string]$p.Target, $remote)
+                $info.Arguments = ($allArgs | ForEach-Object { Quote-NativeArgument $_ }) -join ' '
+            }
             $info.UseShellExecute = $false
             $info.RedirectStandardOutput = $true
             $info.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
@@ -348,21 +479,29 @@ if ($Mode -ne 'App') {
                 if ($line -match '^DELFIN_BROWSER:([A-Za-z0-9+/=]+)$') {
                     $url = Get-BrowserUrl $Matches[1] 0
                     $remoteUri = [Uri]$url
-                    $actualLocal = $LocalPort
-                    $builder = New-Object UriBuilder($url)
-                    $builder.Port = $actualLocal
-                    $url = $builder.Uri.AbsoluteUri
+                    if ($isWsl) {
+                        # No tunnel: WSL serves the dashboard's own port on Windows.
+                        $actualLocal = $remoteUri.Port
+                        Write-Host "Dashboard port (WSL, 127.0.0.1): $actualLocal"
+                    } else {
+                        $actualLocal = $LocalPort
+                        $builder = New-Object UriBuilder($url)
+                        $builder.Port = $actualLocal
+                        $url = $builder.Uri.AbsoluteUri
+                        Write-Host "Dashboard server port: $($remoteUri.Port); local tunnel port: $actualLocal"
+                    }
                     $handoffFile = $readyFile
-                    Write-Host "Dashboard server port: $($remoteUri.Port); local tunnel port: $actualLocal"
-                    $browserJob = Start-Job -ArgumentList $url,$actualLocal,$handoffFile,$browserReadyFile -ScriptBlock {
-                        param($url,$local,$readyFile,$browserReadyFile)
+                    $transport = if ($isWsl) { 'WSL' } else { 'SSH' }
+                    $trustCheck = [scriptblock]::Create('function Test-TrustedListener {' + ${function:Test-TrustedListener}.ToString() + '}')
+                    $browserJob = Start-Job -InitializationScript $trustCheck -ArgumentList $url,$actualLocal,$handoffFile,$browserReadyFile,$transport -ScriptBlock {
+                        param($url,$local,$readyFile,$browserReadyFile,$transport)
                         $deadline = [DateTime]::UtcNow.AddMinutes(5)
                         while ([DateTime]::UtcNow -lt $deadline) {
                             try {
                                 if (Test-Path -LiteralPath $readyFile) {
                                     $owner = [int](Get-Content -LiteralPath $readyFile -Raw)
-                                    $connection = Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort $local -State Listen -ErrorAction Stop
-                                    if ($connection.OwningProcess -contains $owner) {
+                                    $connection = @(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort $local -State Listen -ErrorAction SilentlyContinue)
+                                    if (Test-TrustedListener $transport @($connection | ForEach-Object { $_.OwningProcess }) $owner) {
                                         $probe = Invoke-WebRequest -Uri "http://127.0.0.1:$local/login" -UseBasicParsing -TimeoutSec 2
                                         if ($probe.StatusCode -eq 200) { Start-Process $url; [IO.File]::WriteAllText($browserReadyFile,'ready'); return }
                                     }
@@ -384,7 +523,7 @@ if ($Mode -ne 'App') {
                 if ($sshProcess.ExitCode -eq 10) {
                     $sshProcess.Dispose()
                     $sshProcess = $null
-                    Copy-ServerScripts ([string]$p.Target) $identity $version
+                    if ($isWsl) { Copy-WslScripts ([string]$p.Target) $version } else { Copy-ServerScripts ([string]$p.Target) $identity $version }
                     $scriptsCopied = $true
                     continue
                 }
@@ -393,7 +532,7 @@ if ($Mode -ne 'App') {
             }
             if ($opened) {
                 # Read one decoded character so a short final marker cannot wait for a full buffer.
-                $closedMarker = 'DELFIN_CONNECTION_CLOSED:' + ([IO.Path]::GetFileName([IO.Path]::GetDirectoryName($tunnelPath)))
+                $closedMarker = 'DELFIN_CONNECTION_CLOSED:' + $(if ($isWsl) { $localId } else { [IO.Path]::GetFileName([IO.Path]::GetDirectoryName($tunnelPath)) })
                 $tail = ''
                 $oneChar = New-Object char[] 1
                 while ($true) {
@@ -539,7 +678,7 @@ try {
     $heading.Size = New-Object Drawing.Size(400,42)
     $form.Controls.Add($heading)
     $subtitle = New-Object Windows.Forms.Label
-    $subtitle.Text = 'SSH access, dashboard and working terminal'
+    $subtitle.Text = 'Dashboard and agent on your server (SSH) or on this PC (WSL)'
     $subtitle.Location = New-Object Drawing.Point(128,65)
     $subtitle.Size = New-Object Drawing.Size(420,25)
     $form.Controls.Add($subtitle)
@@ -560,13 +699,25 @@ try {
         $label.Size = New-Object Drawing.Size(165,25)
         $form.Controls.Add($label)
         $text = New-Object Windows.Forms.TextBox
-        $text.Location = New-Object Drawing.Point(180,$row)
-        $text.Size = New-Object Drawing.Size(385,25)
+        # Row 0 shares its line with the "where it runs" choice.
+        $text.Location = New-Object Drawing.Point($(if ($i -eq 0) { 315 } else { 180 }),$row)
+        $text.Size = New-Object Drawing.Size($(if ($i -eq 0) { 250 } else { 385 }),25)
+        if ($i -eq 0) { $targetLabel = $label }
         $fields[$keys[$i]] = $text
         $form.Controls.Add($text)
         if ($i -gt 0) { $advancedControls += @($label,$text) }
     }
     $fields.Port.Text = '0'
+    # Where DELFIN runs: on a Linux server over SSH, or on this PC in WSL.
+    $transportBox = New-Object Windows.Forms.ComboBox
+    $transportBox.Location = New-Object Drawing.Point(180,160)
+    $transportBox.Size = New-Object Drawing.Size(128,25)
+    $transportBox.DropDownStyle = 'DropDownList'
+    [void]$transportBox.Items.Add('Server (SSH)')
+    [void]$transportBox.Items.Add('This PC (WSL)')
+    $transportBox.SelectedIndex = 0
+    $form.Controls.Add($transportBox)
+    function Get-SelectedTransport { if ($transportBox.SelectedIndex -eq 1) { 'WSL' } else { 'SSH' } }
     try { $script:profiles = @(Read-Profiles) } catch { [void][Windows.Forms.MessageBox]::Show('Could not load connections: ' + $_.Exception.Message,'DELFIN'); return }
     $workingToggle = New-Object Windows.Forms.CheckBox
     $workingToggle.Text = 'Working shell (Ctrl+B, then N)'
@@ -597,6 +748,7 @@ try {
         if ($combo.SelectedIndex -ge 0) {
             $p = $script:profiles[$combo.SelectedIndex]
             $script:selectedId = $p.Id
+            $transportBox.SelectedIndex = $(if ((Get-Transport $p) -eq 'WSL') { 1 } else { 0 })
             foreach ($key in $keys) { $fields[$key].Text = [string]$p.$key }
             $workingToggle.Checked = [bool]$p.OpenWorkingTerminal
             $keepToggle.Checked = [bool]$p.KeepSession
@@ -612,7 +764,9 @@ try {
     function Save-Current {
         $id = $script:selectedId
         if (-not $id) { $id = [guid]::NewGuid().ToString() }
-        $p = [pscustomobject]@{ Id=$id; Name=$fields.Target.Text.Trim(); Target=$fields.Target.Text.Trim(); Directory=$fields.Directory.Text.Trim(); Executable=$fields.Executable.Text.Trim(); Port=[int]$fields.Port.Text; KeepSession=$keepToggle.Checked; OpenWorkingTerminal=$workingToggle.Checked; RememberLogin=$rememberToggle.Checked }
+        $transport = Get-SelectedTransport
+        $target = $fields.Target.Text.Trim()
+        $p = [pscustomobject]@{ Id=$id; Name=$(if ($transport -eq 'WSL') { 'This PC (WSL ' + $target + ')' } else { $target }); Transport=$transport; Target=$target; Directory=$fields.Directory.Text.Trim(); Executable=$fields.Executable.Text.Trim(); Port=[int]$fields.Port.Text; KeepSession=$keepToggle.Checked; OpenWorkingTerminal=$workingToggle.Checked; RememberLogin=$rememberToggle.Checked }
         Check-Profile $p
         $script:profiles = @($script:profiles | Where-Object { $_.Id -ne $id }) + @($p)
         [void][IO.Directory]::CreateDirectory($store)
@@ -630,7 +784,7 @@ try {
         $button.Location = New-Object Drawing.Point($spec[1],420)
         $button.Size = New-Object Drawing.Size($(if ($spec[1] -eq 280) { 285 } else { 105 }),35)
         if ($spec[0] -eq 'New') {
-            $button.add_Click({ $script:selectedId=$null; $combo.SelectedIndex=-1; foreach ($key in $keys) { $fields[$key].Text='' }; $fields.Port.Text='0'; $advanced.Checked=$false; $workingToggle.Checked=$false; $keepToggle.Checked=$false; $rememberToggle.Checked=$true })
+            $button.add_Click({ $script:selectedId=$null; $combo.SelectedIndex=-1; $transportBox.SelectedIndex=0; foreach ($key in $keys) { $fields[$key].Text='' }; $fields.Port.Text='0'; $advanced.Checked=$false; $workingToggle.Checked=$false; $keepToggle.Checked=$false; $rememberToggle.Checked=$true })
         } elseif ($spec[0] -eq 'Save') {
             $button.add_Click({ try { [void](Save-Current) } catch { [void][Windows.Forms.MessageBox]::Show($_.Exception.Message,'DELFIN') } })
         } else {
@@ -642,7 +796,8 @@ try {
                         return
                     }
                     $id=Save-Current
-                    Start-Window 'Dashboard' $id ('SSH Dashboard - ' + $fields.Target.Text.Trim())
+                    $started = @($script:profiles | Where-Object { $_.Id -eq $id })[0]
+                    Start-Window 'Dashboard' $id ($(if ($started.Transport -eq 'WSL') { 'WSL' } else { 'SSH' }) + ' Dashboard - ' + $started.Name)
                 } catch { [void][Windows.Forms.MessageBox]::Show($_.Exception.Message,'DELFIN') }
             })
         }
@@ -688,11 +843,13 @@ try {
         $active = @($script:ownedConnections | Where-Object { -not $_.Worker.HasExited })
         if ($active.Count -eq 0) {
             $script:connectionStatus.Text = if ($script:ownedConnections.Count) { 'Disconnected. Keep ON dashboards can remain on the server.' } else { 'Not connected.' }
+            if ([DateTime]::UtcNow -lt $script:noticeUntil) { $script:connectionStatus.Text = $script:notice }
         } else {
             $stopping = @($active | Where-Object { Test-Path -LiteralPath (Join-Path $store ('connection-' + $_.Connection + '.stop')) })
             $ready = @($active | Where-Object { Test-Path -LiteralPath (Join-Path $store ('connection-' + $_.Connection + '.browser-ready')) })
             if ($stopping.Count) { $script:connectionStatus.Text = 'Disconnecting SSH...' }
             elseif ($ready.Count) { $script:connectionStatus.Text = 'Connected. Dashboard SSH terminal stays open for Ctrl+C.' }
+            elseif (@($active | Where-Object { $_.Title.StartsWith('WSL') }).Count) { $script:connectionStatus.Text = 'Starting DELFIN in WSL...' }
             else { $script:connectionStatus.Text = 'Connecting. Complete password/OTP in the SSH window.' }
             if ([DateTime]::UtcNow -lt $script:noticeUntil) { $script:connectionStatus.Text = $script:notice }
         }
@@ -708,6 +865,19 @@ try {
         $form.ClientSize = New-Object Drawing.Size(590,$(if ($advanced.Checked) { 665 } else { 500 }))
     }
     $advanced.add_CheckedChanged({ Show-Advanced })
+    function Show-Transport {
+        $wsl = (Get-SelectedTransport) -eq 'WSL'
+        $targetLabel.Text = $(if ($wsl) { 'WSL distribution' } else { 'SSH server / user@host' })
+        # No login in WSL: nothing to remember.
+        $rememberToggle.Enabled = -not $wsl
+        if ($wsl -and -not $fields.Target.Text.Trim() -and -not $GuiSmokeTest) {
+            $found = @(Get-WslDistributions)
+            if ($found.Count) { $fields.Target.Text = $found[0] }
+            else { $script:notice = 'No WSL distribution found on this PC. See README (Local mode).'; $script:noticeUntil = [DateTime]::UtcNow.AddSeconds(12) }
+        }
+    }
+    $transportBox.add_SelectedIndexChanged({ Show-Transport })
+    Show-Transport
     Show-Advanced
     if ($combo.Items.Count -gt 0) { $combo.SelectedIndex=0 }
     if ($GuiSmokeTest) {

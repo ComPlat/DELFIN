@@ -53,7 +53,7 @@ if ($running.Count -gt 0) {
 }
 
 [void][IO.Directory]::CreateDirectory($destination)
-foreach ($file in @('Install.cmd','Uninstall.cmd','DELFIN.ps1','Install.ps1','Uninstall.ps1','remote_launcher.py','remote_bootstrap.sh','Test-Launcher.ps1','README.md','DELFIN_logo.png','DELFIN.ico')) {
+foreach ($file in @('Install.cmd','Uninstall.cmd','DELFIN.ps1','Install.ps1','Uninstall.ps1','remote_launcher.py','remote_bootstrap.sh','Test-Launcher.ps1','Setup-Wsl.ps1','wsl_setup.sh','README.md','DELFIN_logo.png','DELFIN.ico')) {
     $source = Join-Path $PSScriptRoot $file
     $target = Join-Path $destination $file
     if ([IO.Path]::GetFullPath($source) -ne [IO.Path]::GetFullPath($target)) { Copy-Item -LiteralPath $source -Destination $target -Force }

@@ -3,13 +3,13 @@
 param([switch]$SkipOpenSSHCheck)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-foreach ($name in @('DELFIN.ps1','Install.ps1','Uninstall.ps1','Test-Launcher.ps1')) {
+foreach ($name in @('DELFIN.ps1','Install.ps1','Uninstall.ps1','Test-Launcher.ps1','Setup-Wsl.ps1')) {
     $tokens = $null
     $parseErrors = $null
     [void][Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot $name),[ref]$tokens,[ref]$parseErrors)
     if ($parseErrors.Count -gt 0) { throw ($parseErrors | Out-String) }
 }
-foreach ($name in @('Install.cmd','Uninstall.cmd','remote_launcher.py','remote_bootstrap.sh','README.md','DELFIN_logo.png','DELFIN.ico')) {
+foreach ($name in @('Install.cmd','Uninstall.cmd','remote_launcher.py','remote_bootstrap.sh','wsl_setup.sh','README.md','DELFIN_logo.png','DELFIN.ico')) {
     if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot $name))) { throw "Missing file: $name" }
 }
 if (-not $SkipOpenSSHCheck -and -not (Test-Path "$env:SystemRoot\System32\OpenSSH\ssh.exe")) { throw 'Windows OpenSSH Client is missing.' }
@@ -116,6 +116,94 @@ Add-Type -AssemblyName System.Drawing
 $icon=New-Object Drawing.Icon((Join-Path $PSScriptRoot 'DELFIN.ico'))
 $icon.Dispose()
 Assert-That ((Quote-NativeArgument 'a "b" c') -eq '"a \"b\" c"') 'Native Windows arguments must escape quotation marks.'
+
+# Local mode: DELFIN in a WSL distribution on this PC. Pure checks only; no
+# WSL is needed here (Install.cmd runs this on PCs without it).
+Assert-That ((Get-Transport $legacy) -eq 'SSH') 'A connection saved before WSL must stay an SSH connection.'
+Assert-That ((Normalize-Profile ([pscustomobject]@{ Target='x' })).Transport -eq 'SSH') 'New connections default to SSH.'
+$wslProfile = Normalize-Profile ([pscustomobject]@{ Id=[guid]::NewGuid().ToString(); Transport='WSL'; Target='Ubuntu-24.04' })
+Check-Profile $wslProfile
+foreach ($good in @('Ubuntu','DELFIN','Debian','openSUSE-Tumbleweed','Ubuntu_22.04')) { $wslProfile.Target=$good; Check-Profile $wslProfile }
+foreach ($bad in @('','-d','Ubuntu;bad','Ubuntu bad','alice@Ubuntu','--exec',"Ubuntu`nbad",'Ubuntu"')) {
+    $wslProfile.Target=$bad
+    Assert-Rejected { Check-Profile $wslProfile }
+}
+$wslProfile.Target='Ubuntu'
+foreach ($bad in @('wsl','ssh','Local','')) {
+    $odd = [pscustomobject]@{ Id=$wslProfile.Id; Transport=$bad; Target='Ubuntu'; Directory=''; Executable=''; Port=0 }
+    if ($bad) { Assert-Rejected { Check-Profile $odd } } else { Check-Profile $odd }
+}
+# wsl.exe reads its raw command line: plain options, then the command verbatim.
+Assert-That ((Get-WslArguments 'Ubuntu' "sh -c 'a b' x") -ceq "-d Ubuntu --cd ~ -- sh -c 'a b' x") 'WSL starts the command in the Linux home, verbatim after --.'
+Assert-Rejected { Get-WslArguments '-e' 'x' }
+Assert-Rejected { Get-WslArguments 'Ubuntu' "x`nrm -rf ~" }
+$localId = 'delfin-win-local-' + [guid]::NewGuid().ToString()
+$wslRemote = Get-RemoteCommand $commandProfile 'dashboard' '' '' $version $localId
+Assert-That ($wslRemote -eq ($remote + ' ' + (Shell-Quote $localId))) 'A WSL start is the SSH command plus its local connection as the last argument.'
+foreach ($bad in @('delfin-win-local-x',"delfin-win-local-$([guid]::Empty)'; rm -rf ~",'delfin-win-tunnel-' + [guid]::Empty)) {
+    Assert-Rejected { Get-RemoteCommand $commandProfile 'dashboard' '' '' $version $bad }
+}
+# wsl.exe -l -q: UTF-16 (NULs once read as UTF-8), a BOM, CRLF, Docker's own distributions.
+$listing = [string][char]0xFEFF + "Ubuntu`r`ndocker-desktop`r`nDELFIN`r`n`r`nbad name`r`n"
+$listing = -join ($listing.ToCharArray() | ForEach-Object { [string]$_ + [char]0 })
+$names = @(ConvertFrom-WslListing $listing)
+Assert-That (($names -join '|') -eq 'Ubuntu|DELFIN') "WSL distributions must be read from wsl.exe's listing: $($names -join '|')"
+# The browser's token goes only to a listener the launcher trusts.
+Assert-That (Test-TrustedListener 'SSH' @(4242) 4242) 'SSH: the connection''s own ssh.exe holds the tunnel.'
+Assert-That (-not (Test-TrustedListener 'SSH' @(4243) 4242)) 'SSH: another program on the tunnel port is refused.'
+Assert-That (-not (Test-TrustedListener 'SSH' @() 4242)) 'SSH: no tunnel yet is not ready.'
+Assert-That (Test-TrustedListener 'WSL' @() 0) 'WSL mirrored networking: no Windows listener is the Linux side.'
+Assert-That (-not (Test-TrustedListener 'WSL' @($PID) 0)) 'WSL: a Windows program other than the WSL relay is refused.'
+$relay = @(Get-Process -Name wslrelay -ErrorAction SilentlyContinue | Where-Object { $_.Path })
+if ($relay.Count) { Assert-That (Test-TrustedListener 'WSL' @($relay[0].Id) 0) 'WSL: the WSL relay from its install folder is trusted.' }
+# The browser job gets the check as a function of its own (another runspace).
+$trustCheck = [scriptblock]::Create('function Test-TrustedListener {' + ${function:Test-TrustedListener}.ToString() + '}')
+$probe = Start-Job -InitializationScript $trustCheck -ScriptBlock { @((Test-TrustedListener 'SSH' @(7) 7), (Test-TrustedListener 'WSL' @($PID) 0)) }
+try {
+    [void](Wait-Job $probe -Timeout 60)
+    $answers = @(Receive-Job $probe)
+    Assert-That ($answers.Count -eq 2 -and $answers[0] -eq $true -and $answers[1] -eq $false) 'The browser job must run the same listener check.'
+} finally { Remove-Job $probe -Force }
+Write-Host 'Local mode (WSL): connection type, distribution names, command, listing and listener trust checked.'
+
+# Setup of DELFIN on this PC (Setup-Wsl.ps1). Pure checks: nothing is
+# installed, no registry entry is written, wsl.exe is not started.
+. (Join-Path $PSScriptRoot 'Setup-Wsl.ps1') -FunctionsOnly
+Assert-That ((Get-VirtualizationVerdict $false $false) -eq 'off') 'Setup: firmware virtualization off must stop the setup.'
+Assert-That ((Get-VirtualizationVerdict $true $false) -eq 'on') 'Setup: a running hypervisor means virtualization is on.'
+Assert-That ((Get-VirtualizationVerdict $false $null) -eq 'on') 'Setup: an unknown answer must not stop the setup.'
+Assert-That ((Test-WindowsSupported 19041) -and -not (Test-WindowsSupported 18363)) 'Setup: WSL 2 needs build 19041.'
+foreach ($case in @(@('Fehler 0x80370102','BIOS/UEFI'), @('Error code: Wsl/0x8007019e','Restart Windows'), @('0x80072ee7','internet'), @('E_ACCESSDENIED','administrator rights'))) {
+    $text = Get-FriendlyWslError $case[0] 1
+    Assert-That ($text.Contains($case[1]) -and -not $text.Contains('0x')) ('Setup: ' + $case[0] + ' must be explained in words.')
+}
+Assert-That ((Get-FriendlyWslError "line one`nsomething unknown" 5) -eq 'WSL reported an error (exit 5): something unknown') 'Setup: an unknown error shows its last line.'
+$listed = ConvertFrom-WslList ([string][char]0xFEFF + "U`0b`0u`0n`0t`0u`0`r`0`n`0D`0E`0L`0F`0I`0N`0`r`0`n`0")
+Assert-That ($listed.Count -eq 2 -and $listed[1] -eq 'DELFIN') 'Setup: wsl -l output must be read in every encoding.'
+Assert-That ((Get-SetupArguments 'system') -ceq '-d DELFIN -u root --cd / -- bash -s -- system delfin') 'Setup: system step arguments.'
+Assert-That ((Get-SetupArguments 'delfin') -ceq ('-d DELFIN -u delfin --cd ~ -- bash -s -- delfin https://github.com/ComPlat/DELFIN.git ' + $script:Commit) -and $script:Commit -match '^[0-9a-f]{40}$') 'Setup: DELFIN step arguments.'
+Assert-Rejected { Get-SetupArguments 'other' }
+Assert-Rejected { Invoke-Wsl ("-l`n-q") }
+Assert-That (-not ((Get-SetupScriptBytes) -contains 13)) 'Setup: the Linux half must reach bash with LF line ends.'
+Assert-That ((Get-ResumeCommand 'C:\x y\Setup-Wsl.ps1') -ceq ('"' + $env:SystemRoot + '\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy RemoteSigned -File "C:\x y\Setup-Wsl.ps1" -Resume')) 'Setup: resume command.'
+Assert-Rejected { Get-ResumeCommand 'C:\x"y\Setup-Wsl.ps1' }
+$setupStore = Join-Path ([IO.Path]::GetTempPath()) ('delfin-setup-test-' + [guid]::NewGuid().ToString())
+try {
+    [void][IO.Directory]::CreateDirectory($setupStore)
+    $server = [pscustomobject]@{ Id=[guid]::NewGuid().ToString(); Name='cluster'; Target='alice@login.example.org'; Directory=''; Executable=''; Port=0; KeepSession=$true; OpenWorkingTerminal=$false; RememberLogin=$true }
+    ConvertTo-Json -InputObject @($server) | Set-Content -LiteralPath (Join-Path $setupStore 'profiles.json') -Encoding UTF8
+    $first = Add-WslProfile $setupStore
+    $second = Add-WslProfile $setupStore
+    # Windows PowerShell 5.1 emits a JSON array as one object: unwrap it.
+    $savedJson = Get-Content -LiteralPath (Join-Path $setupStore 'profiles.json') -Raw | ConvertFrom-Json
+    $saved = @($savedJson | ForEach-Object { $_ })
+    Assert-That ($first -eq $second -and $saved.Count -eq 2) 'Setup: the WSL connection is added once.'
+    Assert-That ($saved[0].Id -eq $server.Id -and $saved[0].KeepSession) 'Setup: existing connections stay as they are.'
+    $local = Normalize-Profile $saved[1]
+    Check-Profile $local
+    Assert-That ((Get-Transport $local) -eq 'WSL' -and $local.Target -eq 'DELFIN' -and $local.Name -eq 'This PC (WSL DELFIN)' -and -not $local.Executable) 'Setup: the saved connection is the app''s WSL connection.'
+} finally { Remove-Item -LiteralPath $setupStore -Recurse -Force }
+Write-Host 'Setup on this PC (WSL): checks, error texts, arguments and saved connection checked.'
 Write-Host 'Syntax, connections, SSH options, browser destination and icon checked. Test a real OTP connection separately.'
 
 # Start the actual DELFIN window the way its shortcut does and inspect it.

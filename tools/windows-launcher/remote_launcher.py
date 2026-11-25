@@ -56,6 +56,9 @@ def shell_environment():
     return ' '.join(shlex.quote(key + '=' + os.environ[key]) for key in keys if key in os.environ)
 
 
+#: The closing marker of a WSL connection (DELFIN.ps1 makes it from a GUID).
+LOCAL_ID = re.compile(r'delfin-win-local-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}')
+
 #: `python -c` puts the current directory first on sys.path; a plain folder
 #: named "delfin" there would shadow the package (remote_bootstrap.sh).
 NO_CWD = 'import sys; sys.path[:] = [p for p in sys.path if p not in ("", ".")]; '
@@ -189,6 +192,15 @@ def main():
     tunnel_path = sys.argv[4] if len(sys.argv) > 4 else ''
     keep = len(sys.argv) <= 5 or sys.argv[5] == '1'
     working = len(sys.argv) > 6 and sys.argv[6] == '1'
+    # A connection from the same Windows PC through WSL (DELFIN.ps1, WSL
+    # transport): no tunnel and no relay -- WSL forwards the dashboard's
+    # 127.0.0.1 port to Windows' 127.0.0.1 -- but the same lifetime as a
+    # tunnelled one: closing the window (SIGHUP from wsl.exe) ends it, and
+    # the closing marker names this connection.
+    local_id = sys.argv[7] if len(sys.argv) > 7 else ''
+    if local_id and (tunnel_path or not LOCAL_ID.fullmatch(local_id)):
+        raise RuntimeError('Invalid local connection.')
+    watched = bool(tunnel_path or local_id)
     person = os.environ.get('DELFIN_PERSON', '')
     name = f'delfin-win-{person}-{preferred}' if re.fullmatch(r'[a-z0-9_-]{1,32}', person) else f'delfin-win-{preferred}'
     port = preferred
@@ -212,7 +224,7 @@ def main():
         name += '-' + uuid.uuid4().hex
     def disconnected(signum, frame):
         raise KeyboardInterrupt()
-    if tunnel_path:
+    if watched:
         signal.signal(signal.SIGHUP, disconnected)
         signal.signal(signal.SIGTERM, disconnected)
     try:
@@ -227,16 +239,23 @@ def main():
                        + (' --keep --resume latest' if keep else ''))
             subprocess.run([tmux, 'new-session', '-d', '-s', name, '-x', '240', '-y', '50',
                             'bash -c ' + shlex.quote(command)], check=True)
-        run_dashboard_connection(where, dashboard_session, tmux, name, tunnel_path, keep, working, directory, created_here)
+        run_dashboard_connection(where, dashboard_session, tmux, name, tunnel_path, keep, working, directory, created_here,
+                                 local_id)
     finally:
         if created_here and not keep:
             subprocess.run([tmux, 'kill-session', '-t', '=' + name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if tunnel_path:
+        if watched:
             # Tell Windows cleanup is complete even if an unrelated descendant holds the PTY open.
-            print('DELFIN_CONNECTION_CLOSED:' + os.path.basename(os.path.dirname(tunnel_path)), flush=True)
+            closed = local_id or os.path.basename(os.path.dirname(tunnel_path))
+            try:
+                print('DELFIN_CONNECTION_CLOSED:' + closed, flush=True)
+            except OSError:
+                # The window is already gone (wsl.exe killed): nobody reads it.
+                pass
 
 
-def run_dashboard_connection(where, dashboard_session, tmux, name, tunnel_path, keep, working, directory, created_here):
+def run_dashboard_connection(where, dashboard_session, tmux, name, tunnel_path, keep, working, directory, created_here,
+                             local_id=''):
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
         record = where.dashboard()
@@ -272,7 +291,7 @@ def run_dashboard_connection(where, dashboard_session, tmux, name, tunnel_path, 
                     print('DELFIN: Keep session is ' + ('ON.' if keep else 'OFF.'), flush=True)
                     if not created_here:
                         print('DELFIN: Reusing a pre-existing dashboard; its lifetime is unchanged.', flush=True)
-                    if not tunnel_path:
+                    if not tunnel_path and not local_id:
                         os.execv(tmux, [tmux, 'attach-session', '-t', '=' + name])
                     subprocess.run([tmux, 'attach-session', '-t', '=' + name], check=False)
                     return
