@@ -174,10 +174,11 @@ trailer in any commit you make or rewrite: both are written mechanically by \
 the product, and a deployment that wants them is the operator's choice, not \
 yours. Strip them from what you bundle. No home paths, account names or \
 person names either.""",
-    "F": """AN EMPTY BRANCH CARRIES NOTHING. `git log --oneline \
-{base}..<branch> | wc -l` is 0 for a branch whose report describes work: it \
-has no commits, so there is nothing to merge. Find the branch its report \
-actually measured, or record that the package is empty.""",
+    "F": """AN INTEGRATOR BRANCH 0 COMMITS AHEAD OF THE BASE CARRIES NOTHING. \
+`git log --oneline {base}..<branch> | wc -l` is 0 for a branch whose report \
+describes work: it has no commits, so there is nothing to merge. Find the \
+branch its report actually measured, or record that the package is empty and \
+say so.""",
 }
 
 #: The keys of each stage's share of ``LANDING_RULES``.

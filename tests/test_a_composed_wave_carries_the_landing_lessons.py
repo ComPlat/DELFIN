@@ -60,7 +60,7 @@ def test_the_lander_carries_every_landing_rule_by_name():
     caught: this fails the moment a rule stops being composed in."""
     brief = _composed()["zz-land"]["brief"]
     for heading in ("ONE BRANCH", "NOTHING RED LANDS", "NEEDS A PATCH",
-                    "NO ENTRY POINT", "PUBLIC TEXT", "EMPTY BRANCH"):
+                    "NO ENTRY POINT", "PUBLIC TEXT", "0 COMMITS AHEAD"):
         assert heading in brief, f"{heading!r} missing from the lander's brief"
 
 
