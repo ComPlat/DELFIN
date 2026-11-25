@@ -6357,6 +6357,13 @@ def build_parser() -> argparse.ArgumentParser:
     lab_p.add_argument("lab_args", nargs=argparse.REMAINDER)
     lab_p.set_defaults(func=cmd_lab)
 
+    # eln — Chemotion ELN: the person's approvals (delfin/lab/eln_cli.py)
+    eln_p = sub.add_parser(
+        "eln", help="Chemotion ELN: pending | show ID | approve ID | "
+                    "collections (delfin-agent eln --help)", add_help=False)
+    eln_p.add_argument("eln_args", nargs=argparse.REMAINDER)
+    eln_p.set_defaults(func=cmd_eln)
+
     # approvals — the other side of a supervised headless session
     appr = sub.add_parser(
         "approvals",
@@ -7313,6 +7320,17 @@ def cmd_lab(args) -> int:
     """``delfin-agent lab ...``: handed whole to ``delfin.lab.cli``."""
     from delfin.lab.cli import main as lab_main
     return int(lab_main(list(getattr(args, "lab_args", None) or ["--help"]))
+               or 0)
+
+
+def cmd_eln(args) -> int:
+    """``delfin-agent eln ...``: handed whole to ``delfin.lab.eln_cli``.
+
+    The person's side of an ELN write: ``approve`` is refused to a process
+    an agent session started, both here and in the signature underneath.
+    """
+    from delfin.lab.eln_cli import main as eln_main
+    return int(eln_main(list(getattr(args, "eln_args", None) or ["--help"]))
                or 0)
 
 
