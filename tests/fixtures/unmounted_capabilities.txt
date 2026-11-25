@@ -209,22 +209,26 @@ test-only	calibration_record	delfin/agent/swarm/land.py:636
 # normalise_esd_inp STAYS, and it carries a finding rather than an excuse.
 # It is the only caller of the five ESD block normalisers (_normalise_tddft_
 # block, _normalise_esd_block, _normalise_geom_block, _normalise_basis_block,
-# _normalise_output_block, esd_opi.py:48-135), and the ESD parity test does
-# not use it: test_esd_input_parity normalises with the SHARED
-# delfin.tools.occupier_opi.normalise_inp (tests/test_opi_esd_parity.py:48 and
-# 279-282), which parses no %tddft / %esd / %basis / %output block. Measured
-# directly: two inputs differing ONLY in `%tddft nroots 5` vs `6` come back
-# equivalent under normalise_inp (empty diff list) and differ under
-# normalise_esd_inp ("block 'tddft' option 'nroots': 5 != 6"). So the parity
-# test, which its module docstring says proves the OPI inputs equivalent "over
-# the repo's CONTROL matrix", cannot see a difference inside those blocks at
-# all. The mount is one line (swap normalise_inp for normalise_esd_inp at
-# tests/test_opi_esd_parity.py:280) and was deliberately NOT taken here: it
-# changes what the parity test asserts instead of adding a product caller, the
-# test is behind pytest.importorskip("opi") so it cannot be shown green on a
-# host without OPI, and it can turn red on real historic differences nobody
-# has read yet. It is named as a probe in the wave report for whoever decides
-# whether OPI's ESD inputs currently match the classic ones.
+# _normalise_output_block, esd_opi.py:48,74,99,108,120), and the ESD parity
+# test does not use it: test_esd_input_parity normalises with
+# delfin.tools.co2_coordinator_opi.normalise_inp (imported at
+# tests/test_opi_esd_parity.py:47, used at :280-281), which parses no
+# %tddft / %esd / %basis / %output block at all.
+# Measured 2026-11-25 on the two texts differing ONLY in `%tddft nroots 5`
+# vs `6`, written in the multi-line block form the writers emit, with each
+# normaliser's own output compared block by block:
+#   co2_coordinator_opi.normalise_inp  blocks {'pal'}         -> equal, blind
+#   esd_opi.normalise_esd_inp          blocks {'pal','tddft'} -> differs
+#   ({'tddft': {'nroots': 5}} vs {'tddft': {'nroots': 6}})
+# So the parity test, whose module docstring says it proves the OPI inputs
+# equivalent "over the repo's CONTROL matrix", cannot see a difference inside
+# those blocks. The mount is one line (swap the normaliser at
+# tests/test_opi_esd_parity.py:280-281) and was deliberately NOT taken here:
+# it changes what the parity test asserts instead of adding a product caller,
+# the file is behind pytest.importorskip("opi") so a change to it cannot be
+# shown red-then-green on a host without OPI, and it can turn red on real
+# historic differences nobody has read yet. Whoever next runs the OPI job
+# decides it.
 nowhere	normalise_esd_inp	delfin/tools/esd_opi.py:131
 # esd_inputs_equivalent is the other half of the same pair and stays for a
 # different reason: a parity comparator has no product caller by nature. The
