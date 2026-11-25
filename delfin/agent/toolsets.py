@@ -411,9 +411,24 @@ class WorkspaceToolsets:
 
         Input: the turn's request text (with the recent user turns, as the
         prompt assembly holds them). Output: the groups this added, which
-        were not offered before. Like ``note_used`` it only ever ADDS, at
-        the turn boundary, and the prompt module for a group arrives with
-        the group rather than being stripped beside it.
+        were not offered before.
+
+        TAKEN AT THE FIRST TURN, like every other fact the offering is built
+        from, and for the same measured reason. The offering decides stable
+        prompt rows -- the lazy module that survives stripping and the
+        "not loaded here" line -- so a request on a LATER turn that named a
+        new group would rewrite those rows mid-session. That is exactly the
+        cold prefix the module's "Semantics" section refuses: an earlier
+        reading of this method folded the request in at every turn, and
+        tests/test_the_head_does_not_move_with_the_workspace.py caught it
+        (role_prompt row 6 moved; the prefix cache cannot reach it).
+
+        The cost is bounded and stated: a session whose FIRST request names
+        neither group keeps the `/tools enable <group>` route, which is the
+        turn-boundary switch this module already has. What the package asked
+        for -- an office request in an empty folder being answered with the
+        document tools instead of a request for a switch -- is a first-turn
+        case, and is offered.
 
         The one thing that outranks a request is the person's own switch:
         ``agent.toolsets.<group>: off`` is honoured and the request is
@@ -421,6 +436,11 @@ class WorkspaceToolsets:
         exactly this cost. A group already offered for the workspace
         changes nothing here, so the usual case costs one substring scan.
         """
+        with self._lock:
+            if self._decided is not None:
+                # The session's head is composed; a group added now would
+                # move rows a provider prefix cache has already served.
+                return []
         wanted = request_groups(text)
         if not wanted:
             return []

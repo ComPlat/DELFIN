@@ -340,3 +340,40 @@ def test_a_request_that_names_neither_group_offers_nothing():
     assert ts.decided() == {}
     assert ts.note_request("") == []
     assert ts.note_request(None) == []
+
+
+def test_a_later_turn_cannot_move_the_head_a_prefix_cache_has_served():
+    """The request is read for the FIRST turn's decision, and only there.
+
+    This is the constraint that makes the feature safe, and it is asserted
+    against the implementation that ships rather than argued: an earlier
+    reading folded the request in at every turn, so a second turn naming a
+    new group rewrote ``role_prompt`` -- a stable row the provider had
+    already cached (measured: 7-12 s warm against 199-266 s cold). The
+    engine's held prompt keeps the SENT bytes identical, but the composed
+    rows are what ``_prompt_head_check`` reports, and the module's own
+    "Semantics" section says the decision is taken once, at the first turn.
+
+    Fails against that earlier reading: the second call there returns the
+    two groups it found. Passes here: the decision is already taken, so the
+    later request adds nothing and the rows cannot move.
+    """
+    ts = WorkspaceToolsets(None, settings={"chemistry": "auto",
+                                           "office": "auto"})
+    # Turn 1: a code request, so no group is offered and the session's
+    # decision is taken (this is the turn whose rows the cache keeps).
+    assert ts.note_request("fix the failing unit test in src/") == []
+    assert ts.decided() == {}
+    # Turn 2 would plainly need both groups. The head is composed by now.
+    assert ts.note_request(
+        "the energy of the molecule looks wrong; also check the column in "
+        "the spreadsheet") == []
+    assert ts.decided() == {}, (
+        "a later turn moved the session's tool-group decision, which rewrites "
+        "stable prompt rows the prefix cache has already served")
+    # The first turn of a NEW session is a different matter, and is offered.
+    fresh = WorkspaceToolsets(None, settings={"chemistry": "auto",
+                                              "office": "auto"})
+    assert fresh.note_request(
+        "the energy of the molecule looks wrong; also check the column in "
+        "the spreadsheet") == [CHEMISTRY, OFFICE]
