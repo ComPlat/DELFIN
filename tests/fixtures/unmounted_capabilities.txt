@@ -34,7 +34,7 @@
 # leaves_the_workspace fails if _leaves_workspace ever stops asking for one
 # of them. Deleting it would remove the only explicit statement of the
 # class; mounting it would add a call that cannot change an answer.
-test-only	_bypass_failure_asks	delfin/agent/api_client.py:14120
+test-only	_bypass_failure_asks	delfin/agent/api_client.py:14749
 # _disabled_keyring_factory stays test-only, measured 2026-11-22: the
 # conftest autouse fixture swaps it in (tests/conftest.py:1599) so no test
 # touches the real keyring, and _keyring_factory is only ever bound to
@@ -42,7 +42,7 @@ test-only	_bypass_failure_asks	delfin/agent/api_client.py:14120
 # production path disables the keyring. Mounting one would be a new
 # capability; what would decide a delete is a product need to run
 # keyless, which does not exist.
-test-only	_disabled_keyring_factory	delfin/agent/credentials.py:360
+test-only	_disabled_keyring_factory	delfin/agent/credentials.py:395
 # category_names STAYS, and the reason is the measure's own weak spot: this
 # test counts any mention of a name, so `from .compaction_quality import
 # category_names` in the funnel module would close the row without anything
@@ -54,20 +54,29 @@ test-only	_disabled_keyring_factory	delfin/agent/credentials.py:360
 # the long-run metric -- which is its own change, not a line in an import.
 test-only	category_names	delfin/agent/compaction_quality.py:169
 test-only	for_files	delfin/agent/verify_recipe.py:327
-test-only	is_safe	delfin/agent/readonly_pipeline.py:371
+test-only	is_safe	delfin/agent/readonly_pipeline.py:391
 # _locator_value (cited_retrieval.py:218) DELETED 2026-11-22: zero callers
 # anywhere, including its own module -- check_answer_citations reads the
 # locator dicts from locator_for directly (cited_retrieval.py:287-291) and
 # never normalises to (kind, value). The whole cited_retrieval module has
 # no product import yet; the deletion needs no second answer because the
 # job it did is inline dict access in its own module.
-# bwrap_substitution: measured 2026-11-22 (wave 37, group rr1). Neither mounting
-# nor deleting is right yet. The wiring contract is tests/test_shared_tmp_wiring.py,
-# xfail(strict) with reason "operator wiring pending": the swap belongs in
-# api_client._bash_isolation_argv (delfin/agent/api_client.py:31275), which still
-# mounts --tmpfs /tmp. api_client.py is forbidden to this group (rule 13), so the
-# mount cannot be made here; deleting would orphan that contract. Decides it: the
-# operator wiring commit replacing --tmpfs /tmp with the session-dir bind.
+# bwrap_substitution: DELETED 2026-11-25 with the module that held it
+# (agent/shared_tmp.py), the note kept for its measurement.
+# The module that held it (agent/shared_tmp.py, now deleted) and its five test
+# files went in a92ed6e36, so the strict-xfail contract this note used to point
+# at (test_shared_tmp_wiring.py, same commit) no longer exists and there is no
+# symbol left to mount. The row itself is gone; what remains true is the reason
+# the swap was never made: api_client._bash_isolation_argv already binds the
+# session scratch dir read-write and re-points TMPDIR/TMP/TEMP at it
+# (delfin/agent/api_client.py:32102-32108), so replacing --tmpfs /tmp with that
+# bind would remove the only writable /tmp for a command whose scratch dir
+# could not be made (the try/except at 32109) -- the package caches it names
+# under /tmp (npm/yarn/pnpm/uv, 32111-32113). Two writable locations with two
+# jobs, not a duplicate. Revisit only against a host where the cage can run.
+# A path written root-relative in this file is a LIVE POINTER; a file that no
+# longer exists is named by bare filename, and tests/test_the_unmounted_ledger_
+# points_at_live_code.py enforces exactly that.
 # NOT removed 2026-11-22 (wave 36 c1, re-measured): there are two
 # category vocabularies for one job. The product's compaction record
 # carries its loss under the key ``lost`` in working_state's four
@@ -91,14 +100,18 @@ test-only	is_safe	delfin/agent/readonly_pipeline.py:371
 # in the engine turn would be a tautological new surface (rule 12); the
 # question that decides it is whether the product should surface an
 # ordering violation to a person -- a design decision, not a repair.
-# enforce_quota: measured 2026-11-22 (wave 37, group rr1). Neither mounting nor
-# deleting is right yet. Zero product callers: the product's own session scratch
-# (api_client._session_scratch_dir, delfin/agent/api_client.py:29532) never
+# enforce_quota: DELETED 2026-11-22 with the module that held it
+# (agent/shared_tmp.py, bare filename because the file is gone);
+# a92ed6e36. The note is kept for the measurement that outlived the
+# module. Zero product callers: the product's own session scratch
+# (api_client._session_scratch_dir, delfin/agent/api_client.py:30139) never
 # calls shared_tmp at all, and no cleanup path in delfin/ names this function.
-# Deleting would orphan the quota pin tests (tests/test_shared_tmp_cleanup.py);
-# mounting would need a product cleanup tick that does not exist (new surface,
-# rule 12). Decides it: wiring the session-end cleanup to enforce_quota, or an
-# operator decision that the product never quotas scratch.
+# The quota pin tests this note named (test_shared_tmp_cleanup.py) were
+# deleted with the module in a92ed6e36, so nothing is orphaned any more; the
+# row was removed then. What is still owed is the decision it recorded: wiring
+# the session-end cleanup to a quota, or an operator decision that the product
+# never quotas scratch. The live scratch dir is api_client._session_scratch_dir
+# and it is created 0700, private to the session.
 # for_files (verify_recipe.py:327) KEPT as test-only 2026-11-22, measured:
 # zero product callers. The product consumers of verify_recipe hold a
 # recipe but never a changed-file list -- prompt_loader.py:1002-1003 calls
@@ -128,37 +141,83 @@ test-only	is_safe	delfin/agent/readonly_pipeline.py:371
 # is_safe refuses -- ls > f, ls 3>f, ls >&f, ls &>f, cat <>f,
 # sort --out=f x, sort --compress-program=sh x, git reflog expire --all.
 #
-# At the gate (_run_permission_gate, the entry a bash call really takes,
-# which consults the predicate only after the deny list, the secret scan,
-# the approval guard, the irreversibility rule and unrestorable.refusal):
-# git reflog expire --expire=now --all ASKS, and echo x >
-# ~/.ssh/authorized_keys is refused outright (secret-deny). What runs
-# unasked is the redirect family inside the workspace -- which is
-# deliberate policy, documented in matches_bash_auto_allow itself, and
-# confined by the cage -- plus two classes that are not:
+# At the gate HELPER (_run_permission_gate, which consults the predicate
+# only after the deny list, the secret scan, the approval guard, the
+# irreversibility rule and unrestorable.refusal): git reflog expire
+# --expire=now --all ASKS, and echo x > ~/.ssh/authorized_keys is refused
+# outright (secret-deny). What runs unasked is the redirect family inside
+# the workspace -- deliberate policy, documented in matches_bash_auto_allow
+# itself -- plus two classes that this note said therefore run unguarded:
 #   * a redirect whose TARGET is outside the workspace
-#     (echo x > ~/.bashrc, ls > /tmp/elsewhere.txt, ls > ../escape.txt:
-#     RUN, no question; _changes_outside_the_workspace does not read
-#     redirection targets at all),
-#   * a flag that runs a program (sort --compress-program=sh x and the
-#     space form: RUN, no question).
-# Controls at the gate: ls -la, git status, cat f, grep x f, grep -r,
-# python3 --version, pytest all RUN; rm -rf f and git push --force are
-# refused by deny-pattern; curl -T asks.
+#     (echo x > ~/.bashrc, ls > ../escape.txt, an absolute target),
+#   * a flag that runs a program (sort --compress-program=sh x, space form
+#     too).
+#
+# CORRECTED 2026-11-25, because the second sentence above was the wrong
+# claim to build on: _run_permission_gate is a HELPER, not the entry. Every
+# product caller of it is followed by the write-target gate -- _execute_bash
+# and _execute_bash_background call _gate_bash_write_targets (api_client.py:
+# 25862, 26386), _gate_mcp_tool calls both path gates on top of it (24034-
+# 24055, its own comment: an MCP shell reached the model "with the WORKSPACE
+# boundary missing"), and cli_gate._decide_bash replays the same order
+# (cli_gate.py:641-660). Measured at those entries over 61 spellings whose
+# target is outside the workspace (64 rows, controls included) -- seven
+# redirect operators x inside/outside target, $HOME spelled ~ and $HOME, 14
+# program-flag forms (find -exec, tar -f, tee, xargs cp, awk print >, perl
+# open, rsync, install, truncate), cwd-relative escapes, and the two classes
+# above in default and bypassPermissions with and without a cage: NOT ONE
+# created a file outside the workspace. The redirect half was also withdrawn
+# on purpose, and tests/test_a_flag_that_runs_a_program_is_not_a_reading_
+# command.py:110-140 pins REFUSE to keep it withdrawn -- at the tool entry an
+# outside target is REFUSED, which is stronger than the ASK the note asked
+# for. The wording is "would write to '<target>', which is outside what you
+# may modify", and package r4 re-measured it on 2026-11-25 from the tool entry
+# (_doc_executor.execute) in this tree: echo x > ~/.bashrc, ls > ../escape.txt
+# and ls > /tmp/elsewhere.txt all REFUSE, attended and unattended, and no file
+# appeared at any of the three targets.
+#
+# The flag class is a DIFFERENT answer, and the one this note got wrong on
+# 2026-11-25 (an earlier revision claimed a confirm dialog was raised): with
+# the cage holding the command it runs unasked, attended included, exactly as
+# `bash run.sh`, `./run.sh` and `make` do -- the caged rule admits a command
+# whose text names nothing on _CAGED_UNASKED_EXCLUDED_WORDS, and `sh` is not on
+# that list. That is the documented caged-command policy (the cage bounds what
+# the program can reach), not an unguarded run. Without a layer that confines
+# it the answer is the one the note asked for: a dialog attended, and
+# _REFUSAL_BYPASS (api_client.py:31239) refuses unattended ("runs a command
+# only where bubblewrap, Landlock or Seatbelt confines it, and none does
+# here"), measured exit 126. Re-measured 2026-11-25 three ways: through
+# _run_permission_gate with the isolation decision pinned (cage: admitted, 0
+# dialogs, attended and headless; no cage: 1 dialog attended, refusal
+# headless), through _gate_mcp_tool (the shell the real runs used: STOP on
+# every spelling, attending or not), and in two real product runs, where
+# `sort --compress-program=./p.sh a.txt --` RAN on both sides while the
+# outside-target write was refused on both. Controls that still
+# run at the tool entry: ls -la, git status, cat f, grep x f, grep -r, pytest,
+# ls > /dev/null, ls 2>/dev/null, and in-workspace redirects (asked, granted).
 #
 # So a blanket veto on is_safe would be wrong: at the predicate it also
 # refuses grep -r, sed -n, awk, find, python3 --version, pytest, mkdir
-# and touch, which the list grants on purpose. The repair is the two
-# classes above, in api_client.py, which the self-modification guard
-# refuses to an unattended session. Kept until that attended change
-# lands; deleting the row would discard a judgement the gate still needs.
-# map_to_host: measured 2026-11-22 (wave 37, group rr1). Neither mounting nor
-# deleting is right yet. The wiring contract is tests/test_shared_tmp_wiring.py,
-# xfail(strict): the mapping belongs in api_client._execute_read_file
-# (delfin/agent/api_client.py:18215) BEFORE the read gate, so /tmp/... resolves
-# to the session dir. api_client.py is forbidden to this group (rule 13); deleting
-# would orphan the contract and the mapping rules pinned by tests/test_shared_tmp.py.
-# Decides it: the operator wiring commit in _execute_read_file.
+# and touch, which the list grants on purpose. What the row is kept for is
+# that judgement -- the predicate is deliberately looser than is_safe and the
+# product's real boundary is the executor's write-target gate, not this
+# predicate. The two classes are not an open hole, so nothing in
+# api_client.py is owed here; wiring a veto into the gate was tried and
+# measured on 2026-11-25 (scratch/PR.md): it turns eight pinned REFUSEs into
+# questions, which is weaker. Deleting the row would discard the judgement
+# that keeps the predicate from being tightened by the next reading.
+# map_to_host: DELETED 2026-11-25 with the module that held it
+# (agent/shared_tmp.py); the note is kept for its measurement. The
+# symbol, its module and its strict-xfail contracts (test_shared_tmp.py,
+# test_shared_tmp_wiring.py) were deleted in a92ed6e36; there is nothing left
+# to call and no xfail to remove. The design moved: "/" is bound at itself
+# inside the cage, so a cage path and the host path are the same string and no
+# mapping is needed. Measured 2026-11-25 at the real tool entry: a file inside
+# the session scratch dir is ASKED ABOUT, not read, by read_file, and the shell
+# is asked about it too (cat/grep/ls of that path all reach the person), so the
+# scratch dir is not a silent read channel either way. Adding an allow there
+# would be a new capability for both tools at once, not a wiring; the read gate
+# it would have to pass is api_client._check_read_access.
 # quality_report STAYS (measured 2026-11-22, wave 37 rr2): the product's
 # compaction-loss answer is compare_loss (compaction_log.py:119), mounted in
 # two live places (record_compaction at compaction_log.py:78, in_turn at
@@ -178,8 +237,8 @@ test-only	is_safe	delfin/agent/readonly_pipeline.py:371
 # existing scope on demand, and eviction (office.py:6051) only trims stale
 # scopes. No product path is equivalent to an explicit clear; the office
 # tool runs are the consumers and keep needing it between turns.
-test-only	reset_figure_ledger	delfin/agent/office.py:6098
-test-only	role_tool_surface_report	delfin/agent/api_client.py:12107
+test-only	reset_figure_ledger	delfin/agent/office.py:6063
+test-only	role_tool_surface_report	delfin/agent/api_client.py:12667
 # w36-r2 (2026-11-22): no product path compares a workflow OBJECT's name.
 # grade_run (w20_common.py) calls only charge_spin_consistent and
 # all_steps_terminated; workflow_grader.grade checks name PRESENCE only
@@ -194,7 +253,7 @@ test-only	workflow_is	delfin/agent/pack/benchmark/accept/w20_common.py:15
 # and the per-model record is the reading rule a pair is built on -- fresh,
 # same corpus, same question -- which its tests pin. Ported unchanged with the
 # landing gate from the orchestrator's script, where it was test-only too.
-test-only	calibration_record	delfin/agent/swarm/land.py:636
+test-only	calibration_record	delfin/agent/swarm/land.py:675
 # ---------------------------------------------------------------------------
 # Rows added 2026-11-25 by the widening of the census to delfin/tools/.
 # Measured on the tree BEFORE that widening: delfin/tools/ held 591
