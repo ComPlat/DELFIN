@@ -1,13 +1,57 @@
 #requires -Version 5.1
+# Removes the DELFIN app of the current Windows user. Nothing on the server is
+# touched. The path parameters exist for the isolated install test
+# (Test-InstallRoundTrip.ps1); a normal uninstall passes none of them.
 [CmdletBinding(SupportsShouldProcess=$true)]
-param([switch]$KeepProfiles)
+param(
+    [switch]$KeepProfiles,
+    [switch]$CloseRunning,
+    [string]$Destination = (Join-Path $env:LOCALAPPDATA 'DELFIN Launcher'),
+    [string]$Desktop = '',
+    [string]$Programs = [Environment]::GetFolderPath('Programs'),
+    [string]$RegistryKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DELFINLauncher'
+)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$destination = Join-Path $env:LOCALAPPDATA 'DELFIN Launcher'
-$shortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'DELFIN.lnk'
-$registry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DELFINLauncher'
-Write-Host 'Close the app and DELFIN terminal windows first. The server dashboard will not be stopped.'
+$destination = $Destination
+$registry = $RegistryKey
+# Windows does not remove a folder that is any process's current directory,
+# and Remove-Item then removes nothing at all. Uninstall.cmd may have been
+# started inside the installed folder.
+Set-Location -LiteralPath $env:SystemRoot
+[Environment]::CurrentDirectory = $env:SystemRoot
+
+function Get-RunningApp([string]$folder) {
+    # The app's own PowerShell hosts (main window and SSH consoles) run
+    # DELFIN.ps1 from the installed folder; earlier versions ran DELFIN.exe.
+    $script = (Join-Path $folder 'DELFIN.ps1').ToLowerInvariant()
+    $exe = (Join-Path $folder 'DELFIN.exe').ToLowerInvariant()
+    @(Get-CimInstance Win32_Process | Where-Object {
+        ($_.CommandLine -and $_.CommandLine.ToLowerInvariant().Contains($script)) -or
+        ($_.ExecutablePath -and $_.ExecutablePath.ToLowerInvariant() -eq $exe)
+    })
+}
+function Stop-RunningApp($processes) {
+    # The app and the ssh/scp it started, as its own Disconnect ends them.
+    $ids = @($processes | ForEach-Object { $_.ProcessId })
+    $children = @(Get-CimInstance Win32_Process | Where-Object { $ids -contains $_.ParentProcessId -and $_.Name -match '^(ssh|scp|powershell)\.exe$' })
+    foreach ($process in @($children) + @($processes)) {
+        try { Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop } catch {}
+    }
+    Start-Sleep -Milliseconds 500
+}
+
 if (-not $PSCmdlet.ShouldProcess($destination,'Uninstall the local DELFIN app')) { return }
+# A running app holds its files: removing them under it fails halfway.
+$running = @(Get-RunningApp $destination)
+if ($running.Count -gt 0) {
+    Write-Host 'DELFIN is open. It has to be closed to uninstall it.' -ForegroundColor Yellow
+    Write-Host 'Open connections end; a session kept on the server stays there.'
+    $answer = if ($CloseRunning) { 'y' } else { Read-Host 'Close DELFIN now and continue? (y/N)' }
+    if ($answer -ne 'y' -and $answer -ne 'Y') { throw 'DELFIN is still open. Nothing was removed.' }
+    Stop-RunningApp $running
+    if (@(Get-RunningApp $destination).Count -gt 0) { throw 'DELFIN could not be closed. Close its windows and try again. Nothing was removed.' }
+}
 if (Test-Path -LiteralPath $destination) {
     if ((Get-Item -LiteralPath $destination).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Installation directory is a link. Refusing recursive removal.' }
     if ($KeepProfiles) {
@@ -15,23 +59,29 @@ if (Test-Path -LiteralPath $destination) {
             $path = Join-Path $destination $name
             if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
         }
+        Get-ChildItem -LiteralPath $destination -Filter 'connection-*' -File | Remove-Item -Force
     } else { Remove-Item -LiteralPath $destination -Recurse -Force }
 }
-$desktopFolders = @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('DesktopDirectory'), (Join-Path $env:USERPROFILE 'Desktop'))
-foreach ($cloudRoot in @($env:OneDrive, $env:OneDriveConsumer, $env:OneDriveCommercial)) {
-    if ($cloudRoot) { $desktopFolders += Join-Path $cloudRoot 'Desktop' }
+if ($Desktop) {
+    $desktopFolders = @($Desktop)
+} else {
+    $desktopFolders = @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('DesktopDirectory'), (Join-Path $env:USERPROFILE 'Desktop'))
+    foreach ($cloudRoot in @($env:OneDrive, $env:OneDriveConsumer, $env:OneDriveCommercial)) {
+        if ($cloudRoot) { $desktopFolders += Join-Path $cloudRoot 'Desktop' }
+    }
 }
-foreach ($desktop in @($desktopFolders | Where-Object { $_ } | Select-Object -Unique)) {
-    $launcherShortcut = Join-Path $desktop 'DELFIN.lnk'
+foreach ($folder in @($desktopFolders | Where-Object { $_ } | Select-Object -Unique)) {
+    $launcherShortcut = Join-Path $folder 'DELFIN.lnk'
     if (Test-Path -LiteralPath $launcherShortcut) { Remove-Item -LiteralPath $launcherShortcut -Force }
 }
-$programs = [Environment]::GetFolderPath('Programs')
-if ($programs) {
-    $startShortcut = Join-Path $programs 'DELFIN.lnk'
+if ($Programs) {
+    $startShortcut = Join-Path $Programs 'DELFIN.lnk'
     if (Test-Path -LiteralPath $startShortcut) { Remove-Item -LiteralPath $startShortcut -Force }
 }
-Write-Host 'If you pinned DELFIN to the taskbar, right-click its icon and select Unpin from taskbar.'
 if (Test-Path -LiteralPath $registry) { Remove-Item -LiteralPath $registry -Recurse -Force }
-Write-Host 'If the desktop icon is still visible, refresh the desktop with F5.'
-Write-Host 'DELFIN Launcher uninstalled. The server installation and tmux session remain unchanged.'
-if ($KeepProfiles) { Write-Host "Saved connections remain in $destination." }
+Write-Host ''
+Write-Host 'DELFIN is removed from this PC.' -ForegroundColor Green
+Write-Host '  Nothing on the server was changed: your sessions and calculations there are untouched.'
+if ($KeepProfiles) { Write-Host "  Saved connections are kept in $destination for a later install." }
+Write-Host '  If you pinned DELFIN to the taskbar: right-click its icon, then Unpin from taskbar.'
+Write-Host '  If the desktop icon is still visible, press F5 on the desktop.'
