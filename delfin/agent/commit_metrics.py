@@ -71,6 +71,11 @@ from typing import Any, Iterable, Optional
 #: whether the commit is inside it without reading the test file.
 _REACHABILITY_CEILING = 86
 
+#: A root that yields fewer definitions than this was not measured. Set two
+#: orders of magnitude below the 5368 this tree carried on 2026-11-25, so only
+#: a broken or foreign root trips it, never a tree that lost code.
+_MIN_DEFINITIONS = 300
+
 #: Below this many repeats per agent per side, no comparison is made. Two
 #: runs cannot tell a spread from a coincidence, and one run has no spread at
 #: all -- the difference between "measured" and "looked at once".
@@ -81,6 +86,24 @@ _MIN_REPEATS = 3
 #: to look further, and the cost of a false "worse" is a wasted bisect while
 #: the cost of a false "better" is a regression merged.
 _NOISE_SIGMAS = 2.0
+
+
+def _zero_spread_floor(n: int) -> float:
+    """The smallest difference that cannot be a repeat coincidence, for *n*.
+
+    Used only when every repeat on both sides agreed and the measured spread
+    is therefore exactly 0. The score is a rate over a task set, so one task
+    flipping moves the rate by ``1/k`` for a set of ``k`` tasks; the set size
+    is not in the row, so the conservative reading is one repeat's worth of
+    resolution, ``1/n``. Conservative in the direction that matters: it makes
+    a zero-spread comparison HARDER to call, never easier.
+
+    A project whose repeats are genuinely deterministic (an exact classifier,
+    say) pays for this with repeats -- ``n >= 20`` gets the floor below 0.05
+    -- which is the honest price of a claim that the change moved something.
+    """
+    return 1.0 / max(int(n), 1)
+
 
 _BINARY_SUFFIXES = frozenset({
     ".png", ".jpg", ".jpeg", ".gif", ".pdf", ".ico", ".woff", ".woff2",
@@ -239,6 +262,29 @@ def reachability(tree_root: Path) -> dict[str, Any]:
     """
     tree_root = Path(tree_root)
     defs = definitions(tree_root)
+    # A scan that read nothing must not report "nothing unreachable". Measured
+    # 2026-11-25: an unreadable root gave `unmounted: 0, within_ceiling: true`
+    # -- a row that reads as a clean bill of health for a tree it never
+    # opened, which is worse than no row. The ratchet guards its own scan with
+    # the same idea (`assert len(defs) > 3000`); a row cannot assert, so it
+    # says what happened instead and leaves the numbers absent rather than
+    # zero. The floor is deliberately far below any tree that has agents: on
+    # 2026-11-25 this tree defined 5368.
+    if len(defs) < _MIN_DEFINITIONS:
+        return {
+            "population": "module-level callables under delfin/agent/",
+            "callables_defined": len(defs),
+            "unmounted": None,
+            "unmounted_names": [],
+            "tiers": None,
+            "ceiling": _REACHABILITY_CEILING,
+            "within_ceiling": None,
+            "newly_unreachable": [],
+            "stale_in_baseline": [],
+            "error": (f"the scan found {len(defs)} definitions under "
+                      f"{tree_root}/delfin/agent (< {_MIN_DEFINITIONS}), so "
+                      "this root was not measured -- not a count of zero"),
+        }
     baseline_path = tree_root / "tests" / "fixtures" / "unmounted_capabilities.txt"
     baseline = read_baseline(baseline_path) if baseline_path.is_file() else {}
     # The product half scans ``delfin/`` ONLY, exactly as the ratchet does.
@@ -302,13 +348,39 @@ def _tools_server_names(tree_root: Path) -> frozenset[str]:
     return frozenset(found)
 
 
-def _ops_server_names() -> frozenset[str]:
-    """Tool names the ops server exposes: its ``tool_*`` module functions.
+def _ops_server_names(tree_root: Optional[Path] = None) -> frozenset[str]:
+    """Tool names the ops server exposes, read from an AST of its own file.
 
-    Derived from the module rather than hand-listed, the same derivation
-    ``api_client.known_tool_names`` uses, so one the server registers later
-    is counted automatically.
+    Derived from the registrations rather than hand-listed, so a tool the
+    server registers later is counted automatically.
+
+    Read as SOURCE from the measured tree when one is given, not imported.
+    Measured 2026-11-25: the import form read the *installed* package, so the
+    PR table -- which claims that one instrument reads both trees -- counted
+    a PR's own added or removed ops tool on both sides and cancelled it out,
+    reporting an unchanged surface for a change it exists to show. The import
+    also drags the MCP SDK in, which a metrics row must not need.
+
+    Both forms are accepted because both are used in the server: the
+    decorator (``@mcp.tool(name="x")``) and the functional registration
+    (``mcp.tool(name="x")(fn)``). Only ``name=`` is read, since a tool named
+    after a wrapped function is not how this server registers anything --
+    if that ever changes, the count drops and `test_every_ops_tool_is_counted`
+    fails rather than the surface quietly shrinking.
     """
+    if tree_root is not None:
+        path = Path(tree_root) / "delfin" / "ops_server" / "server.py"
+        if not path.is_file():
+            return frozenset()
+        try:
+            tree = ast.parse(path.read_text(errors="replace"))
+        except SyntaxError:
+            return frozenset()
+        return frozenset(
+            m.group(1) for node in ast.walk(tree)
+            for m in [re.search(r"""\.tool\(\s*name\s*=\s*['"]([A-Za-z0-9_]+)['"]""",
+                                ast.unparse(node))]
+            if m is not None)
     try:
         from delfin.ops_server import server as ops_server
     except Exception:                                       # noqa: BLE001
@@ -322,24 +394,52 @@ def mcp_tool_names(tree_root: Path) -> dict[str, frozenset[str]]:
 
     Only the two DELFIN ships. A user's own server is discovered inside a
     turn and has nothing to measure at record time, so it is not guessed at.
+
+    Both halves are read from ``tree_root``, so a row measures ONE tree.
     """
     return {
         "delfin-tools": _tools_server_names(Path(tree_root)),
-        "delfin-ops": _ops_server_names(),
+        "delfin-ops": _ops_server_names(Path(tree_root)),
     }
 
 
 def role_names() -> list[str]:
-    """Every agent a session can run: the generalist, then every specialist.
+    """Every agent the product can run, generalist first.
 
-    The generalist is the empty role, which is how the product spells "no
-    role-level restriction". Specialists come from the live preset registry,
-    so a preset added to the pack appears here without an edit.
+    Three sources, because a role can run without being a delegation preset
+    and this row's question is "what is EACH agent offered", not "what can
+    the generalist delegate to":
+
+    * the empty role and ``solo_agent`` -- the generalist, spelled two ways;
+    * the subagent presets (``subagents.subagent_type_names``), so a preset
+      added to the pack appears without an edit here;
+    * every role the engine restricts with its own tool whitelist and every
+      role ``api_client`` restricts with an execution allow-list. These are
+      the SESSION roles -- ``dashboard_agent``, ``office_agent``,
+      ``chief_agent`` and the rest. Measured 2026-11-25: the preset registry
+      alone left ten of them out of every row, including the two with the
+      tightest allow-lists in the product, so a row that reported "every
+      agent" measured eleven of twenty-one. The question this answers for
+      ``dashboard_agent`` -- what is it offered? -- had no answer at all.
+
+    Anything a source cannot supply is skipped rather than guessed: a role
+    this row cannot describe is missing from the row, never reported with
+    the generalist's surface.
     """
     names = ["", "solo_agent"]
     try:
         from .subagents import subagent_type_names
         names.extend(sorted(subagent_type_names()))
+    except Exception:                                       # noqa: BLE001
+        pass
+    try:
+        from .engine import _ROLE_TOOL_WHITELIST
+        names.extend(sorted(_ROLE_TOOL_WHITELIST))
+    except Exception:                                       # noqa: BLE001
+        pass
+    try:
+        from .api_client import _ROLE_EXEC_ALLOWLIST
+        names.extend(sorted(_ROLE_EXEC_ALLOWLIST))
     except Exception:                                       # noqa: BLE001
         pass
     seen: set[str] = set()
@@ -465,21 +565,39 @@ def spread(values: list[float]) -> dict[str, Any]:
 def quality_row(runs: list[dict[str, Any]]) -> dict[str, Any]:
     """Per-agent quality from repeated benchmark runs.
 
-    *runs* is one dict per repeat, each ``{"agent": {...}, "delegation": {...}}``
-    where the agent dict maps an agent name to its per-run score (the pass
-    rate over that agent's own task set) and the delegation dict maps a task
-    id to the specialist the generalist handed it to.
+    *runs* is one dict per repeat. Two shapes are accepted, and the reason is
+    a defect measured on 2026-11-25: the first shape below was the only one
+    this module understood, and NOTHING in the product writes it, so feeding
+    it the file ``delfin-agent bench run`` actually produces recorded
+    ``agents: {}`` -- a quality half that had never read a real run.
+
+    * what ``benchmark.write_run`` writes, one result row per (task, repeat):
+      ``{"task_id", "quality_0_100", "success", "profile_name", ...}``. Grouped
+      here by ``profile_name``, which is the MODEL profile the result was
+      stamped with. That is not an agent role, and this module does not
+      pretend it is: per-agent quality needs a run in which the agent is
+      known, which is why the summary says which column it grouped by.
+    * the agent-labelled summary this command was designed for:
+      ``{"agent": {name: score}, "delegation": {...}, "delegation_expected":
+      {...}}``. A caller that knows which agent produced each score -- a
+      harness that runs the generalist and a specialist and labels the rows
+      -- writes this, and then the row IS per agent.
 
     An agent measured fewer than ``_MIN_REPEATS`` times is reported with its
     mean and marked ``is_result: false``: the number is what was seen, and
     saying it is a result would be the lie the repeats exist to prevent.
     """
-    per_agent: dict[str, list[float]] = {}
-    for run in runs:
-        for agent, value in (run.get("agent") or {}).items():
-            if value is None:
-                continue
-            per_agent.setdefault(agent, []).append(float(value))
+    labelled = [r for r in runs if isinstance(r.get("agent"), dict)]
+    if labelled:
+        per_agent: dict[str, list[float]] = {}
+        for run in labelled:
+            for agent, value in (run.get("agent") or {}).items():
+                if value is None:
+                    continue
+                per_agent.setdefault(agent, []).append(float(value))
+        grouped_by = "agent"
+    else:
+        per_agent, grouped_by = _per_agent_from_bench_rows(runs)
 
     agents: dict[str, Any] = {}
     for agent, values in sorted(per_agent.items()):
@@ -489,12 +607,52 @@ def quality_row(runs: list[dict[str, Any]]) -> dict[str, Any]:
         agents[agent] = stats
 
     delegation = delegation_accuracy(runs)
-    return {
+    out: dict[str, Any] = {
         "repeats": len(runs),
         "min_repeats": _MIN_REPEATS,
+        "grouped_by": grouped_by,
         "agents": agents,
         "delegation": delegation,
     }
+    if not agents:
+        out["note"] = (
+            f"{len(runs)} row(s) were read but none carried a score to group: "
+            "expected benchmark result rows (quality_0_100 / success) or an "
+            "`agent` mapping. This is not a quality of zero.")
+    elif grouped_by == "profile_name":
+        out["note"] = (
+            "grouped by profile_name, which is the MODEL profile stamped on "
+            "each result -- not an agent role. Per-agent quality needs a run "
+            "that records which agent produced each score.")
+    return out
+
+
+def _per_agent_from_bench_rows(
+        runs: list[dict[str, Any]]) -> tuple[dict[str, list[float]], str]:
+    """Group real benchmark result rows into per-profile quality samples.
+
+    A "repeat" here is one *file*: one complete pass of the suite. The score
+    for that repeat is the mean ``quality_0_100`` over the tasks it covered,
+    so a repeat that covered more tasks cannot outweigh one that covered
+    fewer, and a suite half-run is reported as the rate it is.
+
+    Unmeasured rows are skipped, exactly as ``aggregate_replicates`` skips
+    them: a run that never reached the model is not a failing model. When
+    every row is unmeasured the profile gets no sample at all rather than a
+    zero -- ``is_result`` stays false and the caller sees ``n: 0``.
+    """
+    per_profile: dict[str, list[float]] = {}
+    for row in runs:
+        if not isinstance(row, dict) or row.get("quality_0_100") is None:
+            continue
+        if row.get("unmeasured"):
+            continue
+        who = str(row.get("profile_name") or row.get("model") or "default")
+        per_profile.setdefault(who, []).append(float(row["quality_0_100"]))
+    # One sample per profile: this file is one repeat of the suite.
+    return ({who: [sum(values) / len(values)]
+             for who, values in per_profile.items() if values},
+            "profile_name")
 
 
 def delegation_accuracy(runs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -584,16 +742,50 @@ def compare_number(name: str, old: Optional[dict], new: Optional[dict],
                     f"{_MIN_REPEATS} are needed before a difference can be "
                     "told from the spread"))
         return out
+    # A MISSING spread is not a zero spread. A row read back from the kept
+    # history, or written by a caller that supplied a mean and an n but no
+    # stderr, has no spread to compare against; reading the absent value as
+    # 0.0 would let it through the zero-spread branch below as if its
+    # repeats had agreed, which is the opposite of what an absent value
+    # means. Measured 2026-11-25: `stderr: None` and `stderr: 0.0` took the
+    # same path.
+    missing = [side for side, entry in (("old", old), ("new", new))
+               if entry.get("stderr") is None]
+    if missing and not all(
+            entry.get("n", 0) >= _MIN_REPEATS and (entry.get("max") == entry.get("min"))
+            for entry in (old, new)):
+        out.update(
+            verdict="not a result",
+            reason=(f"{' and '.join(missing)} side carries no spread, so no "
+                    "difference can be told from noise; record the repeats "
+                    "rather than a mean"))
+        return out
     se = math.sqrt((old.get("stderr") or 0.0) ** 2
                    + (new.get("stderr") or 0.0) ** 2)
     threshold = _NOISE_SIGMAS * se
     out["threshold"] = threshold
     if se == 0.0:
-        # Every repeat agreed on both sides. That is a measurement, not an
-        # absence of one: any difference at all is outside the spread.
+        # Every repeat agreed on BOTH sides, so the spread measured here is
+        # zero. That is NOT the same as "no noise": a per-run score is a
+        # rate over a task set, and a binomial process gives identical
+        # repeats by chance -- measured on this project's own reference, one
+        # task scored 45, 93, 93 and an afternoon of re-running the same
+        # code would eventually produce three equal runs and a false
+        # direction. So a zero spread falls back to the range the repeats
+        # must have covered, which cannot be zero for a rate in [0, 1]: at
+        # least 1/n of it can move by chance.
+        floor = _zero_spread_floor(max(out["old_n"], out["new_n"]))
+        out["threshold"] = floor
+        out["reason_no_spread"] = (
+            "every repeat agreed on both sides, so the measured spread is 0; "
+            f"the 1/n floor for {max(out['old_n'], out['new_n'])} repeats "
+            "bounds it instead of treating three coincidences as certainty")
+        if abs(delta) <= floor:
+            out.update(verdict="within noise", reason=out["reason_no_spread"])
+            return out
         out["verdict"] = ("better" if (delta > 0) == higher_is_better
-                          else "worse") if delta else "within noise"
-        out["reason"] = "no spread on either side; any difference is outside it"
+                          else "worse")
+        out["reason"] = out["reason_no_spread"]
         return out
     if abs(delta) <= threshold:
         out.update(verdict="within noise",
@@ -638,6 +830,14 @@ def compare_rows(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
     for agent in sorted(set(o_agents) & set(n_agents)):
         comparisons.append(compare_number(
             f"quality.{agent}", o_agents[agent], n_agents[agent]))
+    # An agent measured on ONE side only is compared too, and comes out
+    # `not measured` rather than vanishing. Measured 2026-11-25: the
+    # intersection-only loop dropped such an agent silently, so a specialist
+    # that disappeared between two commits produced no row at all -- the
+    # absence that this whole command exists to make visible.
+    for agent in sorted(set(o_agents) ^ set(n_agents)):
+        comparisons.append(compare_number(
+            f"quality.{agent}", o_agents.get(agent), n_agents.get(agent)))
 
     o_del = ((old.get("quality") or {}).get("delegation") or {})
     n_del = ((new.get("quality") or {}).get("delegation") or {})
@@ -822,24 +1022,51 @@ def latest_for(rows: list[dict[str, Any]], commit: str) -> Optional[dict]:
 
 
 def load_bench_runs(path: Path) -> list[dict[str, Any]]:
-    """Read a ``--bench-runs`` file: a JSON list, or JSONL, of repeat dicts.
+    """Read a ``--bench-runs`` input: one path, or several separated by commas.
 
-    This is the seam that lets the quality half be tested without a model: a
-    file of measured per-run results is a first-class input, and a fake one
-    proves the noise rule exactly as the real one would be measured by it.
+    Each path is either a JSON list or JSONL. This is the seam that lets the
+    quality half be tested without a model: a file of measured per-run results
+    is a first-class input, and a fake one proves the noise rule exactly as
+    the real one would be measured by it.
+
+    SEVERAL paths, because one file is one repeat. ``delfin-agent bench run``
+    writes one file per invocation, and the noise rule needs three per side;
+    a single path cannot express that, which would have made ``is_result``
+    unreachable for every real benchmark. Each file's ``run_header`` line is
+    skipped -- it is provenance, not a result -- and unparseable lines are
+    named rather than dropped: a truncated run file that silently contributes
+    fewer rows is a measurement of the wrong population.
     """
-    text = Path(path).read_text(encoding="utf-8")
-    stripped = text.strip()
-    if not stripped:
-        return []
-    if stripped.startswith("["):
-        data = json.loads(stripped)
-        return [d for d in data if isinstance(d, dict)]
-    runs = []
-    for line in stripped.splitlines():
-        line = line.strip()
-        if line:
-            runs.append(json.loads(line))
+    runs: list[dict[str, Any]] = []
+    for one in str(path).split(","):
+        one = one.strip()
+        if not one:
+            continue
+        file_path = Path(one)
+        text = file_path.read_text(encoding="utf-8")
+        stripped = text.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("["):
+            data = json.loads(stripped)
+            runs.extend(d for d in data if isinstance(d, dict))
+            continue
+        for number, line in enumerate(stripped.splitlines(), 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"{file_path}:{number}: not JSON ({exc.msg}) -- a truncated "
+                    "run file is a different population, not a shorter one"
+                ) from exc
+            if not isinstance(parsed, dict):
+                continue
+            if "run_header" in parsed and len(parsed) == 1:
+                continue
+            runs.append(parsed)
     return runs
 
 

@@ -5523,8 +5523,16 @@ def cmd_metrics(args: argparse.Namespace) -> int:
     from . import commit_metrics as _cm
 
     tree = Path(getattr(args, "tree", "") or ".")
-    action = getattr(args, "metrics_action", "record") or "record"
+    action = getattr(args, "metrics_action", "") or ""
     history = getattr(args, "history", "") or ""
+
+    if not action:
+        # Bare `metrics`: answer the question that was asked. `metrics record`
+        # is the only action that could be meant by default, but running it
+        # here would spend a minute measuring a tree for someone who wanted
+        # to see the options, so the options are what is printed.
+        _print_metrics_usage()
+        return 0
 
     if action == "record":
         runs = None
@@ -5594,6 +5602,29 @@ def cmd_metrics(args: argparse.Namespace) -> int:
 
     print(f"ERROR: unknown metrics action {action!r}", file=sys.stderr)
     return 2
+
+
+def _print_metrics_usage() -> None:
+    """What `metrics` can do, printed when it is asked with no action."""
+    print(
+        "delfin-agent metrics -- one row of numbers per commit, per agent\n"
+        "\n"
+        "  metrics record   [--tree DIR] [--bench-runs FILE] [--history DIR]\n"
+        "                   [--commit LABEL] [--json]\n"
+        "      Measure a tree and append one row: how many capabilities the\n"
+        "      product does not reach, what the generalist and every agent is\n"
+        "      offered, and quality with its spread when --bench-runs is given.\n"
+        "\n"
+        "  metrics show     [--commit PREFIX] [--history DIR] [--json]\n"
+        "      Print a kept row (default: the newest).\n"
+        "\n"
+        "  metrics compare  [--old PREFIX] [--new PREFIX] [--history DIR]\n"
+        "                   [--json]\n"
+        "      Two commits side by side: better / worse / within noise per\n"
+        "      number, the noise taken from the spread of the repeats.\n"
+        "\n"
+        "A single run is not a result: below 3 repeats per side a quality row\n"
+        "reads `not a result`, whatever the means say.")
 
 
 def _metrics_summary_line(row: dict) -> str:
@@ -6857,6 +6888,12 @@ def build_parser() -> argparse.ArgumentParser:
     met_cmp.add_argument("--json", action="store_true",
                          help="Print the comparison as JSON")
     met_cmp.set_defaults(func=cmd_metrics)
+    # A bare `metrics` must print what it can do. Without this the subparser
+    # leaves no `func` and main() raises `AttributeError: 'Namespace' object
+    # has no attribute 'func'` -- measured 2026-11-25. Defaulting the action
+    # to `record` instead would make the bare command spend 60 s measuring a
+    # tree for someone who asked what the options were.
+    met.set_defaults(func=cmd_metrics, metrics_action="")
 
     # friction — ranked refusals, slow turns and silent exits, with tasks
     fric = sub.add_parser(
