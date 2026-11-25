@@ -174,11 +174,25 @@ test-only	is_safe	delfin/agent/readonly_pipeline.py:391
 # may modify", and package r4 re-measured it on 2026-11-25 from the tool entry
 # (_doc_executor.execute) in this tree: echo x > ~/.bashrc, ls > ../escape.txt
 # and ls > /tmp/elsewhere.txt all REFUSE, attended and unattended, and no file
-# appeared at any of the three targets. The flag class ASKS attended;
-# unattended it runs only where a layer
-# confines it, and with no layer _REFUSAL_BYPASS (api_client.py:31239) stops
-# it ("runs a command only where bubblewrap, Landlock or Seatbelt confines
-# it, and none does here"), measured exit 126. Controls that still
+# appeared at any of the three targets.
+#
+# The flag class is a DIFFERENT answer, and the one this note got wrong on
+# 2026-11-25 (an earlier revision claimed a confirm dialog was raised): with
+# the cage holding the command it runs unasked, attended included, exactly as
+# `bash run.sh`, `./run.sh` and `make` do -- the caged rule admits a command
+# whose text names nothing on _CAGED_UNASKED_EXCLUDED_WORDS, and `sh` is not on
+# that list. That is the documented caged-command policy (the cage bounds what
+# the program can reach), not an unguarded run. Without a layer that confines
+# it the answer is the one the note asked for: a dialog attended, and
+# _REFUSAL_BYPASS (api_client.py:31239) refuses unattended ("runs a command
+# only where bubblewrap, Landlock or Seatbelt confines it, and none does
+# here"), measured exit 126. Re-measured 2026-11-25 three ways: through
+# _run_permission_gate with the isolation decision pinned (cage: admitted, 0
+# dialogs, attended and headless; no cage: 1 dialog attended, refusal
+# headless), through _gate_mcp_tool (the shell the real runs used: STOP on
+# every spelling, attending or not), and in two real product runs, where
+# `sort --compress-program=./p.sh a.txt --` RAN on both sides while the
+# outside-target write was refused on both. Controls that still
 # run at the tool entry: ls -la, git status, cat f, grep x f, grep -r, pytest,
 # ls > /dev/null, ls 2>/dev/null, and in-workspace redirects (asked, granted).
 #
