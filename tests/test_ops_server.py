@@ -206,9 +206,13 @@ def test_pipeline_run_executes_with_allow_mutate(cli_recorder):
 
 
 def test_pipeline_prepare_executes_with_allow_mutate(cli_recorder):
+    """The CONTROL file travels as ``--control``; see tests/test_api.py."""
     ops_server.tool_pipeline_prepare(control_file="X.txt", overwrite=True,
                                      allow_mutate=True)
-    assert cli_recorder[0] == ["--define", "X.txt", "--overwrite"]
+    argv = cli_recorder[0]
+    assert "--control" in argv, argv
+    assert argv[argv.index("--control") + 1] == "X.txt", argv
+    assert argv[argv.index("--define") + 1] == "input.txt", argv
 
 
 def test_run_orca_input_executes_with_allow_mutate(cli_recorder):

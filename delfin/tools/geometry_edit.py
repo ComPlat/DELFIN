@@ -709,7 +709,14 @@ def merge_fragments(a: Geom, b: Geom, *rest: Geom) -> Tuple[Geom, dict]:
     out = Geom(symbols=symbols, coords=coords,
                charge=a.charge, multiplicity=a.multiplicity,
                comment=a.comment, bonds=bonds)
-    return out, {"op": "merge_fragments", "atoms_moved": [], "added": range(len(a), len(out))}
+    # ``added`` is a list of atom indices, not a range: the change dict is
+    # part of the tool's JSON answer (delfin/api.py:geometry_merge ->
+    # ops_server._dumps), and a range is not JSON-serializable, so every
+    # geometry_merge call answered "Object of type range is not JSON
+    # serializable" instead of the merged structure. The mirror op above
+    # already wraps its indices in list() for the same reason.
+    return out, {"op": "merge_fragments", "atoms_moved": [],
+                 "added": list(range(len(a), len(out)))}
 
 
 def align_rmsd(mobile: Geom, reference: Geom):

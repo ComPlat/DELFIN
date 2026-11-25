@@ -88,17 +88,25 @@ def test_an_installation_that_already_ran_is_repaired(home):
         assert _mode(level) == 0o700, level
 
 
-def test_a_home_that_does_not_exist_yet_is_created_too(home):
+def test_a_home_that_does_not_exist_yet_is_created_too(home, monkeypatch):
     """The first run on a machine. Found by a test, not by a probe: a
     manual check used a home tempfile had already created, so the root's
-    own parent always existed and the hole stayed invisible."""
+    own parent always existed and the hole stayed invisible.
+
+    The fresh home is installed through the SAME ``monkeypatch`` the
+    ``home`` fixture uses. Undoing it by hand with ``del M.Path.home``
+    removed the fixture's own undo target, so the fixture's teardown raised
+    ``AttributeError: type object 'Path' has no attribute 'home'`` -- the
+    run reported a cleanup accident instead of anything about the code.
+    Measured on the base: ``12 passed, 1 error``. Measured separately: the
+    later-test poisoning that was suspected does NOT happen on this
+    interpreter (a following test still resolves ``Path.home`` through
+    ``pathlib``'s base class), so this is a broken teardown, not a leak.
+    """
     fresh = home / "not-yet"
     d = fresh / ".delfin" / "projects" / "slug" / "memory"
-    M.Path.home = classmethod(lambda cls: fresh)
-    try:
-        M._private_dir(d)
-    finally:
-        del M.Path.home
+    monkeypatch.setattr(M.Path, "home", classmethod(lambda cls: fresh))
+    M._private_dir(d)
     assert d.is_dir(), "a store under a home that did not exist was not made"
     assert _mode(fresh / ".delfin") == 0o700
 
