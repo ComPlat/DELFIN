@@ -1,0 +1,16 @@
+{
+  "probes": [
+    {
+      "name": "guard-exists-and-names-offender",
+      "prompt": "Does this repository contain a test that compiles every .py file under delfin/ with warnings turned into errors? If it does, name the file and run it, then report its result verbatim (pass/fail counts and any file:line it names). If it does not, say plainly that no such test exists. Do not edit any file and do not fix anything you find.",
+      "workspace": "repo",
+      "turns": 20
+    },
+    {
+      "name": "compile-offenders",
+      "prompt": "Compile every .py file under delfin/ in this repository with Python's compile(source, path, 'exec') inside warnings.simplefilter('error'), and report the complete list of offending files with their line numbers and messages, then state in one sentence whether there are any offenders at all. Do not edit any file and do not fix anything.",
+      "workspace": "repo",
+      "turns": 20
+    }
+  ]
+}
