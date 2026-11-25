@@ -321,7 +321,18 @@ _BASELINE_TOKENS = 11_422
 # 4,408 tokens against 11,865. The catalogue ceiling is kept because a
 # cold tool's schema still costs when it is described, and the ceiling
 # that matters now is the SHIPPED one below.
-_TOKEN_BUDGET = 11_865
+# 11_865 -> 11_873 (2026-11-25, +8 measured): the `subagent` description.
+# It is DERIVED from the live preset registry (tool_catalog._subagent_
+# writers), and `chemotion-eln` ships as a writer in mode `default`. The
+# +8 is the words that name it in the "All read-only except ..." list.
+# Nothing in the catalogue itself was added: the five ELN schemas were
+# measured at 444 tokens on top (11_865 -> 12_317) and removed instead,
+# because no `_ELN_TOOL_NAMES` dispatch branch existed for them -- the
+# tools ride on the delfin-ops MCP surface, where the other 100+ typed
+# tools already live. `mode: plan` would have avoided the +8 and is NOT
+# available: plan mode refuses any name outside _PLAN_DELEGATE_TOOLS
+# (web_search, subagent_message), so it would block `eln_draft` itself.
+_TOKEN_BUDGET = 11_873
 
 #: What actually rides on every request once the cold schemas are
 #: deferred: the hot set plus the always-sent name listing. Measured
@@ -441,7 +452,11 @@ def test_tool_schema_is_at_least_35_percent_below_baseline():
     # job -- the catalogue stays 34.9 % below the pre-compaction
     # baseline -- and it is raised by the measured amount rather than
     # by a round number, so the next addition has to measure itself too.
-    assert total <= _BASELINE_TOKENS * 0.651, (
+    # 0.651 -> 0.6517 (2026-11-25): the +8 tokens of the derived
+    # `subagent` description that names `chemotion-eln` as a writer;
+    # measured 7_443 / 11_422 = 0.651637, so the catalogue stays 34.8 %
+    # below the baseline.
+    assert total <= _BASELINE_TOKENS * 0.6517, (
         f"{total} tokens (excluding tools added after the compaction) is "
         f"only {100 * (1 - total / _BASELINE_TOKENS):.1f}% below the "
         f"{_BASELINE_TOKENS}-token baseline")
@@ -454,8 +469,16 @@ def test_post_compaction_tools_are_named_and_present():
 
 def test_no_single_tool_schema_is_oversized():
     """A single tool must not eat a disproportionate slice of the surface."""
+    # `subagent` is 452, raised from the 450 ceiling for the 2 measured
+    # tokens over: its description is derived from the preset registry,
+    # and naming `chemotion-eln` among the writer types is what makes it
+    # 452. The alternative -- leaving the specialist out of that sentence
+    # -- is a description that is FALSE about what a delegate may write,
+    # which is the defect _subagent_writers exists to prevent.
     for name, entry in tool_schema_token_report()["tools"].items():
-        assert entry["total"] <= 450, f"{name} schema is {entry['total']} tokens"
+        ceiling = 452 if name == "subagent" else 450
+        assert entry["total"] <= ceiling, (
+            f"{name} schema is {entry['total']} tokens (ceiling {ceiling})")
 
 
 # ---------------------------------------------------------------------------

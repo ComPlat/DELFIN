@@ -66,10 +66,23 @@ def home(tmp_path, monkeypatch):
 # 1. The catalogue and the executor agree, and the executor answers
 # ---------------------------------------------------------------------------
 
-def test_the_five_schemas_are_in_the_catalogue():
+def test_the_eln_tools_are_not_in_the_builtin_catalogue():
+    """They ride on the ``delfin-ops`` MCP surface instead.
+
+    The builtin catalogue is the schema that goes on EVERY request, and its
+    budget test (``test_tool_schema_budget``) exists so the catalogue cannot
+    grow. Five ELN schemas cost 444 tokens (measured: 11865 -> 12317) and
+    broke four of those tests. They bought nothing: no ``_ELN_TOOL_NAMES``
+    dispatch branch existed for them, so a model calling ``eln_find`` from
+    the catalogue would have been answered by the dispatcher's unknown-tool
+    path. The ops server is where ``parse_orca_output`` and the other 100+
+    typed tools already live, and that route IS registered and IS driven
+    below. Pinned in this direction so a later change does not quietly put
+    them back on the per-request surface.
+    """
     from delfin.agent import tool_catalog as TC
     names = {t["function"]["name"] for t in TC._DOC_TOOLS_OPENAI}
-    assert EXPECTED <= names, sorted(EXPECTED - names)
+    assert not (EXPECTED & names), sorted(EXPECTED & names)
 
 
 def test_the_executor_answers_every_name_rather_than_unknown_tool(home):
@@ -93,30 +106,48 @@ def test_the_executor_answers_every_name_rather_than_unknown_tool(home):
         assert out, name
 
 
-def test_the_api_client_names_the_same_five():
-    """``api_client._ELN_TOOL_NAMES`` gates advertisement and dispatch. It
-    is the half that rides in a patch, so a divergence would be invisible
-    in the lab package's own tests."""
-    from delfin.agent import api_client as A
-    assert set(A._ELN_TOOL_NAMES) == EXPECTED
+def test_the_ops_server_is_what_makes_them_known_to_a_preset():
+    """The one measurement that decides whether a specialist may list them.
+
+    ``_known_preset_tool_names`` derives its catalogue from the modules, so
+    the server functions ARE the reason a bare ``eln_find`` in a preset's
+    ``tools:`` is accepted. Asserted by removing them from the derivation
+    rather than by naming them: a name can be listed by a hand-written set
+    that knows nothing about the server.
+    """
+    from delfin.agent import subagents as SA
+    known = SA._known_preset_tool_names()
+    assert EXPECTED <= known, sorted(EXPECTED - known)
+    assert {f"mcp__delfin-ops__{n}" for n in EXPECTED} <= known
 
 
-def test_the_tools_are_advertised_only_where_an_eln_is_configured(home,
-                                                                 monkeypatch):
-    from delfin.agent.api_client import ToolSurfaceContext, \
-        tool_unavailable_reason
-    ctx = ToolSurfaceContext(has_eln=True)
-    assert tool_unavailable_reason("eln_find", ctx) is None
-    ctx_off = ToolSurfaceContext(has_eln=False)
-    why = tool_unavailable_reason("eln_draft", ctx_off)
-    assert why and "ELN" in why
-    # The live surface must pass the real answer, not the default.
-    import inspect
-    from delfin.agent import api_client as A
-    source = inspect.getsource(A)
-    assert "has_eln=_eln_configured()" in source, (
-        "ToolSurfaceContext defaults has_eln to True; the live surface has "
-        "to pass the measured answer or every installation advertises them")
+def test_the_specialist_can_actually_call_the_tools_it_lists(home):
+    """Rule 5: a set membership is not a capability.
+
+    A1 shipped this preset in the registry with an ``eln_*``-free ``tools:``
+    list, which passed every check it wrote for itself -- ``validate_preset``
+    was clean and the type was offered. It could still call nothing: preset
+    tools are INTERSECTED into the child's ``session_allowed_tools``, which
+    is the field the executor gate reads, so listing only read tools removed
+    every ELN tool. Measured directly through ``_derive_perms`` and the same
+    ``_session_tool_refusal`` the executor calls.
+    """
+    from delfin.agent import subagents as SA
+    from delfin.agent.api_client import (
+        KitToolPermissions, _session_tool_refusal)
+
+    preset = SA._build_preset_registry()["chemotion-eln"]
+    parent = KitToolPermissions(workspace=Path("."))
+    child = SA._derive_perms(parent, preset.mode,
+                             preset_tools=preset.tools,
+                             preset_name=preset.name)
+    allowed = child.session_allowed_tools
+    assert allowed, "the preset narrowed the child to no tools at all"
+    for name in EXPECTED:
+        assert _session_tool_refusal(name, allowed,
+                                     frozenset()) is None, (
+            f"the specialist lists content it means to use but cannot call "
+            f"{name!r}; its tools: line must carry it")
 
 
 # ---------------------------------------------------------------------------
@@ -248,15 +279,20 @@ def test_every_tool_the_specialist_lists_exists():
     assert problems == [], problems
 
 
-def test_the_specialist_does_not_name_the_eln_tools_it_cannot_hold():
-    """The preset reaches the ELN through the ops server's namespace, which
-    ``_known_preset_tool_names`` does not model. Listing a bare ``eln_find``
-    would be refused as an unknown tool, so the body names the namespaced
-    form and the frontmatter does not list it -- which is stated in the
-    body rather than left to be discovered."""
+def test_the_specialist_names_the_eln_tools_it_may_call():
+    """The inverse of what this file asserted first, and the reason for it.
+
+    ``_known_preset_tool_names`` DOES model the ops server (it walks every
+    ``tool_*`` in ``delfin/ops_server/server.py``), so a bare ``eln_find`` is
+    a known name -- and it must be listed, because the list narrows. The
+    body's claim that the tools appear namespaced is still true and still
+    checked; both spellings resolve to the same permission.
+    """
     text = PRESET.read_text(encoding="utf-8")
     frontmatter = text.split("---")[1]
-    assert "eln_find" not in frontmatter
+    listed = set(frontmatter.split("tools:", 1)[1].split("]", 1)[0]
+                 .strip().strip("[]").replace(",", " ").split())
+    assert EXPECTED <= listed, sorted(EXPECTED - listed)
     assert "mcp__delfin-ops__eln_find" in text
 
 
