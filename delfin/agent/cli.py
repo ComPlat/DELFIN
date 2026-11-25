@@ -5505,6 +5505,114 @@ def cmd_prompt_size(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_metrics(args: argparse.Namespace) -> int:
+    """Record, show or compare one commit's row of numbers, per agent.
+
+    Input: the tree to measure (``--tree``, default the current directory), an
+    optional ``--bench-runs`` file of repeated benchmark results, and
+    ``--history`` for where rows are kept. Output: one line of the kept
+    history, or the JSON row on stdout with ``--json``; exit 0.
+
+    Why this command exists: the three numbers it writes -- unreached
+    capabilities, the surface each agent is offered, and quality with its
+    spread -- were each computable and none of them was written down for a
+    commit, so "did the agents get better" had no data. ``compare`` is the
+    other half: it calls a difference better or worse ONLY when it is larger
+    than the spread of the repeats says it could be by chance.
+    """
+    from . import commit_metrics as _cm
+
+    tree = Path(getattr(args, "tree", "") or ".")
+    action = getattr(args, "metrics_action", "record") or "record"
+    history = getattr(args, "history", "") or ""
+
+    if action == "record":
+        runs = None
+        bench = getattr(args, "bench_runs", "") or ""
+        if bench:
+            try:
+                runs = _cm.load_bench_runs(Path(bench))
+            except Exception as exc:                        # noqa: BLE001
+                print(f"ERROR: cannot read --bench-runs {bench}: {exc}",
+                      file=sys.stderr)
+                return 2
+        row = _cm.build_row(tree, runs=runs,
+                            commit=getattr(args, "commit", "") or "")
+        if getattr(args, "json", False):
+            print(_cm.to_json(row))
+        else:
+            summary = _metrics_summary_line(row)
+            print(summary)
+        try:
+            path = _cm.record_row(row, Path(history) if history else None)
+        except OSError as exc:
+            # A round that was measured and not kept is the defect, so this
+            # is a failure rather than a warning: exiting 0 would let CI log
+            # a successful record that left nothing behind.
+            print(f"ERROR: measured but could not keep the row: {exc}",
+                  file=sys.stderr)
+            return 4
+        print(f"kept in {path}", file=sys.stderr)
+        return 0
+
+    path = _cm.history_path(Path(history) if history else None)
+
+    if action == "show":
+        rows = _cm.read_rows(path)
+        if not rows:
+            print(f"no rows in {path} -- run `delfin-agent metrics record` "
+                  f"first", file=sys.stderr)
+            return 1
+        commit = getattr(args, "commit", "") or ""
+        row = _cm.latest_for(rows, commit) if commit else rows[-1]
+        if row is None:
+            print(f"no kept row for commit {commit!r} in {path}",
+                  file=sys.stderr)
+            return 1
+        print(_cm.to_json(row) if getattr(args, "json", False)
+              else _metrics_summary_line(row))
+        return 0
+
+    if action == "compare":
+        rows = _cm.read_rows(path)
+        if not rows:
+            print(f"no rows in {path} -- nothing to compare", file=sys.stderr)
+            return 1
+        old_commit = getattr(args, "old", "") or ""
+        new_commit = getattr(args, "new", "") or ""
+        old = _cm.latest_for(rows, old_commit) if old_commit else rows[0]
+        new = _cm.latest_for(rows, new_commit) if new_commit else rows[-1]
+        missing = [c for c, r in ((old_commit, old), (new_commit, new)) if r is None]
+        if missing:
+            print(f"no kept row for {', '.join(repr(m) for m in missing)}",
+                  file=sys.stderr)
+            return 1
+        result = _cm.compare_rows(old, new)
+        print(_cm.to_json(result) if getattr(args, "json", False)
+              else _cm.format_comparison(result))
+        return 0
+
+    print(f"ERROR: unknown metrics action {action!r}", file=sys.stderr)
+    return 2
+
+
+def _metrics_summary_line(row: dict) -> str:
+    """One line: what the row is about, before the detail is asked for."""
+    reach = row.get("reachability") or {}
+    quality = row.get("quality") or {}
+    agents = row.get("agents") or {}
+    unreached = reach.get("unmounted")
+    ceiling = reach.get("ceiling")
+    repeats = quality.get("repeats") or 0
+    return (
+        f"commit {row.get('commit', '?')}: "
+        f"{unreached} unreached capabilit"
+        f"{'y' if unreached == 1 else 'ies'} (ceiling {ceiling}), "
+        f"{len(agents)} agent surface{'s' if len(agents) != 1 else ''}, "
+        f"quality {'not measured' if not repeats else f'from {repeats} repeats'}"
+    )
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     """What one agent session actually did: tools, files, commands,
     tests, denials, cost. `--json` prints the SessionReport itself,
@@ -6702,6 +6810,53 @@ def build_parser() -> argparse.ArgumentParser:
     psize.add_argument("--mode", default="solo",
                        help="Mode id to compose for (default: solo)")
     psize.set_defaults(func=cmd_prompt_size)
+
+    # metrics — one row of numbers per commit: reachability, what each agent
+    # is offered, and quality with its spread. `compare` is the half that
+    # decides better / worse / within noise.
+    met = sub.add_parser(
+        "metrics",
+        help="Record, show or compare a commit's numbers per agent: unreached "
+             "capabilities, the tool surface and prompt size of the "
+             "generalist and every specialist, and quality with its spread",
+    )
+    met_sub = met.add_subparsers(dest="metrics_action", required=False)
+    met_rec = met_sub.add_parser(
+        "record", help="Measure this tree and append one row to the history")
+    met_rec.add_argument("--tree", default="",
+                         help="Tree to measure (default: the current directory)")
+    met_rec.add_argument("--bench-runs", default="",
+                         help="JSON list or JSONL of repeated benchmark "
+                              "results; without it the reachability half is "
+                              "recorded and quality is marked not measured")
+    met_rec.add_argument("--history", default="",
+                         help="History directory or .jsonl file (default: "
+                              "~/.delfin/metrics_history)")
+    met_rec.add_argument("--commit", default="",
+                         help="Commit label for the row (default: read from "
+                              "the tree, with -dirty when it has changes)")
+    met_rec.add_argument("--json", action="store_true",
+                         help="Print the row as JSON")
+    met_rec.set_defaults(func=cmd_metrics)
+    met_show = met_sub.add_parser("show", help="Print a kept row")
+    met_show.add_argument("--commit", default="",
+                          help="Commit prefix to look up (default: the newest)")
+    met_show.add_argument("--history", default="", help="History to read")
+    met_show.add_argument("--json", action="store_true",
+                          help="Print the row as JSON")
+    met_show.set_defaults(func=cmd_metrics)
+    met_cmp = met_sub.add_parser(
+        "compare",
+        help="Two commits side by side: better / worse / within noise, the "
+             "noise taken from the spread of the repeats")
+    met_cmp.add_argument("--old", default="",
+                         help="Older commit prefix (default: the oldest row)")
+    met_cmp.add_argument("--new", default="",
+                         help="Newer commit prefix (default: the newest row)")
+    met_cmp.add_argument("--history", default="", help="History to read")
+    met_cmp.add_argument("--json", action="store_true",
+                         help="Print the comparison as JSON")
+    met_cmp.set_defaults(func=cmd_metrics)
 
     # friction — ranked refusals, slow turns and silent exits, with tasks
     fric = sub.add_parser(

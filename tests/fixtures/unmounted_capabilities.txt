@@ -179,7 +179,6 @@ test-only	is_safe	delfin/agent/readonly_pipeline.py:371
 # scopes. No product path is equivalent to an explicit clear; the office
 # tool runs are the consumers and keep needing it between turns.
 test-only	reset_figure_ledger	delfin/agent/office.py:6098
-test-only	role_tool_surface_report	delfin/agent/api_client.py:12107
 # w36-r2 (2026-11-22): no product path compares a workflow OBJECT's name.
 # grade_run (w20_common.py) calls only charge_spin_consistent and
 # all_steps_terminated; workflow_grader.grade checks name PRESENCE only
