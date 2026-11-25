@@ -105,10 +105,9 @@ class _Perms:
 
 
 def _own_job_pids(pid: int):
-    """The seam BOTH ``own_listening_sockets`` and ``own_listening_ports``
-    read: with the session's job pid named, each derives its answer from the
-    recorded /proc through its own code, so a test never patches the rule it
-    is measuring."""
+    """The seam ``own_listening_sockets`` reads: with the session's job pid
+    named, it derives its answer from the recorded /proc through its own code,
+    so a test never patches the rule it is measuring."""
     return lambda sid: {pid} if sid == "sess-own" else set()
 
 

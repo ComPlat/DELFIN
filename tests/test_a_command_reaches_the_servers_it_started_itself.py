@@ -201,7 +201,9 @@ def test_a_post_to_a_background_jobs_server_is_not_an_upload(monkeypatch):
 
 
 def test_the_proxy_asks_the_pid_that_forwarded_the_request(proc, monkeypatch):
-    monkeypatch.setattr(BJ, "own_listening_ports", lambda sid: set())
+    # No background job of this session holds a listener, so the only route
+    # left is the peer pid: the sandbox helper that forwarded the request.
+    monkeypatch.setattr(BJ, "own_listening_sockets", lambda sid: set())
     proc.process(100, socket_inodes=["11"]).listener("127.0.0.1", 9300, "11")
     # The helper forwards for the command below it; its own sockets, such
     # as the forwarder, do not make a port the command's.
