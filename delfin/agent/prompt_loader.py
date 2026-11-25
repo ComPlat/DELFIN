@@ -956,14 +956,19 @@ class PromptLoader:
 
         On by default; ``agent.commit_coauthor = false`` turns it off, and
         the user's own instructions or remembered preferences win over it.
-        The executor now adds the same trailer mechanically to ``git
-        commit`` the agent runs, so this line is a fallback for the paths
-        that do not go through the bash executor.
+        A session inside a wave or swarm job is off unless
+        ``agent.swarm_commit_coauthor`` says otherwise: its commits are merged
+        as the wave's work, and the line is public text. The executor adds the
+        same trailer mechanically to ``git commit`` the agent runs, so this
+        block is a fallback for the paths outside the bash executor -- and both
+        read ONE decision, ``commit_attribution.commit_coauthor_for``, because
+        the two disagreed for a whole release while each read the settings.
         """
         try:
             from delfin.user_settings import load_settings
+            from delfin.agent.commit_attribution import commit_coauthor_for
             agent = (load_settings() or {}).get("agent") or {}
-            if not bool(agent.get("commit_coauthor", True)):
+            if not commit_coauthor_for(agent):
                 return ""
         except Exception:
             pass
