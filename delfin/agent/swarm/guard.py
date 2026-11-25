@@ -211,7 +211,7 @@ def _tick(start_tasks: bool) -> dict:
                                         + "; ".join(loud[:3]))
         _save(st)
         return did
-    for run in wave.runs():
+    for run in wave.runs_oldest_first():
         rd: dict = {}
         state = wave.load_state(run)
         # Only a run started through this interface (wave_start sets it) is
