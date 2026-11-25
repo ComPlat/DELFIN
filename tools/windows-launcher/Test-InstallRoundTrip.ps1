@@ -81,7 +81,7 @@ try {
     $package = Join-Path $root 'invited package'
     [void](New-Item -ItemType Directory -Path $package)
     Get-ChildItem -LiteralPath $PSScriptRoot -File | Copy-Item -Destination $package
-    $hostKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGxVZr1q3F0c0o1u2y3m4n5p6q7r8s9t0u1v2w3x4y5z'
+    $hostKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGxVZr1q3F0c0o1u2y3m4n5p6q7r8s9t0u1v2w3x4y5z'  # secret-guard: allow (synthetic host key, not any machine's)
     $inviteJson = @{ target='delfin@192.0.2.10'; name='anna'; expires='209901010000Z'; host_keys=@($hostKey) }
     ConvertTo-Json -InputObject $inviteJson | Set-Content -LiteralPath (Join-Path $package 'invite.json') -Encoding ASCII
     # A real key, so OpenSSH's own permission check can be run on the copy.

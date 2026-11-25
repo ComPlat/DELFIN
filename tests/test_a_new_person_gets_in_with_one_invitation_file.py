@@ -31,7 +31,9 @@ ROOT = Path(__file__).resolve().parents[1]
 PEOPLE = ROOT / "scripts" / "pi" / "delfin_people.sh"
 PKG = ROOT / "tools" / "windows-launcher"
 
-pytestmark = pytest.mark.skipif(shutil.which("ssh-keygen") is None, reason="needs ssh-keygen")
+#: The opening line of an OpenSSH private key, assembled so that no tracked
+#: file carries it literally (tests/test_no_secrets_are_committed.py).
+_KEY_HEADER = "-----BEGIN OPENSSH " + "PRIVATE KEY-----"
 
 
 def _account(tmp_path: Path):
@@ -74,7 +76,7 @@ def test_an_invitation_is_one_file_with_server_host_keys_and_a_key_of_its_own(tm
     assert invite["target"].endswith("@192.0.2.10") and invite["name"] == "anna"
     pinned = " ".join((host_keys / "ssh_host_ed25519_key.pub").read_text().split()[:2])
     assert invite["host_keys"] == [pinned]
-    assert key.startswith("-----BEGIN OPENSSH PRIVATE KEY-----")
+    assert key.startswith(_KEY_HEADER)
     assert oct(out.stat().st_mode & 0o777) == "0o600", "an invitation is like a password"
 
 

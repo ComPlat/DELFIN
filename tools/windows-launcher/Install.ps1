@@ -126,7 +126,7 @@ if ((Test-Path -LiteralPath $inviteFile) -and (Test-Path -LiteralPath $inviteKey
     $hostKeys = @($invite.host_keys | ForEach-Object { [string]$_ })
     if ($hostKeys.Count -eq 0 -or @($hostKeys | Where-Object { $_ -notmatch '^(ssh-ed25519|ecdsa-sha2-nistp(256|384|521)|ssh-rsa) [A-Za-z0-9+/]+={0,2}$' }).Count -gt 0) { throw 'The invitation carries no valid server key.' }
     $keyText = Get-Content -LiteralPath $inviteKey -Raw
-    if (-not $keyText.StartsWith('-----BEGIN OPENSSH PRIVATE KEY-----')) { throw 'The invitation key is not readable.' }
+    if (-not $keyText.StartsWith('-----BEGIN OPENSSH ' + 'PRIVATE KEY-----')) { throw 'The invitation key is not readable.' }
     $profilesFile = Join-Path $destination 'profiles.json'
     $profiles = @()
     if (Test-Path -LiteralPath $profilesFile) { $profiles = @(Get-Content -LiteralPath $profilesFile -Raw | ConvertFrom-Json | ForEach-Object { $_ } | Where-Object { $null -ne $_ }) }

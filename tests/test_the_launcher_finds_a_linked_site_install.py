@@ -24,6 +24,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import child_env
+
 ROOT = Path(__file__).resolve().parents[1] / "tools" / "windows-launcher"
 
 
@@ -31,7 +33,7 @@ def _site_install(tmp_path: Path, *, with_agent: bool) -> tuple[Path, Path]:
     """/opt/<venv> with DELFIN in its site-packages and delfin-voila linked
     into a bin directory of its own, like /usr/local/bin."""
     venv = tmp_path / "opt" / "delfin311"
-    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True)
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True, env=child_env(tmp_path))
     site = next((venv / "lib").glob("python3*/site-packages"))
     modules = ["delfin/__init__.py", "delfin/cli_voila.py"]
     if with_agent:
@@ -59,7 +61,9 @@ def _run(tmp_path: Path, local_bin: Path):
     payload = tmp_path / "copied" / "remote_launcher.py"
     payload.parent.mkdir()
     payload.write_text('import sys; print("CHOSEN=" + sys.executable)\n')
-    env = {k: v for k, v in os.environ.items()
+    # child_env: the bootstrap starts DELFIN's python; its ~/.delfin sinks
+    # resolve in the test's own home, never the real one.
+    env = {k: v for k, v in child_env(tmp_path).items()
            if k not in {"VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONPATH", "DELFIN_REPO", "MAMBA_ROOT_PREFIX"}}
     env.update(PATH=f"{local_bin}:/usr/bin:/bin", HOME=str(home))
     return subprocess.run(["bash", str(ROOT / "remote_bootstrap.sh"), "0", "", "", str(payload), "dashboard"],
@@ -87,10 +91,10 @@ def test_an_install_without_the_agent_is_named_as_too_old(tmp_path):
     assert "Not found" not in result.stderr
 
 
-def _environment(prefix: Path, *, voila: bool = True) -> Path:
+def _environment(tmp_path: Path, prefix: Path, *, voila: bool = True) -> Path:
     """A Python environment at prefix with the DELFIN modules the launcher
     needs, and voila (which serves the dashboard) unless told otherwise."""
-    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(prefix)], check=True)
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(prefix)], check=True, env=child_env(tmp_path))
     site = next((prefix / "lib").glob("python3*/site-packages"))
     modules = ["delfin/__init__.py", "delfin/cli_voila.py", "delfin/agent/__init__.py",
                "delfin/agent/where.py", "delfin/dashboard/__init__.py", "delfin/dashboard/session.py"]
@@ -105,7 +109,7 @@ def _environment(prefix: Path, *, voila: bool = True) -> Path:
 def test_a_micromamba_environment_named_delfin_is_found_without_a_location(tmp_path):
     # A server whose DELFIN lives in ~/micromamba/envs/delfin, not activated
     # by the login shell: before, the location had to be typed in by hand.
-    python = _environment(tmp_path / "home" / "micromamba" / "envs" / "delfin")
+    python = _environment(tmp_path, tmp_path / "home" / "micromamba" / "envs" / "delfin")
     empty_bin = tmp_path / "bin"
     empty_bin.mkdir()
 
@@ -116,8 +120,8 @@ def test_a_micromamba_environment_named_delfin_is_found_without_a_location(tmp_p
 
 
 def test_two_environments_named_delfin_are_listed_not_guessed(tmp_path):
-    first = _environment(tmp_path / "home" / "micromamba" / "envs" / "delfin")
-    second = _environment(tmp_path / "home" / "miniconda3" / "envs" / "delfin")
+    first = _environment(tmp_path, tmp_path / "home" / "micromamba" / "envs" / "delfin")
+    second = _environment(tmp_path, tmp_path / "home" / "miniconda3" / "envs" / "delfin")
     empty_bin = tmp_path / "bin"
     empty_bin.mkdir()
 
@@ -132,8 +136,8 @@ def test_the_environment_that_can_serve_the_dashboard_wins(tmp_path):
     # Measured on a server: envs/delfin had DELFIN but no voila, envs/delfin-voila
     # had both. The first was taken, and the dashboard died inside tmux with a
     # message about --strict-port.
-    _environment(tmp_path / "home" / "micromamba" / "envs" / "delfin", voila=False)
-    complete = _environment(tmp_path / "home" / "micromamba" / "envs" / "delfin-voila")
+    _environment(tmp_path, tmp_path / "home" / "micromamba" / "envs" / "delfin", voila=False)
+    complete = _environment(tmp_path, tmp_path / "home" / "micromamba" / "envs" / "delfin-voila")
     empty_bin = tmp_path / "bin"
     empty_bin.mkdir()
 
@@ -144,7 +148,7 @@ def test_the_environment_that_can_serve_the_dashboard_wins(tmp_path):
 
 
 def test_an_environment_without_voila_is_named_before_anything_starts(tmp_path):
-    partial = _environment(tmp_path / "home" / "micromamba" / "envs" / "delfin", voila=False)
+    partial = _environment(tmp_path, tmp_path / "home" / "micromamba" / "envs" / "delfin", voila=False)
     empty_bin = tmp_path / "bin"
     empty_bin.mkdir()
 
