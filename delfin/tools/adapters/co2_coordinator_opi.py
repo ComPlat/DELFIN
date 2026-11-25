@@ -51,6 +51,23 @@ class Co2CoordinatorOpiAdapter(StepAdapter):
     ) -> StepResult:
         del geometry  # classic writers take atoms + paths as keyword args
         start = time.monotonic()
+        # Which of the classic coordinator's two inputs to write.  The default
+        # is the single point, so a caller that names no job gets exactly what
+        # it got before ``scan`` was mounted: same writer, same kwargs, same
+        # file name.  The gate runs BEFORE the scan writer is imported, so
+        # refusing an unknown job costs nothing and needs neither OPI nor the
+        # classic module.
+        job = kwargs.pop("job", "sp")
+        if job not in ("sp", "scan"):
+            return self._make_result(
+                self.name,
+                StepStatus.FAILED,
+                work_dir,
+                start,
+                error=f"unknown job {job!r}; use one of ['scan', 'sp']",
+            )
+        if job == "scan":
+            return self._execute_scan(work_dir, start, kwargs)
         try:
             from delfin.tools.co2_coordinator_opi import (
                 write_co2_sp_opi_input,
@@ -91,6 +108,120 @@ class Co2CoordinatorOpiAdapter(StepAdapter):
             output_file=inp_path,
             data={"input_file": str(inp_path)},
         )
+
+
+    def _execute_scan(
+        self, work_dir: Path, start: float, kwargs: dict
+    ) -> StepResult:
+        """Write the relaxed CO2 distance-scan input (``job="scan"``).
+
+        The classic coordinator does not pick the scan axis from a caller's
+        index list: after choosing the best orientation it finds the metal with
+        ``detect_metal_index`` and takes the metal-C distance of THAT structure
+        as the scan's start (``CO2_Coordinator6.py:1496-1498``), with the CO2
+        carbon located by symbol (``_co2_axis_center_indices``,
+        ``CO2_Coordinator6.py:605-614``).  An explicit ``metal_index`` /
+        ``co2_c_index`` still wins, so a caller that knows its own axis is not
+        second-guessed.
+
+        The indices must not be inferred by POSITION.  DELFIN's own ``co2.xyz``
+        is written O, C, O (``CO2_Coordinator6.py:137-141``,
+        ``chain_setup.py:201-207``), so ``co2_indices[0]`` is an OXYGEN; taking
+        it as the carbon would scan the M-O distance and label the result a
+        C scan.  The carbon is therefore the single carbon among
+        ``co2_indices``, and an ambiguous substrate is refused rather than
+        guessed.
+        """
+        atoms = kwargs.get("atoms")
+        if atoms is None:
+            return self._refuse_scan(work_dir, start, "missing required "
+                                     "argument 'atoms'")
+        co2_indices = kwargs.get("co2_indices")
+        try:
+            metal_index = kwargs.get("metal_index")
+            if metal_index is None:
+                from delfin.co2.CO2_Coordinator6 import detect_metal_index
+
+                metal_index = detect_metal_index(atoms)
+            co2_c_index = kwargs.get("co2_c_index")
+            if co2_c_index is None:
+                co2_c_index = _co2_carbon_index(atoms, co2_indices)
+            start_distance = kwargs.get("start_distance")
+            if start_distance is None:
+                start_distance = _distance(atoms, metal_index, co2_c_index)
+        except ValueError as exc:
+            return self._refuse_scan(work_dir, start, str(exc))
+
+        try:
+            from delfin.tools.co2_coordinator_opi import (
+                write_co2_scan_opi_input,
+            )
+
+            scan_dir = kwargs.get("scan_dir", work_dir / "relaxed_surface_scan")
+            inp_path = write_co2_scan_opi_input(
+                atoms,
+                str(kwargs.get("xyz_path", work_dir / "input.xyz")),
+                int(metal_index),
+                int(co2_c_index),
+                start_distance=float(start_distance),
+                end_distance=kwargs.get("end_distance", 1.7),
+                steps=kwargs.get("steps", 5),
+                orca_keywords=kwargs.get(
+                    "orca_keywords", "GFN2-XTB OPT ALPB(DMF)"),
+                broken_sym=kwargs.get("broken_sym", ""),
+                charge=kwargs.get("charge", -2),
+                multiplicity=kwargs.get("mult", 3),
+                PAL=kwargs.get("PAL", 4),
+                maxcore=kwargs.get("maxcore", 2000),
+                metal_symbol=kwargs.get("metal_symbol"),
+                metal_basis=kwargs.get("metal_basis"),
+                control_args=kwargs.get("control_args"),
+                qmmm_range=kwargs.get("qmmm_range"),
+                co2_indices=co2_indices,
+                scan_dir=str(scan_dir),
+            )
+        except KeyError as exc:
+            return self._refuse_scan(work_dir, start,
+                                     f"missing required argument {exc}")
+        return self._make_result(
+            self.name,
+            StepStatus.SUCCESS,
+            work_dir,
+            start,
+            output_file=inp_path,
+            data={"input_file": str(inp_path)},
+        )
+
+    def _refuse_scan(self, work_dir: Path, start: float, error: str):
+        return self._make_result(
+            self.name, StepStatus.FAILED, work_dir, start, error=error)
+
+
+def _co2_carbon_index(atoms, co2_indices) -> int:
+    """The CO2 carbon's index, found by SYMBOL inside ``co2_indices``.
+
+    By symbol, not by position: DELFIN's own ``co2.xyz`` is O, C, O, so the
+    first index of the CO2 group is an oxygen.  A group without exactly one
+    carbon is ambiguous and is refused rather than guessed.
+    """
+    if not co2_indices:
+        raise ValueError(
+            "a scan needs the CO2 carbon: pass co2_indices (or co2_c_index)")
+    group = [int(i) for i in co2_indices]
+    carbons = [i for i in group if atoms[i].symbol == "C"]
+    if len(carbons) != 1:
+        raise ValueError(
+            f"a scan needs exactly one carbon in co2_indices {group}; found "
+            f"{len(carbons)} -- pass co2_c_index to name it")
+    return carbons[0]
+
+
+def _distance(atoms, i: int, j: int) -> float:
+    """``|r_i - r_j|`` in Angstrom, the classic's scan start
+    (``CO2_Coordinator6.py:1498``)."""
+    from math import dist
+
+    return dist(tuple(atoms[int(i)].position), tuple(atoms[int(j)].position))
 
 
 register(Co2CoordinatorOpiAdapter())
