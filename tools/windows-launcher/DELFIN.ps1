@@ -236,6 +236,40 @@ if ($Mode -ne 'App') {
         # like a refused password. Measured 2026-11-19: that server offers
         # publickey,password and allows three attempts.
         if ($loginKey) { $options += @('-o','IdentitiesOnly=yes','-i',$loginKey.Key); $identity = @('-o','IdentitiesOnly=yes','-i',$loginKey.Key); $publicKey = $loginKey.Public }
+        # An invitation (Install.ps1 kept its key as invite-<id>.key): one
+        # short connection with that key, whose only power on the server is
+        # to add this PC's own key (delfin-people --enroll). Afterwards the
+        # invitation key is deleted and every login uses the PC's own key --
+        # no password, and no fingerprint question (the server's keys came
+        # with the invitation).
+        $inviteKeyFile = Join-Path $store ('invite-' + $p.Id + '.key')
+        if ($loginKey -and (Test-Path -LiteralPath $inviteKeyFile)) {
+            Write-Host 'Registering this PC with the server (once, no password needed)...'
+            $enrollInfo = New-Object Diagnostics.ProcessStartInfo
+            $enrollInfo.FileName = $ssh
+            $enrollArgs = @('-T') + @(Get-SSHOptions 'Copy') + @('-o','BatchMode=yes','-o','IdentitiesOnly=yes','-i',$inviteKeyFile,[string]$p.Target)
+            $enrollInfo.Arguments = ($enrollArgs | ForEach-Object { Quote-NativeArgument $_ }) -join ' '
+            $enrollInfo.UseShellExecute = $false
+            $enrollInfo.RedirectStandardInput = $true
+            $enrollInfo.RedirectStandardOutput = $true
+            $enrollInfo.RedirectStandardError = $true
+            $enrollProcess = [Diagnostics.Process]::Start($enrollInfo)
+            $enrollProcess.StandardInput.WriteLine($loginKey.Public)
+            $enrollProcess.StandardInput.Close()
+            $enrollOut = $enrollProcess.StandardOutput.ReadToEndAsync()
+            $enrollErr = $enrollProcess.StandardError.ReadToEndAsync()
+            if (-not $enrollProcess.WaitForExit(60000)) { $enrollProcess.Kill() }
+            if ($enrollOut.Result -match 'DELFIN_ENROLLED') {
+                Remove-Item -LiteralPath $inviteKeyFile -Force
+                Write-Host 'This PC is registered. From now on it logs in by itself.' -ForegroundColor Green
+            } else {
+                $detail = ([string]$enrollErr.Result).Trim()
+                if ($detail) { Write-Host $detail }
+                Write-Host 'The invitation could not be used (expired, used already, or the server is not reachable).' -ForegroundColor Yellow
+                Write-Host 'Ask whoever runs the server for a new one. Trying the normal login instead.'
+            }
+            $enrollProcess.Dispose()
+        }
         if ($Mode -eq 'Terminal') {
             Write-Host 'Working terminal. Password and OTP prompts are handled exclusively by OpenSSH.'
             Write-Host 'To paste a password here: right-click in this window. Ctrl+V does not paste into this console; it sends a control character, and the server sees a wrong password.'

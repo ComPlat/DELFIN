@@ -76,7 +76,35 @@ try {
     Assert-That ((Invoke-Uninstall 'N') -eq 0 -and (Test-Path -LiteralPath (Join-Path $dest 'DELFIN.ps1'))) 'N changes nothing'
     Assert-That ((Invoke-Uninstall 'Y') -eq 0) 'uninstall (everything) from inside the installed folder'
     Assert-That (-not (Test-Path -LiteralPath $dest)) 'Y removes the app folder'
-    Write-Host 'Install, update, running app, uninstall (keep / cancel / all) checked in an isolated folder.'
+    # 6. An invitation package (delfin-people --invite): the connection, the
+    #    pinned server key and the invitation key are set up by the install.
+    $package = Join-Path $root 'invited package'
+    [void](New-Item -ItemType Directory -Path $package)
+    Get-ChildItem -LiteralPath $PSScriptRoot -File | Copy-Item -Destination $package
+    $hostKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGxVZr1q3F0c0o1u2y3m4n5p6q7r8s9t0u1v2w3x4y5z'
+    $inviteJson = @{ target='delfin@192.0.2.10'; name='anna'; expires='209901010000Z'; host_keys=@($hostKey) }
+    ConvertTo-Json -InputObject $inviteJson | Set-Content -LiteralPath (Join-Path $package 'invite.json') -Encoding ASCII
+    # A real key, so OpenSSH's own permission check can be run on the copy.
+    $keygen = Join-Path $env:SystemRoot 'System32\OpenSSH\ssh-keygen.exe'
+    & $keygen -q -t ed25519 -N '""' -f (Join-Path $package 'invite_key') | Out-Null
+    Remove-Item -LiteralPath (Join-Path $package 'invite_key.pub') -Force
+    $ssh = Join-Path $root 'ssh'
+    Assert-That ((Invoke-Script (Join-Path $package 'Install.ps1') ($paths + @('-SshFolder',$ssh))) -eq 0) 'install with an invitation'
+    $saved = @(Get-Content -LiteralPath (Join-Path $dest 'profiles.json') -Raw | ConvertFrom-Json)
+    Assert-That ($saved[0].Target -eq 'delfin@192.0.2.10' -and $saved[0].RememberLogin) 'the invitation is the first saved connection, with Remember login'
+    Assert-That ((Get-Content -LiteralPath (Join-Path $ssh 'known_hosts')) -contains ('192.0.2.10 ' + $hostKey)) 'the server key is pinned in known_hosts'
+    $kept = Join-Path $dest ('invite-' + $saved[0].Id + '.key')
+    Assert-That (Test-Path -LiteralPath $kept) 'the invitation key is kept for the first Start'
+    # ssh-keygen -y refuses a key file others may read ("UNPROTECTED PRIVATE
+    # KEY FILE"), exactly as ssh does when it logs in with it.
+    & $keygen -y -f $kept 2>&1 | Out-Null
+    Assert-That ($LASTEXITCODE -eq 0) 'OpenSSH accepts the permissions of the kept invitation key'
+    Assert-That ((Invoke-Script (Join-Path $package 'Install.ps1') ($paths + @('-SshFolder',$ssh))) -eq 0) 'installing the same invitation again'
+    $again = @(Get-Content -LiteralPath (Join-Path $dest 'profiles.json') -Raw | ConvertFrom-Json)
+    Assert-That (@($again | Where-Object { $_.Target -eq 'delfin@192.0.2.10' }).Count -eq 1) 'no second connection for the same server'
+    Assert-That (@(Get-Content -LiteralPath (Join-Path $ssh 'known_hosts') | Where-Object { $_ -eq ('192.0.2.10 ' + $hostKey) }).Count -eq 1) 'no duplicate known_hosts line'
+    Assert-That ((Invoke-Uninstall 'Y') -eq 0 -and -not (Test-Path -LiteralPath $dest)) 'uninstall after an invitation'
+    Write-Host 'Install, update, running app, uninstall (keep / cancel / all), invitation checked in an isolated folder.'
 } finally {
     if ($fake -and -not $fake.HasExited) { Stop-Process -Id $fake.Id -Force }
     if (Test-Path -LiteralPath $reg) { Remove-Item -LiteralPath $reg -Recurse -Force }

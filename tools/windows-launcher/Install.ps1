@@ -8,6 +8,7 @@ param(
     [string]$Desktop = [Environment]::GetFolderPath('Desktop'),
     [string]$Programs = [Environment]::GetFolderPath('Programs'),
     [string]$RegistryKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DELFINLauncher',
+    [string]$SshFolder = (Join-Path $env:USERPROFILE '.ssh'),
     [switch]$CloseRunning
 )
 Set-StrictMode -Version Latest
@@ -110,8 +111,63 @@ foreach ($entry in @{ NoModify=1; NoRepair=1; EstimatedSize=$sizeKb }.GetEnumera
     [void](New-ItemProperty -LiteralPath $RegistryKey -Name $entry.Key -Value $entry.Value -PropertyType DWord -Force)
 }
 
+# An invitation (delfin-people --invite on the server) travels in the package
+# as invite.json and invite_key. It becomes the first saved connection, the
+# server's host keys go into known_hosts (so the first login asks no
+# fingerprint question), and the invitation key is kept for the app's first
+# Start, which registers this PC's own key with it and then deletes it.
+$invited = $null
+$inviteFile = Join-Path $PSScriptRoot 'invite.json'
+$inviteKey = Join-Path $PSScriptRoot 'invite_key'
+if ((Test-Path -LiteralPath $inviteFile) -and (Test-Path -LiteralPath $inviteKey)) {
+    $invite = Get-Content -LiteralPath $inviteFile -Raw | ConvertFrom-Json
+    $target = [string]$invite.target
+    if ($target -notmatch '^[a-z_][a-z0-9_-]{0,31}@[A-Za-z0-9][A-Za-z0-9.-]{0,200}$') { throw 'The invitation names no valid server.' }
+    $hostKeys = @($invite.host_keys | ForEach-Object { [string]$_ })
+    if ($hostKeys.Count -eq 0 -or @($hostKeys | Where-Object { $_ -notmatch '^(ssh-ed25519|ecdsa-sha2-nistp(256|384|521)|ssh-rsa) [A-Za-z0-9+/]+={0,2}$' }).Count -gt 0) { throw 'The invitation carries no valid server key.' }
+    $keyText = Get-Content -LiteralPath $inviteKey -Raw
+    if (-not $keyText.StartsWith('-----BEGIN OPENSSH PRIVATE KEY-----')) { throw 'The invitation key is not readable.' }
+    $profilesFile = Join-Path $destination 'profiles.json'
+    $profiles = @()
+    if (Test-Path -LiteralPath $profilesFile) { $profiles = @(Get-Content -LiteralPath $profilesFile -Raw | ConvertFrom-Json | ForEach-Object { $_ } | Where-Object { $null -ne $_ }) }
+    $existing = @($profiles | Where-Object { [string]$_.Target -eq $target })
+    if ($existing.Count -gt 0) {
+        $profileId = [string]$existing[0].Id
+        $existing[0] | Add-Member -NotePropertyName RememberLogin -NotePropertyValue $true -Force
+        $profiles = @($existing[0]) + @($profiles | Where-Object { [string]$_.Target -ne $target })
+    } else {
+        $profileId = [guid]::NewGuid().ToString()
+        $profiles = @([pscustomobject]@{ Id=$profileId; Name=$target; Target=$target; Directory=''; Executable=''; Port=0; KeepSession=$true; OpenWorkingTerminal=$false; RememberLogin=$true }) + $profiles
+    }
+    ConvertTo-Json -InputObject @($profiles) -Depth 3 | Set-Content -LiteralPath $profilesFile -Encoding UTF8
+    [void][IO.Directory]::CreateDirectory($SshFolder)
+    $knownHosts = Join-Path $SshFolder 'known_hosts'
+    $known = if (Test-Path -LiteralPath $knownHosts) { @(Get-Content -LiteralPath $knownHosts) } else { @() }
+    $serverName = $target.Split('@')[1]
+    foreach ($hostKey in $hostKeys) {
+        $entry = $serverName + ' ' + $hostKey
+        if ($known -notcontains $entry) { Add-Content -LiteralPath $knownHosts -Value $entry -Encoding ASCII }
+    }
+    $keptKey = Join-Path $destination ('invite-' + $profileId + '.key')
+    if (Test-Path -LiteralPath $keptKey) { Remove-Item -LiteralPath $keptKey -Force }
+    Copy-Item -LiteralPath $inviteKey -Destination $keptKey
+    # Windows OpenSSH ignores a private key that anyone but its owner (and
+    # SYSTEM / Administrators) may read -- "UNPROTECTED PRIVATE KEY FILE" --
+    # and a copied file inherits whatever its folder grants. Measured: an
+    # inherited extra entry made the invitation unusable. Owner only.
+    $me = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $acl = New-Object Security.AccessControl.FileSecurity
+    $acl.SetAccessRuleProtection($true, $false)
+    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($me, 'FullControl', 'Allow')))
+    # Not Set-Acl: in Windows PowerShell 5.1 it also writes the audit list,
+    # which needs administrator rights. This writes the access list only.
+    [IO.File]::SetAccessControl($keptKey, $acl)
+    $invited = $target
+}
+
 Write-Host ''
 Write-Host 'DELFIN is installed.' -ForegroundColor Green
+if ($invited) { Write-Host "  Your connection to $invited is set up. Start DELFIN and press Start / Reconnect: no password is needed." -ForegroundColor Green }
 Write-Host '  Start it: the DELFIN icon on your desktop, or DELFIN in the Start menu.'
 Write-Host '  Taskbar:  right-click DELFIN in Start, then Pin to taskbar (under More on some Windows versions).'
 Write-Host '  Remove:   Windows Settings > Apps > Installed apps > DELFIN SSH Launcher.'
