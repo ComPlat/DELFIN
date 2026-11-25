@@ -299,16 +299,21 @@ jobs:
           gh api "repos/$GH_REPO/contents/tools/delfin-windows-launcher.zip?ref=$TAG" \
             --header 'Accept: application/vnd.github.raw' \
             > delfin-windows-launcher.zip
+          # The macOS launcher, the same way and for the same reasons.
+          gh api "repos/$GH_REPO/contents/tools/delfin-macos-launcher.zip?ref=$TAG" \
+            --header 'Accept: application/vnd.github.raw' \
+            > delfin-macos-launcher.zip
           # Beside dist/, not in it: the distributions carry build
           # attestations and this file does not, and one checksum list
           # that mixes the two would imply it does.
           (cd dist && sha256sum -- * > ../SHA256SUMS.txt)
           (cd sbom && sha256sum -- * >> ../SHA256SUMS.txt)
           sha256sum -- delfin-windows-launcher.zip >> SHA256SUMS.txt
+          sha256sum -- delfin-macos-launcher.zip >> SHA256SUMS.txt
           cat SHA256SUMS.txt
           if gh release view "$TAG" > /dev/null 2>&1; then
             gh release upload "$TAG" dist/* sbom/* \
-              delfin-windows-launcher.zip SHA256SUMS.txt
+              delfin-windows-launcher.zip delfin-macos-launcher.zip SHA256SUMS.txt
           else
             # --notes-from-tag reads the ANNOTATED tag's message from a
             # local clone, and this job has no checkout: it downloads the
@@ -320,6 +325,6 @@ jobs:
             # GitHub from the commits since the previous release, which
             # needs neither a clone nor a particular kind of tag.
             gh release create "$TAG" dist/* sbom/* \
-              delfin-windows-launcher.zip SHA256SUMS.txt \
+              delfin-windows-launcher.zip delfin-macos-launcher.zip SHA256SUMS.txt \
               --verify-tag --generate-notes --title "$TAG"
           fi

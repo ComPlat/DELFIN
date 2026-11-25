@@ -304,6 +304,10 @@ screen stays in the foreground as before.
 Windows SSH desktop launcher (OTP, separate working terminal, tmux reconnect):
 [Setup and installation](tools/windows-launcher/README.md). Copy that folder to your Windows PC.
 
+macOS app (a server over SSH with the same server side, or DELFIN on the Mac itself):
+[Setup and installation](tools/macos-launcher/README.md). The release carries it as
+`delfin-macos-launcher.zip`; extract it and double-click `Install.command`.
+
 Detailed documentation: [docs/SETTINGS_AND_SETUP.md](docs/SETTINGS_AND_SETUP.md)
 
 ---
