@@ -149,7 +149,14 @@ def test_the_check_names_the_line_and_the_message_of_a_bad_escape(tmp_path):
     """
     bad = tmp_path / "bad.py"
     bad.write_bytes(b'"""doc"""\n\nMSG = "path a\\ b c"\n')
-    assert _offenders(bad) == [(3, "invalid escape sequence '\\ '")]
+    found = _offenders(bad)
+    assert len(found) == 1, found
+    line, message = found[0]
+    # The line is where the string starts (line 3), not where the backslash
+    # is; the message names the sequence. Pinned on those two properties, not
+    # on CPython's exact wording, which has moved before.
+    assert line == 3, found
+    assert "invalid escape sequence" in message and chr(92) in message, found
 
 
 def test_a_warning_that_is_not_an_escape_is_also_an_offender(tmp_path):
@@ -162,8 +169,10 @@ def test_a_warning_that_is_not_an_escape_is_also_an_offender(tmp_path):
     odd = tmp_path / "odd.py"
     odd.write_bytes(b'A = 1\nB = A is "x"\n')
     found = _offenders(odd)
-    assert len(found) == 1 and found[0][0] == 2, found
-    assert "is" in found[0][1] and "literal" in found[0][1], found
+    assert len(found) == 1, found
+    line, message = found[0]
+    assert line == 2, found
+    assert message and "invalid escape sequence" not in message, found
 
 
 def test_a_raw_string_with_the_same_backslash_is_no_offender(tmp_path):
