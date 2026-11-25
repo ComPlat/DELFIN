@@ -433,6 +433,46 @@ def test_an_emergency_stop_in_a_test_never_reaches_the_live_slice(waves):
     assert wave._DEFAULTS["slice"] not in json.dumps(waves["systemctl"])
 
 
+def test_a_run_keeps_its_limit_when_the_tick_starts_the_rest(waves):
+    tasks = [_task(t, "sleep:20") for t in ("a", "b", "c")]
+    assert wave.start("r40", tasks, str(waves["repo"]), parallel=1, wait=False)["started"] == ["a"]
+    assert wave.load_state("r40")["parallel"] == 1
+    st = wave.load_state("r40")
+    st["driven"] = True
+    wave._save_state("r40", st)
+    assert not guard.tick()["runs"]["r40"].get("started")      # still one at a time
+    wave.stop("r40")
+
+
+def test_max_live_queues_a_run_behind_the_others(waves, monkeypatch):
+    wave.start("r41", [_task("x", "sleep:20")], str(waves["repo"]), wait=False)
+    cfg = dict(wave.settings(), max_live=1)
+    monkeypatch.setattr(wave, "settings", lambda: dict(cfg))
+    out = wave.start("r42", [_task("y", "sleep:1")], str(waves["repo"]), parallel=5, wait=False)
+    assert out["started"] == [] and out["waiting"] == ["y"]
+    wave.stop("r41")
+
+
+def test_the_older_run_gets_a_free_place_before_a_newer_one(waves, monkeypatch):
+    def tasks(*ids):
+        return [_task(t, "sleep:20") for t in ids]
+    assert wave.start("r43", tasks("a", "b"), str(waves["repo"]), parallel=1, wait=False)["started"] == ["a"]
+    time.sleep(0.05)
+    assert wave.start("r44", tasks("c", "d"), str(waves["repo"]), parallel=1, wait=False)["started"] == ["c"]
+    for run in ("r43", "r44"):
+        st = wave.load_state(run)
+        st.update(driven=True, parallel=5)
+        wave._save_state(run, st)
+    # the listing as the live root gave it: the newer run first
+    monkeypatch.setattr(wave, "runs", lambda: ["r44", "r43"])
+    cfg = dict(wave.settings(), max_live=3)        # one free place
+    monkeypatch.setattr(wave, "settings", lambda: dict(cfg))
+    out = guard.tick()["runs"]
+    assert out["r43"].get("started") == ["b"] and not out["r44"].get("started")
+    wave.stop("r43")
+    wave.stop("r44")
+
+
 def test_a_second_tick_while_one_runs_does_nothing(waves):
     with wave._flock(wave.root() / ".tick.lock") as held:
         assert held
