@@ -24,6 +24,22 @@ import pytest
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def _an_ordinary_session(monkeypatch):
+    """Every case here documents the ORDINARY session's prompt.
+
+    The block a session is given is decided (since the w48 landing rules) by
+    ``commit_attribution.commit_coauthor_for``, which reads
+    ``DELFIN_SWARM_RUN``: run this file from inside a wave without pinning it
+    and the five prompt cases below fail -- not because the attribution broke
+    but because a member is deliberately NOT given the line. The pin says
+    which session each case is about; the member case is its own test at the
+    bottom. Before the member decision existed the code path did not read the
+    environment, so the omission of this fixture measured nothing.
+    """
+    monkeypatch.delenv("DELFIN_SWARM_RUN", raising=False)
+
+
 def _solo_prompt(model: str) -> str:
     from delfin.agent.prompt_loader import PromptLoader
     loader = PromptLoader()
@@ -83,3 +99,23 @@ def test_the_shipped_address_is_the_agents_own_account():
     prompt = _solo_prompt("kit.glm-5.3")
     assert "@users.noreply.github.com>" in prompt
     assert "@gmail.com" not in prompt
+
+
+def test_a_wave_member_is_not_asked_to_sign_its_commits(monkeypatch):
+    """A member's commits are merged as the wave's work, so the line is public
+    text on a history nobody can reword: the prompt gives it nothing. Red on
+    the base, where the block read only `agent.commit_coauthor` and every
+    member was told to sign."""
+    import delfin.user_settings as us
+    monkeypatch.setenv("DELFIN_SWARM_RUN", "w48")
+    monkeypatch.setattr(us, "load_settings", lambda *a, **k: {"agent": {}})
+    assert "Co-Authored-By: DELFIN-Agent" not in _solo_prompt("kit.glm-5.3")
+
+
+def test_a_deployment_can_have_its_members_sign_anyway(monkeypatch):
+    """Off, not gone: one setting restores the line for a wave."""
+    import delfin.user_settings as us
+    monkeypatch.setenv("DELFIN_SWARM_RUN", "w48")
+    monkeypatch.setattr(us, "load_settings", lambda *a, **k: {
+        "agent": {"swarm_commit_coauthor": True}})
+    assert "Co-Authored-By: DELFIN-Agent (kit.glm-5.3)" in _solo_prompt("kit.glm-5.3")
