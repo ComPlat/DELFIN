@@ -5455,6 +5455,21 @@ def _unknown_keywords(calc: dict) -> list:
             continue
         if _dict_explain(bare) is not None:
             continue
+        # The dictionary is not the whole of what ORCA knows. ORCA's own
+        # catalog does: the pinned OPI keyword list plus the words ORCA's
+        # parser was measured accepting. Manual 2.16 names STABILITY and
+        # SCFSTABILITY on the simple input line, and the dictionary holds
+        # only STAB/SCFSTAB -- refusing that input as "cannot run as written"
+        # was a false accusation about a calculation that runs. A word
+        # neither witness knows is still the mistyped or invented keyword
+        # this rule exists to catch, so both are asked and only a double miss
+        # is reported.
+        try:
+            from delfin.orca_knowledge import known_keyword as _known
+        except Exception:
+            _known = None
+        if _known is not None and _known(bare):
+            continue
         findings.append({
             "id": f"unknown-keyword.{bare.lower()}",
             "kind": "unknown_keyword",
