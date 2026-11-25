@@ -17,6 +17,10 @@ __pycache__/
 *$py.class
 
 .venv/
+# Named variants of the same thing (.venv-ci, .venv-fix, ...): a virtualenv is
+# never a repository file, and one left beside the code must not be swept into
+# a `git add -A` by its name alone.
+.venv*/
 delfin_venv.tar
 
 # Local server config
