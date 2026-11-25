@@ -486,3 +486,42 @@ def test_the_note_does_not_accuse_when_the_run_cannot_tell(_waves, monkeypatch):
     """``unknown`` gets the plain note: the change was not shown to be missed."""
     note = _note_for(_waves, monkeypatch, "unknown")
     assert "NONE OF THEM REACHED YOUR CHANGE" not in note
+
+
+def _note_for_a_writer_that_records_no_column(_waves, monkeypatch):
+    """What the stage says when the summary it was handed has no column.
+
+    The writer that ran need not be the branch's: the orchestrator imports the
+    installed DELFIN, so a member's real runs can be written by a copy that
+    predates the column. Its result then carries no ``reached`` key, and the
+    plain note would tell the member to read a column the table does not have.
+    """
+    seen = []
+    monkeypatch.setattr(wave, "resume", lambda run, tid, note="", **k: seen.append(note))
+    monkeypatch.setattr(realrun, "run", lambda run, tid: {"rows": [], "summary": "x"})
+    did = stages.advance("note", start_real_run=lambda run, tid, busy:
+                         stages._real_run_then_resume(run, tid, busy))
+    assert [x["did"] for x in did] == ["real run"], did
+    assert seen, "the member was never resumed with a note"
+    return seen[0]
+
+
+def test_the_note_says_the_summary_cannot_answer_when_it_has_no_column(_waves, monkeypatch):
+    """No ``reached`` key: do not point at a column that is not in the table.
+
+    Red on the base for the reason it names: there ``realrun.run`` returns no
+    ``reached`` key either, so the stage hands the plain note, which says "Each
+    row says whether that run reached the change: read that column" -- a column
+    the delivered summary may not carry. The note is the only instruction the
+    member gets, so a member following it looks for evidence that was never
+    written and can read the base/branch difference as proof of its change.
+    """
+    note = _note_for_a_writer_that_records_no_column(_waves, monkeypatch)
+    assert "THE SUMMARY DOES NOT SAY WHETHER ANY RUN REACHED YOUR CHANGE" in note
+    # The false instruction is what must be gone, word for word.
+    assert "read that column" not in note
+    assert "Each row says whether that run reached the change" not in note
+    # Not an accusation either: this is "cannot tell", not "none reached it".
+    assert "NONE OF THEM REACHED YOUR CHANGE" not in note
+    # Still no second request the stage would never run.
+    assert "Do not write scratch/realrun.json again" in note

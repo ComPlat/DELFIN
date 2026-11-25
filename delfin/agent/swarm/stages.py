@@ -82,6 +82,29 @@ not reach it, and better than a probe invented to look like one.
 Do not write scratch/realrun.json again.
 """
 
+#: Used when the summary the member was handed carries no ``reached the change``
+#: column at all, so the note above would point at a column that is not there.
+#: A pointer to a missing column is the same false route as a probe that never
+#: reached the change: the member is told to check evidence that does not exist.
+#: Measured on 2026-11-25, on an integration branch whose real runs were written
+#: by the orchestrator's installed copy of the writer, not by the branch's.
+_READ_YOUR_RUNS_NO_COLUMN = """
+Your real runs are done: scratch/realrun/summary.md, and one log per probe
+and side in scratch/realrun/. They were made outside your cage, on your
+base and your branch HEAD, same prompt and model, a fresh HOME each.
+
+THE SUMMARY DOES NOT SAY WHETHER ANY RUN REACHED YOUR CHANGE. The writer
+that produced it records no 'reached the change' column, so nothing in the
+table says whether a probe executed a function your branch changed -- and a
+run that never reaches the change compares two copies of the same behaviour.
+Read the logs and the final answers below the table, and treat the
+base/branch difference as evidence for your change only if you can show from
+them that the changed code ran on the branch side.
+
+""" + _READ_YOUR_RUNS_TAIL + """
+Do not write scratch/realrun.json again.
+"""
+
 _ASK_FOR_RUNS = """
 You ended without scratch/realrun.json. Nothing lands without a real run.
 Write it now: up to three probes, each a prompt a person would type that
@@ -191,8 +214,16 @@ def _real_run_then_resume(run: str, tid: str, busy: set) -> None:
                 # as evidence. "unknown" gets the plain note with the column to
                 # read: the runs cannot say, and the note above now points at
                 # the reason per row rather than this stage guessing.
-                note = (_READ_YOUR_RUNS_MISSED if res and res.get("reached") == "no"
-                        else _READ_YOUR_RUNS)
+                # A row set with no ``reached`` key at all means the writer that
+                # ran does not record the column -- pointing the member at it
+                # would be a false route, so say the table cannot answer instead.
+                if res is None:
+                    note = _READ_YOUR_RUNS
+                elif "reached" in res:
+                    note = (_READ_YOUR_RUNS_MISSED if res.get("reached") == "no"
+                            else _READ_YOUR_RUNS)
+                else:
+                    note = _READ_YOUR_RUNS_NO_COLUMN
                 rc = "0"
             except Exception as exc:          # a refused request is the member's to fix
                 note = (f"Your scratch/realrun.json could not be run: {exc}. Fix it and end "
