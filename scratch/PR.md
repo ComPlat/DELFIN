@@ -289,7 +289,11 @@ The branch is unchanged since these runs: `238f3c706` and earlier, plus this rep
 | `582df5c6f` | the integrator's measurements (this file) |
 | `238f3c706` | point the report at the commits that exist |
 
-## Instruments written this session (in `scratch/x1/`, not part of the change)
+## Instruments written this session (in `scratch/x1/`, **untracked — not committed**)
+
+They stay on disk so any number below can be re-derived, but the branch does not carry
+them: a landing branch holds the guard, the patch and this report. If you want them
+kept for the next wave, they need their own commit outside this branch.
 
 - `rerun/two_escape.py` + `rerun/a1_guard.py` + `rerun/a2_guard.py` — the
   offenders-per-file comparison, loading both arms' guards verbatim from their
