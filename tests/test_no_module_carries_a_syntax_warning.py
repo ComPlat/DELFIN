@@ -73,19 +73,19 @@ def _compile_warnings(text: str, name: str) -> tuple:
 def _offenders(path: Path) -> list:
     """``(line, message)`` for each compile-time warning in *path*.
 
-    Two passes, because the two Python families report the same defect
-    differently and both have to give the same answer here:
+    Two passes, because each sees something the other cannot:
 
     * the ``"always"`` pass lists every warning with its line. This is what
       the report prints -- the line the compiler attributes to the string,
       which for a multi-line literal is its FIRST line, not the line holding
       the backslash.
     * the pass the task specifies, ``simplefilter("error")``, which is what
-      makes a warning unmissable: 3.11 raises it as a ``DeprecationWarning``,
-      3.12/3.13 as a ``SyntaxError`` whose message names the construct. It
-      contributes no text -- an escalated warning is not recorded -- only the
-      guarantee that no ``filterwarnings("ignore")`` elsewhere in the run can
-      hide an offender from the check.
+      makes an offender unmissable: whatever category the interpreter reports
+      (measured here: a ``Warning`` subclass on one path, a ``SyntaxError``
+      whose message carries a `` (file, line N)`` suffix on another), an
+      ``ignore`` filter set elsewhere in the run cannot hide it from this
+      check. It contributes no text -- an escalated warning is not recorded
+      -- which is why the list above has to come from the other pass.
 
     A file that fails to compile at all is NOT this guard's report: a real
     syntax error is re-raised for ``test_syntax_integrity.py``, which names
@@ -107,11 +107,12 @@ def _offenders(path: Path) -> list:
         try:
             compile(text, name, "exec")
         except Warning:
-            pass                    # 3.11: raised as a DeprecationWarning
+            pass                    # escalated to a Warning subclass
         except SyntaxError:
-            # 3.12/3.13 escalate here. If the warning pass saw nothing, this
-            # is not an escalated warning but a broken file, and that file
-            # belongs to test_syntax_integrity.py.
+            # Escalation also lands here (measured). If the warning pass saw
+            # nothing at all, this is not an escalated warning but a file that
+            # does not compile, and that file belongs to
+            # test_syntax_integrity.py -- re-raise it unchanged.
             if hard is not None and not found:
                 raise hard
     return found
