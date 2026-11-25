@@ -66,6 +66,7 @@ the ``.out`` text, where ORCA prints it (T1(DLPNO) line).
 from __future__ import annotations
 
 import re
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -75,6 +76,7 @@ from delfin.common.logging import get_logger
 from delfin.tools._base import StepAdapter
 from delfin.tools._registry import register
 from delfin.tools._types import ErrorKind, StepResult, StepStatus
+from delfin.tools.opi_chain import read_geometry_xyz
 
 logger = get_logger(__name__)
 
@@ -302,6 +304,7 @@ def build_dlpno_input(
     cbs: Optional[tuple[str, str]] = None,
     extra_keywords: Optional[Sequence[str]] = None,
     mdci_options: Optional[dict] = None,
+    moread: Optional[str] = None,
     maxcore: int = 2000,
     ncores: int = 2,
     base_name: str = "dlpno",
@@ -327,7 +330,7 @@ def build_dlpno_input(
         raise ValueError("; ".join(errors))
 
     from opi.core import Calculator
-    from opi.input import Input
+    from opi.input import ArbitraryStringPos, Input
     from opi.input.blocks.block_mdci import BlockMdci
     from opi.input.simple_keywords.approximation import Approximation
     from opi.input.simple_keywords.base import SimpleKeyword
@@ -369,6 +372,26 @@ def build_dlpno_input(
     inp.memory = maxcore
     if mdci_options:
         inp.add_blocks(BlockMdci(**dict(mdci_options)))
+    if moread:
+        # MORead guess from the chain's upstream .gbw (manual 2.20.5, the
+        # same form ``run_opi_job`` writes: ``! moread`` + ``%moinp``).  The
+        # file is copied next to the input so ORCA finds it by name; a
+        # dangling reference is refused rather than written.
+        moread_src = Path(moread)
+        src = moread_src if moread_src.is_file() else moread_src.with_suffix(".gbw")
+        if not src.is_file():
+            raise FileNotFoundError(
+                f"MOREAD gbw {src} does not exist (refused to write a "
+                "dangling MORead reference)"
+            )
+        shutil.copy2(src, work_dir / f"{base_name}.gbw")
+        inp.add_simple_keywords("MOREAD")
+        # ``pos`` is keyword-only in OPI 2.0.0
+        # (``add_arbitrary_string(self, string, /, *, pos=None)``); passing it
+        # positionally raises TypeError the first time a chain really wires
+        # orbitals into this step.
+        inp.add_arbitrary_string(
+            f'%moinp "{base_name}.gbw"', pos=ArbitraryStringPos.BEFORE_COORDS)
 
     atoms = [
         Atom(str(el), coordinates=(float(x), float(y), float(z)))
@@ -532,6 +555,7 @@ def run_dlpno(
     cbs: Optional[tuple[str, str]] = None,
     extra_keywords: Optional[Sequence[str]] = None,
     mdci_options: Optional[dict] = None,
+    moread: Optional[str] = None,
     maxcore: int = 2000,
     ncores: int = 2,
     base_name: str = "dlpno",
@@ -585,6 +609,7 @@ def run_dlpno(
         cbs=cbs,
         extra_keywords=extra_keywords,
         mdci_options=mdci_options,
+        moread=moread,
         maxcore=maxcore,
         ncores=ncores,
         base_name=base_name,
@@ -633,18 +658,40 @@ class OrcaDlpnoOpiAdapter(StepAdapter):
     ) -> StepResult:
         kwargs.pop("_prev_artifacts", None)
         start = time.monotonic()
-        try:
-            elements = kwargs["elements"]
-            coordinates = kwargs["coordinates"]
-        except KeyError as exc:
-            return self._make_result(
-                self.name,
-                StepStatus.FAILED,
-                work_dir,
-                start,
-                error=f"missing required {exc}",
-                error_kind=ErrorKind.MISSING_PARAM,
-            )
+        # The geometry comes from the step before this one when the chain
+        # hands it over (``Pipeline.run`` passes the previous step's .xyz as
+        # ``geometry=``, which is what ``opi_opt_freq_dlpno`` relies on for
+        # every step after the first). This adapter declares
+        # ``consumes = ("geometry",)``, so a chain that reaches it has always
+        # delivered one; reading only the kwargs made the last step of
+        # DELFIN's own OPI chain fail with "missing required 'elements'" and
+        # write no input. An explicit elements/coordinates pair still decides,
+        # so the historical meaning of that pair is unchanged.
+        if geometry is not None and not ("elements" in kwargs and "coordinates" in kwargs):
+            try:
+                elements, coordinates = read_geometry_xyz(geometry)
+            except (OSError, ValueError) as exc:
+                return self._make_result(
+                    self.name,
+                    StepStatus.FAILED,
+                    work_dir,
+                    start,
+                    error=f"unreadable chained geometry {geometry}: {exc}",
+                    error_kind=ErrorKind.MISSING_PARAM,
+                )
+        else:
+            try:
+                elements = kwargs["elements"]
+                coordinates = kwargs["coordinates"]
+            except KeyError as exc:
+                return self._make_result(
+                    self.name,
+                    StepStatus.FAILED,
+                    work_dir,
+                    start,
+                    error=f"missing required {exc}",
+                    error_kind=ErrorKind.MISSING_PARAM,
+                )
         res = run_dlpno(
             elements=elements,
             coordinates=coordinates,
@@ -659,6 +706,7 @@ class OrcaDlpnoOpiAdapter(StepAdapter):
             cbs=kwargs.get("cbs"),
             extra_keywords=kwargs.get("extra_keywords"),
             mdci_options=kwargs.get("mdci_options"),
+            moread=kwargs.get("moread"),
             maxcore=kwargs.get("maxcore", 2000),
             ncores=cores,
             base_name=kwargs.get("base_name", "dlpno"),
