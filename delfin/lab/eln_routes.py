@@ -214,6 +214,17 @@ ELN_ROUTES: tuple = (
     Route("POST", "/api/v1/search/*", writes=False,
           reason="search: the POST body is the query, nothing is written",
           source="@3657b15"),
+    # -- a read added for the ELN specialist (e1). It is the collection
+    # listing the search path cannot replace: a collection's NAME has to be
+    # resolved to an id before a search can be scoped to it, and the server
+    # answers that only here (`GET /collections` -> own + shared_with_me).
+    # A GET, so there is no body whose scope could be misread, and the
+    # answer is scoped by the server to what this account may read
+    # (collection_api.rb: `serialized_own_collections_for(current_user)`
+    # plus the shared list).
+    Route("GET", "/api/v1/collections", writes=False,
+          reason="lists the collections this account may read; a read",
+          source="@main 2026-11-24"),
     # -- writes: everything below changes state. All refused at this gate.
     Route("POST", "/api/v1/authentication/token", writes=True,
           reason="mints an API token for the account (and the token has no "
@@ -227,6 +238,16 @@ ELN_ROUTES: tuple = (
           reason="creates a research plan under a collection (collection_id "
                  "in the body)",
           source="exporter"),
+    # The reaction create the ELN specialist drafts through. It was missing
+    # from this table, which is why a draft to it was refused as
+    # `refused_not_allowlisted` rather than as a write -- and a refusal for
+    # the wrong reason is how a route that is never reached looks the same
+    # as a rule that holds. Established from reaction_api.rb (`resource
+    # :reactions` + `post do`), read 2026-11-24.
+    Route("POST", "/api/v1/reactions", writes=True,
+          reason="creates a reaction under a collection (collection_id in the "
+                 "body; materials are resolved by UpdateMaterials)",
+          source="@main 2026-11-24"),
     Route("POST", "/api/v1/attachments/upload_chunk", writes=True,
           reason="writes bytes into a pending upload (its target is the key "
                  "in the body)",
