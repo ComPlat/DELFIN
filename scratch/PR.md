@@ -152,3 +152,34 @@ attributable; nothing here is claimed as caused by this branch.
 Apply `scratch/eln-reads-in-the-gate-allowlist.patch`, then re-run the
 `read-question` probe — that is the one claim still only gate-level, not
 product-level.
+
+## 9. Attributing the full-suite failures (rule 14)
+
+The full suite ran chunked over `tests/test_*.py` (3225 files, 12 chunks):
+**502 failed**, ~8600 passed, every one of the twelve chunks exited 1. The
+runner's own exit code was 0 because its last statement was an `echo` — judged
+from the chunks' summary lines, not from `exit_code`.
+
+Those 502 were **not attributed** at first: the failing files (151 of them)
+share no *name* with the files this branch touches, which is not the same as
+being pre-existing.
+
+Control: the same 151 files, on an untouched `origin/main` worktree, same
+interpreter, same `-m "not slow"`, same `--timeout=300`:
+
+| side | result |
+|---|---|
+| origin/main (control) | **482 failed, 2073 passed**, 19 skipped, 39 errors, 3175 s |
+
+So at file granularity nearly all of the branch's 502 already fail on
+`origin/main` — dashboard, service, cage, shell and peer-text suites this host
+has a recorded history of failing in a sandbox. **Prediction (written before
+the measurement):** re-running the branch over exactly those 151 files will
+show **0 failures unique to the branch**, and specifically none in any
+`eln`/`lab`/`chemotion`/`attach`/`draft` file. If any nodeid fails on the branch
+and passes on the control, that is a regression I own.
+
+A first attempt to diff nodeids printed "0 branch failures" — a **false zero**:
+the chunk logs lived in a per-command temp directory that had been cleaned up,
+so the grep read nothing. An absent input is not a measurement; re-run with the
+logs kept inside the workspace.
