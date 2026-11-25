@@ -38,9 +38,12 @@ def ex():
 ])
 def test_web_fetch_refuses_internal_hosts_and_names_the_cause(ex, perms, url, host):
     out = ex.execute("web_fetch", {"url": url}, perms)
-    assert "web_fetch refused" in out, out
+    # Two layers refuse an internal host, and which answers first depends on
+    # what ran earlier in the process (CI's shard 3 met the executor's
+    # deny-list first, 2026-11-25). Both must refuse and name the host;
+    # neither may hand back fetched content.
     assert host in out, out
-    assert "Nothing was sent" in out, out
+    assert ("web_fetch refused" in out and "Nothing was sent" in out) or "deny-list" in out, out
 
 
 @pytest.mark.parametrize("arguments", [
