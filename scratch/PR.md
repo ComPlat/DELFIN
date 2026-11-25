@@ -32,9 +32,9 @@ red for the wrong line.
 
 | item | decision | commit | reason (one line) |
 |---|---|---|---|
-| a2's guard `tests/test_no_module_carries_a_syntax_warning.py` (5 commits) | **take** | `ca341c75f` + `3d7731af0` `bd91b0988` `73ac2bd63` `2f4f253cd` | reports **every** warning in a file; a1's reports only the first (measured below) |
+| a2's guard `tests/test_no_module_carries_a_syntax_warning.py` (5 commits) | **take** | `e26e0d58b` + `41b66e65e` `14e2995e1` `07231aa1d` `15484ab4d` | reports **every** warning in a file; a1's reports only the first (measured below) |
 | a1's guard `tests/test_the_package_compiles_with_no_syntax_warning.py` | **reject** | — | on a file with two bad escapes it names only the first; the package asks for *each* offender |
-| the fix `scratch/api_client-escapes.patch` | **take** | `0e5afe6a8` | both arms produced a **byte-identical** patch; one character on line 5330 |
+| the fix `scratch/api_client-escapes.patch` | **take** | `f47d672ed` | both arms produced a **byte-identical** patch; one character on line 5330 |
 | a1's `scratch/make_api_client_escapes_patch.py` | **reject** | — | a generator for a one-character fix that is committed once; nothing re-derives it |
 | a1's and a2's `scratch/PR.md` | **reject** | — | their reports; this file supersedes them |
 | "fix every other offender" | **nothing to fix — measured** | — | 1 offender in 1288 package files; the repo-wide scan the arms ran agrees |
