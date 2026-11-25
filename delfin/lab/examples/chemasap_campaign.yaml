@@ -245,6 +245,51 @@ modules:
         stale_after_s: 15
         reads:
           temperature: {unit: degC}
+      # The sample holder of each reactor position. Without it the hand-over
+      # from storage is bookkeeping only: the registry says the sample is in R1
+      # and no device holds it, which the transfer reports as `registry_only`
+      # and the run counts as done. A reactor position holds a container just as
+      # a rack position does, so it declares the same slot.
+      - id: reactor_rack_1
+        driver: simulator
+        model: reader
+        description: sample holder of reactor position R1
+        address: {position: R1}
+        reads:
+          barcode: {text: true}
+        writes:
+          container: {text: true, level: benign}
+        safe_state: {container: empty}
+      - id: reactor_rack_2
+        driver: simulator
+        model: reader
+        description: sample holder of reactor position R2
+        address: {position: R2}
+        reads:
+          barcode: {text: true}
+        writes:
+          container: {text: true, level: benign}
+        safe_state: {container: empty}
+      - id: reactor_rack_3
+        driver: simulator
+        model: reader
+        description: sample holder of reactor position R3
+        address: {position: R3}
+        reads:
+          barcode: {text: true}
+        writes:
+          container: {text: true, level: benign}
+        safe_state: {container: empty}
+      - id: reactor_rack_4
+        driver: simulator
+        model: reader
+        description: sample holder of reactor position R4
+        address: {position: R4}
+        reads:
+          barcode: {text: true}
+        writes:
+          container: {text: true, level: benign}
+        safe_state: {container: empty}
   # ------------------------------------------------------------ purification
   # Four columns, one per position. The pump moves solvent, so a flow above
   # zero is hazardous: a person approves each one. A pump's own safe value
@@ -339,6 +384,49 @@ modules:
         writes:
           power: {states: [on, off], level: benign}
         safe_state: {power: off}
+      # The sample holder of each column position, for the same reason as the
+      # reactor racks: a hand-over into purification must be a physical move or
+      # it is only a registry edit that the next module cannot verify.
+      - id: column_rack_1
+        driver: simulator
+        model: reader
+        description: sample holder of column position P1
+        address: {position: P1}
+        reads:
+          barcode: {text: true}
+        writes:
+          container: {text: true, level: benign}
+        safe_state: {container: empty}
+      - id: column_rack_2
+        driver: simulator
+        model: reader
+        description: sample holder of column position P2
+        address: {position: P2}
+        reads:
+          barcode: {text: true}
+        writes:
+          container: {text: true, level: benign}
+        safe_state: {container: empty}
+      - id: column_rack_3
+        driver: simulator
+        model: reader
+        description: sample holder of column position P3
+        address: {position: P3}
+        reads:
+          barcode: {text: true}
+        writes:
+          container: {text: true, level: benign}
+        safe_state: {container: empty}
+      - id: column_rack_4
+        driver: simulator
+        model: reader
+        description: sample holder of column position P4
+        address: {position: P4}
+        reads:
+          barcode: {text: true}
+        writes:
+          container: {text: true, level: benign}
+        safe_state: {container: empty}
   # ---------------------------------------------------------------- analysis
   # Four instruments, one per position, each with its own rack scanner. The
   # scanner declares the position it serves; the measure step compares the

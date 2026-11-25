@@ -158,3 +158,39 @@ def test_the_shipped_campaign_declares_a_slot_for_every_rack_position():
                    and "container" in man.devices[d].writes]
         assert len(holders) == 1, (position, [h.id for h in holders])
         assert holders[0].writes["container"].text, holders[0].id
+
+
+def test_every_hand_over_the_shipped_workflow_makes_is_a_physical_move():
+    """No step of the shipped campaign degrades to a registry-only hand-over.
+
+    ``transfer`` reports ``registry_only`` when the destination position has no
+    device that can hold a container, and the run still counts the step as done.
+    A campaign written that way is half bookkeeping: the registry moves the
+    sample and the world is never told, which is the defect the analysis slots
+    were added for -- and it would only surface later, as a ``sample_mixup``
+    blamed on the wrong module.
+
+    The control is the same check against a position that DOES have a carrier:
+    if the lookup were broken this test would fail on ``analysis`` too.
+    """
+    from delfin.lab import manifest
+    man = manifest.load(MANIFEST)
+    workflow = yaml.safe_load((EXAMPLES / "chemasap_campaign_workflow.yaml").read_text())
+    transfers = [s for s in workflow.get("steps") or [] if s.get("op") == "transfer"]
+    assert transfers, "the campaign declares no transfer step -- nothing would be tested"
+
+    def carriers(module_id, position):
+        mod = man.modules[module_id]
+        return [d for d in mod.devices
+                if (man.devices[d].address or {}).get("position") == position
+                and "container" in man.devices[d].writes]
+
+    # Control: the analysis hand-overs every sample needs are physical today.
+    assert carriers("analysis", "A1"), "control failed: no carrier at analysis:A1"
+
+    bookkeeping = [(s.get("id"), s.get("to"), s.get("position"))
+                   for s in transfers
+                   if not carriers(s.get("to"), s.get("position"))]
+    assert not bookkeeping, (
+        "hand-overs that only rewrite the registry: "
+        + ", ".join(f"{sid} -> {to}:{pos}" for sid, to, pos in bookkeeping))
