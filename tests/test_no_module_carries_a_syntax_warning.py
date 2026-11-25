@@ -137,9 +137,10 @@ def test_no_module_of_the_package_compiles_with_a_syntax_warning():
         for line, msg in _offenders(path)
     ]
     assert not offenders, (
-        "these modules make compile() warn -- a non-raw string with an "
-        "escape Python does not define, or a construct like x is 'text', "
-        "any of which becomes a SyntaxError in a future release:\n  "
+        "these modules make compile() warn, which raises outright under "
+        "-W error and turns every import into an exception for any caller "
+        "that escalates warnings -- a non-raw string with an escape Python "
+        "does not define, or a construct like x is 'text':\n  "
         + "\n  ".join(offenders)
     )
 
