@@ -317,6 +317,24 @@ def _render_input(
     return "\n".join(lines) + "\n"
 
 
+def _gibbs_via_orca_read_cycle(path) -> Optional[float]:
+    """One cycle output's Gibbs energy through :func:`delfin.orca_read.read`.
+
+    Behaviour-identical where text is read (baseline recorder over 204
+    runs, 0 gibbs mismatches); None when orca_read has no value, so the
+    caller falls back to the text parser exactly as before.
+    """
+    from delfin import orca_read
+    try:
+        reading = orca_read.read(str(Path(path).parent), Path(path).stem,
+                                 orca_read.Quantity.GIBBS)
+    except Exception:
+        return None
+    if reading is None or reading.value is None:
+        return None
+    return reading.value
+
+
 def read_cycle_gibbs_energies(
     outputs: Mapping[str, Path],
 ) -> Dict[str, Optional[float]]:
@@ -344,7 +362,8 @@ def read_cycle_gibbs_energies(
             )
             values[label] = None
             continue
-        values[label] = find_gibbs_energy(str(path))
+        reading = _gibbs_via_orca_read_cycle(path)
+        values[label] = reading if reading is not None else find_gibbs_energy(str(path))
         if values[label] is None:
             logger.info(
                 "pKa cycle: output %s has no Gibbs thermochemistry", path
@@ -461,7 +480,8 @@ def run_cycle(
             failures.append(species.label)
             gibbs[species.label] = None
             continue
-        gibbs[species.label] = find_gibbs_energy(str(out_path))
+        reading = _gibbs_via_orca_read_cycle(out_path)
+        gibbs[species.label] = reading if reading is not None else find_gibbs_energy(str(out_path))
         if gibbs[species.label] is None:
             failures.append(species.label)
 

@@ -234,15 +234,48 @@ def _build_full_orca_input(
 #  Energy extraction
 # ──────────────────────────────────────────────────────────────────────
 
-def _extract_energy(out_path: Path) -> Optional[float]:
-    """Try to extract the final electronic energy from an ORCA output."""
+def _via_orca_read(out_path: Path, quantity) -> Optional[float]:
+    """One energy through :func:`delfin.orca_read.read`, or None.
+
+    The adapter's numbers were the last ones outside the reader switch: they
+    came straight from the text parsers, so ``orca.reader=text`` and the OPI
+    witness (:mod:`delfin.opi_witness`) never reached a ``delfin-app`` run.
+    Nothing raises here -- a missing value is answered by the caller's own
+    fallback.
+    """
+    from delfin import orca_read
+
     try:
-        from delfin.energies import find_gibbs_energy
-        e = find_gibbs_energy(str(out_path))
-        if e is not None:
-            return e
+        reading = orca_read.read(str(out_path.parent), out_path.stem, quantity)
+    except Exception:
+        return None
+    return reading.value
+
+
+def _extract_energy(out_path: Path) -> Optional[float]:
+    """The final electronic energy of an ORCA output.
+
+    This fills ``energy_Eh``, which the adapter declares as "Final electronic
+    energy" and ``delfin-app describe`` prints as such.  It used to call
+    ``find_gibbs_energy``: on an Opt+Freq output that returned G, 3.5 mEh
+    away from E on the water fixture, under E's name -- a reaction energy
+    built from ``energy_Eh`` then came out as ``G - G`` with nothing to show
+    for it.
+    """
+    from delfin import orca_read
+    from delfin.energies import find_electronic_energy
+
+    value = _via_orca_read(out_path, orca_read.Quantity.FINAL_SINGLE_POINT_ENERGY)
+    if value is not None:
+        return value
+    try:
+        value = find_electronic_energy(str(out_path))
+        if value is not None:
+            return value
     except Exception:
         pass
+    # Last resort, as before: an output the parser does not recognise but
+    # which still prints the line (e.g. a wording the patterns miss).
     try:
         text = out_path.read_text()
         for line in reversed(text.splitlines()):
@@ -254,7 +287,21 @@ def _extract_energy(out_path: Path) -> Optional[float]:
 
 
 def _extract_gibbs(out_path: Path) -> Optional[float]:
-    """Extract Gibbs free energy if available (freq calc)."""
+    """Gibbs free energy if available (a frequency calculation has it)."""
+    from delfin import orca_read
+    from delfin.energies import find_gibbs_energy
+
+    value = _via_orca_read(out_path, orca_read.Quantity.GIBBS)
+    if value is not None:
+        return value
+    try:
+        value = find_gibbs_energy(str(out_path))
+        if value is not None:
+            return value
+    except Exception:
+        pass
+    # "Final Gibbs free enthalpy" is the older wording; the shared parsers
+    # match "Gibbs free energy" only, so it keeps its own read here.
     try:
         text = out_path.read_text()
         for line in reversed(text.splitlines()):

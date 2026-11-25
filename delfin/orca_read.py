@@ -401,26 +401,53 @@ def _final_energy_text(values: dict, out_path: Path, tail: str) -> None:
 
 def _fill_thermo_and_energy(values: dict, out_path: Path, tail: str,
                             wanted: set) -> None:
-    """Energy and thermochemistry quantities from the bounded tail."""
+    """Energy and thermochemistry quantities; the bounded tail first.
+
+    One quantity is deliberately not answered from the window alone, for the
+    same reason :func:`_final_energy_text` is not: DELFIN writes multi-job
+    outputs whose appended job can print more than ``_TAIL_BYTES`` after the
+    thermochemistry block that belongs to the file's own job (the ``T1`` +
+    ``T1_TDDFT`` chain, :func:`delfin.energies.own_job_text`). The tail is
+    read first, so an ordinary run keeps the bounded read; only when it
+    carries none of the wanted thermochemistry is the whole file read, and
+    then with the same parsers -- no second reading of a value the window
+    already answered.
+    """
     from delfin.energies import gibbs_energy_in_text
 
     # energies first: the text functions accept pre-read text, so the
     # bounded tail is reused instead of re-reading the file.
     if "final_energy" in wanted:
         _final_energy_text(values, out_path, tail)
-    if "free_energy" in wanted:
-        values["free_energy"] = gibbs_energy_in_text(tail, str(out_path))
-    if "inner_energy" in wanted:
+
+    thermo_keys = tuple(k for k in ("free_energy", "inner_energy", "zpe",
+                                    "enthalpy", "entropy") if k in wanted)
+    if not thermo_keys:
+        return
+    _fill_thermo_values(values, out_path, tail, thermo_keys)
+    if all(values.get(key) is None for key in thermo_keys):
+        whole = out_path.read_text(encoding="utf-8", errors="ignore")
+        _fill_thermo_values(values, out_path, whole, thermo_keys)
+
+
+def _fill_thermo_values(values: dict, out_path: Path, text: str,
+                        keys) -> None:
+    """The thermochemistry parsers themselves, over whichever text is given."""
+    from delfin.energies import gibbs_energy_in_text
+
+    if "free_energy" in keys:
+        values["free_energy"] = gibbs_energy_in_text(text, str(out_path))
+    if "inner_energy" in keys:
         values["inner_energy"] = _last_float_after(
-            tail, r"Total thermal energy\s+(-?\d+\.\d+)\s*Eh")
-    if "zpe" in wanted:
-        values["zpe"] = _last_float_in_text(tail, _ZPE_PATTERNS, str(out_path))
-    if "enthalpy" in wanted:
+            text, r"Total thermal energy\s+(-?\d+\.\d+)\s*Eh")
+    if "zpe" in keys:
+        values["zpe"] = _last_float_in_text(text, _ZPE_PATTERNS, str(out_path))
+    if "enthalpy" in keys:
         values["enthalpy"] = _last_float_after(
-            tail, r"Total Enthalpy\s+\.\.\.\s+(-?\d+\.\d+)\s*Eh")
-    if "entropy" in wanted:
+            text, r"Total Enthalpy\s+\.\.\.\s+(-?\d+\.\d+)\s*Eh")
+    if "entropy" in keys:
         values["entropy"] = _last_float_after(
-            tail, r"Final entropy term\s+\.\.\.\s+(-?\d+\.\d+)\s*Eh")
+            text, r"Final entropy term\s+\.\.\.\s+(-?\d+\.\d+)\s*Eh")
 
 
 _ZPE_PATTERNS = (

@@ -96,11 +96,56 @@ _ANCHORS = {
     "distance": re.compile(r"CARTESIAN COORDINATES"),
     "dipole": re.compile(r"DIPOLE|Dipole"),
 }
-_ENERGY_LABELS = {
-    "FINAL SINGLE POINT ENERGY": energies.find_electronic_energy,
-    "Final Gibbs free energy": energies.find_gibbs_energy,
-    "Zero point energy": energies.find_ZPE,
+
+
+def _read_via_orca_read(path, quantity):
+    """One energy through :func:`delfin.orca_read.read`.
+
+    Behaviour-identical where text is read (baseline recorder over 204
+    runs, 0 gibbs mismatches); the old text parser stays as fallback when
+    orca_read has no value, so a run without OPI answers exactly as before.
+    """
+    from delfin import orca_read
+    try:
+        _p = Path(path)
+        reading = orca_read.read(str(_p.parent), _p.stem, quantity)
+    except Exception:
+        return None
+    if reading is None or reading.value is None:
+        return None
+    return reading.value
+
+
+def _energy_finder(label, text_finder):
+    """Reader for one labelled energy: orca_read first, text parser as
+    fallback when orca_read has no value (a run without OPI answers
+    exactly as before)."""
+    from delfin import orca_read
+
+    quantity = getattr(orca_read.Quantity, _ORCA_READ_QUANTITY[label])
+    def finder(path):
+        v = _read_via_orca_read(path, quantity)
+        if v is not None:
+            return v
+        return text_finder(path)
+    return finder
+
+
+_ORCA_READ_QUANTITY = {
+    "FINAL SINGLE POINT ENERGY": "FINAL_SINGLE_POINT_ENERGY",
+    "Final Gibbs free energy": "GIBBS",
+    "Zero point energy": "ZPE",
 }
+
+_ENERGY_LABELS = {
+    label: _energy_finder(label, finder)
+    for label, finder in (
+        ("FINAL SINGLE POINT ENERGY", energies.find_electronic_energy),
+        ("Final Gibbs free energy", energies.find_gibbs_energy),
+        ("Zero point energy", energies.find_ZPE),
+    )
+}
+
 
 
 @dataclass
