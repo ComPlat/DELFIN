@@ -65,13 +65,6 @@ def _adapter_name(name: str, kind: str) -> str:
     return name if name.endswith("_" + kind) else f"{name}_{kind}"
 
 
-def _kind_name(name: str) -> str:
-    for kind in _KINDS:
-        if name.endswith("_" + kind):
-            return kind
-    return "program"
-
-
 def _skeleton(kind: str, class_name: str, adapter_name: str, description: str) -> str:
     params_doc = {
         "program": 'ParamSpec("geometry", "path", description="Input geometry file"),',
