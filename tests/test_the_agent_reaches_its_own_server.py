@@ -30,9 +30,25 @@ class _Perms:
 
 @pytest.fixture
 def proxy(monkeypatch):
-    monkeypatch.setattr(BJ, "own_listening_ports",
-                        lambda sid: {8393} if sid == "sess-own" else set())
+    """The session's own listener, named by inode as the cage names it.
+
+    The rule is ``socket_guard.owns_loopback`` at the address the request
+    goes to, so the seam is the session's LISTENER INODES
+    (``bash_jobs.own_listening_sockets``) -- what ``--own-listener``
+    carries -- not a set of port numbers. Measured 2026-11-25: a port number
+    is not an endpoint (``[::1]:P`` and ``127.0.0.1:P`` coexist), so a port
+    set cannot say which address the session's server is on.
+    """
+    monkeypatch.setattr(BJ, "own_listening_sockets",
+                        lambda sid: {"8393"} if sid == "sess-own" else set())
+    from delfin.agent import socket_guard as SG
+    # The kernel table this file reads: one listener on the address under
+    # test, held by inode "8393" -- the session's own.
+    monkeypatch.setattr(
+        SG, "loopback_listeners",
+        lambda ip, port: {"8393"} if port == 8393 else set())
     return EP.EgressProxy(allowed_domains=(), allowed_ports=(80, 443))
+
 
 
 @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1",

@@ -177,9 +177,17 @@ class _Perms:
 
 def test_a_post_to_a_background_jobs_server_is_not_an_upload(monkeypatch):
     """Before, ``decide`` let the session's own port through and ``settle``
-    then refused every write to it with nobody to ask."""
-    monkeypatch.setattr(BJ, "own_listening_ports",
-                        lambda sid: {8393} if sid == "sess-own" else set())
+    then refused every write to it with nobody to ask.
+
+    Patched at the seam the rule reads: the session's listener INODES
+    (``bash_jobs.own_listening_sockets``) and the kernel table naming them --
+    the rule judges the address, not a port number, because the same port
+    number exists on ::1 and 127.0.0.1 at once (measured 2026-11-25)."""
+    from delfin.agent import socket_guard as SG
+    monkeypatch.setattr(BJ, "own_listening_sockets",
+                        lambda sid: {"8393"} if sid == "sess-own" else set())
+    monkeypatch.setattr(SG, "loopback_listeners",
+                        lambda ip, port: {"8393"} if port == 8393 else set())
     p = EP.EgressProxy(allowed_domains=(), allowed_ports=(80, 443))
     try:
         assert p.settle("127.0.0.1", 8393, method="POST", body_bytes=10,
