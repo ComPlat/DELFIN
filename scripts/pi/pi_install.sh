@@ -14,7 +14,18 @@ set -euo pipefail
 #   .venv/      Python 3.11 venv created by pi_bootstrap.sh
 # ============================================================================
 
-ROOT="$HOME/delfin"
+# ~/delfin is a link to the shared installation when every person has an
+# account of their own (pi_bootstrap.sh, DELFIN_PI_ACCOUNTS=1): resolved, so
+# the editable install and the venv record the path the others can reach.
+ROOT="$(readlink -f "$HOME/delfin" 2>/dev/null || echo "$HOME/delfin")"
+SHARED=0
+case "$ROOT/" in "$(readlink -f "$HOME")"/*) ;; *) SHARED=1 ;; esac
+if [[ "$SHARED" == "1" ]]; then
+    # Everything deployed is read by every person's account, never written.
+    umask 022
+    # Playwright's browser too: under ~/.cache it would be the agent user's alone.
+    export PLAYWRIGHT_BROWSERS_PATH="$ROOT/ms-playwright"
+fi
 VENV_PY="$ROOT/.venv/bin/python"
 UV="$HOME/.local/bin/uv"
 # PyPI has no aarch64 dist of pymol -> built from GitHub source below instead.
@@ -315,6 +326,11 @@ set_up_extras() {
             "export DELFIN_MCP_ISOLATION=builtin" >> "$ROOT/agent.env"
         echo "==> agent.env: DELFIN_MCP_ISOLATION=builtin"
     fi
+    if [[ "$SHARED" == "1" && -f "$ROOT/agent.env" ]] && ! grep -q '^export PLAYWRIGHT_BROWSERS_PATH=' "$ROOT/agent.env"; then
+        printf '%s\n' "# One Chromium for every account (shared installation)." \
+            "export PLAYWRIGHT_BROWSERS_PATH=$ROOT/ms-playwright" >> "$ROOT/agent.env"
+        echo "==> agent.env: PLAYWRIGHT_BROWSERS_PATH=$ROOT/ms-playwright"
+    fi
     # The agent tab's defaults on this box (~/.config/delfin/pi-agent.conf),
     # written into the account's DELFIN settings on every deploy, like
     # pi-tabs.conf. In the launcher's people mode that file is read under
@@ -362,7 +378,11 @@ EOF
     # gets ~/people/<windows user> as home (own sessions, dashboard, tmux,
     # agent service). DELFIN_PI_PEOPLE=0 leaves it off. An overview, not a
     # boundary: they are one Unix user.
-    if [[ "${DELFIN_PI_PEOPLE:-1}" == "1" && ! -f "$HOME/.config/delfin/launcher-people.conf" ]]; then
+    # With one Linux account per person (a shared root) people have their
+    # own accounts, so this account does not need the mode.
+    local people_default=1
+    [[ "$SHARED" == "1" ]] && people_default=0
+    if [[ "${DELFIN_PI_PEOPLE:-$people_default}" == "1" && ! -f "$HOME/.config/delfin/launcher-people.conf" ]]; then
         mkdir -p "$HOME/.config/delfin"
         printf '%s\n' "# Windows launcher: one home per person under ~/people (remote_bootstrap.sh)." \
             > "$HOME/.config/delfin/launcher-people.conf"
@@ -409,6 +429,30 @@ if tabs.get("order") != order or tabs.get("hidden") != hidden:
     save_settings(settings)
     print("==> dashboard tabs: " + " ".join(t for t in shown if t in ids) + " (+ settings)")
 EOF
+    # Every person's defaults (one account per person): the same agent and
+    # tab choices, from this account's settings, and nothing else of them
+    # (its settings file stays its own). Each person's login shell layers
+    # it under their own file (DELFIN_SETTINGS_DEFAULTS, delfin_accounts.sh).
+    if [[ "$SHARED" == "1" ]]; then
+        env -u DELFIN_SETTINGS_DEFAULTS "$VENV_PY" - "$ROOT/settings-defaults.json" <<'EOF' || echo "warning: could not write the shared settings defaults" >&2
+import json, os, sys
+from delfin.user_settings import load_settings
+settings = load_settings()
+agent = settings.get("agent", {})
+keys = ("mode", "provider", "model", "permission_profile", "effort")
+out = {"agent": {k: agent[k] for k in keys if k in agent}}
+tabs = settings.get("ui", {}).get("tabs")
+if tabs:
+    out["ui"] = {"tabs": tabs}
+tmp = sys.argv[1] + ".tmp"
+with open(tmp, "w", encoding="utf-8") as fh:
+    json.dump(out, fh, indent=2)
+    fh.write("\n")
+os.chmod(tmp, 0o644)
+os.replace(tmp, sys.argv[1])
+print("==> shared settings defaults: " + sys.argv[1])
+EOF
+    fi
     # tmux waits 10 ms (3.5 default) for the rest of an escape sequence; over
     # SSH and a VPN the terminal's answer to tmux's capability query arrives
     # later, and its text ("^[[?61;1;6;...c") landed in the pane as typing.

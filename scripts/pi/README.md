@@ -217,6 +217,7 @@ unchanged; then it takes seconds.
 | `pi_github_deploy_key.sh` | Pi (agent user) | Push access to one repository via a deploy key, GitHub host key pinned |
 | `pi_harden_host.sh` | Pi (root) | Host lockdown: sshd key only, nftables, fail2ban, security updates, sudo password |
 | `delfin_people.sh` | Pi (agent user) | `delfin-people`: who works in the account through the Windows launcher, `--attach NAME` to watch |
+| `delfin_accounts.sh` | Pi (root, admin) | `delfin-accounts`: one Linux account per person (opt-in, `DELFIN_PI_ACCOUNTS=1`): add with an invitation, lock, unlock, remove |
 | `lab/delfin-lab-estop.service`, `lab/delfin-lab-watchdog.service` | Pi (agent user, systemd user units) | Lab control: the e-stop owner and the dead-man, installed and restarted by `pi_install.sh`; the deploy then runs `python -m delfin.lab.smoke` (prints `smoke lab ok`). Admin steps: lingering (`pi_bootstrap.sh` does it), and GPIO only with `LAB_GPIO=1` (adds the agent user to `gpio`). See `docs/design/lab-control.md` |
 
 ## New card (Windows)
@@ -381,6 +382,88 @@ What only a person can do, in this order:
   the "DELFIN Dashboard" menu entry; from your PC use a tunnel
   `ssh -L 8866:127.0.0.1:8866 delfin@delfin-pi.local` and open the URL printed
   by `delfin-dashboard-url` on the Pi.
+
+## One Linux account per person (opt-in)
+
+The default above puts everyone into the one account `delfin` (people mode,
+`~/people/<name>`): simple, and the admin reaches every person's files, but
+it is no boundary between people. For a box where that matters (another
+institute, people who must not read each other's API keys or data) the
+bootstrap has a variant in which each person gets a Linux account of their
+own. It is chosen at setup and changes nothing on a box set up without it.
+
+```bash
+DELFIN_PI_ACCOUNTS=1 scripts/pi/deploy_pi.sh --bootstrap pi@<pi>   # or on the Pi:
+sudo DELFIN_PI_ACCOUNTS=1 bash scripts/pi/pi_bootstrap.sh
+scripts/pi/deploy_pi.sh delfin@<pi>                                 # deploy as usual
+```
+
+What is different:
+
+- The installation lives in `/opt/delfin` (`DELFIN_PI_SHARED_ROOT`), owned by
+  `delfin`, mode 755, Python included (`/opt/delfin/python`); `~delfin/delfin`
+  is a link to it, so deploys, services and every other script work as
+  before. `/opt/delfin/work` (the `delfin` account's own workspace) stays 700.
+  `pi_install.sh` resolves the link, so the venv and the editable install
+  record `/opt/delfin`, and deploys with umask 022. It also writes
+  `/opt/delfin/settings-defaults.json` (the agent and tab defaults of
+  `pi-agent.conf` / `pi-tabs.conf`, nothing else) and puts Playwright's
+  Chromium into `/opt/delfin/ms-playwright`. People mode stays off in the
+  `delfin` account (`DELFIN_PI_PEOPLE=1` turns it on anyway).
+- Needs a fresh box: a `~delfin/delfin` that is already a directory is not
+  moved (the bootstrap stops and changes nothing).
+- The admin's tool `delfin-accounts` (`delfin_accounts.sh`, installed
+  root-owned to `/usr/local/sbin`; `delfin-people` is installed root-owned to
+  `/usr/local/lib/delfin` for the invitations). Run `deploy_pi.sh --bootstrap`
+  again after an update to refresh both.
+
+As the admin (`pi`):
+
+```bash
+sudo delfin-accounts add anna      # = delfin-people --add-person anna
+                                   # [--host delfin-pi.local] [--hours 48] [--no-invite]
+sudo delfin-accounts invite anna   # a new invitation (another PC, or the first expired)
+sudo delfin-accounts list          # = delfin-people --persons
+sudo delfin-accounts lock anna     # = --lock-person; unlock anna undoes it
+sudo delfin-accounts remove anna   # = --remove-person; [--keep-home]
+```
+
+- `add` creates the account `anna` (group `delfin-people`, home 700, no
+  password: keys only), appends the shared installation to her `~/.bashrc`
+  (venv, `agent.env`, `DELFIN_SETTINGS_DEFAULTS`), adds her to sshd's
+  `AllowUsers` (`sshd -t` before the reload; a list sshd refuses is put back)
+  and makes the invitation `~/invites/DELFIN-anna.zip` in the admin's home.
+  It is `delfin-people --invite` run as `anna`: the invitation key, its forced
+  `--enroll` (the root-owned copy) and the expiry are in her own
+  `authorized_keys`, and the file leads to `anna@<pi>` with the host keys
+  pinned. The Windows launcher finds DELFIN through the venv her login shell
+  activates; she enters her own API key in the dashboard's settings
+  (`~anna/.delfin`, unreadable for others).
+- `lock` sets the account's expiry to day 1 (sshd's PAM check then refuses
+  it, keys included: a locked password alone does not stop a key login),
+  takes her out of `AllowUsers` and stops her processes; files stay.
+  `remove` locks, archives the home to `/var/backups/delfin-people/` (root
+  only) and deletes the account. Both refuse every account outside
+  `delfin-people` (`pi`, `delfin`, system users).
+- `pi_harden_host.sh` keeps every unlocked person in `AllowUsers` when it
+  runs again.
+
+What stays shared, and what is the `delfin` account's alone:
+
+- Whoever controls `delfin` controls the code every person runs (it owns
+  `/opt/delfin`, as root owns `/usr`). Keep `delfin` for deploys and the
+  services; people work in their own accounts.
+- Each person's dashboard runs in their own account on a loopback port with
+  its own token; the dashboard enforces the token (jupyter-server extension
+  mode), so another account on the box cannot use it without the token.
+- The services (`delfin-dashboard`, the agent service, the messenger bridge
+  and gateway) and the lab units run as `delfin`; a person's dashboard starts
+  its own agent service in their account. The messenger pairs phones for the
+  `delfin` account only.
+- Optional QM tools installed by the deploy (`~delfin/.delfin/qm_tools`) and
+  the docs index are `delfin`'s; a person builds their own when needed.
+- The agent's cage (bwrap, Landlock) needs nothing per account: it reads
+  `/` and writes only the workspace, and its secret masks follow `HOME`.
 
 ## Updating
 

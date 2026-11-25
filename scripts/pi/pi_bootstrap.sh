@@ -22,16 +22,34 @@ set -euo pipefail
 #   sudo bash pi_bootstrap.sh                   # agent may restart its service only
 #   AGENT_SUDO=none sudo bash pi_bootstrap.sh   # agent user without sudo
 #   AGENT_SUDO=full sudo bash pi_bootstrap.sh   # root without password (not advised)
+#
+# One Linux account per person (opt-in; the default is people mode, everyone
+# in the agent user's account under ~/people/<name>):
+#   DELFIN_PI_ACCOUNTS=1 sudo bash pi_bootstrap.sh
+# puts the installation into $DELFIN_PI_SHARED_ROOT (default /opt/delfin,
+# owned by the agent user, readable by all; ~/delfin is a link to it),
+# Python included, and installs delfin-accounts (delfin_accounts.sh, beside
+# this script) for the admin: sudo delfin-accounts add NAME. Needs a box
+# whose ~/delfin is not a directory yet (a fresh one).
 # ============================================================================
 
 AGENT_USER="${AGENT_USER:-delfin}"
 # NO_SUDO=1 (the earlier switch) still means no sudo at all.
 AGENT_SUDO="${AGENT_SUDO:-$([[ "${NO_SUDO:-0}" == "1" ]] && echo none || echo service)}"
 PY_VERSION="${PY_VERSION:-3.11}"
+ACCOUNTS="${DELFIN_PI_ACCOUNTS:-0}"
+SHARED_ROOT="${DELFIN_PI_SHARED_ROOT:-/opt/delfin}"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 
 if [[ $EUID -ne 0 ]]; then
     echo "error: run with sudo" >&2
     exit 1
+fi
+if [[ "$ACCOUNTS" == "1" ]]; then
+    [[ "$SHARED_ROOT" =~ ^/[A-Za-z0-9._/-]+$ && "$SHARED_ROOT" != / ]]         || { echo "error: DELFIN_PI_SHARED_ROOT must be an absolute path (got '$SHARED_ROOT')" >&2; exit 1; }
+    for f in delfin_accounts.sh delfin_people.sh; do
+        [[ -f "$HERE/$f" ]] || { echo "error: $HERE/$f missing: run this script from scripts/pi (deploy_pi.sh --bootstrap copies it)" >&2; exit 1; }
+    done
 fi
 if [[ "$(uname -m)" != "aarch64" ]]; then
     echo "warning: expected aarch64, got $(uname -m)" >&2
@@ -89,6 +107,35 @@ if [[ -f "$SUDOERS.tmp" ]]; then
 fi
 AGENT_HOME="$(getent passwd "$AGENT_USER" | cut -d: -f6)"
 
+if [[ "$ACCOUNTS" == "1" ]]; then
+    echo "==> one account per person: shared installation in $SHARED_ROOT"
+    # The installation every person reads: owned by the agent user (deploys
+    # write it), 0755, outside any home. ~/delfin stays the path every other
+    # script uses (pi_install.sh resolves it, so the venv, its scripts and
+    # the editable install record the shared path, not the link).
+    if [[ -e "$AGENT_HOME/delfin" && ! -L "$AGENT_HOME/delfin" ]]; then
+        echo "error: $AGENT_HOME/delfin is a directory: this box already has the one-account layout." >&2
+        echo "       The per-person variant needs the installation in $SHARED_ROOT from the start" >&2
+        echo "       (a fresh box). Nothing was changed." >&2
+        exit 1
+    fi
+    install -d -m 755 -o "$AGENT_USER" -g "$AGENT_USER" "$SHARED_ROOT"
+    ln -sfn "$SHARED_ROOT" "$AGENT_HOME/delfin"
+    chown -h "$AGENT_USER:$AGENT_USER" "$AGENT_HOME/delfin"
+    install -d -m 755 /etc/delfin
+    printf '%s
+' "# One Linux account per person (pi_bootstrap.sh, delfin-accounts)."         "DELFIN_SHARED_ROOT=$SHARED_ROOT" "DELFIN_DEPLOY_USER=$AGENT_USER" > /etc/delfin/accounts.conf.tmp
+    chmod 644 /etc/delfin/accounts.conf.tmp
+    mv /etc/delfin/accounts.conf.tmp /etc/delfin/accounts.conf
+    # Root-owned copies: the admin runs delfin-accounts as root, and an
+    # invitation's forced command runs delfin-people as the person. A copy
+    # in the agent user's tree could be changed by that user first.
+    install -D -m 755 -o root -g root "$HERE/delfin_accounts.sh" /usr/local/sbin/delfin-accounts
+    install -D -m 755 -o root -g root "$HERE/delfin_people.sh" /usr/local/lib/delfin/delfin-people
+    ln -sfn /usr/local/lib/delfin/delfin-people /usr/local/bin/delfin-people
+    getent group delfin-people >/dev/null || groupadd --system delfin-people
+fi
+
 # The administrator's floor (managed_policy), root-owned so neither the agent
 # nor its user can loosen it: shell commands only ever in the cage (bwrap),
 # and no session on a CLI backend, whose own shell runs outside the cage
@@ -125,10 +172,20 @@ if [[ -n "$LOGIN_USER" ]]; then
 fi
 
 echo "==> [4/5] uv + Python $PY_VERSION + venv"
-sudo -iu "$AGENT_USER" bash -s -- "$PY_VERSION" <<'EOS'
+sudo -iu "$AGENT_USER" bash -s -- "$PY_VERSION" "$ACCOUNTS" <<'EOS'
 set -euo pipefail
 PY_VERSION="$1"
+ACCOUNTS="$2"
 export PATH="$HOME/.local/bin:$PATH"
+# ~/delfin may be a link (one account per person): everything below that
+# records a path (the venv, its Python) records the real one.
+ROOT="$(readlink -f "$HOME/delfin" 2>/dev/null || echo "$HOME/delfin")"
+if [[ "$ACCOUNTS" == "1" ]]; then
+    # uv's own Python lives under ~/.local/share by default, where nobody
+    # else can read it; the venv's python is a link to it.
+    export UV_PYTHON_INSTALL_DIR="$ROOT/python"
+    umask 022
+fi
 # One pinned uv release, kept only when its SHA-256 matches (never curl | sh).
 UV_VERSION=0.13.5
 UV_SHA256_aarch64=4bb69cf95ed13f23713bb7bc09f241896ea0c75b7c557e615a20604b82f9c403
@@ -152,8 +209,10 @@ if ! command -v uv >/dev/null; then
     rm -rf "$tmp"
 fi
 uv python install "$PY_VERSION"
-mkdir -p "$HOME/delfin" "$HOME/delfin/work"
-[[ -x "$HOME/delfin/.venv/bin/python" ]] || uv venv --python "$PY_VERSION" "$HOME/delfin/.venv"
+mkdir -p "$ROOT" "$ROOT/work"
+# The agent user's own workspace stays its own in a shared root.
+[[ "$ACCOUNTS" == "1" ]] && chmod 700 "$ROOT/work"
+[[ -x "$ROOT/.venv/bin/python" ]] || uv venv --python "$PY_VERSION" "$ROOT/.venv"
 # CLI backends of the agent (backend=cli). Login happens interactively later.
 # Download first: `curl | bash </dev/null` would feed bash /dev/null, not the script.
 if ! command -v claude >/dev/null && [[ ! -x "$HOME/.local/bin/claude" ]]; then
@@ -282,4 +341,8 @@ fi
 
 echo
 echo "Bootstrap done. Agent user: $AGENT_USER (sudo: $AGENT_SUDO)"
+if [[ "$ACCOUNTS" == "1" ]]; then
+    echo "One account per person: installation in $SHARED_ROOT; after the deploy, as the admin:"
+    echo "  sudo delfin-accounts add NAME    (or: delfin-people --add-person NAME)"
+fi
 echo "Next (from your PC): scripts/pi/deploy_pi.sh $AGENT_USER@<pi-host>"
