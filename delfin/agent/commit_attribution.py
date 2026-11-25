@@ -7,9 +7,18 @@ them in through git's own ``--trailer`` mechanism
 (``api_client._commit_trailer_rewrite``, called from ``_bash_isolation_argv``,
 the one choke point every bash command passes through), and
 ``prompt_loader._commit_attribution_block`` tells the model to add the first one
-itself on the paths that do not go through the executor. Both read the decision
-computed here, so there is ONE answer to "may this session attribute its
-commits", not two that can drift.
+itself on the paths that do not go through the executor.
+
+One half reads the decision computed here today: the prompt block. The executor
+does NOT yet -- ``api_client._commit_trailer_enabled`` still reads
+``agent.commit_coauthor`` directly, so a wave member is told nothing about the
+trailer while its ``git commit`` still gets the line spliced in. The wiring is
+``scratch/h1-trailer-off-for-members.patch`` (both files sit behind the
+self-modification guard) and the contract for it is
+``tests/test_the_executor_asks_the_same_attribution_question.py``, whose case is
+``xfail(strict=True)`` until that patch is applied. Read this paragraph before
+trusting the module's name: two callers, one answer is the design, and the
+second caller is not wired yet.
 
 Why a wave member answers "no" by default: its commits are read later as the
 wave's work, on a branch someone else merges, and the line is public text — the
