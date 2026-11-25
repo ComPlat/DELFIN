@@ -1,27 +1,33 @@
 r"""Compiling any module of the package must not raise a syntax warning.
 
 A string holding an escape Python does not define, or a comparison like
-``x is "text"``, makes ``compile()`` emit a syntax warning today; the same
-construct is a hard ``SyntaxError`` in a future release, so a module
-carrying one is a module that stops importing at the next interpreter
-upgrade. It is also the noisiest defect this repository has measured: every
-agent process that imported ``delfin.agent.api_client`` printed
-``invalid escape sequence`` on its way in -- 504 records from one day of
-swarm runs, 110 agents -- because the ``_word_spans`` docstring is not a raw
-string and shows a shell-escaped space, ``a`` backslash ``b``.
+``x is`` a literal, makes ``compile()`` warn today and raises outright under
+``-W error`` -- so ``python3 -W error -c "import delfin.agent.api_client"``
+fails on this interpreter, and a warning filter set by any downstream user
+of the package turns every import of it into an exception. The defect was
+reported to this package as the noisiest output of a day of swarm runs (one
+record per agent process that imported the module, 504 records over 110
+agents, from the task report -- not counted here), because the
+``_word_spans`` docstring is not a raw string and shows a shell-escaped
+space: ``a`` backslash ``b``.
 
 ``ast.parse`` (``tests/test_syntax_integrity.py``) does not see any of it:
 only ``compile()`` emits these warnings. This guard therefore compiles every
 file under ``delfin/`` itself, under ``warnings.simplefilter("error")``, and
 lists each offender as ``file:line: message``.
 
-Two deliberate choices, both because this has to fail the same way on the
-CI interpreter (3.11) and on a developer's (3.12+):
+Two deliberate choices, both because this has to fail the same way on the CI
+interpreter and on whatever a developer runs:
 
-* the warning's CATEGORY is ignored -- 3.11/3.12 report an undefined escape
-  as a ``DeprecationWarning``, 3.13 as a ``SyntaxWarning``, and ``is`` with a
-  literal has been a ``SyntaxWarning`` throughout. Any warning from
-  ``compile()`` is an offender.
+* neither the CATEGORY nor the MESSAGE TEXT decides an offender, because the
+  one defect already arrives under two categories on the interpreter measured
+  here (3.12): a bare ``compile()`` under ``"always"`` gives a
+  ``SyntaxWarning``, while the same string through the shared parse helper
+  surfaces in pytest's summary as a ``DeprecationWarning``, and under
+  ``-W error`` both constructs raise a ``SyntaxError`` whose message carries a
+  `` (file, line N)`` suffix. Keying on any one of those would narrow the
+  guard to one interpreter and one call path, so ANY warning from
+  ``compile()`` is an offender -- which also catches ``is`` with a literal.
 * nothing asks the host what is installed; the files on disk are the input.
 
 This module's own docstrings are raw for the reason
@@ -162,9 +168,10 @@ def test_the_check_names_the_line_and_the_message_of_a_bad_escape(tmp_path):
 def test_a_warning_that_is_not_an_escape_is_also_an_offender(tmp_path):
     """The rule is 'compile warned', not 'the message says escape'.
 
-    ``x is 'text'`` has been a SyntaxWarning since 3.8 on every interpreter
-    this runs on, so this pins the category-agnostic rule: narrow the guard
-    back to the escape message and this fails.
+    ``x is 'text'`` warns here with a message that has nothing to do with
+    escapes (measured: '"is" with a literal. Did you mean "=="?'), so this
+    pins the category- and text-agnostic rule: narrow the guard back to the
+    escape message and this fails.
     """
     odd = tmp_path / "odd.py"
     odd.write_bytes(b'A = 1\nB = A is "x"\n')
