@@ -138,11 +138,11 @@ def _is_loopback(host: str) -> bool:
     return h in ("localhost", "::1") or h.startswith("127.")
 
 
-def _own_ports(perms) -> set:
-    """Ports the background jobs of ``perms``'s session listen on."""
+def _own_inodes(perms) -> set:
+    """Listener inodes the background jobs of ``perms``'s session hold."""
     try:
-        from .bash_jobs import own_listening_ports
-        return own_listening_ports(
+        from .bash_jobs import own_listening_sockets
+        return own_listening_sockets(
             str(getattr(perms, "task_session_id", "") or ""))
     except Exception:
         return set()
@@ -167,13 +167,20 @@ def _peer_pid(conn) -> int:
 
 def _own_server(perms, host: str, port: int, peer_pid: int = 0) -> bool:
     """Whether ``host:port`` is a server of the requesting session's own on
-    the loopback: a port one of its running background jobs listens on
-    (``_own_ports``), or one only processes below the sandbox helper that
-    sent the request listen on (``peer_pid``, ``socket_guard.owns_loopback``):
+    the loopback: a listener one of its running background jobs holds
+    (``_own_inodes``), or one only processes below the sandbox helper that
+    sent the request hold (``peer_pid``, ``socket_guard.owns_loopback``):
     a test that serves a fake endpoint to itself, a server started in the
     same command. Such a request stays on this machine between the
     session's own processes: it is let through for a session's token in
     every mode, writes included, and connected to the loopback itself.
+
+    Judged at the ADDRESS the proxy connects to (``_loopback_addr``), never
+    by the port number alone. ``[::1]:P`` and ``127.0.0.1:P`` are two
+    endpoints in one network namespace and both bind at once, so a session
+    whose job listens on one of them must not open the other, where a host
+    service may sit. The listener's inode says which address it is on; a
+    port number does not.
 
     The helper's own sockets (the forwarder) do not count. The process
     token, other ports and every other host go on to the rules. Measured
@@ -181,14 +188,17 @@ def _own_server(perms, host: str, port: int, peer_pid: int = 0) -> bool:
     test to the scripted endpoint it served itself."""
     if perms is None or not _is_loopback(host):
         return False
-    if port in _own_ports(perms):
-        return True
-    if not peer_pid:
-        return False
     try:
         from . import socket_guard as _sg
-        return _sg.owns_loopback(ipaddress.ip_address(_loopback_addr(host)),
-                                 port, (), peer_pid, include_root=False)
+        address = ipaddress.ip_address(_loopback_addr(host))
+        if _sg.owns_loopback(address, port, _own_inodes(perms)):
+            return True
+        if not peer_pid:
+            return False
+        # The helper forwards for the command below it; its own sockets (the
+        # forwarder listening for the proxy itself) are excluded.
+        return _sg.owns_loopback(address, port, (), peer_pid,
+                                 include_root=False)
     except Exception:
         return False
 
@@ -799,6 +809,44 @@ class EgressProxy:
                 "~/.delfin_settings.json. Do not retry it or send the same "
                 "data another way.")
 
+    def _refused_port_note(self, host: str, port: int) -> str:
+        """The sentence on a refused LOOPBACK port: the route that exists,
+        so the command stops retrying the same connect.
+
+        Measured 2026-11-26 in the product's own cage: the agent's own
+        servers on the loopback are already reachable with no setting at
+        all (a listener of the command itself: raw connect CONNECTED, GET
+        and POST through the proxy 200; a listener of the session's
+        background jobs, used from a later command: 200), while the host's
+        services on the same loopback are refused (11434, 5432, 8088, 631,
+        3000: EACCES) because on this host the cage shares the host's
+        network namespace. So a refused loopback port is never "a port you
+        have to unlock to talk to your own server": the own server is open
+        already, and an agent retrying it is reaching for something of the
+        machine. A command carries no provider key either
+        (``_scrubbed_bash_env`` removes them, ``_SECRET_ENV_MARKERS``), so
+        posting to a model endpoint from a script cannot work at ANY port;
+        saying only "add it to allowed_ports" sent agents to ask the user
+        for exactly that.
+
+        Only the sentence changes; no verdict here depends on it. Empty for
+        a non-loopback host, where this note would be wrong.
+        """
+        if not _is_loopback(host):
+            return ""
+        return (" A server THIS session started is let through on the loopback "
+                "with no setting at all: a listener of the command itself, or "
+                "one of the session's background jobs. This port is not one of "
+                "them, so whatever answers there was not started by this "
+                "session -- on a shared host's loopback that is a service of "
+                "the machine or of another user, and it stays refused. A model "
+                "endpoint is not reachable from a command at any port either: "
+                "the command gets no provider key (DELFIN makes its own model "
+                "calls), so a script that posts to a model server cannot work. "
+                "Do not retry it; if this session genuinely has a server on "
+                "this port, the user can name it in "
+                "agent.sandbox_network.allowed_ports.")
+
     def decide(self, host: str, port: int, *, method: str = "CONNECT",
                body_bytes: int = 0, perms=None,
                peer_pid: int = 0) -> tuple[str, str, bool]:
@@ -816,7 +864,8 @@ class EgressProxy:
             return "deny", (
                 f"blocked by DELFIN's egress proxy: port {port} is not allowed "
                 f"(allowed: {', '.join(map(str, self.allowed_ports))}; "
-                "setting agent.sandbox_network.allowed_ports)"), False
+                "setting agent.sandbox_network.allowed_ports)"
+                + self._refused_port_note(host, port)), False
         # The administrator's ceiling comes before every user rule, known
         # host and question: outside it nothing reaches the host. An
         # unreadable trusted policy is handled (closed) by managed_policy;
@@ -851,7 +900,12 @@ class EgressProxy:
         return (f"blocked by DELFIN's egress proxy: {why}, and nobody can be "
                 f"asked. To allow {host}, the user adds the permission rule "
                 f"web_fetch(domain:{host}) or adds {host} to "
-                "agent.sandbox_network.allowed_domains in ~/.delfin_settings.json.")
+                "agent.sandbox_network.allowed_domains in ~/.delfin_settings.json. "
+                f"If {host} is a model endpoint: a command gets no provider "
+                "key (DELFIN makes its own model calls), so a script "
+                "calling a model API cannot work even once the domain is "
+                "allowed; a task that needs a real model answer is run by "
+                "DELFIN itself, not by a command. Do not retry it.")
 
     def settle(self, host: str, port: int, *, method: str = "CONNECT",
                body_bytes: int = 0, perms=None,
