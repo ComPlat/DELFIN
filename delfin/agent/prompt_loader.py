@@ -2211,6 +2211,21 @@ class PromptLoader:
         sections: list[PromptSection] = []
         injected: list[str] = []  # track which sections we inject
 
+        # A request that names a group gets that group, before anything
+        # below reads the session's decision. This is the one place that
+        # holds the person's words and runs before both consumers: the
+        # lazy-module stripping (a module describing a hidden group is
+        # dropped) and the advertised tool list, which the engine assembles
+        # after this prompt. Offering therefore cannot get ahead of the
+        # tools, and the advice for a group arrives with the group.
+        # See toolsets.WorkspaceToolsets.note_request.
+        try:
+            _ts = self._session_toolsets()
+            if _ts is not None:
+                _ts.note_request(f"{conversation_text}\n{task_text or ''}")
+        except Exception:
+            pass
+
         def add(name: str, layer: int, content: str) -> None:
             if content:
                 sections.append(
