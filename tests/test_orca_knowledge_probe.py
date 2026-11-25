@@ -4,6 +4,8 @@ whether a word is a simple-input keyword. Tests use a fake ``orca`` script
 from __future__ import annotations
 
 import os
+from pathlib import Path
+import time
 import textwrap
 
 import pytest
@@ -139,8 +141,25 @@ def test_timeout_kills_orca_process_group(run_dir, tmp_path):
     result = probe.probe_one("RKS", run_dir, timeout_s=2)
     assert result == "unavailable"  # no parse verdict within the budget
     pid = int(pidfile.read_text().split()[-1])
-    with pytest.raises((ProcessLookupError, OSError)):
-        os.kill(pid, 0)  # it is gone
+    # Killed is gone or a zombie: a killed process stays visible to
+    # os.kill(pid, 0) until its parent reaps it, and with the inbound
+    # guard between probe and ORCA that took longer than one look on a
+    # CI runner (main, 2026-11-25). Wait for it, briefly.
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and _alive(pid):
+        time.sleep(0.05)
+    assert not _alive(pid)
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
+    except OSError:
+        return True
 
 
 def test_probe_is_serial_not_parallel(run_dir, tmp_path, monkeypatch):
