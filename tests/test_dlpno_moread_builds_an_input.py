@@ -12,9 +12,19 @@ positionally is a ``TypeError``, and the first step of the chain that really
 carries orbitals forward fails instead of starting from them.
 
 These tests exercise the BUILD path, so they need no ORCA binary: they
-assert the file ``build_dlpno_input`` writes.  They run only where ``opi`` is
-installed (the CI "OPI tests" job sets ``DELFIN_OPI_REQUIRED=1``, which turns
-this skip into a failure); without ``opi`` no input can be built at all.
+assert the file ``build_dlpno_input`` writes.  They run where ``opi`` is
+installed, and skip (with the import named) everywhere else.
+
+Their reachability is narrower than the ``test_opi_*`` files': the CI "OPI
+tests" job installs ``opi`` and passes ``tests/test_opi_*.py
+tests/test_orca_knowledge*.py``, and this filename is not in that list, so
+that job does not run these two ``test_dlpno_*`` files.  ``DELFIN_OPI_REQUIRED``
+therefore does not reach this skip, and no CI job does: they run for a
+developer with ``opi`` installed, and that is all.  Widening the job's path
+list would change CI, which was not verified from here (``opi`` is not
+installed on the reviewing host, so the newly selected tests were never
+executed), and a test that is newly selected by a job nobody ran is the same
+claim in a new place.
 
 Manual ground truth for the written form (ORCA 6.1 manual, section 2.20.5
 "MORead"/Table 2.68): MORead reads the MOs of a previous calculation from the
