@@ -20,6 +20,7 @@ from typing import Any, Optional
 from delfin.common.logging import get_logger
 from delfin.tools._base import StepAdapter
 from delfin.tools._registry import register
+from delfin.tools._spec import ParamSpec
 from delfin.tools._types import StepResult, StepStatus
 
 logger = get_logger(__name__)
@@ -41,6 +42,20 @@ class Co2CoordinatorOpiAdapter(StepAdapter):
     consumes = ("geometry",)
     produces = ("orca_input",)
     requires_python = ("opi",)
+    #: ``job`` is declared so the choice is DISCOVERABLE: without it
+    #: ``delfin-step co2_coordinator_opi --describe`` printed no params at all,
+    #: and a caller could not learn that the relaxed-scan writer exists.  It is
+    #: optional with the historical default, so ``_validate``'s required-param
+    #: check is untouched; its enum is advisory (a mismatched value raises a
+    #: WARNING, and the adapter's own gate is the hard refusal).
+    params = (
+        ParamSpec(
+            "job", "str", required=False, default="sp",
+            enum=("sp", "scan"),
+            description=("Which classic CO2 input to write: the orientation "
+                         "single points (sp) or the relaxed distance scan"
+                         " (scan)")),
+    )
 
     def execute(
         self,
@@ -139,6 +154,13 @@ class Co2CoordinatorOpiAdapter(StepAdapter):
         co2_indices = kwargs.get("co2_indices")
         try:
             metal_index = kwargs.get("metal_index")
+            co2_c_index = kwargs.get("co2_c_index")
+            if metal_index is None or co2_c_index is None:
+                # Only the INFERENCE path reads atoms, so only that path
+                # requires an atoms object.  ``delfin-step --atoms=Ir`` arrives
+                # as a string (argv cannot carry an ase.Atoms); a caller that
+                # names both indices and the start distance never needs one.
+                _require_atoms_object(atoms)
             if metal_index is None:
                 from delfin.co2.CO2_Coordinator6 import detect_metal_index
 
@@ -195,6 +217,16 @@ class Co2CoordinatorOpiAdapter(StepAdapter):
     def _refuse_scan(self, work_dir: Path, start: float, error: str):
         return self._make_result(
             self.name, StepStatus.FAILED, work_dir, start, error=error)
+
+
+def _require_atoms_object(atoms) -> None:
+    """Refuse a non-atoms ``atoms`` with a message that says what to pass."""
+    if not hasattr(atoms, "symbols") or not hasattr(atoms, "positions"):
+        raise ValueError(
+            f"inferring the scan axis needs an ase.Atoms for 'atoms', got "
+            f"{type(atoms).__name__}; pass an atoms object through run_step "
+            f"(the step registry), or name metal_index, co2_c_index and "
+            f"start_distance explicitly")
 
 
 def _co2_carbon_index(atoms, co2_indices) -> int:

@@ -88,6 +88,24 @@ def test_the_single_point_stays_the_default(tmp_path, spy):
     assert scan.calls == []
 
 
+def test_the_scan_choice_is_discoverable_from_the_contract(capsys):
+    """A caller must be able to LEARN that the scan writer exists.
+
+    Before this, the adapter declared ``params = ()``, so ``--describe``
+    printed no parameters at all and a scan was reachable only by a caller who
+    already knew the keyword.  A capability nobody can discover is the same
+    shape of defect as one nothing calls.  The base commit prints no
+    ``params:`` line here, which is what makes this red there.
+    """
+    assert step_main(["co2_coordinator_opi", "--describe"]) == 0
+    out = capsys.readouterr().out
+    assert "params:" in out, f"the contract lists no parameters:\n{out}"
+    assert "job" in out, f"the job choice is not in the contract:\n{out}"
+    assert "'scan'" in out, (
+        "the contract does not name the scan choice, so a caller cannot find "
+        f"the relaxed-scan writer:\n{out}")
+
+
 def test_an_unknown_job_is_refused_with_the_choices(tmp_path, spy):
     """A refused choice must say what it offers.
 
