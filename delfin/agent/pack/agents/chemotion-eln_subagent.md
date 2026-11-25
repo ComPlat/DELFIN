@@ -2,7 +2,7 @@
 name: chemotion-eln
 description: Reads and writes a Chemotion ELN through its REST API - finds a collection, lists the samples or reactions in it (e.g. "which samples have no analysis?"), reads one element with its analyses, and drafts a sample or reaction. Every write is filed for a person's approval and says exactly what it would write.
 mode: default
-tools: [eln_find, eln_read, eln_pending, eln_draft, eln_approve, read_file, list_files, grep_file, ask_user_question, subagent_message, read_section, list_sections, list_docs, search_docs, report_verdict]
+tools: [eln_find, eln_read, eln_pending, eln_draft, eln_attach, eln_approve, read_file, list_files, grep_file, ask_user_question, subagent_message, read_section, list_sections, list_docs, search_docs, report_verdict]
 department: lab
 display_name: Chemotion ELN
 ---

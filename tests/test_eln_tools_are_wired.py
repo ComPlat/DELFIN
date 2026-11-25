@@ -40,7 +40,8 @@ REPO = Path(__file__).resolve().parents[1]
 #: The five names, spelled once. ``eln_tools.TOOL_NAMES`` is asserted
 #: equal to this, so a new tool must be added in both (and then to the
 #: catalogue and the dispatcher, which the other tests here check).
-EXPECTED = {"eln_find", "eln_read", "eln_pending", "eln_draft", "eln_approve"}
+EXPECTED = {"eln_find", "eln_read", "eln_pending", "eln_draft", "eln_approve",
+            "eln_attach"}
 
 PRESET = REPO / "delfin" / "agent" / "pack" / "agents" / "chemotion-eln_subagent.md"
 
@@ -170,6 +171,69 @@ def test_the_draft_tool_is_not_host_gated_like_a_calculation():
     assert 'mcp.tool(name="eln_draft")(_safe("eln_draft", tool_eln_draft))' \
         in server
     assert "_host_gated(tool_eln_draft)" not in server
+
+
+def test_the_attachment_tool_is_not_host_gated_either():
+    """The same standing-grant defect would apply to ``eln_attach``.
+
+    The package names attaching a file (a lab run's export). It is a WRITE
+    on the same server whose ``DELFIN_OPS_ALLOW_MUTATE=1`` is a standing
+    host grant, so it must go through ``_safe`` like its siblings and never
+    ``_host_gated``.
+    """
+    server = (REPO / "delfin" / "ops_server" / "server.py").read_text(
+        encoding="utf-8")
+    assert 'mcp.tool(name="eln_attach")(_safe("eln_attach", tool_eln_attach))' \
+        in server
+    assert "_host_gated(tool_eln_attach)" not in server
+
+
+def test_an_attachment_needs_an_approval_and_sends_nothing_without_one(home):
+    """The package's write rule, driven through the tool a model calls.
+
+    Two assertions, and the second is the one that matters: without an
+    approval NOTHING reaches the server -- not even the first chunk -- and
+    the refusal names the file, the element, the request id and the person's
+    command. Then one grant sends the exporter's whole sequence once, and a
+    second call with the same grant is refused.
+    """
+    from delfin.lab import eln_tools, eln_write
+
+    fake = FakeELN()
+    payload = b"x" * 11_000          # three chunks at MAX_UPLOAD_CHUNK=5000
+    args = {"path": "", "content": payload, "element_type": "Sample",
+            "element_id": 11, "filename": "run-export.json"}
+
+    out = json.loads(eln_tools.execute("eln_attach",
+                                       {**args, "_transport": fake.send}, None))
+    assert out["code"] == "needs_approval", out
+    assert out["request_id"].startswith("eln-")
+    assert "run-export.json" in out["error"]
+    assert "11000 bytes" in out["error"]
+    assert "Element 11" in out["error"] or "Sample 11" in out["error"]
+    assert f"delfin-agent eln approve {out['request_id']}" in out["error"]
+    # Nothing was sent: not the chunk, not the complete, not the link.
+    assert [c for c in fake.calls if "attachments" in c["path"]] == []
+    assert fake.uploaded == [] and fake.attached == []
+
+    # The person grants it; the same call now sends the sequence once.
+    eln_write.grant(out["request_id"], approver="alice")
+    sent = json.loads(eln_tools.execute(
+        "eln_attach", {**args, "approval": out["request_id"],
+                       "_transport": fake.send}, None))
+    assert sent["ok"] is True, sent
+    assert sent["chunks"] == 3
+    assert fake.uploaded[0]["filename"] == "run-export.json"
+    assert len(fake.uploaded[0]["checksum"]) == 32
+    assert fake.attached == [{"element_type": "Sample",
+                              "attachment_ids": [sent["key"]]}]
+
+    # The grant is single use.
+    again = json.loads(eln_tools.execute(
+        "eln_attach", {**args, "approval": out["request_id"],
+                       "_transport": fake.send}, None))
+    assert again.get("code") == "refused_approval", again
+    assert len(fake.attached) == 1
 
 
 def test_an_ops_tool_call_reaches_the_eln_tools(home):

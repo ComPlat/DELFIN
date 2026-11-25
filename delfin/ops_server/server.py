@@ -2023,6 +2023,28 @@ def tool_eln_approve(request_id: str = "") -> str:
     return _eln("eln_approve", {"request_id": request_id})
 
 
+def tool_eln_attach(path: str = "", element_type: str = "",
+                    element_id: int = 0, filename: str = "",
+                    approval: str = "") -> str:
+    """Attach ONE file to ONE ELN element, as a DRAFT a person approves.
+
+    ``path`` is a file on this machine (a lab run's export from
+    ``delfin/lab/chemotion.py``, a spectrum). Without ``approval`` the
+    request is filed and the refusal names what would be written, its id and
+    the person's command; with one, the exporter's chunked sequence is sent
+    once. ``element_type`` is the API's own name for the kind (``Sample``,
+    ``Reaction``), because the link request carries it.
+    """
+    args: dict = {}
+    for key, value in (("path", path), ("element_type", element_type),
+                       ("filename", filename), ("approval", approval)):
+        if value:
+            args[key] = value
+    if element_id:
+        args["element_id"] = element_id
+    return _eln("eln_attach", args)
+
+
 # ---------------------------------------------------------------------------
 # geometry_edit — coordinate manipulation on instruction (read-only wrappers
 # over delfin.tools.geometry_edit; chemistry toolset group, never always-on).
@@ -2360,6 +2382,7 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool(name="eln_read")(_safe("eln_read", tool_eln_read))
     mcp.tool(name="eln_pending")(_safe("eln_pending", tool_eln_pending))
     mcp.tool(name="eln_draft")(_safe("eln_draft", tool_eln_draft))
+    mcp.tool(name="eln_attach")(_safe("eln_attach", tool_eln_attach))
     mcp.tool(name="eln_approve")(_safe("eln_approve", tool_eln_approve))
 
     mcp.run(transport="stdio")

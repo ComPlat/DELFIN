@@ -149,6 +149,12 @@ class FakeELN:
             self._reaction(22, "Boc deprotection", 3, "running"),
         ]
         self.next_id = 100
+        # Attachment state: the chunked upload's own ledger, so a test can
+        # assert the exporter's sequence arrived whole rather than that a
+        # 200 came back.
+        self.upload_chunks: dict = {}
+        self.uploaded: list = []
+        self.attached: list = []
 
     # -- fixtures ---------------------------------------------------------
 
@@ -247,6 +253,30 @@ class FakeELN:
             row["collection_id"] = collection
             self.samples.append(row)
             return self._json(200, {"sample": row})
+
+        if path == "/api/v1/attachments/upload_chunk" and method == "POST":
+            # chemotion.build_import's chunk step. The server keeps the key
+            # so the complete step can check one arrived.
+            self.upload_chunks.setdefault(str(payload.get("key")), []).append(
+                payload.get("counter"))
+            return self._json(200, {"ok": True})
+
+        if path == "/api/v1/attachments/upload_chunk_complete" \
+                and method == "POST":
+            key = str(payload.get("key"))
+            if key not in self.upload_chunks:
+                return self._json(422, {"error": "unknown upload key"})
+            self.uploaded.append({"key": key,
+                                  "filename": payload.get("filename"),
+                                  "checksum": payload.get("checksum"),
+                                  "chunks": len(self.upload_chunks[key])})
+            return self._json(200, {"ok": True, "key": key})
+
+        if path == "/api/v1/attachments" and method == "POST":
+            self.attached.append({"element_type": payload.get("element_type"),
+                                  "attachment_ids": payload.get(
+                                      "attachment_ids")})
+            return self._json(200, {"ok": True})
 
         return self._json(404, {"error": "404 Not Found"})
 

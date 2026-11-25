@@ -1,4 +1,4 @@
-"""The ELN tools: four reads, one draft write a person approves.
+"""The ELN tools: four reads, two draft writes a person approves.
 
 Input: a tool name, its arguments as a model sent them, and the session's
 ``KitToolPermissions``. Output: a JSON string, like every other lab tool
@@ -12,6 +12,9 @@ eln_pending the writes waiting for a person's approval, in words they can
             check; a READ of the lab's own ledger
 eln_draft   creates ONE element as a DRAFT; filed for approval, and only a
             person's approval makes the second call send
+eln_attach  attaches ONE file (a run's export, a spectrum) to ONE element,
+            in the exporter's chunked sequence; filed for approval the same
+            way, and the grant covers the whole file by its sha256
 eln_approve REFUSES an agent session. The person's command is
             ``delfin-agent eln approve <id>``; this name exists so a model
             that tries it is told which route is the person's, rather than
@@ -44,7 +47,7 @@ from . import eln_api, eln_write
 #: ``api_client._LAB_TOOL_NAMES`` and the catalogue schemas; the test
 #: ``tests/test_eln_tools_are_wired.py`` holds the three together.
 TOOL_NAMES = frozenset({"eln_find", "eln_read", "eln_pending", "eln_draft",
-                        "eln_approve"})
+                        "eln_approve", "eln_attach"})
 
 #: Read names only. These need no approval and never write.
 READ_NAMES = frozenset({"eln_find", "eln_read", "eln_pending"})
@@ -312,6 +315,56 @@ def _draft(args: dict, permissions=None, transport=None) -> dict:
         return out
 
 
+def _attach(args: dict, transport=None) -> dict:
+    """Attach one file to one element, or file the approval that would.
+
+    ``path`` is a file on this machine (a lab run's export, a spectrum);
+    ``content`` is accepted as an alternative for a caller that already
+    holds the bytes. One of the two. The element type is required because
+    the link request names it, and the id because the file has to land
+    somewhere.
+    """
+    path = str(args.get("path") or "").strip()
+    content = args.get("content")
+    if path:
+        from pathlib import Path
+        try:
+            content = Path(path).read_bytes()
+        except OSError as exc:
+            return {"error": f"cannot read {path!r}: {exc}", "code": "bad_path"}
+    if content is None:
+        return {"error": "eln_attach needs a path to a file (or content "
+                         "bytes); nothing was read and nothing was sent."}
+    if isinstance(content, str):
+        content = content.encode("utf-8")
+    element_type = str(args.get("element_type") or "").strip()
+    element_id = args.get("element_id")
+    try:
+        element_id = int(element_id)
+    except (TypeError, ValueError):
+        return {"error": "eln_attach needs an integer element_id: the file "
+                         "must land on an element, and the id is what names "
+                         "it.", "code": "bad_element_id"}
+    filename = str(args.get("filename") or "").strip() or (
+        path.rsplit("/", 1)[-1] if path else "attachment")
+    client = _client(transport)
+    try:
+        return eln_write.attach_file(
+            client, filename=filename, content=content,
+            element_type=element_type, element_id=element_id,
+            approval=str(args.get("approval") or ""))
+    except eln_write.WriteRefused as exc:
+        out = {"error": str(exc), "code": exc.code, "draft": exc.draft,
+               "request_id": exc.request_id, "digest": exc.digest}
+        if exc.code == "needs_approval":
+            out["note"] = (
+                "this is not decided by the permission mode, by a prompt, or "
+                "by a claimed approval. Only the person's `delfin-agent eln "
+                f"approve {exc.request_id}` makes it sendable.")
+            out["approve_with"] = f"delfin-agent eln approve {exc.request_id}"
+        return out
+
+
 def _approve(args: dict, transport=None) -> dict:
     """Refused: approving is the person's command, never an agent's tool."""
     return {
@@ -348,6 +401,8 @@ def execute(name: str, arguments: dict, permissions=None) -> str:
         if name == "eln_draft":
             return _dump(_draft(args, permissions=permissions,
                                 transport=transport))
+        if name == "eln_attach":
+            return _dump(_attach(args, transport=transport))
         if name == "eln_approve":
             return _dump(_approve(args))
     except eln_api.ClientError as exc:

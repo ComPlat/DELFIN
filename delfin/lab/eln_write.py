@@ -361,3 +361,120 @@ def send_with_approval(client: "eln_api.Client", call: Callable[[], Any],
         raise WriteRefused(why, code="refused_approval",
                            request_id=str(approval), digest=digest_)
     return call()
+
+
+#: The route each step of a chunked attachment upload takes, read from the
+#: exporter's own request sequence (``chemotion.build_import``) and listed
+#: as writes in :data:`eln_routes.ELN_ROUTES`. Named, not guessed.
+_ATTACH_CHUNK = "/api/v1/attachments/upload_chunk"
+_ATTACH_COMPLETE = "/api/v1/attachments/upload_chunk_complete"
+_ATTACH_LINK = "/api/v1/attachments"
+
+
+def attach_digest(base_url: str, *, filename: str, content: bytes,
+                  element_type: str, element_id: int) -> str:
+    """SHA-256 over the whole upload this grant would authorise.
+
+    Over the CONTENT, not over one chunk: the person is approving "this file
+    goes onto this element", and a grant that only covered the first chunk
+    would let the second half be anything.
+    """
+    blob = json.dumps(
+        [eln_api.display_url(base_url), _ATTACH_CHUNK, _ATTACH_COMPLETE,
+         _ATTACH_LINK, filename, len(content),
+         hashlib.sha256(content).hexdigest(),
+         str(element_type), int(element_id)],
+        sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def describe_attachment(filename: str, content: bytes, *,
+                        element_type: str, element_id: int) -> str:
+    """What an attach would write, in one sentence a person can check."""
+    return (f"attachment {filename!r} ({len(content)} bytes, sha256 "
+            f"{hashlib.sha256(content).hexdigest()[:12]}) onto "
+            f"{element_type} {element_id}")
+
+
+def attach_file(client: "eln_api.Client", *, filename: str, content: bytes,
+                element_type: str, element_id: int, approval: str = "",
+                person: str = "", session: str = "") -> dict:
+    """Attach one file to one element -- only against a person's approval.
+
+    The same two-call shape as :func:`create_draft`, for the same reason:
+    without ``approval`` it FILES the request and raises with everything a
+    person needs to judge it; with one it sends the exporter's chunked
+    sequence once, and the grant is consumed.
+
+    The sequence is ``chemotion.build_import``'s, which is established from
+    the API source: chunk(s) with a shared ``key`` and a ``counter``, then
+    ``upload_chunk_complete`` with the md5 the server checks, then the
+    ``attachments`` link that names the element. ``MAX_UPLOAD_CHUNK`` is
+    that module's constant, so a payload over one chunk is split here the
+    way the exporter splits it.
+    """
+    from . import chemotion as _exporter
+    from . import store
+
+    kind = str(element_type or "").strip()
+    if not kind:
+        raise WriteRefused(
+            "attach needs the element type the file belongs to (e.g. "
+            "'Sample', 'Reaction'), because the link request names it.",
+            code="refused_shape")
+    if not filename:
+        raise WriteRefused("attach needs a filename.", code="refused_shape")
+    data = bytes(content or b"")
+    if not data:
+        raise WriteRefused("attach needs content; an empty file is not a "
+                           "lab record.", code="refused_shape")
+    who = person or store.person()
+    digest_ = attach_digest(client.base_url, filename=filename, content=data,
+                            element_type=kind, element_id=element_id)
+
+    if not approval:
+        rec = file_request(digest_=digest_, person=who, session=session,
+                           element=kind,
+                           body={"name": filename, "collection_id": element_id},
+                           base_url=client.base_url)
+        raise WriteRefused(
+            f"needs a person's approval. It would write "
+            f"{describe_attachment(filename, data, element_type=kind, element_id=element_id)}"
+            f" to {eln_api.display_url(client.base_url)} "
+            f"(request {rec['id']}, digest {digest_[:12]}). A person runs: "
+            f"`delfin-agent eln approve {rec['id']}`, then this is repeated "
+            f"with approval={rec['id']!r}. Nothing was sent.",
+            code="needs_approval",
+            draft={"element": kind, "filename": filename,
+                   "element_id": element_id, "bytes": len(data)},
+            request_id=rec["id"], digest=digest_)
+
+    md5 = hashlib.md5(data).hexdigest()
+    key = __import__("uuid").uuid4().hex
+
+    def _send() -> dict:
+        """The exporter's chunk -> complete -> link sequence, once."""
+        counter = 0
+        for start in range(0, len(data), _exporter.MAX_UPLOAD_CHUNK):
+            chunk = data[start:start + _exporter.MAX_UPLOAD_CHUNK]
+            client.send_approved(
+                "POST", _ATTACH_CHUNK, digest=digest_,
+                body={"key": key, "counter": str(counter),
+                      "filename": filename, "chunk_sha256":
+                          hashlib.sha256(chunk).hexdigest(),
+                      "chunk_len": len(chunk)})
+            counter += 1
+        client.send_approved("POST", _ATTACH_COMPLETE, digest=digest_,
+                             body={"key": key, "filename": filename,
+                                   "checksum": md5})
+        answer = client.send_approved(
+            "POST", _ATTACH_LINK, digest=digest_,
+            body={"element_type": kind, "attachment_ids": [key]})
+        return {"status": answer.status, "answer": answer.body,
+                "key": key, "chunks": counter}
+
+    sent = send_with_approval(client, _send, approval=approval,
+                              digest_=digest_, person=who)
+    return {"ok": True, "request_id": str(approval), "digest": digest_,
+            "element_type": kind, "element_id": element_id,
+            "filename": filename, "bytes": len(data), **sent}
