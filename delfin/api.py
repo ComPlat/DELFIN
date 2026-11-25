@@ -173,8 +173,25 @@ def pipeline_prepare(
     *,
     capture: bool = True,
 ) -> CommandResult:
-    """Generate a CONTROL template via ``delfin --define <file>``."""
-    argv = ["--define", control_file]
+    """Write a CONTROL template, and an empty input file beside it.
+
+    ``control_file`` names the CONTROL file to WRITE, which is what the word
+    and this tool's own parameter name say, and where the caller asks for it.
+    The first version passed it to ``delfin --define <control_file>`` --
+    and ``--define`` names the INPUT file (``delfin/cli_helpers.py:127``,
+    ``nargs="?"``). So the requested path became an empty input file and the
+    template went to ``CONTROL.txt`` in whatever directory the process ran in:
+    a caller that asked for a template in its workspace got an empty file
+    there and the real one in DELFIN's own checkout, reported only in passing
+    between two "has been created (empty)" lines.
+
+    ``--control`` is the option that names the CONTROL file
+    (``delfin/cli_helpers.py:141``); ``--define`` keeps naming the input, and
+    the input belongs beside the CONTROL file (``delfin/define.py:393-403``).
+    """
+    workspace = Path(control_file).expanduser().resolve().parent
+    argv = [str(workspace), "--control", str(control_file),
+            "--define", "input.txt"]
     if overwrite:
         argv.append("--overwrite")
     return _run_cli(argv, capture=capture)
@@ -5328,6 +5345,14 @@ def orca_check_input(calc_description: str) -> dict:
     remaining relevant cards for the described method/job come back as
     ``relevant_cards`` (id, severity, statement, sources). Nothing is run.
 
+    ``ok`` is true only when a check RAN and produced its verdict. Every
+    shipped card is a v1 statement card (no executable ``applies``), so the
+    card store alone cannot fail anything; the keyword dictionary is asked
+    as well, because a name no manual defines is the failure a described
+    calculation most often has. A description that names no keyword at all
+    is refused rather than passed: ``ok: true`` on it would say
+    "nothing wrong with this input" about an input nobody checked.
+
     Args:
         calc_description: JSON object describing the calculation, e.g.
             ``{"keywords": ["RKS", "TightSCF"], "blocks": {"scf":
@@ -5355,6 +5380,25 @@ def orca_check_input(calc_description: str) -> dict:
     except Exception as exc:  # malformed card must not break the answer
         return {"ok": False, "error": str(exc),
                 "findings": [], "relevant_cards": []}
+    # The card store is v1 only, so `found` can never fail anything by
+    # itself. Ask the keyword dictionary too: a name that no shipped record
+    # defines (a mistyped basis set, an invented keyword) is the defect a
+    # described calculation most often carries, and it used to come back as
+    # `ok: true` with an empty findings list. Measured in a real run: a model
+    # sent `nonexistent-basis-xyz` and `{}`, got `ok: true` twice, and wrote
+    # that "a checker that passes deliberate garbage validates nothing".
+    unknown = _unknown_keywords(calc)
+    if unknown:
+        found = list(found) + unknown
+    described = bool(calc.get("keywords") or calc.get("blocks")
+                     or calc.get("method_family") or calc.get("job"))
+    if not described:
+        return {"ok": False,
+                "error": ("calc_description names no keyword, block or "
+                          "method: nothing to check — pass the calculation "
+                          "you intend to run"),
+                "findings": found, "n_findings": len(found),
+                "relevant_cards": []}
     # Cards without an executable check are statements, not findings —
     # but the ones that describe THIS calculation are exactly what the
     # model needs before writing the input, so surface them.
@@ -5373,9 +5417,55 @@ def orca_check_input(calc_description: str) -> dict:
             })
     except Exception:
         pass
-    return {"ok": True, "findings": found, "n_findings": len(found),
+    blocking = [f for f in found if str(f.get("severity")) == "error"]
+    return {"ok": not blocking, "findings": found, "n_findings": len(found),
             "relevant_cards": relevant,
-            "n_relevant_cards": len(relevant)}
+            "n_relevant_cards": len(relevant),
+            "checked": {"keyword_dictionary": True,
+                        "knowledge_cards": len(_ok.cards())}}
+
+
+def _unknown_keywords(calc: dict) -> list:
+    """Findings for every described keyword no shipped record defines.
+
+    The dictionary holds 1,481 ORCA keywords, aliases and block options. A
+    described keyword that resolves nowhere is either a typo or a name that
+    does not exist, and both make the input unrunnable — so it is reported
+    with severity ``error``.
+
+    Two shapes are NOT accusations, and both were measured before this was
+    written: a value that only qualifies a keyword (``CPCM(water)`` — the
+    dictionary holds ``CPCM`` but no solvent names, and DELFIN's own ORCA
+    inputs write the parenthesised form), and a pure number or unit
+    (``5000``, ``300K``) which no record claims to define. The keyword part
+    of a qualified token is what gets checked, so ``CPCM(water)`` is spelled
+    ``CPCM`` before the lookup and never reported as unknown.
+    """
+    from delfin.orca_knowledge.dictionary import explain as _dict_explain
+
+    findings = []
+    seen = set()
+    for raw in calc.get("keywords") or []:
+        word = str(raw).strip()
+        if not word or word in seen:
+            continue
+        seen.add(word)
+        bare = word.split("(", 1)[0].strip() if "(" in word else word
+        if not bare or bare[0].isdigit():
+            continue
+        if _dict_explain(bare) is not None:
+            continue
+        findings.append({
+            "id": f"unknown-keyword.{bare.lower()}",
+            "kind": "unknown_keyword",
+            "severity": "error",
+            "statement": (f"{bare} is not a keyword, alias or block option "
+                          f"in ORCA's shipped dictionary (1,481 records): "
+                          f"the input cannot run as written"),
+            "keyword": bare,
+            "sources": [],
+        })
+    return findings
 
 
 def _card_matches(card: dict, calc: dict) -> bool:
