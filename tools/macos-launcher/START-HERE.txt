@@ -11,6 +11,13 @@ Two ways to work, from one app:
 
 README.md beside this file is the full reference. This is the short path.
 
+THE QUICKEST WAY: ONE LINE IN TERMINAL
+DELFIN's README (github.com/ComPlat/DELFIN) has a one-line install for each
+release. Paste it into Terminal (Spotlight: Cmd+Space, "Terminal") and
+press Enter. It downloads this package for exactly that release, checks it
+against its SHA-256 before anything of it runs, and starts Install.command.
+macOS asks nothing about the download that way.
+
 GOT A PERSONAL FILE "DELFIN-<your name>.zip" FROM WHOEVER RUNS THE SERVER?
 Then it is three steps:
   1. Double-click the ZIP. It extracts into a folder.
@@ -53,7 +60,8 @@ and asks:
 
 Type  y  and press Enter. That clears the mark on THESE files and nothing
 else. Gatekeeper stays on; no setting is changed. Answer n and nothing is
-installed.
+installed. (A release signed and notarized by Apple does not ask: macOS
+opens DELFIN.app with the mark on.)
 
 IF YOU WOULD RATHER USE TERMINAL:
   1. Open Terminal (Spotlight: Cmd+Space, "Terminal").
@@ -121,7 +129,9 @@ Terminal window, once per start.
 Open DELFIN and choose "Set up DELFIN on this Mac...". A Terminal window
 downloads and installs it (5 to 20 minutes, about 4 GB of disk). From then
 on the menu says "DELFIN on this Mac": the dashboard opens in your
-browser, only reachable from this Mac. Your files are in the folder
+browser, only reachable from this Mac. It keeps running when you close
+the Terminal window and ends by itself 10 minutes after your last browser
+tab closed; "Stop DELFIN on this Mac" in the menu ends it at once. Your files are in the folder
 DELFIN in your home folder. The agent's commands run in macOS's own
 sandbox. ORCA is not included (its licence does not allow it).
 

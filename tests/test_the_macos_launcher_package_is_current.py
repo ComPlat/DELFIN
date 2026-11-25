@@ -35,11 +35,15 @@ def _build():
     return module
 
 
+#: What signing adds (sign_and_notarize.sh): allowed in a signed ZIP, not listed.
+SIGNATURE = ("macos-launcher/DELFIN.app/Contents/_CodeSignature/", "macos-launcher/DELFIN.app/Contents/CodeResources")
+
+
 def test_the_zip_holds_the_current_sources():
     build = _build()
     files = build.contents()
     with zipfile.ZipFile(ZIP) as archive:
-        names = [n for n in archive.namelist() if not n.endswith("/")]
+        names = [n for n in archive.namelist() if not n.endswith("/") and not n.startswith(SIGNATURE)]
         assert sorted(names) == sorted("macos-launcher/" + n for n in build.NAMES + ["SHA256SUMS.txt"])
         for name in build.NAMES:
             assert archive.read("macos-launcher/" + name) == files[name], (
@@ -52,22 +56,41 @@ def test_the_zip_holds_the_current_sources():
 def test_the_scripts_stay_executable_after_extraction():
     build = _build()
     with zipfile.ZipFile(ZIP) as archive:
-        for info in archive.infolist():
-            if info.is_dir():
-                continue
+        for name in build.NAMES:
+            info = archive.getinfo("macos-launcher/" + name)
             mode = info.external_attr >> 16
-            assert info.create_system == 3 and stat.S_ISREG(mode), info.filename
-            name = info.filename.split("/", 1)[1]
-            assert bool(mode & 0o111) == (name in build.EXECUTABLE), info.filename
+            assert info.create_system == 3 and stat.S_ISREG(mode), name
+            assert bool(mode & 0o111) == (name in build.EXECUTABLE), name
 
 
-def test_the_server_half_is_the_windows_one_and_the_app_lists_the_package():
+def test_the_package_is_a_finished_app_bundle():
     build = _build()
-    assert build.SHARED["remote_bootstrap.sh"] == ROOT / "tools" / "windows-launcher" / "remote_bootstrap.sh"
-    assert build.SHARED["remote_launcher.py"] == ROOT / "tools" / "windows-launcher" / "remote_launcher.py"
-    script = (MAC / "DELFIN.sh").read_text(encoding="utf-8")
-    listed = script.split('PACKAGE_FILES="', 1)[1].split('"', 1)[0].split()
-    assert sorted(listed) == sorted(build.NAMES), "the installer copies every file of the package"
+    files = build.contents()
+    plist = files["DELFIN.app/Contents/Info.plist"].decode()
+    assert f"<string>{build.version()}</string>" in plist and "@VERSION@" not in plist
+    assert "<key>CFBundleExecutable</key><string>DELFIN</string>" in plist
+    assert files[build.RESOURCES + "DELFIN.icns"][:4] == b"icns"
+    windows = ROOT / "tools" / "windows-launcher"
+    assert build.SOURCES[build.RESOURCES + "remote_bootstrap.sh"] == windows / "remote_bootstrap.sh"
+    assert build.SOURCES[build.RESOURCES + "remote_launcher.py"] == windows / "remote_launcher.py"
+
+
+def test_the_one_line_install_is_pinned_and_checked():
+    """One command in Terminal: a fixed release asset, its SHA-256 checked
+    before anything of it runs, never a script piped into a shell."""
+    import hashlib
+    build = _build()
+    digest = hashlib.sha256(ZIP.read_bytes()).hexdigest()
+    readme = (ROOT / "README.md").read_text(encoding="utf-8").replace("\r\n", "\n")
+    assert build.readme_block(digest) in readme, (
+        "README.md's one-line install does not name this ZIP: run build_package.py "
+        "(or, for a signed ZIP, put sign_and_notarize.sh's digest there)")
+    line = build.install_line(digest)
+    assert f"/releases/download/v{build.version()}/delfin-macos-launcher.zip" in line
+    assert line.index("shasum -a 256 -c") < line.index("ditto -x -k") < line.index("Install.command")
+    assert "--proto =https" in line
+    import re
+    assert not re.search(r"\|\s*(sudo\s+)?(sh|bash|zsh)(\s|$)", line), "nothing is piped into a shell"
 
 
 @pytest.mark.skipif(shutil.which("ssh-keygen") is None or shutil.which("bash") is None
@@ -107,7 +130,7 @@ def test_an_invitation_carries_the_mac_package_too(tmp_path):
     mac_home = tmp_path / "mac"
     mac_home.mkdir()
     install = subprocess.run(
-        ["bash", str(folder / "DELFIN.sh"), "install"], capture_output=True, text=True, timeout=120,
+        ["bash", str(folder / "DELFIN.app" / "Contents" / "Resources" / "DELFIN.sh"), "install"], capture_output=True, text=True, timeout=120,
         stdin=subprocess.DEVNULL,
         env={**os.environ, "HOME": str(mac_home), "DELFIN_LAUNCHER_STORE": str(mac_home / "store"),
              "DELFIN_LAUNCHER_APPS": str(mac_home / "Applications"),

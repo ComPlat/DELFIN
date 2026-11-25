@@ -1,8 +1,7 @@
 # DELFIN for macOS
 
-**New here?** `START-HERE.txt` beside this file is the short path: Gatekeeper
-and the download mark, install, connect, DELFIN on the Mac. This page is the
-reference behind it.
+**New here?** `START-HERE.txt` beside this file is the short path. This page
+is the reference behind it.
 
 The Mac counterpart of `tools/windows-launcher/`. One app, two places to work:
 
@@ -14,60 +13,111 @@ The Mac counterpart of `tools/windows-launcher/`. One app, two places to work:
 
 Nothing on the Mac needs Xcode, its command line tools, Homebrew or a Python:
 the app is `/bin/bash` (3.2, as macOS ships it) and the system's `ssh`,
-`scp`, `ssh-keygen`, `shasum`, `lsof`, `curl`, `open` and `osascript`.
-`/usr/bin/python3` is not used: on a Mac without the command line tools it
-is only a stub that offers to install them.
+`scp`, `ssh-keygen`, `shasum`, `lsof`, `curl`, `ditto`, `open` and
+`osascript`. `/usr/bin/python3` is not used: on a Mac without the command
+line tools it is only a stub that offers to install them.
 
-## Files
+## Install: one line
 
-| File | What it is |
-| --- | --- |
-| `Install.command` | Double-click: download-mark question, package check, install, start |
-| `Uninstall.command` | Double-click: remove, keeping saved connections and the local DELFIN on request |
-| `DELFIN.sh` | The app: menu, SSH connection, local dashboard, install and uninstall |
-| `setup_local.sh` | Sets DELFIN up on the Mac (micromamba, Python 3.11, DELFIN from PyPI) |
-| `fetch_micromamba.sh` | DELFIN's pinned micromamba download (from `delfin/installers/`) |
-| `remote_bootstrap.sh`, `remote_launcher.py` | The server half (from `tools/windows-launcher/`) |
-| `VERSION` | The DELFIN release `setup_local.sh` installs |
-| `SHA256SUMS.txt` | Checked by `Install.command` before anything is installed |
+The repository's README.md carries the line for the current release (it
+names the ZIP's SHA-256, so it cannot live inside the ZIP). In Terminal:
 
-`build_package.py` builds `tools/delfin-macos-launcher.zip`, the file the
-release publishes. The shared files are taken from where they live at build
-time; `tests/test_the_macos_launcher_package_is_current.py` fails when the
-ZIP no longer matches them.
+```bash
+d=$(mktemp -d) && curl -fL --proto =https -o "$d/delfin.zip" https://github.com/ComPlat/DELFIN/releases/download/v<VERSION>/delfin-macos-launcher.zip && echo "<SHA-256>  $d/delfin.zip" | shasum -a 256 -c && ditto -x -k "$d/delfin.zip" "$d" && bash "$d/macos-launcher/Install.command"
+```
+
+* A fixed release asset (`v<VERSION>`, HTTPS only), checked against its
+  SHA-256 **before anything of it runs**; a wrong digest stops the line.
+  Nothing is piped into a shell.
+* `curl` does not set the download mark, so Gatekeeper has nothing to ask:
+  that is how macOS treats a file a person fetches in Terminal, not a way
+  around it. The same holds for a signed and notarized build.
+* `build_package.py` writes the line; `tests/test_the_macos_launcher_package_is_current.py`
+  fails when it does not name the committed ZIP and this version.
+
+**From Finder** instead: download `delfin-macos-launcher.zip`, double-click
+it, double-click `Install.command` in the folder (see Gatekeeper below).
+
+## Package
+
+```
+macos-launcher/
+  Install.command      download-mark question, package check, install, start
+  Uninstall.command    remove; keeps saved connections / local DELFIN on request
+  SHA256SUMS.txt       every file below, checked before anything is installed
+  README.md  START-HERE.txt
+  DELFIN.app/Contents/
+    Info.plist  MacOS/DELFIN
+    Resources/DELFIN.sh            menu, SSH connection, local dashboard, install
+              setup_local.sh       DELFIN on the Mac (micromamba, Python, PyPI)
+              fetch_micromamba.sh  DELFIN's pinned micromamba (delfin/installers/)
+              remote_bootstrap.sh  remote_launcher.py   (tools/windows-launcher/)
+              DELFIN.icns  VERSION
+```
+
+`DELFIN.app` is a finished bundle, built with the package (`build_package.py`)
+and never assembled or changed on the Mac: the installer copies it with
+`ditto`, so a signature on it stays valid. Sources: `app/Info.plist`,
+`app/DELFIN`, `app/DELFIN.icns` (made from `tools/windows-launcher/DELFIN_logo.png`).
 
 ## Where things go
 
 | What | Where |
 | --- | --- |
-| The app | `~/Applications/DELFIN.app` (no administrator rights) |
+| The app | `~/Applications/DELFIN.app` (no administrator rights; Spotlight and Launchpad find it) |
 | Saved connections | `~/Library/Application Support/DELFIN Launcher/profiles/<id>.conf` |
 | An invitation key until its first use | `~/Library/Application Support/DELFIN Launcher/invite-<id>.key` (0600) |
 | DELFIN on this Mac | `~/Library/Application Support/DELFIN Launcher/local/` |
 | Working folder of the local dashboard | `~/DELFIN` |
 | Remember-login key | `~/.ssh/delfin_launcher_ed25519` (as on Windows) |
 
-The settings folder is 0700, files in it 0600 (`umask 077`).
+The settings folder is 0700, files in it 0600 (`umask 077`). No `launchd`
+job, login item or background service is installed: the dashboard runs while
+its Terminal window is open, and the server's dashboard is the server's.
+`DELFIN_LAUNCHER_APPS=/Applications bash Install.command` installs for all
+accounts of the Mac (needs write access there).
 
 ## Gatekeeper and the download mark
 
-The package is not signed and not notarized. A ZIP downloaded with a browser
-carries the quarantine attribute (`com.apple.quarantine`), and Archive
-Utility passes it to every extracted file; Gatekeeper then refuses to open
-`Install.command` with "unidentified developer" (macOS 15: "Apple could not
-verify ..."). The way through is Apple's own: System Settings > Privacy &
-Security > **Open Anyway** (macOS 14 and earlier also right-click > Open),
-or `bash Install.command` in Terminal.
+A ZIP downloaded with a browser carries the quarantine attribute
+(`com.apple.quarantine`), and Archive Utility passes it to every extracted
+file. Gatekeeper then opens only software Apple has notarized.
 
-`Install.command` then lists the package files that still carry the mark and
-asks *Remove the mark and continue? (y/N)*. `y` runs
-`xattr -d com.apple.quarantine` on exactly those files; `n` installs nothing.
-The mark is never removed silently, and nothing else is changed: Gatekeeper
-stays on, no `spctl` setting is touched. The installed app is copied with
-`cp -p`, so it keeps whatever the person decided.
+* **Signed and notarized build** (see below): `Install.command` checks
+  `DELFIN.app` with `spctl --assess` and, when Gatekeeper accepts it, asks
+  nothing and keeps the mark. Only `Install.command` itself, a plain script,
+  is asked about once by macOS in Finder ("Open Anyway"); a script cannot
+  carry a stapled ticket.
+* **Unsigned build** (the default until a Developer ID is set up):
+  `Install.command` lists the package files that carry the mark and asks
+  *Remove the mark and continue? (y/N)*. `y` runs
+  `xattr -dr com.apple.quarantine` on exactly those; `n` installs nothing.
+  Never silent; Gatekeeper stays on; no `spctl` setting is changed and
+  nothing needs `sudo`.
 
-Files the app writes itself (the `.command` file a connection runs in,
-the app bundle) are made on the Mac and carry no mark.
+Getting `Install.command` to run from Finder in the first place: System
+Settings > Privacy & Security > **Open Anyway** (macOS 14 and earlier also
+right-click > Open), or `bash Install.command` in Terminal.
+
+## Signing and notarization
+
+`sign_and_notarize.sh` (maintainer-side, on a Mac with Xcode's command line
+tools) does it with Apple's own tools, from two settings outside the
+repository: `DELFIN_SIGN_IDENTITY` ("Developer ID Application: ...") and
+`DELFIN_NOTARY_PROFILE` (made once with `xcrun notarytool store-credentials`).
+
+1. `codesign --options runtime --timestamp` on `DELFIN.app` (hardened
+   runtime, secure timestamp), `codesign --verify --deep --strict`.
+2. `xcrun notarytool submit --wait`, `xcrun stapler staple`, `spctl --assess`.
+3. The ZIP is rebuilt from the signed tree. Signing adds
+   `Contents/_CodeSignature/` and `Contents/CodeResources`; no checked file
+   changes (the macOS CI signs the bundle ad hoc and verifies exactly that).
+4. Put the printed SHA-256 into README.md's one-line install, commit ZIP and
+   line, then tag.
+
+Next step, not built here: a signed installer package (`pkgbuild` +
+`productsign` with a "Developer ID Installer" certificate, notarized the
+same way) would also remove the one Finder question about `Install.command`.
 
 ## Connecting to a server
 
@@ -132,15 +182,22 @@ stops on macOS. ORCA is not installed (licence).
 "DELFIN on this Mac" then starts `delfin-voila --open-browser --ip 127.0.0.1`
 in a Terminal window, with `DELFIN_AGENT_SANDBOX=auto` (Seatbelt on macOS)
 and `DELFIN_AGENT_SANDBOX_NETWORK=0`. The dashboard's token is mandatory;
-the browser is opened with it by `delfin-voila` itself. Closing the window
-stops the dashboard.
+the browser is opened with it by `delfin-voila` itself. As on a server,
+`delfin-voila` started from a terminal runs its server in the background,
+one per account: the window may be closed, starting again opens the same
+dashboard, and it ends itself 10 minutes after its last browser window
+closed. "Stop DELFIN on this Mac" in the menu (`delfin-voila stop`) ends it
+at once. Jupyter's kernel sockets go to `/tmp/delfin-jupyter-<uid>` (0700,
+checked to be this account's own): the default folder's path is too long
+for a Unix socket on macOS, and kernels would otherwise use loopback TCP.
 
 ## Uninstall
 
 `Uninstall.command` (or the app's menu) removes the app and the settings
 folder. It asks whether to keep the saved connections (and unused invitation
 keys) and whether to keep the local DELFIN. The login key in `~/.ssh` stays;
-nothing on any server is changed.
+nothing on any server is changed. Nothing else was installed: no launchd
+job, no login item, nothing outside the app and the settings folder.
 
 For scripts: `DELFIN.sh uninstall --keep-profiles|--remove-profiles
 --keep-local|--remove-local --close-running`.
@@ -149,14 +206,19 @@ For scripts: `DELFIN.sh uninstall --keep-profiles|--remove-profiles
 
 * Linux CI (`pytest`): the shared rules -- the server command is the Windows
   launcher's, byte for byte; SSH options; URL check; profiles; the
-  invitation import; install and uninstall in an isolated home; the package
-  ZIP matches its sources; the release publishes it.
+  invitation import; install (the bundle copied unchanged) and uninstall in
+  an isolated home; the package ZIP matches its sources; the one-line
+  install names this ZIP and version; the release publishes it.
 * macOS CI (`.github/workflows/macos-launcher.yml`, `macos-latest`): the
-  same under the Mac's `/bin/bash` 3.2 and BSD tools; the package extracted
-  with `ditto` (what Archive Utility uses); the quarantine question both
-  ways; install, icon, `plutil -lint`; uninstall keeping and removing;
-  DELFIN set up on the Mac from the tested tree and its dashboard answering
-  with the token and refusing without it, bound to 127.0.0.1 only; and an
-  SSH connection to a `sshd` on the runner.
+  same under the Mac's `/bin/bash` 3.2 and BSD tools; the one-line install
+  (with the committed ZIP in place of the download) and a wrong digest
+  stopping it; the package extracted with `ditto` and marked; the
+  download-mark question both ways; `plutil -lint`, the icon, an ad-hoc
+  signature verified with `--strict`; uninstall keeping and removing; DELFIN
+  set up on the Mac from the tested tree and its dashboard answering with
+  the token and refusing without it, bound to 127.0.0.1 only; and an
+  invitation plus SSH connection to an `sshd` on the runner.
 * Not in CI: Finder, Gatekeeper's dialog and "Open Anyway", Terminal.app
-  opening the window, the browser. These need a person at a Mac.
+  opening the window, the browser, a Developer ID signature and
+  notarization. These need a person at a Mac (and, for signing, a
+  Developer ID).

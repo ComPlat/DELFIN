@@ -52,8 +52,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install pytest
-        run: python -m pip install -c .github/ci/constraints-ci.txt pytest pyyaml
+      - name: Install pytest and the package without its chemistry stack
+        # tests/conftest.py imports delfin; these tests need nothing else of it.
+        run: |
+          python -m pip install -c .github/ci/constraints-ci.txt pytest pyyaml
+          python -m pip install --no-deps -e .
 
       - name: The shared rules under the Mac's /bin/bash 3.2
         # The tests call `bash` from PATH; on the runner that is Homebrew's

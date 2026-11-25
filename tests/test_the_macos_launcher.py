@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MAC = ROOT / "tools" / "macos-launcher"
 SCRIPT = MAC / "DELFIN.sh"
 WINDOWS_APP = (ROOT / "tools" / "windows-launcher" / "DELFIN.ps1").read_text(encoding="utf-8")
+RESOURCES = "DELFIN.app/Contents/Resources"
 _KEY_HEADER = "-----BEGIN OPENSSH " + "PRIVATE KEY-----"
 
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
@@ -203,7 +204,9 @@ def _package(tmp_path: Path, invite: dict | None = None) -> Path:
     folder = tmp_path / "pkg" / "macos-launcher"
     folder.mkdir(parents=True)
     for name, data in build.contents().items():
+        (folder / name).parent.mkdir(parents=True, exist_ok=True)
         (folder / name).write_bytes(data)
+        (folder / name).chmod(0o755 if name in build.EXECUTABLE else 0o644)
     (folder / "SHA256SUMS.txt").write_text(build.checksums(build.contents()), encoding="ascii")
     if invite:
         import json
@@ -216,14 +219,14 @@ def _run(folder: Path, home: Path, *args: str) -> subprocess.CompletedProcess:
     env = {**os.environ, "HOME": str(home),
            "DELFIN_LAUNCHER_STORE": str(home / "store"), "DELFIN_LAUNCHER_APPS": str(home / "Applications"),
            "DELFIN_LAUNCHER_SSH_DIR": str(home / ".ssh")}
-    return subprocess.run(["bash", str(folder / "DELFIN.sh"), *args], capture_output=True, text=True,
+    return subprocess.run(["bash", str(folder / RESOURCES / "DELFIN.sh"), *args], capture_output=True, text=True,
                           env=env, timeout=120, stdin=subprocess.DEVNULL)
 
 
 def test_a_changed_package_is_refused(tmp_path):
     folder = _package(tmp_path)
     assert _run(folder, tmp_path, "validate").returncode == 0
-    (folder / "remote_launcher.py").write_text("print('changed')\n")
+    (folder / RESOURCES / "remote_launcher.py").write_text("print('changed')\n")
     result = _run(folder, tmp_path, "validate")
     assert result.returncode != 0 and "remote_launcher.py" in result.stderr
 
@@ -240,8 +243,13 @@ def test_install_with_an_invitation_then_uninstall_keeping_and_removing(tmp_path
     app = home / "Applications" / "DELFIN.app" / "Contents"
     assert os.access(app / "MacOS" / "DELFIN", os.X_OK)
     assert "<key>CFBundleExecutable</key><string>DELFIN</string>" in (app / "Info.plist").read_text()
-    for name in ("DELFIN.sh", "remote_bootstrap.sh", "remote_launcher.py", "setup_local.sh", "SHA256SUMS.txt"):
+    for name in ("DELFIN.sh", "remote_bootstrap.sh", "remote_launcher.py", "setup_local.sh", "DELFIN.icns"):
         assert (app / "Resources" / name).is_file(), name
+    package_app = folder / "DELFIN.app" / "Contents"
+    for path in package_app.rglob("*"):
+        if path.is_file():
+            copy = app / path.relative_to(package_app)
+            assert copy.read_bytes() == path.read_bytes(), f"the installed app differs: {copy}"
     store = home / "store"
     assert stat.S_IMODE(store.stat().st_mode) == 0o700
     profiles = list((store / "profiles").glob("*.conf"))
@@ -286,7 +294,8 @@ def test_a_broken_invitation_is_refused(tmp_path, invite):
 
 def test_the_script_runs_on_the_bash_macos_ships():
     """/bin/bash on a Mac is 3.2: these would fail there and pass here."""
-    for path in (SCRIPT, MAC / "setup_local.sh", MAC / "Install.command", MAC / "Uninstall.command"):
+    for path in (SCRIPT, MAC / "setup_local.sh", MAC / "Install.command", MAC / "Uninstall.command",
+                 MAC / "app" / "DELFIN", MAC / "sign_and_notarize.sh"):
         full = path.read_text(encoding="utf-8")
         text = "\n".join(line for line in full.splitlines() if not line.lstrip().startswith("#"))
         for construct in (r"declare -A", r"\$\{[A-Za-z_]+,,", r"\$\{[A-Za-z_]+\^\^", r"\bmapfile\b",
@@ -299,8 +308,21 @@ def test_the_script_runs_on_the_bash_macos_ships():
 
 def test_the_download_mark_is_offered_never_removed_silently():
     text = (MAC / "Install.command").read_text(encoding="utf-8")
-    assert "xattr -d com.apple.quarantine" in text
     question = text.index("Remove the mark and continue? (y/N)")
-    assert question < text.index("xattr -d com.apple.quarantine"), "asked before it is removed"
-    assert "spctl" not in text and "--master-disable" not in text, "Gatekeeper itself is never touched"
-    assert "cp -X" not in SCRIPT.read_text(encoding="utf-8"), "the install keeps the person's decision"
+    assert text.count("xattr -dr com.apple.quarantine") == 1
+    assert question < text.index("xattr -dr com.apple.quarantine"), "asked before it is removed"
+    assert "spctl --assess" in text, "a notarized app keeps its mark and is not asked about"
+    for forbidden in ("--master-disable", "--global-disable", "spctl --add", "spctl --disable", "sudo"):
+        assert forbidden not in text, forbidden
+    script = SCRIPT.read_text(encoding="utf-8")
+    assert "cp -X" not in script and "xattr" not in script, "only Install.command, after asking, touches the mark"
+
+
+def test_the_app_is_copied_as_built_never_assembled():
+    """A signed and notarized app stays valid only if nothing in it changes
+    on the Mac: the installer copies the bundle, it does not write into it."""
+    script = SCRIPT.read_text(encoding="utf-8")
+    body = script[script.index("write_app() {"):script.index("# An invitation")]
+    assert 'ditto "$BUNDLE" "$new"' in body
+    assert "CFBundleExecutable" not in script and "iconutil" not in script and "sips " not in script
+    assert "launchd" not in script and "LaunchAgents" not in script, "nothing runs in the background"

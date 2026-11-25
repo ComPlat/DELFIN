@@ -35,19 +35,30 @@ wait_for() { # SECONDS COMMAND...
 }
 
 echo '== 1. DELFIN on this Mac'
-DELFIN_LOCAL_SOURCE="$repo" /bin/bash "$pkg/setup_local.sh"
+DELFIN_LOCAL_SOURCE="$repo" /bin/bash "$pkg/DELFIN.app/Contents/Resources/setup_local.sh"
 env="$work/store/local/env"
 "$env/bin/python" -c 'from delfin.agent.isolation_posture import isolation_status as s; r = s(); print("isolation:", r); assert r.isolated and "eatbelt" in r.layer, r'
 mkdir -p "$work/DELFIN"
-DELFIN_LOCAL_WORKDIR="$work/DELFIN" BROWSER=true /bin/bash "$pkg/DELFIN.sh" local > "$work/local.log" 2>&1 < /dev/null &
+# script(1) gives it the terminal Terminal.app would: delfin-voila then runs
+# its server in the background, as it does for a person.
+(sleep 900 | DELFIN_LOCAL_WORKDIR="$work/DELFIN" BROWSER=true script -q "$work/local.log" \
+    /bin/bash "$pkg/DELFIN.app/Contents/Resources/DELFIN.sh" local) &
 local_pid=$!
-wait_for 120 grep -q 'dashboard on 127.0.0.1:' "$work/local.log" || { cat "$work/local.log"; fail 'no port'; }
-port=$(sed -n 's/.*dashboard on 127\.0\.0\.1:\([0-9]*\),.*/\1/p' "$work/local.log" | head -n 1)
-record() { "$env/bin/python" -I -c 'import json, sys; from delfin.agent import where; r = where.dashboard(); print(r.get("token", "") if r.get("running") and int(r.get("port", 0)) == int(sys.argv[1]) else "")' "$port"; }
-wait_for 180 test -n "$(record)" || { cat "$work/local.log"; fail 'the dashboard did not come up'; }
-dashboard_key=$(record)
+record() { "$env/bin/python" -I -c 'from delfin.agent import where; r = where.dashboard(); print(r.get("port", ""), r.get("token", "")) if r.get("running") else None'; }
+diagnose() {
+    echo '--- local.log'; cat "$work/local.log" || true
+    echo '--- record'; "$env/bin/python" -I -c 'from delfin.agent import where; r = where.dashboard(); r.pop("token", None); print(r)' || true
+    echo '--- listeners'; lsof -nP -iTCP -sTCP:LISTEN | grep -i python || true
+    echo '--- logs'; find ~/.delfin -name '*.log' -mmin -30 -exec tail -n 30 {} \; 2>/dev/null | tail -n 80 || true
+}
+wait_for 300 test -n "$(record)" || { diagnose; fail 'the dashboard did not come up'; }
+read -r port dashboard_key <<EOF2
+$(record)
+EOF2
+echo "local dashboard on 127.0.0.1:$port"
+grep -q 'keeps running in the background' "$work/local.log" || { diagnose; fail 'not started in the background from a terminal'; }
 code=$(curl -s -o /dev/null -w '%{http_code}' -L --max-redirs 5 "http://127.0.0.1:$port/?token=$dashboard_key")
-[ "$code" = 200 ] || fail "with the token: HTTP $code"
+[ "$code" = 200 ] || { diagnose; fail "with the token: HTTP $code"; }
 code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/voila/render/delfin_dashboard.ipynb")
 case $code in 302|401|403) ;; *) fail "without the token: HTTP $code" ;; esac
 lsof -nP -iTCP:"$port" -sTCP:LISTEN
@@ -55,9 +66,13 @@ if lsof -nP -iTCP:"$port" -sTCP:LISTEN | awk 'NR > 1 {print $9}' | grep -v '^127
 for address in $(ifconfig | awk '/inet / && $2 != "127.0.0.1" {print $2}'); do
     if curl -s -o /dev/null --max-time 3 "http://$address:$port/"; then fail "reachable on $address"; fi
 done
+runtime="/tmp/delfin-jupyter-$(id -u)"
+[ "$(stat -f %Lp "$runtime")" = 700 ] || fail 'the Jupyter runtime folder is not private'
+ls -la "$runtime"
 echo "local dashboard: token 200, no token $code, 127.0.0.1 only"
-kill "$local_pid"; wait "$local_pid" 2>/dev/null || true; local_pid=''
-wait_for 30 sh -c "! lsof -nP -iTCP:$port -sTCP:LISTEN >/dev/null" || fail 'the dashboard outlived its window'
+kill "$local_pid" 2>/dev/null || true; local_pid=''
+"$env/bin/delfin-voila" stop
+wait_for 60 sh -c "! lsof -nP -iTCP:$port -sTCP:LISTEN >/dev/null" || fail 'delfin-voila stop did not end it'
 
 echo '== 2. An invitation and a connection over SSH'
 command -v tmux >/dev/null || brew install tmux
@@ -95,7 +110,7 @@ host_key=$(cut -d' ' -f1-2 "$work/sshd/host_key.pub")
 printf '{\n  "target": "%s@127.0.0.1",\n  "name": "ci",\n  "expires": "%s",\n  "host_keys": [\n    "%s"\n  ]\n}\n' \
     "$user" "$expiry" "$host_key" > "$pkg/invite.json"
 cp "$work/invite_key" "$pkg/invite_key"
-/bin/bash "$pkg/DELFIN.sh" install < /dev/null
+/bin/bash "$pkg/DELFIN.app/Contents/Resources/DELFIN.sh" install < /dev/null
 grep -qx "127.0.0.1 $host_key" ~/.ssh/known_hosts || fail 'the host key is not in known_hosts'
 profile=$(ls "$work/store/profiles"/*.conf)
 id=$(basename "$profile" .conf)

@@ -34,6 +34,10 @@ export PATH
 umask 077
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+# HERE is DELFIN.app/Contents/Resources; the package (Install.command,
+# SHA256SUMS.txt, an invitation) is the folder that holds DELFIN.app.
+BUNDLE=$(cd "$HERE/../.." && pwd -P)
+PKG=$(dirname "$BUNDLE")
 STORE=${DELFIN_LAUNCHER_STORE:-"$HOME/Library/Application Support/DELFIN Launcher"}
 APPS=${DELFIN_LAUNCHER_APPS:-"$HOME/Applications"}
 SSH_DIR=${DELFIN_LAUNCHER_SSH_DIR:-"$HOME/.ssh"}
@@ -41,8 +45,6 @@ DESKTOP=${DELFIN_LAUNCHER_DESKTOP:-"$HOME/Desktop"}
 SSH=/usr/bin/ssh
 SCP=/usr/bin/scp
 KEYGEN=/usr/bin/ssh-keygen
-APP_VERSION=0.7.0
-PACKAGE_FILES="DELFIN.sh Install.command Uninstall.command setup_local.sh fetch_micromamba.sh remote_bootstrap.sh remote_launcher.py README.md START-HERE.txt DELFIN_logo.png VERSION"
 
 say() { printf '%s\n' "$*"; }
 warn() { printf '%s\n' "$*" >&2; }
@@ -412,13 +414,42 @@ local_worker() {
     workdir=${DELFIN_LOCAL_WORKDIR:-"$HOME/DELFIN"}
     mkdir -p "$workdir" && cd "$workdir" || die "Cannot use $workdir as the working folder."
     port=$(free_local_port 8866)
-    say "DELFIN on this Mac: dashboard on 127.0.0.1:$port, working folder $workdir."
+    # Jupyter's kernels talk over Unix sockets only when the runtime folder's
+    # path is short enough (104 bytes on macOS); ~/Library/Jupyter/runtime
+    # is not, and kernels then fall back to loopback TCP, which other
+    # accounts of this Mac can reach. A short folder of this account's own,
+    # taken only when it is really ours: no link, our owner, 0700.
+    runtime="/tmp/delfin-jupyter-$(id -u)"
+    mkdir -m 700 "$runtime" 2>/dev/null
+    if [ -d "$runtime" ] && [ ! -L "$runtime" ] && [ -O "$runtime" ] \
+        && [ "$(stat -f %Lp "$runtime" 2>/dev/null || stat -c %a "$runtime")" = 700 ]; then
+        export JUPYTER_RUNTIME_DIR="$runtime"
+    fi
+    say "DELFIN on this Mac: dashboard on 127.0.0.1, working folder $workdir."
     say 'The browser opens with the dashboard and signs in with its token.'
-    say 'Close this window or press Ctrl+C to stop the dashboard.'
     # Bound to 127.0.0.1 only; the agent's commands run in macOS's Seatbelt
     # sandbox (DELFIN_AGENT_SANDBOX=auto), without network, as on a server.
-    exec env DELFIN_AGENT_SANDBOX=auto DELFIN_AGENT_SANDBOX_NETWORK=0 \
+    # Started from a terminal, delfin-voila runs its server in the
+    # background, one per account: starting again opens the same one, and
+    # it ends itself 10 minutes after its last browser window closed
+    # (DELFIN's own rule, as on a server). "Stop DELFIN on this Mac" in the
+    # menu ends it at once.
+    env DELFIN_AGENT_SANDBOX=auto DELFIN_AGENT_SANDBOX_NETWORK=0 \
         "$voila" --open-browser --ip 127.0.0.1 --port "$port"
+    code=$?
+    say ''
+    if [ $code = 0 ]; then say 'You can close this window; the dashboard keeps running in the background.'
+    else say "The dashboard did not start (exit $code); the lines above say why."; fi
+    printf 'Press Enter to close. '; read -r _
+    return $code
+}
+
+local_stop() {
+    local voila out
+    voila="$(local_env)/bin/delfin-voila"
+    [ -x "$voila" ] || return 0
+    out=$("$voila" stop 2>&1 | tail -n 3)
+    tell_user "${out:-DELFIN on this Mac is stopped.}"
 }
 
 # -- the app: menus with the dialogs macOS has (osascript) --------------------
@@ -527,7 +558,9 @@ app_menu() {
         index=$((index + 1))
     done
     if [ -x "$(local_env)/bin/delfin-voila" ]; then local_item='DELFIN on this Mac'; else local_item='Set up DELFIN on this Mac...'; fi
-    items=("${items[@]}" "$local_item" 'New server connection...')
+    items=("${items[@]}" "$local_item")
+    [ "$local_item" = 'DELFIN on this Mac' ] && items=("${items[@]}" 'Stop DELFIN on this Mac')
+    items=("${items[@]}" 'New server connection...')
     [ ${#ids[@]} -gt 0 ] && items=("${items[@]}" 'Edit a connection...' 'Remove a connection...')
     items=("${items[@]}" 'Uninstall DELFIN...')
     choice=$(ask_list 'Where do you want to work?' "${items[@]}")
@@ -539,6 +572,7 @@ app_menu() {
             touch "$(profile_file "$id")"
             in_terminal connect "$id" ;;
         'DELFIN on this Mac') in_terminal local ;;
+        'Stop DELFIN on this Mac') local_stop ;;
         'Set up DELFIN on this Mac...') in_terminal setup-local ;;
         'New server connection...') id=$(edit_profile '') && in_terminal connect "$id" ;;
         'Edit a connection...'|'Remove a connection...')
@@ -556,16 +590,19 @@ app_menu() {
 
 # -- package check, install, uninstall ----------------------------------------
 
+# SHA256SUMS.txt lies at the package root, beside DELFIN.app and
+# Install.command, and names every file of the package by its path there.
 validate_package() {
-    local dir=${1:-$HERE} name want got
+    local dir=${1:-$PKG} name want got
     [ -f "$dir/SHA256SUMS.txt" ] || die 'SHA256SUMS.txt is missing: this is not a complete launcher package.'
     while read -r want name; do
         [ -n "$name" ] || continue
+        case $name in /*|*..*) die "Invalid path in SHA256SUMS.txt: $name" ;; esac
         [ -f "$dir/$name" ] || die "Missing from the package: $name"
         got=$(sha256_of "$dir/$name")
         [ "$got" = "$want" ] || die "Changed since the package was built: $name"
     done < "$dir/SHA256SUMS.txt"
-    for name in DELFIN.sh Install.command Uninstall.command setup_local.sh fetch_micromamba.sh remote_bootstrap.sh; do
+    for name in Install.command Uninstall.command DELFIN.app/Contents/MacOS/DELFIN         DELFIN.app/Contents/Resources/DELFIN.sh DELFIN.app/Contents/Resources/setup_local.sh         DELFIN.app/Contents/Resources/fetch_micromamba.sh DELFIN.app/Contents/Resources/remote_bootstrap.sh; do
         /bin/bash -n "$dir/$name" || die "Syntax error in $name"
     done
 }
@@ -586,48 +623,17 @@ close_running() {
     [ -z "$(running_app)" ] || die 'DELFIN could not be closed. Close its Terminal windows and try again.'
 }
 
+# The app is built and checked with the package (and, for a signed
+# release, signed and notarized there): it is copied as it is, never
+# assembled or changed here, so a signature on it stays valid. ditto keeps
+# the bundle's attributes and signature; a download mark the person chose to
+# keep stays on the copy too, and macOS asks there in turn.
 write_app() {
-    local app="$APPS/DELFIN.app" new name
+    local app="$APPS/DELFIN.app" new="$APPS/.DELFIN.app.new"
+    [ -f "$BUNDLE/Contents/Info.plist" ] || die 'DELFIN.app is missing from the package.'
     mkdir -p "$APPS"
-    new="$APPS/.DELFIN.app.new"
     rm -rf "$new"
-    mkdir -p "$new/Contents/MacOS" "$new/Contents/Resources"
-    for name in $PACKAGE_FILES SHA256SUMS.txt; do
-        # cp keeps the file's attributes: a download mark the person chose to
-        # keep stays on the installed copy, and macOS asks there in turn.
-        cp -p "$HERE/$name" "$new/Contents/Resources/$name"
-    done
-    chmod 755 "$new/Contents/Resources/DELFIN.sh" "$new/Contents/Resources/Install.command" "$new/Contents/Resources/Uninstall.command"
-    printf '#!/bin/bash\nexec /bin/bash "$(dirname "$0")/../Resources/DELFIN.sh" app\n' > "$new/Contents/MacOS/DELFIN"
-    chmod 755 "$new/Contents/MacOS/DELFIN"
-    cat > "$new/Contents/Info.plist" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleName</key><string>DELFIN</string>
-    <key>CFBundleDisplayName</key><string>DELFIN</string>
-    <key>CFBundleIdentifier</key><string>org.delfin.launcher</string>
-    <key>CFBundleVersion</key><string>$APP_VERSION</string>
-    <key>CFBundleShortVersionString</key><string>$APP_VERSION</string>
-    <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleExecutable</key><string>DELFIN</string>
-    <key>CFBundleIconFile</key><string>DELFIN</string>
-    <key>LSMinimumSystemVersion</key><string>11.0</string>
-</dict>
-</plist>
-EOF
-    # The icon is made from the logo with the Mac's own sips and iconutil.
-    if command -v sips >/dev/null 2>&1 && command -v iconutil >/dev/null 2>&1; then
-        local set="$new/Contents/Resources/DELFIN.iconset" size
-        mkdir -p "$set"
-        for size in 16 32 128 256 512; do
-            sips -z $size $size "$HERE/DELFIN_logo.png" --out "$set/icon_${size}x${size}.png" >/dev/null 2>&1
-            sips -z $((size * 2)) $((size * 2)) "$HERE/DELFIN_logo.png" --out "$set/icon_${size}x${size}@2x.png" >/dev/null 2>&1
-        done
-        iconutil -c icns "$set" -o "$new/Contents/Resources/DELFIN.icns" >/dev/null 2>&1 || warn 'The app icon could not be made; DELFIN works without it.'
-        rm -rf "$set"
-    fi
+    if command -v ditto >/dev/null 2>&1; then ditto "$BUNDLE" "$new"; else cp -Rp "$BUNDLE" "$new"; fi
     rm -rf "$app"
     mv "$new" "$app"
 }
@@ -637,7 +643,7 @@ EOF
 # go into known_hosts (no fingerprint question), and the key is kept for the
 # first Start, which registers this Mac's own key with it and deletes it.
 import_invitation() {
-    local json="$HERE/invite.json" key="$HERE/invite_key" target keys id existing server hostkey
+    local json="$PKG/invite.json" key="$PKG/invite_key" target keys id existing server hostkey
     [ -f "$json" ] && [ -f "$key" ] || return 0
     target=$(grep -oE '"target"[[:space:]]*:[[:space:]]*"[^"]*"' "$json" | head -n 1 | sed -E 's/.*:[[:space:]]*"([^"]*)"$/\1/')
     [[ $target =~ ^[a-z_][a-z0-9_-]{0,31}@[A-Za-z0-9][A-Za-z0-9.-]{0,200}$ ]] || die 'The invitation names no valid server.'
@@ -674,7 +680,7 @@ EOF
 install_app() {
     local yes=no
     [ "$1" = --close-running ] && yes=yes
-    validate_package "$HERE"
+    validate_package "$PKG"
     close_running $yes
     mkdir -p "$STORE" && chmod 700 "$STORE"
     rm -f "$STORE"/start-*.command
@@ -747,6 +753,6 @@ case ${1:-app} in
         fi ;;
     install) shift; install_app "$@" ;;
     uninstall) shift; uninstall_app "$@" ;;
-    validate) validate_package "${2:-$HERE}"; say 'Package OK.' ;;
+    validate) validate_package "${2:-$PKG}"; say 'Package OK.' ;;
     *) die "Unknown command: $1" ;;
 esac
