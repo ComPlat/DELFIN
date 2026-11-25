@@ -373,11 +373,20 @@ def test_the_specialist_names_the_eln_tools_it_may_call():
 def test_control_the_lab_tools_still_block_in_plan_mode():
     """The lab path the ELN copies: a write is refused in plan mode. Passes
     at the base and here, and would fail if the ELN work had disturbed the
-    shared dispatcher."""
+    shared dispatcher.
+
+    The name set is the full documented one, ``lab_run`` included: the
+    workflow runner is the lab's sixth tool, added by the workflow package
+    that lands alongside this one. Asserting the five-name set from before
+    it is red on the bundle and green on the base -- a control that fails
+    for a reason on neither branch is measuring the merge, not the ELN.
+    Equality is kept rather than a subset check, so a tool that disappears
+    or a stray name that appears is still caught.
+    """
     from delfin.lab import safety  # noqa: F401  (the module the kernel lives in)
     from delfin.lab.tools import TOOL_NAMES as LAB_NAMES
     assert LAB_NAMES == {"lab_devices", "lab_read", "lab_set",
-                         "lab_plan_check", "lab_estop"}
+                         "lab_plan_check", "lab_estop", "lab_run"}
 
 
 def test_control_the_write_gate_refuses_before_this_change_too():
