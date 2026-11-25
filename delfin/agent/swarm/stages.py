@@ -36,73 +36,18 @@ MAX_PARALLEL_RUNS = 6
 ERROR_RESUME_AFTER_S = 900
 MAX_ERROR_RESUMES = 3
 
-_READ_YOUR_RUNS_HEAD = """
+_READ_YOUR_RUNS = """
 Your real runs are done: scratch/realrun/summary.md, and one log per probe
 and side in scratch/realrun/. They were made outside your cage, on your
 base and on your branch HEAD, same prompt and model, a fresh HOME each.
-Each row says whether that run reached the change: read that column before
-you read any difference between the two sides.
 
-"""
-
-_READ_YOUR_RUNS_TAIL = """
 Judge them against the prediction you wrote before they ran. If the
 branch is not better than the base where your task says it must be, say
 so in the first line of scratch/PR.md -- that is a result, not a failure
 to hide. If a run shows a defect, fix it, commit, and say that the fix has
 not had a real run of its own. Then finish scratch/PR.md with the real
-runs table, what it shows, and every suite you ran with its numbers.
-"""
-
-_READ_YOUR_RUNS = _READ_YOUR_RUNS_HEAD + _READ_YOUR_RUNS_TAIL + """
-Do not write scratch/realrun.json again.
-"""
-
-#: Used instead of the note above when no probe of the branch executed a
-#: function the branch changed. A run that never touches the change compares
-#: two copies of the same behaviour, so the table cannot support the claim the
-#: member is about to write -- and on 2026-11-25 three probes of one package
-#: were reported as evidence of the change without anyone noticing. It keeps
-#: the "do not write realrun.json again" line on purpose: the ``.realrun``
-#: marker makes the member final at its next ending, so a second request would
-#: never be run and promising one would be a false route.
-_READ_YOUR_RUNS_MISSED = _READ_YOUR_RUNS_HEAD + """
-NONE OF THEM REACHED YOUR CHANGE. No probe executed a function your branch
-changed, so the base and branch rows ran the same code and the difference
-between them says nothing about your change -- it is a difference in the
-model, not in your work. Check the 'reached the change' column and the reason
-under each row: they name the changed functions and what the run did enter.
-
-Say that in the FIRST line of scratch/PR.md: no probe reached the change, and
-what therefore remains unmeasured. Do not present the two sides as evidence
-for the change. If the change is only reachable from a path a person cannot
-drive, say so plainly -- that is the honest result of a real run that could
-not reach it, and better than a probe invented to look like one.
-""" + _READ_YOUR_RUNS_TAIL + """
-Do not write scratch/realrun.json again.
-"""
-
-#: Used when the summary the member was handed carries no ``reached the change``
-#: column at all, so the note above would point at a column that is not there.
-#: A pointer to a missing column is the same false route as a probe that never
-#: reached the change: the member is told to check evidence that does not exist.
-#: Measured on 2026-11-25, on an integration branch whose real runs were written
-#: by the orchestrator's installed copy of the writer, not by the branch's.
-_READ_YOUR_RUNS_NO_COLUMN = """
-Your real runs are done: scratch/realrun/summary.md, and one log per probe
-and side in scratch/realrun/. They were made outside your cage, on your
-base and your branch HEAD, same prompt and model, a fresh HOME each.
-
-THE SUMMARY DOES NOT SAY WHETHER ANY RUN REACHED YOUR CHANGE. The writer
-that produced it records no 'reached the change' column, so nothing in the
-table says whether a probe executed a function your branch changed -- and a
-run that never reaches the change compares two copies of the same behaviour.
-Read the logs and the final answers below the table, and treat the
-base/branch difference as evidence for your change only if you can show from
-them that the changed code ran on the branch side.
-
-""" + _READ_YOUR_RUNS_TAIL + """
-Do not write scratch/realrun.json again.
+runs table, what it shows, and every suite you ran with its numbers. Do
+not write scratch/realrun.json again.
 """
 
 _ASK_FOR_RUNS = """
@@ -209,21 +154,7 @@ def _real_run_then_resume(run: str, tid: str, busy: set) -> None:
         with _gate:
             try:
                 res = realrun.run(run, tid)
-                # The plain note when a probe reached the change; the blunt one
-                # when none did, which is the case a member would otherwise read
-                # as evidence. "unknown" gets the plain note with the column to
-                # read: the runs cannot say, and the note above now points at
-                # the reason per row rather than this stage guessing.
-                # A row set with no ``reached`` key at all means the writer that
-                # ran does not record the column -- pointing the member at it
-                # would be a false route, so say the table cannot answer instead.
-                if res is None:
-                    note = _READ_YOUR_RUNS
-                elif "reached" in res:
-                    note = (_READ_YOUR_RUNS_MISSED if res.get("reached") == "no"
-                            else _READ_YOUR_RUNS)
-                else:
-                    note = _READ_YOUR_RUNS_NO_COLUMN
+                note = _READ_YOUR_RUNS
                 rc = "0"
             except Exception as exc:          # a refused request is the member's to fix
                 note = (f"Your scratch/realrun.json could not be run: {exc}. Fix it and end "
