@@ -465,8 +465,9 @@ What stays shared, and what is the `delfin` account's alone:
   and gateway) and the lab units run as `delfin`; a person's dashboard starts
   its own agent service in their account. The messenger pairs phones for the
   `delfin` account only.
-- Optional QM tools installed by the deploy (`~delfin/.delfin/qm_tools`) and
-  the docs index are `delfin`'s; a person builds their own when needed.
+- Optional QM tools installed by the deploy (`~delfin/.delfin/qm_tools`),
+  the docs index and the terminal window's Bun (`~delfin/.delfin/tools`) are
+  `delfin`'s; a person's dashboard and agent do not need them.
 - The agent's cage (bwrap, Landlock) needs nothing per account: it reads
   `/` and writes only the workspace, and its secret masks follow `HOME`.
 

@@ -151,8 +151,12 @@ sync_ssh() {
     [[ -f "$SSHD_CONF" ]] || { echo "note: no $SSHD_CONF (host not hardened): no SSH allow-list to keep"; return 0; }
     line="$(grep -m1 -E '^[[:space:]]*AllowUsers[[:space:]]' "$SSHD_CONF" || true)"
     [[ -n "$line" ]] || return 0
+    # A name without an account goes too: a removed person is no member any
+    # more and would otherwise stay in the list as if it were pi or delfin.
     for word in ${line#*AllowUsers}; do
-        is_person "$word" || base+=" $word"
+        is_person "$word" && continue
+        id "$word" >/dev/null 2>&1 || continue
+        base+=" $word"
     done
     person="$(active_people)"
     backup="$(mktemp "$SSHD_CONF.bak.XXXXXX")"
@@ -276,7 +280,9 @@ remove() {
     local name="$1" keep_home="$2" home archive
     require_person "$name"
     home="$(getent passwd "$name" | cut -d: -f6)"
+    # Out of sshd's list while still a member, then the account goes.
     usermod --expiredate 1 "$name"
+    sync_ssh
     stop_processes "$name"
     if [[ "$keep_home" == 1 ]]; then
         userdel "$name"
@@ -290,7 +296,6 @@ remove() {
         id "$name" >/dev/null 2>&1 && die "userdel did not remove $name"
         echo "==> account $name removed; its home is archived (root only): $archive"
     fi
-    sync_ssh
 }
 
 list() {

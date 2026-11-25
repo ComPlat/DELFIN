@@ -230,6 +230,21 @@ def test_locking_one_person_takes_only_that_one_out_and_unlocking_brings_it_back
     assert _allow(sshd_conf) == ["AllowUsers pi delfin anna ben"]
 
 
+def test_a_removed_person_leaves_the_allow_list(tmp_path):
+    # Found in the real run: after userdel the name was no member any more
+    # and stayed in AllowUsers as if it were an account like pi.
+    fake, script, env, sshd_conf, _ = _box(tmp_path)
+    for name in ("anna", "ben"):
+        assert _run(script, env, "add", name, "--no-invite").returncode == 0
+    # userdel as the system does it: the account and its membership go.
+    (fake / "passwd").write_text("".join(l for l in (fake / "passwd").read_text().splitlines(True)
+                                         if not l.startswith("anna:")))
+    (fake / "group").write_text((fake / "group").read_text().replace(":anna,ben", ":ben"))
+    r = _run(script, env, "unlock", "ben")  # any verb that re-syncs the list
+    assert r.returncode == 0, r.stderr
+    assert _allow(sshd_conf) == ["AllowUsers pi delfin ben"]
+
+
 def test_an_allow_list_sshd_refuses_is_put_back(tmp_path):
     fake, script, env, sshd_conf, _ = _box(tmp_path)
     before = sshd_conf.read_text()
