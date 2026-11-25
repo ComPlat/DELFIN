@@ -245,6 +245,23 @@ def test_the_baseline_file_is_readable():
     assert set(rows.values()) <= {"nowhere", "test-only"}
 
 
+def test_every_scanned_tree_exists():
+    """A scanned directory that stops existing silently stops being scanned.
+
+    ``rglob`` over a missing path yields nothing and raises nothing, so moving
+    one of these trees -- ``delfin/agent/pack/`` out of ``agent/`` is the live
+    case -- would drop its callables from the census without a single test
+    failing, which is the opposite of what widening the scan is for. The
+    listing of the pack in ``_SCAN_DIRS`` is only a safeguard while this holds.
+    """
+    missing = [d for d in _SCAN_DIRS if not (ROOT / d).is_dir()]
+    assert not missing, (
+        "these trees the census claims to scan are gone, so nothing there is "
+        f"censused any more: {missing}. Update _SCAN_DIRS with the move, and "
+        "re-measure -- the population will have changed."
+    )
+
+
 def test_no_capability_is_newly_unreachable(measured):
     """The one that catches the next commit-trailer.
 
