@@ -27,7 +27,8 @@ set -euo pipefail
 # in the agent user's account under ~/people/<name>):
 #   DELFIN_PI_ACCOUNTS=1 sudo bash pi_bootstrap.sh
 # puts the installation into $DELFIN_PI_SHARED_ROOT (default /opt/delfin,
-# owned by the agent user, readable by all; ~/delfin is a link to it),
+# owned by the agent user, readable by the group delfin-people only, 0750;
+# ~/delfin is a link to it),
 # Python included, and installs delfin-accounts (delfin_accounts.sh, beside
 # this script) for the admin: sudo delfin-accounts add NAME. Needs a box
 # whose ~/delfin is not a directory yet (a fresh one).
@@ -119,7 +120,10 @@ if [[ "$ACCOUNTS" == "1" ]]; then
         echo "       (a fresh box). Nothing was changed." >&2
         exit 1
     fi
-    install -d -m 755 -o "$AGENT_USER" -g "$AGENT_USER" "$SHARED_ROOT"
+    # Open to the persons' group only (0750), not to every account: the
+    # agent user writes it, members of delfin-people read it, others nothing.
+    getent group delfin-people >/dev/null || groupadd --system delfin-people
+    install -d -m 750 -o "$AGENT_USER" -g delfin-people "$SHARED_ROOT"
     ln -sfn "$SHARED_ROOT" "$AGENT_HOME/delfin"
     chown -h "$AGENT_USER:$AGENT_USER" "$AGENT_HOME/delfin"
     install -d -m 755 /etc/delfin
@@ -133,7 +137,6 @@ if [[ "$ACCOUNTS" == "1" ]]; then
     install -D -m 755 -o root -g root "$HERE/delfin_accounts.sh" /usr/local/sbin/delfin-accounts
     install -D -m 755 -o root -g root "$HERE/delfin_people.sh" /usr/local/lib/delfin/delfin-people
     ln -sfn /usr/local/lib/delfin/delfin-people /usr/local/bin/delfin-people
-    getent group delfin-people >/dev/null || groupadd --system delfin-people
 fi
 
 # The administrator's floor (managed_policy), root-owned so neither the agent

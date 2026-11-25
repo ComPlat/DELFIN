@@ -143,7 +143,9 @@ active_people() {
 # sshd's allow-list (pi_harden_host.sh writes `AllowUsers pi delfin`): every
 # person who is not locked is added, every other person taken out; the
 # accounts that are not persons stay as they are. Checked with sshd -t before
-# the reload, and put back when the check fails.
+# the reload, and put back when the check fails. The line is edited in that
+# drop-in, not added in one of its own: sshd keeps the first AllowUsers it
+# reads, so a second file's names were ignored (measured, OpenSSH 10.0).
 sync_ssh() {
     local line word base="" person backup
     [[ -f "$SSHD_CONF" ]] || { echo "note: no $SSHD_CONF (host not hardened): no SSH allow-list to keep"; return 0; }
@@ -214,15 +216,20 @@ add() {
     valid_name "$name" || die "NAME: a-z, 0-9, _ and -, starting with a letter or _"
     root="$(shared_root)"
     deployer="$(deploy_user)"
+    local existed=0
     if id "$name" >/dev/null 2>&1; then
         is_person "$name" || die "an account $name exists and is not a DELFIN person; nothing changed"
-        die "$name is already a person (new invitation: delfin-accounts invite $name)"
+        existed=1
     fi
     getent group "$GROUP" >/dev/null || groupadd --system "$GROUP"
     # No password at all (the shadow entry stays '!'): keys only, and the
-    # first key comes through the invitation.
-    useradd --create-home --shell /bin/bash --user-group --groups "$GROUP" \
-        --comment "DELFIN person" "$name"
+    # first key comes through the invitation. Run again for an existing
+    # person, add only re-applies the setup below (nothing is replaced, a
+    # lock stays) and makes no new invitation.
+    if [[ "$existed" == 0 ]]; then
+        useradd --create-home --shell /bin/bash --user-group --groups "$GROUP" \
+            --comment "DELFIN person" "$name"
+    fi
     home="$(getent passwd "$name" | cut -d: -f6)"
     chmod 700 "$home"
     # The box's default for the launcher (pi_install.sh, DELFIN_PI_KEEP) is
@@ -233,11 +240,13 @@ add() {
         [[ -n "$dhome" && -f "$dhome/.config/delfin/launcher-keep.conf" ]] && keep=1
     fi
     run_as "$name" bash "$SELF" _setup-home "$root" "$keep"
-    echo "==> account $name: $home (0700), group $GROUP, no password"
+    echo "==> account $name: $home (0700), group $GROUP, no password login"
     [[ -x "$root/.venv/bin/python" ]] \
         || echo "note: $root/.venv has no python yet: deploy DELFIN (deploy_pi.sh) before $name starts" >&2
     sync_ssh
-    if [[ "$no_invite" == 0 ]]; then
+    if [[ "$existed" == 1 ]]; then
+        echo "$name was already a person: setup checked, no new invitation (delfin-accounts invite $name)"
+    elif [[ "$no_invite" == 0 ]]; then
         invite "$name" "$host" "$hours"
     fi
 }

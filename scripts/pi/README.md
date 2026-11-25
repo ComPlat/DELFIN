@@ -401,7 +401,8 @@ scripts/pi/deploy_pi.sh delfin@<pi>                                 # deploy as 
 What is different:
 
 - The installation lives in `/opt/delfin` (`DELFIN_PI_SHARED_ROOT`), owned by
-  `delfin`, mode 755, Python included (`/opt/delfin/python`); `~delfin/delfin`
+  `delfin`, group `delfin-people`, mode 750 (the persons read it, other
+  accounts see nothing), Python included (`/opt/delfin/python`); `~delfin/delfin`
   is a link to it, so deploys, services and every other script work as
   before. `/opt/delfin/work` (the `delfin` account's own workspace) stays 700.
   `pi_install.sh` resolves the link, so the venv and the editable install
@@ -431,7 +432,9 @@ sudo delfin-accounts remove anna   # = --remove-person; [--keep-home]
 - `add` creates the account `anna` (group `delfin-people`, home 700, no
   password: keys only), appends the shared installation to her `~/.bashrc`
   (venv, `agent.env`, `DELFIN_SETTINGS_DEFAULTS`), adds her to sshd's
-  `AllowUsers` (`sshd -t` before the reload; a list sshd refuses is put back)
+  `AllowUsers` in the hardening drop-in `40-delfin-hardening.conf` (`sshd -t`
+  before the reload; a list sshd refuses is put back; not a drop-in of its
+  own, because sshd keeps the first `AllowUsers` it reads)
   and makes the invitation `~/invites/DELFIN-anna.zip` in the admin's home.
   It is `delfin-people --invite` run as `anna`: the invitation key, its forced
   `--enroll` (the root-owned copy) and the expiry are in her own
@@ -439,6 +442,8 @@ sudo delfin-accounts remove anna   # = --remove-person; [--keep-home]
   pinned. The Windows launcher finds DELFIN through the venv her login shell
   activates; she enters her own API key in the dashboard's settings
   (`~anna/.delfin`, unreadable for others).
+- `add` again for an existing person only checks the setup (no new account,
+  no new invitation, a lock stays); the bootstrap can be run again as well.
 - `lock` sets the account's expiry to day 1 (sshd's PAM check then refuses
   it, keys included: a locked password alone does not stop a key login),
   takes her out of `AllowUsers` and stops her processes; files stay.

@@ -183,12 +183,14 @@ def test_adding_a_person_makes_an_account_without_password_and_lets_it_through_s
     assert oct((home / ".ssh" / "authorized_keys").stat().st_mode & 0o777) == "0o600"
 
 
-def test_adding_twice_or_an_account_that_is_not_a_person_changes_nothing(tmp_path):
+def test_adding_again_or_an_account_that_is_not_a_person_changes_nothing(tmp_path):
     fake, script, env, sshd_conf, _ = _box(tmp_path)
     assert _run(script, env, "add", "anna", "--no-invite").returncode == 0
     before = (fake / "passwd").read_text()
-    again = _run(script, env, "add", "anna", "--no-invite")
-    assert again.returncode != 0 and "already a person" in again.stderr
+    # Run again: the setup is checked, nothing is replaced, no new account.
+    again = _run(script, env, "add", "anna")
+    assert again.returncode == 0 and "already a person" in again.stdout, again.stderr
+    assert not (fake / "home" / "pi" / "invites").exists(), "no new invitation on a re-run"
     for other in ("pi", "delfin"):
         r = _run(script, env, "add", other, "--no-invite")
         assert r.returncode != 0 and "not a DELFIN person" in r.stderr
@@ -358,6 +360,8 @@ def test_the_shared_install_is_opt_in_and_resolves_to_the_shared_path():
     # Root-owned copies: never run as root from the agent user's tree.
     assert "install -D -m 755 -o root -g root \"$HERE/delfin_accounts.sh\" /usr/local/sbin/delfin-accounts" in boot
     assert 'export UV_PYTHON_INSTALL_DIR="$ROOT/python"' in boot
+    # Open to the persons' group, not to every account on the box.
+    assert 'install -d -m 750 -o "$AGENT_USER" -g delfin-people "$SHARED_ROOT"' in boot
     install = (PI / "pi_install.sh").read_text(encoding="utf-8")
     assert 'ROOT="$(readlink -f "$HOME/delfin"' in install
     deploy = (PI / "deploy_pi.sh").read_text(encoding="utf-8")
