@@ -45,6 +45,7 @@ import pytest
 import yaml
 
 import _lab_support  # noqa: F401  (the fixture lives there)
+from conftest import child_env
 from _lab_support import lab_fixture  # noqa: F401  (registers the fixture)
 
 REPO = Path(__file__).resolve().parents[1]
@@ -139,6 +140,13 @@ def test_the_cli_runs_the_campaign_through_one_verb(lab, tmp_path):
     Runs in a child process so the CLI is reached the way a person reaches it,
     with `PYTHONPATH` naming THIS tree -- a test that imports a module and
     calls its function measures that the function exists.
+
+    The child's environment comes from ``child_env``, not ``os.environ``: the
+    suite's own sink redirects are in-process attribute swaps and stop at the
+    process boundary, so a child started on the raw environment resolves
+    ``~/.delfin`` against the real home. Measured on the bundle before this
+    fix: the repository-wide scanner flagged this line, and the stated leak
+    is nine confirmation requests from suite children in the operator's room.
     """
     from delfin.lab.safety import pin
     from delfin.lab import manifest as _manifest, store
@@ -152,7 +160,7 @@ def test_the_cli_runs_the_campaign_through_one_verb(lab, tmp_path):
     ws.mkdir()
     doc = ws / "campaign.yaml"
     doc.write_text(CAMPAIGN.read_text(encoding="utf-8"), encoding="utf-8")
-    env = dict(os.environ)
+    env = dict(child_env(tmp_path))
     env["PYTHONPATH"] = str(REPO)
     env.pop("DELFIN_AGENT_SESSION", None)          # this IS the person
     env["DELFIN_LAB_DIR"] = os.environ["DELFIN_LAB_DIR"]
