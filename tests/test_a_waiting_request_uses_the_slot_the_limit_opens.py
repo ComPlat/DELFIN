@@ -72,7 +72,8 @@ os.environ["DELFIN_RUNTIME_DIR"] = {runtime!r}
 os.environ["DELFIN_ENDPOINT_MAX_CONCURRENCY"] = {max_conc!r}
 os.environ.pop("DELFIN_ENDPOINT_PER_MODEL_LIMIT", None)
 import delfin
-from delfin.agent.endpoint_gate import EndpointGate
+from delfin.agent.endpoint_gate import (EndpointGate, SlotWaitCancelled,
+                                        SlotWaitTimeout)
 
 holder = {holder!r}
 if holder:
@@ -93,7 +94,7 @@ g = EndpointGate({url!r}, "m")
 t0 = time.monotonic()
 try:
     idx = g.acquire(timeout_s={deadline!r})
-except Exception as exc:                      # half the measurement
+except (SlotWaitTimeout, SlotWaitCancelled) as exc:   # half the measurement
     print(json.dumps({{"role": "waiter", "module": delfin.__file__,
                        "error": type(exc).__name__,
                        "waited": round(time.monotonic() - t0, 3)}}),
