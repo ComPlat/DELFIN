@@ -70,6 +70,17 @@ def _recalled(workspace: Path) -> str:
     return loader._load_external_memory_context(max_chars=6000, task_text="")
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "the fix is a one-line change at delfin/agent/api_client.py's "
+        "_execute_forget (pass scope=\"all\" to delete_typed_memory, as the "
+        "REPL and dashboard /forget already do), and that file is in the "
+        "Self-Modification Guard's protected set, so it must be applied by a "
+        "person, not by an agent session. strict=True: this turns red the "
+        "moment the fix lands without the marker being removed."
+    ),
+)
 def test_forget_removes_a_global_memory_it_can_see(home, workspaces):
     """The defect: the name is in the recalled block, the delete misses."""
     from delfin.agent import memory_store as ms
