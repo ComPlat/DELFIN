@@ -321,19 +321,20 @@ _BASELINE_TOKENS = 11_422
 # 4,408 tokens against 11,865. The catalogue ceiling is kept because a
 # cold tool's schema still costs when it is described, and the ceiling
 # that matters now is the SHIPPED one below.
-# 11_865 -> 12_072 (2026-11-24, +207 measured): the lab specialist.
-# Attributed in two parts, because they are different decisions:
-#   +9   the preset's name in the subagent_type enum, plus the entry the
-#        description gains in its writer list -- the same cost, for the
-#        same reason, as the workflow-operator specialist above. Adding
-#        ANY preset pays this (measured: a branch that adds the preset
-#        and nothing else reads 11_874).
-#   +198 lab_run's own schema. That is the self-driving lab's first
-#        agent-facing entrance -- before it the model could turn one
-#        device on and nothing more -- so it is the change, not slack.
-# Both were measured on the tree that ships them, not estimated, and the
-# per-tool cap below moved for the subagent schema only (444 -> 453).
-_TOKEN_BUDGET = 12_072
+# 11_865 -> 12_080 (2026-11-25, +215 measured on the MERGED tree): the
+# three specialists that landed together, each of which had measured itself
+# alone. A merge resolves a numeric ceiling by measuring the result, not by
+# taking one branch's number: the two branches asked for 12_072 and 11_873,
+# and neither describes a tree that carries both. Attribution:
+#   +9   a preset's name in the subagent_type enum plus one entry in the
+#        derived writer list -- ANY preset pays this (twice here: the lab
+#        specialist and the ELN one);
+#   +198 lab_run's own schema, the lab's first agent-facing entrance;
+#   +8   the words naming the ELN specialist in the "All read-only except
+#        ..." sentence.
+# Measured: `tool_schema_token_report()["total_tokens"]` == 12_080 at this
+# commit, with `PYTHONPATH` naming this tree.
+_TOKEN_BUDGET = 12_080
 
 #: What actually rides on every request once the cold schemas are
 #: deferred: the hot set plus the always-sent name listing. Measured
@@ -463,7 +464,14 @@ def test_tool_schema_is_at_least_35_percent_below_baseline():
     # derived writer list. Measured 7,444 tokens, 34.82 % below the
     # baseline, against a 0.651 ceiling that allowed 7,435. Nine tokens,
     # not a round number, and the same cause as the line above.
-    assert total <= _BASELINE_TOKENS * 0.652, (
+    # 0.652 -> 0.6525 (2026-11-25): re-measured on the MERGED tree, where
+    # the lab specialist (0.652, +9) and the ELN specialist whose name joins
+    # the derived `subagent` description (+8) are both present. Measured
+    # 7,452 / 11,422 = 0.652425, so 0.652 no longer holds and 0.6525 covers
+    # it by 1 token. This is the third raise in the same 9-token class; the
+    # ratchet's job is unchanged (the catalogue stays 34.8 % below the
+    # baseline), and the next addition must measure itself too.
+    assert total <= _BASELINE_TOKENS * 0.6525, (
         f"{total} tokens (excluding tools added after the compaction) is "
         f"only {100 * (1 - total / _BASELINE_TOKENS):.1f}% below the "
         f"{_BASELINE_TOKENS}-token baseline")
@@ -476,15 +484,15 @@ def test_post_compaction_tools_are_named_and_present():
 
 def test_no_single_tool_schema_is_oversized():
     """A single tool must not eat a disproportionate slice of the surface."""
-    # 450 -> 460 (2026-11-24): adding ANY preset costs +9 in the `subagent`
-    # schema -- its name in the subagent_type enum and one more entry in the
-    # derived writer list -- because a preset whose mode is not ``plan`` is
-    # a writer. Measured: 444 on the tree with no lab specialist, 453 with
-    # one, whichever arm supplies it. The ceiling is raised by the measured
-    # amount (and rounded to 460, 7 tokens of headroom), not by the room the
-    # next schema would like; `subagent` is the one schema that grows with
-    # the registry rather than with its own author.
-    _PER_TOOL_CAP = 460
+    # 450 -> 470 (2026-11-25): `subagent` measures 461 on the MERGED tree.
+    # Each package had measured its own branch alone -- 453 for the lab
+    # specialist, 452 for the ELN one -- and both ceilings were below what a
+    # tree carrying both actually costs, because each preset adds its name to
+    # the subagent_type enum AND an entry to the derived writer list. The cap
+    # is raised to the measured 461 rounded up to 470 (9 tokens of headroom),
+    # not to whatever the next schema would like, and `subagent` is the only
+    # schema that grows with the registry rather than with its own author.
+    _PER_TOOL_CAP = 470
     for name, entry in tool_schema_token_report()["tools"].items():
         assert entry["total"] <= _PER_TOOL_CAP, (
             f"{name} schema is {entry['total']} tokens")

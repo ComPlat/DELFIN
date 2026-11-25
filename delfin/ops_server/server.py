@@ -1951,6 +1951,101 @@ def tool_hyperpol(extra_args: str = "", allow_mutate: bool = False) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Chemotion ELN (delfin/lab/eln_tools.py). FOUR reads and one write. The
+# write is registered here, on this agent-started server, WITHOUT
+# ``_host_gated`` -- and the omission is the design: this server is started
+# with DELFIN_OPS_ALLOW_MUTATE=1, so the host gate would wave a draft
+# through on a standing permission granted once for calculations. An ELN
+# write is a different act every time (an element the API cannot undelete),
+# so its gate is one approval PER WRITE, filed and signed by a person
+# (delfin/lab/eln_write.py), which no environment variable and no tool
+# argument can satisfy. The reads carry no gate at all.
+# ---------------------------------------------------------------------------
+
+def _eln(name: str, arguments: dict) -> str:
+    """Run one ELN tool function. ``permissions`` stays None on purpose.
+
+    The eln_* entry points take the session's ``KitToolPermissions`` only
+    so a refusal here can SAY which permission mode decided nothing. From
+    this server there is no such session, so None is passed and nothing is
+    read as consent.
+    """
+    from delfin.lab import eln_tools
+    return _safe(name, lambda: eln_tools.execute(name, arguments, None))()
+
+
+def tool_eln_find(collection: str = "", element: str = "samples",
+                  query: str = "", max_pages: int = 20) -> str:
+    """Chemotion ELN read: one collection, or the samples/reactions in it.
+
+    ``query`` is a JSON OBJECT as a string (the search body the server
+    takes). Nothing is written.
+    """
+    args: dict = {"element": element or "samples", "max_pages": max_pages}
+    if collection:
+        args["collection"] = collection
+    if query:
+        args["query"] = query
+    return _eln("eln_find", args)
+
+
+def tool_eln_read(element: str = "samples", id: int = 0) -> str:
+    """Chemotion ELN read: one sample or reaction by id, with its analyses."""
+    return _eln("eln_read", {"element": element or "samples", "id": id})
+
+
+def tool_eln_pending() -> str:
+    """Chemotion ELN: the drafts waiting for a person's approval."""
+    return _eln("eln_pending", {})
+
+
+def tool_eln_draft(element: str = "", name: str = "",
+                   collection_id: int = 0, materials: str = "",
+                   approval: str = "") -> str:
+    """Create ONE element in the Chemotion ELN as a DRAFT.
+
+    ``materials`` is a JSON OBJECT as a string (``{"reactants": [ids]}``).
+    Without ``approval`` a request is filed and the refusal names the draft,
+    its id and the person's command; with one, the same body is sent once.
+    """
+    args: dict = {"element": element, "name": name}
+    if collection_id:
+        args["collection_id"] = collection_id
+    if materials:
+        args["materials"] = materials
+    if approval:
+        args["approval"] = approval
+    return _eln("eln_draft", args)
+
+
+def tool_eln_approve(request_id: str = "") -> str:
+    """Refused: approving an ELN write is a person's command."""
+    return _eln("eln_approve", {"request_id": request_id})
+
+
+def tool_eln_attach(path: str = "", element_type: str = "",
+                    element_id: int = 0, filename: str = "",
+                    approval: str = "") -> str:
+    """Attach ONE file to ONE ELN element, as a DRAFT a person approves.
+
+    ``path`` is a file on this machine (a lab run's export from
+    ``delfin/lab/chemotion.py``, a spectrum). Without ``approval`` the
+    request is filed and the refusal names what would be written, its id and
+    the person's command; with one, the exporter's chunked sequence is sent
+    once. ``element_type`` is the API's own name for the kind (``Sample``,
+    ``Reaction``), because the link request carries it.
+    """
+    args: dict = {}
+    for key, value in (("path", path), ("element_type", element_type),
+                       ("filename", filename), ("approval", approval)):
+        if value:
+            args[key] = value
+    if element_id:
+        args["element_id"] = element_id
+    return _eln("eln_attach", args)
+
+
+# ---------------------------------------------------------------------------
 # geometry_edit — coordinate manipulation on instruction (read-only wrappers
 # over delfin.tools.geometry_edit; chemistry toolset group, never always-on).
 # ---------------------------------------------------------------------------
@@ -2278,5 +2373,16 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool(name="co2")(_host_gated(tool_co2))
     mcp.tool(name="tadf_xtb")(_host_gated(tool_tadf_xtb))
     mcp.tool(name="hyperpol")(_host_gated(tool_hyperpol))
+
+    # Chemotion ELN. The reads are open; ``eln_draft`` is NOT host-gated on
+    # purpose (see the block above): its gate is one person's approval per
+    # write, which this server's standing DELFIN_OPS_ALLOW_MUTATE cannot
+    # stand in for.
+    mcp.tool(name="eln_find")(_safe("eln_find", tool_eln_find))
+    mcp.tool(name="eln_read")(_safe("eln_read", tool_eln_read))
+    mcp.tool(name="eln_pending")(_safe("eln_pending", tool_eln_pending))
+    mcp.tool(name="eln_draft")(_safe("eln_draft", tool_eln_draft))
+    mcp.tool(name="eln_attach")(_safe("eln_attach", tool_eln_attach))
+    mcp.tool(name="eln_approve")(_safe("eln_approve", tool_eln_approve))
 
     mcp.run(transport="stdio")
