@@ -7499,6 +7499,18 @@ _MCP_READONLY_TOOL_BASES: frozenset[str] = frozenset({
     # --- DELFIN ops server: literature reading ---
     "check_orca_manual_indexed", "read_pdf", "search_pdf_local",
     "extract_pdf_section",
+    # --- DELFIN ops server: Chemotion ELN reads ---
+    # Reading a collection, one element, or the drafts waiting for a
+    # person. They send GET requests and change nothing. Leaving them off
+    # this list had exactly the shape its own comment above warns about,
+    # and it was found in a real run rather than by a test: ``eln_find``
+    # asked for the samples of a collection was refused in default mode,
+    # so a chemist's read question could not be answered at all.
+    #
+    # The writes stay off this list on purpose. ``eln_draft``,
+    # ``eln_attach`` and ``eln_approve`` each need one person's approval,
+    # and ``eln_approve`` exists so the agent cannot give that approval.
+    "eln_find", "eln_read", "eln_pending",
 })
 
 
