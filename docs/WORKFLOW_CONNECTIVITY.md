@@ -94,7 +94,7 @@ would miss it, which is how two of these were once reported as unused.
 | `SMILES` | own name | `delfin/agent/api_client.py`, `delfin/agent/calc_policy.py`, `delfin/cli_manta.py`, `delfin/common/control_allowed_values.py` (+8 more) |
 | `charge` | own name | `delfin/agent/briefing.py`, `delfin/agent/calc_policy.py`, `delfin/agent/chat_plots.py`, `delfin/agent/cli_new_workflow.py` (+100 more) |
 | `implicit_solvation_model` | own name | `delfin/cli.py`, `delfin/cli_fukui.py`, `delfin/co2/CO2_Coordinator6.py`, `delfin/co2/chain_setup.py` (+14 more) |
-| `solvent` | own name | `delfin/agent/api_client.py`, `delfin/agent/briefing.py`, `delfin/agent/engine.py`, `delfin/agent/pack/benchmark/setup/a_small_calc_archive.py` (+59 more) |
+| `solvent` | own name | `delfin/agent/api_client.py`, `delfin/agent/briefing.py`, `delfin/agent/engine.py`, `delfin/agent/pack/benchmark/setup/a_small_calc_archive.py` (+60 more) |
 | `XTB_SOLVATOR` | own name | `delfin/cli.py`, `delfin/cli_recalc.py`, `delfin/recalc_control.py`, `delfin/workflows/engine/occupier.py` (+2 more) |
 | `number_explicit_solv_molecules` | own name | `delfin/cli.py`, `delfin/common/control_allowed_values.py`, `delfin/common/control_validator.py`, `delfin/recalc_control.py` (+1 more) |
 | `smiles_converter` | own name | `delfin/cli_fukui.py`, `delfin/common/control_validator.py`, `delfin/config.py`, `delfin/dashboard/tab_submit.py` (+5 more) |
@@ -109,7 +109,7 @@ would miss it, which is how two of these were once reported as unused.
 | `IMAG_sp_energy_window` | own name | `delfin/common/control_allowed_values.py`, `delfin/common/control_validator.py`, `delfin/imag.py`, `delfin/tools/workflows.py` (+1 more) |
 | `IMAG_optimize_candidates` | own name | `delfin/imag.py`, `delfin/workflow_connectivity.py` |
 | `IMAG_max_rounds` | own name | `delfin/common/control_allowed_values.py`, `delfin/common/control_validator.py`, `delfin/imag.py`, `delfin/tools/workflows.py` (+2 more) |
-| `method` | own name | `delfin/agent/api_client.py`, `delfin/agent/briefing.py`, `delfin/agent/calc_budget.py`, `delfin/agent/calc_policy.py` (+90 more) |
+| `method` | own name | `delfin/agent/api_client.py`, `delfin/agent/briefing.py`, `delfin/agent/calc_budget.py`, `delfin/agent/calc_policy.py` (+91 more) |
 | `calc_initial` | own name | `delfin/cli.py`, `delfin/cli_imag.py`, `delfin/cli_report.py`, `delfin/common/control_validator.py` (+7 more) |
 | `oxidation_steps` | own name | `delfin/cli.py`, `delfin/cli_imag.py`, `delfin/cli_report.py`, `delfin/common/control_validator.py` (+7 more) |
 | `reduction_steps` | own name | `delfin/cli.py`, `delfin/cli_imag.py`, `delfin/cli_report.py`, `delfin/common/control_validator.py` (+7 more) |
@@ -210,7 +210,7 @@ would miss it, which is how two of these were once reported as unused.
 | `geom_opt` | own name | `delfin/cli_fukui.py`, `delfin/common/control_allowed_values.py`, `delfin/common/control_validator.py`, `delfin/esd_input_generator.py` (+8 more) |
 | `freq_type` | own name | `delfin/common/control_allowed_values.py`, `delfin/common/control_validator.py`, `delfin/esd_input_generator.py`, `delfin/recalc_control.py` (+3 more) |
 | `initial_guess` | own name | `delfin/cli_fukui.py`, `delfin/common/control_allowed_values.py`, `delfin/common/control_validator.py`, `delfin/esd_input_generator.py` (+5 more) |
-| `temperature` | own name | `delfin/agent/api_client.py`, `delfin/agent/bench_ab.py`, `delfin/agent/cli.py`, `delfin/agent/run_manifest.py` (+14 more) |
+| `temperature` | own name | `delfin/agent/api_client.py`, `delfin/agent/bench_ab.py`, `delfin/agent/cli.py`, `delfin/agent/run_manifest.py` (+15 more) |
 | `maxiter` | own name | `delfin/agent/generate_fact_tasks.py`, `delfin/agent/job_fix.py`, `delfin/api.py`, `delfin/casscf_active_space.py` (+17 more) |
 | `qmmm_option` | own name | `delfin/occupier.py`, `delfin/tools/occupier_opi.py`, `delfin/xyz_io.py` |
 | `print_MOs` | own name | `delfin/common/orca_blocks.py`, `delfin/recalc_control.py` |
