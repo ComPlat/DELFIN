@@ -206,6 +206,11 @@ def report(run_names: list[str] | None = None, top: int = 30) -> dict:
 #: "member" cannot be traced back to the log it came from.
 _SRC = "member:"
 
+#: How many ledger lines the once-an-hour report keeps. Each line is one
+#: friction record (a few hundred bytes); 50k lines is a few MB, which holds
+#: weeks of waves while keeping the file the report re-reads bounded.
+_LEDGER_KEEP_LINES = 50_000
+
 
 def _ledger_path() -> Path:
     return wave.root() / ".friction.jsonl"
@@ -337,8 +342,36 @@ def sweep(run_names: list[str] | None = None) -> dict:
                 fh.flush()                             # the cursor must not run
                 cur[key] = e["next"]                   # ahead of the ledger
                 appended += len(e["recs"])
-        _save_cursor(cur)
+        _save_cursor({k: v for k, v in cur.items()
+                      if Path(k).exists() or k in new})
         return {"appended": appended, "sources": n_src}
+
+
+def _prune_ledger(keep: int = _LEDGER_KEEP_LINES) -> int:
+    """Keep the ledger's last *keep* lines; return how many were dropped.
+
+    The ledger only ever appended: every tick adds the lines its members
+    wrote since the last one, and nothing removed anything. On a host running
+    waves for months that is unbounded growth beside the wave state, and
+    ``write_report`` re-reads the whole file. The grouped report counts what
+    it has read, so dropping the oldest records bounds the file without
+    losing a count already published.
+
+    Called only from :func:`write_report` -- the once-an-hour path -- so the
+    per-tick ``sweep`` stays a stat-and-append.
+    """
+    p = _ledger_path()
+    try:
+        lines = p.read_text(errors="replace").splitlines()
+    except OSError:
+        return 0
+    if len(lines) <= keep:
+        return 0
+    dropped = len(lines) - keep
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+    tmp.write_text("\n".join(lines[-keep:]) + "\n")
+    _replace_private(tmp, p)
+    return dropped
 
 
 def read_ledger() -> list[dict]:
@@ -360,11 +393,20 @@ def read_ledger() -> list[dict]:
 
 def write_report(top: int = 30) -> dict:
     """Rewrite ``<root>/friction.json`` from the ledger. The tick does this
-    at most once an hour; the counts stay readable while the members run."""
+    at most once an hour; the counts stay readable while the members run.
+
+    The ledger is pruned here too, to the last ``_LEDGER_KEEP_LINES`` lines:
+    this is the only path that reads the whole file, and an append-only
+    ledger beside a months-old waves root grows without bound. The counts in
+    the report are cumulative as read, so a pruning pass does not reset them
+    -- it bounds the file, it does not forget what was already counted.
+    """
     rep = group(read_ledger(), top)
+    dropped = _prune_ledger()
     p = wave.root() / "friction.json"
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(rep, indent=1, default=str))
     _replace_private(tmp, p)
-    return {"path": str(p), "records": rep["records"]}
+    return {"path": str(p), "records": rep["records"],
+            "ledger_pruned": dropped}

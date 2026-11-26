@@ -768,3 +768,35 @@ def test_the_ledger_cursor_and_report_are_owner_only(host):
         assert path.exists(), f"{path} was not written"
         mode = stat.S_IMODE(path.stat().st_mode)
         assert mode == 0o600, f"{path.name} is {oct(mode)}, not 0o600"
+
+
+def test_the_ledger_is_bounded_so_a_long_lived_root_cannot_grow_it(host):
+    """The ledger only appended; nothing removed anything.
+
+    Each tick appends the lines its members wrote since the last one, and
+    ``write_report`` re-reads the whole file -- on a host running waves for
+    months both the file and the per-report cost grew without bound. The
+    report path keeps the newest lines and says how many it dropped.
+    """
+    from delfin.agent.swarm import friction
+
+    led = friction._ledger_path()
+    led.parent.mkdir(parents=True, exist_ok=True)
+    keep = 10
+    total = 25
+    led.write_text("\n".join(
+        json.dumps({"run": "r", "id": f"m{i}", "src": "member:r/m",
+                    "kind": "end", "code": "ok", "detail": "", "model": ""})
+        for i in range(total)) + "\n")
+
+    # The oldest records go, the newest stay, and the caller is told.
+    dropped = friction._prune_ledger(keep=keep)
+    assert dropped == total - keep
+    lines = [line for line in led.read_text().splitlines() if line.strip()]
+    assert len(lines) == keep, f"the ledger is not bounded: {len(lines)} lines"
+    tail = json.loads(lines[-1])
+    assert tail["id"] == f"m{total - 1}", "the NEWEST records must be kept"
+
+    # Below the cap it is a no-op, so a normal root keeps everything.
+    assert friction._prune_ledger(keep=keep) == 0
+    assert len([l for l in led.read_text().splitlines() if l.strip()]) == keep
