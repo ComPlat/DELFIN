@@ -502,21 +502,26 @@ def test_a_member_whose_real_run_marker_outlived_its_process_is_raised(host):
 
 
 def test_a_live_member_with_a_silent_log_is_raised(host):
-    """Alive, and nothing written for over an hour."""
+    """Alive, and nothing written for over an hour.
+
+    ``started`` is as old as the log on purpose: a member resumed seconds ago
+    with an hour-old log is NOT this case (see
+    ``test_a_member_the_stage_just_resumed_is_not_silent``), so the session must
+    have begun as long ago as its silence to be a stall."""
     run = "s4"
     wave.run_dir(run).mkdir(parents=True)
     (wave.run_dir(run) / "tasks.json").write_text(json.dumps([_task("a")]))
     log = wave.run_dir(run) / "a.log"
     log.write_text("{}\n")
+    old = time.time() - 90 * 60
     st = wave.load_state(run)
     host["alive"].add(os.getpid())                                  # alive
     st["agents"] = {"a": {"pid": os.getpid(),
                           "branch": f"wave/{run}/a",
                           "worktree": str(wave.run_dir(run) / "a"),
-                          "log": str(log), "started": time.time(),
+                          "log": str(log), "started": old,
                           "task": _task("a")}}
     wave._save_state(run, st)
-    old = time.time() - 90 * 60
     os.utime(log, (old, old))
     assert guard.tick()["stalls"] == 1
     assert "stalled (silent)" in host["seen"][0][1]
@@ -573,3 +578,43 @@ def test_a_run_another_tool_started_is_not_judged_for_stalls(host):
     host["advance"](20 * 60)
     guard.tick()
     assert host["seen"] == []
+
+
+def test_a_member_the_stage_just_resumed_is_not_silent(host):
+    """The stage resumes a member that fell through its branches, and a resume
+    keeps the old log: ``wave._launch`` opens it "ab", which does not touch its
+    mtime, and gives the member a fresh pid and ``started``. Judged on the log
+    alone the member reads as silent for as long as its previous session ran --
+    measured on the arm's code: a member with ``started`` = now and a
+    90-minute-old log was reported "silent, 90 min" in the tick right after its
+    resume, i.e. a false alarm that arrives exactly when the wave is
+    recovering."""
+    run = "s8"
+    wave.run_dir(run).mkdir(parents=True)
+    (wave.run_dir(run) / "tasks.json").write_text(json.dumps([_task("a")]))
+    log = wave.run_dir(run) / "a.log"
+    log.write_text(json.dumps({"type": "result", "stop_reason": "end_of_turn",
+                               "tool_calls": 3}) + "\n")
+    _agent_entry(run, "a", log, started=time.time())   # resumed seconds ago
+    old = time.time() - 90 * 60
+    os.utime(log, (old, old))                          # the old session's log
+    host["alive"].add(4242)                            # and it is running now
+    guard.tick()
+    assert host["seen"] == []
+
+
+def test_a_member_silent_past_the_old_session_is_still_raised(host):
+    """Control for the case above: the start time must not hide a member that
+    really is quiet. Alive, its log 90 minutes old AND started 90 minutes ago
+    -- nothing has happened since the session began -- is a stall."""
+    run = "s9"
+    wave.run_dir(run).mkdir(parents=True)
+    (wave.run_dir(run) / "tasks.json").write_text(json.dumps([_task("a")]))
+    log = wave.run_dir(run) / "a.log"
+    log.write_text("{}\n")
+    old = time.time() - 90 * 60
+    os.utime(log, (old, old))
+    _agent_entry(run, "a", log, started=old)
+    host["alive"].add(4242)
+    assert guard.tick()["stalls"] == 1
+    assert "stalled (silent)" in host["seen"][0][1]

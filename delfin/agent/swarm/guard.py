@@ -478,9 +478,21 @@ def find_stalls(lim: dict | None = None, now: float | None = None) -> list[dict]
                                 "why": "ended and the stage did nothing with it"})
                 continue
             try:
-                idle = (now - Path(a["log"]).stat().st_mtime) / 60
+                last = Path(a["log"]).stat().st_mtime
             except OSError:
-                idle = 0
+                last = 0
+            # A resume keeps the member's log (``wave._launch`` opens it "ab",
+            # which does not touch its mtime) and gives it a fresh pid and a
+            # fresh ``started``. Judged on the log alone, a member resumed a
+            # second ago after two hours of work reads as "silent for 120
+            # minutes" -- measured: a member with ``started = now`` and a
+            # 90-minute-old log was reported silent 90. The session is the
+            # newer of the two, so the newer of the two is what "has not grown"
+            # is measured from.
+            started = a.get("started")
+            if isinstance(started, (int, float)) and started > last:
+                last = float(started)
+            idle = (now - last) / 60
             if idle >= float(lim["stall_silent_min"]):
                 out.append({**at, "kind": "silent", "min": round(idle),
                             "why": "alive, nothing written to its log"})
