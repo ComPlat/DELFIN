@@ -611,8 +611,27 @@ def task_digest(task: Any) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
+#: Provider -> the environment variable the credential loader reads for it.
+#: Mirrors ``api_client.build_client``'s per-provider ``key_env_var`` and
+#: ``credentials._WELL_KNOWN_KEYS``, and a test keeps the three in step. Only
+#: the provider under test crosses into a side's worker: see ``_child_env``.
+PROVIDER_KEY_NAMES: dict[str, str] = {
+    "kit": "KIT_TOOLBOX_API_KEY",
+    "blablador": "BLABLADOR_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "claude": "ANTHROPIC_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+}
+
+#: The provider whose key crosses when the caller names none. ``build_client``
+#: with ``backend="api"`` and no provider resolves ``APIClient``, which reads
+#: ``ANTHROPIC_API_KEY`` -- so this is that default, named rather than assumed.
+DEFAULT_KEY_PROVIDER = "claude"
+
+
 def _child_env(worktree: Path, home: Path, seed: str,
-               temperature: str) -> dict[str, str]:
+               temperature: str, *, parent: Optional[dict] = None,
+               provider: str = "") -> dict[str, str]:
     """The environment a side's worker runs in.
 
     ``PYTHONPATH`` first on the import path and the SIDE'S OWN tree opening it:
@@ -620,12 +639,27 @@ def _child_env(worktree: Path, home: Path, seed: str,
     ``delfin`` the parent process imported. ``HOME`` is a fresh directory per
     attempt, so nothing the agent would read about a previous attempt -- a
     memory store, an outcome history -- exists to be read.
+
+    THAT FRESH HOME ALSO HIDES THE CREDENTIAL FILE, and a credential is what an
+    attempt cannot do without. ``credentials.load_credential`` resolves env >
+    keyring > file; with the file behind the redirected home the environment
+    variable is the only route left across the process boundary, so the one key
+    of the provider under test is carried over explicitly. Without it every
+    attempt died in engine init and the verb reported a pass rate for a run
+    that called nothing -- measured on this branch before the fix.
+
+    ONLY THAT KEY. ``parent`` is read for the named provider's variable and no
+    other: a benchmark measures an agent that can run shell commands, and a
+    GitHub token in its environment is a token it can spend. The parent
+    environment is passed in rather than read here so a test can state what it
+    hands over.
     """
+    parent = os.environ if parent is None else parent
     env = {
-        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "PATH": parent.get("PATH", "/usr/bin:/bin"),
         "HOME": str(home),
-        "LANG": os.environ.get("LANG", "C.UTF-8"),
-        "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
+        "LANG": parent.get("LANG", "C.UTF-8"),
+        "LC_ALL": parent.get("LC_ALL", "C.UTF-8"),
         "PYTHONPATH": str(worktree),
         "PYTHONDONTWRITEBYTECODE": "1",
         "DELFIN_NO_BROWSER": "1",
@@ -633,6 +667,11 @@ def _child_env(worktree: Path, home: Path, seed: str,
         # any directory that belongs to a person.
         "DELFIN_SCRATCH_STATE": str(home / ".delfin"),
     }
+    key_name = PROVIDER_KEY_NAMES.get(
+        (provider or DEFAULT_KEY_PROVIDER).strip().lower(), "")
+    key_value = parent.get(key_name, "") if key_name else ""
+    if key_value:
+        env[key_name] = key_value
     if seed:
         env["DELFIN_SAMPLING_SEED"] = str(seed)
     if temperature:
@@ -668,7 +707,7 @@ def subprocess_runner(task: Any, spec: RunSpec) -> SideResult:
                str(getattr(task, "id", "")), spec.model, spec.provider,
                spec.backend, str(max(1, int(spec.repeat))), str(out)]
         r = subprocess.run(cmd, cwd=str(wt), env=_child_env(
-            wt, home, spec.seed, spec.temperature),
+            wt, home, spec.seed, spec.temperature, provider=spec.provider),
             capture_output=True, text=True, timeout=spec.timeout_s)
         payload: dict[str, Any] = {}
         try:
