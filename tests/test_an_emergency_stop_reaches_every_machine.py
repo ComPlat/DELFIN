@@ -63,6 +63,48 @@ def stop_file(tmp_path, monkeypatch):
     return path
 
 
+@pytest.fixture
+def the_check_sees_only_this_test(monkeypatch):
+    """Shadow what ``stop-all --check`` reads from THIS machine.
+
+    ``stop_all.status()`` reads four things from the home directory (all
+    redirected above) and three from the machine. Of the machine reads the
+    suite's own guard (``_emergency_stop_reaches_no_real_process``) covers
+    only the command-line markers; two stay open, and on any host where
+    DELFIN agents run they decide the answer instead of the code:
+
+      ``_outlived_their_start``  judges every ``/proc/<pid>/environ`` on this
+                                 machine -- a leftover agent whose lifeline is
+                                 gone is found even though no marker matches;
+      ``_agent_service_here``    reads this host's agent-service run file --
+                                 a service with one live session is enough.
+
+    Both are shadowed at their source, not at ``status``, so the verdict and
+    the printing under test stay the product's own. The process path is
+    filtered by pid rather than replaced: the rows are still produced by
+    ``_outlived_their_start``, judging a real process this test started (the
+    control ``test_the_check_says_so_when_a_process_is_really_running``).
+
+    Returns an object with ``.seen`` (the pids the check may see), ``.real``
+    (the unshadowed discovery, so a test can prepare a process with it) and
+    ``.add(pid)``.
+    """
+    class _Seen:
+        def __init__(self) -> None:
+            self.seen: set[int] = set()
+            self.real = S._outlived_their_start
+
+        def add(self, pid: int) -> None:
+            self.seen.add(pid)
+
+    only = _Seen()
+    monkeypatch.setattr(
+        S, "_outlived_their_start",
+        lambda: [r for r in only.real() if r["pid"] in only.seen])
+    monkeypatch.setattr(S, "_agent_service_here", lambda: None)
+    return only
+
+
 def _register(proc, kind: str) -> None:
     """Put *proc* on the (redirected) process_guard register as *kind*.
 
@@ -310,20 +352,100 @@ def test_the_stop_file_is_redirected_for_every_test():
 
 # -- the check ----------------------------------------------------------------
 
-def test_the_check_changes_nothing_and_says_when_nothing_runs(stop_file, capsys):
+def test_the_check_changes_nothing_and_says_when_nothing_runs(
+        stop_file, the_check_sees_only_this_test, capsys):
     from delfin.agent import cli
     assert cli.main(["stop-all", "--check"]) == 0
     assert not stop_file.exists(), "a check is not a stop"
     assert "no agent is running or scheduled" in capsys.readouterr().out
 
 
-def test_the_check_names_a_schedule_that_would_start_an_agent(stop_file, tmp_path, capsys):
+def test_the_check_says_so_when_a_process_is_really_running(
+        stop_file, the_check_sees_only_this_test, monkeypatch, capsys):
+    """The shadow above must not turn the check into a constant 0.
+
+    A real process of this machine, judged by the product's own
+    ``_outlived_their_start``, still makes ``--check`` report 1 -- and with
+    no such process named it reports 0. Without this pair a shadow that
+    found nothing would look exactly like a working check.
+    """
+    from delfin.agent import cli
+    # A leftover agent: its lifeline is a pid that is gone. This is the
+    # machine state the package exists for, made here on purpose.
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone_ticks = L._start_ticks(gone.pid)
+    gone.wait()
+    orphan = _sleeper(**{L.ENV_PID: str(gone.pid), L.ENV_TICKS: str(gone_ticks)})
+    try:
+        deadline = time.time() + 10
+        rows = []
+        while time.time() < deadline and not rows:
+            rows = [r for r in the_check_sees_only_this_test.real()
+                    if r["pid"] == orphan.pid]
+            time.sleep(0.1)
+        assert rows, "the fixture never saw the process it started"
+
+        # Negative half: the check does not report what the test did not name.
+        assert cli.main(["stop-all", "--check"]) == 0
+        assert "no agent is running or scheduled" in capsys.readouterr().out
+
+        # Positive half: name it, and the check reports it.
+        the_check_sees_only_this_test.add(orphan.pid)
+        assert cli.main(["stop-all", "--check"]) == 1
+        out = capsys.readouterr().out
+        assert f"pid {orphan.pid} (its lifeline {gone.pid} is gone)" in out
+        assert "Result: something is running or scheduled" in out
+    finally:
+        orphan.kill()
+        orphan.wait()
+
+
+def test_the_check_names_a_schedule_that_would_start_an_agent(
+        stop_file, the_check_sees_only_this_test, tmp_path, capsys):
     from delfin.agent import cli
     sched_mod.Scheduler().schedule_once(delay_seconds=600, prompt="look again",
                                         workspace=str(tmp_path))
     assert cli.main(["stop-all", "--check"]) == 1
     out = capsys.readouterr().out
     assert "Active schedules:        1" in out and "look again" in out
+
+
+def test_an_agent_service_with_a_session_is_counted_as_running(capsys):
+    """The third machine read ``status()`` makes, kept tested.
+
+    Nothing tested this verdict clause before, and the fixture above shadows
+    ``_agent_service_here`` so the host's own service cannot decide the check
+    -- which leaves the clause unreachable through ``status()`` in the suite
+    for good. Measured: on the base commit, and on this branch without the
+    two tests below, deleting ``service["sessions"]`` from
+    ``_print_stop_all_check`` still passed the whole file (33 and 34 green).
+
+    This names the report ``status()`` would produce for a service with one
+    session, so the clause is tested without reading the host.
+    """
+    from delfin.agent import cli
+    code = cli._print_stop_all_check(_report(agent_service={
+        "pid": 4242, "socket": "/run/delfin/agent.sock",
+        "started_at": "2026-01-01T00:00:00", "sessions": 1, "asleep": 0,
+        "runs_on_its_own": True}))
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "Agent service:           pid 4242, 1 session(s) running" in out
+    assert "Result: something is running or scheduled" in out
+
+
+def test_an_agent_service_with_no_session_is_named_but_not_running(capsys):
+    """The other half: a service that is up and idle runs on its own on
+    purpose, so it is printed -- and it is not what makes the check exit 1.
+    Without this the clause could be ``service is not None`` and pass."""
+    from delfin.agent import cli
+    code = cli._print_stop_all_check(_report(agent_service={
+        "pid": 4242, "socket": "/run/delfin/agent.sock",
+        "started_at": "2026-01-01T00:00:00", "sessions": 0, "asleep": 2,
+        "runs_on_its_own": True}))
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "pid 4242, 0 session(s) running, 2 asleep" in out
 
 
 def test_the_check_finds_a_process_whose_dashboard_is_gone(stop_file):
@@ -351,7 +473,7 @@ def _report(**overrides):
     report = {"host": "login01", "at": time.time(), "last_stop": {},
               "open_sessions": [], "kept_sessions": [], "active_schedules": [],
               "daemon_pid_files": {}, "agent_processes_here": [],
-              "outlived_their_start_here": []}
+              "outlived_their_start_here": [], "agent_service": None}
     report.update(overrides)
     return report
 

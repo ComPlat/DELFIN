@@ -1,6 +1,6 @@
 ---
 name: data-extractor
-description: Read-only extraction of finished results into one table. Use to turn a directory of finished jobs into numbers you can compare.
+description: Read-only extraction of finished results into one table. Use to turn finished jobs into numbers.
 mode: plan
 tools: [read_file, read_section, list_sections, list_files, list_docs, grep_file, find_definition, find_references, search_docs, read_document, view_image, exit_plan_mode, ask_user_question, report_verdict, subagent_result, subagent_message, search_calcs, get_calc_info, calc_summary, compare_tables, sum_column, notebook_read]
 ---

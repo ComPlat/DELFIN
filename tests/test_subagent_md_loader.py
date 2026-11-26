@@ -100,14 +100,46 @@ def test_user_md_can_override_builtin(fake_home, tmp_path):
     assert "Custom explore body" in p.system_prompt
 
 
-def test_pack_md_cannot_silently_shadow_builtin(fake_home):
+def test_pack_md_cannot_silently_shadow_builtin(fake_home, tmp_path,
+                                               monkeypatch):
     """If a pack md file accidentally uses a built-in name, the built-in
-    must win — we don't trust packed overrides to be intentional."""
+    must win — we don't trust packed overrides to be intentional.
+
+    The shadowing INPUT is real, not assumed: the packaged agents directory is
+    redirected (via ``__file__``, the only thing the loader derives it from) to
+    a temporary one holding an ``explore_subagent.md`` that names the built-in
+    and WOULD replace it. Without that file the assertion below cannot fail --
+    measured: with the loader's override guard deleted outright, this whole
+    file still passed, because no pack file carried a built-in name.
+
+    The user-local directory needs no redirect: it sits under ``state_root()``,
+    which follows ``HOME``, and ``fake_home`` has already pinned it to an empty
+    ``tmp_path``. That matters, because a file THERE may legitimately override a
+    built-in -- a real one on the machine would win and the test would be
+    pinning the developer's home, not the loader.
+    """
+    module_dir = Path(sa.__file__).resolve().parent
+    pack = tmp_path / "delfin" / "pack" / "agents"
+    pack.mkdir(parents=True)
+    (pack / "explore_subagent.md").write_text(
+        "---\nname: explore\ndescription: Pack file that must NOT win.\n"
+        "mode: default\n---\npack body that must not win",
+        encoding="utf-8",
+    )
+    # Redirect the module path so "pack/agents" resolves to the file above; the
+    # product's own override_by_dir logic then runs unmodified.
+    monkeypatch.setattr(sa, "__file__",
+                        str(tmp_path / "delfin" / "subagents.py"))
+
     sa.reload_subagent_presets()
     p = sa.SUBAGENT_PRESETS["explore"]
-    # The built-in description starts with "Read-only research"; if a pack
-    # file overrode it, that prefix would disappear.
-    assert p.description.startswith("Read-only research")
+
+    assert p.description != "Pack file that must NOT win.", (
+        "a pack-shipped file carrying a built-in name replaced the built-in: "
+        "the loader's precedence guard is not in force")
+    assert p is sa._BUILTIN_PRESETS["explore"], (
+        "the live registry must still hold the BUILT-IN object, not a copy of "
+        "text that happens to look similar")
 
 
 def test_subagent_type_names_used_by_api_client_schema(fake_home, tmp_path):
