@@ -77,6 +77,9 @@ _DEFAULTS = {
     # the dependency cannot run the other way -- and the two are pinned
     # together by test_the_start_gate_stops_before_the_envelope_does.
     "max_load_per_core": 0.885,
+    # The start gate's memory share: nothing new starts while less than this
+    # share of the total is free (the old operator script's 150 of 1511 GB).
+    "min_available_frac": 0.10,
     "seconds": 5400,
     "turns": 60,
     # A checkout of its own the members run DELFIN from (PYTHONPATH), so a
@@ -311,7 +314,12 @@ def _room(cfg: dict) -> tuple[bool, str]:
         for line in Path("/proc/meminfo").read_text().splitlines():
             if line.startswith("MemAvailable:"):
                 gb = int(line.split()[1]) / 1048576
-                if gb < float(cfg["min_available_gb"]):
+                total = next((int(x.split()[1]) / 1048576 for x in
+                              Path("/proc/meminfo").read_text().splitlines()
+                              if x.startswith("MemTotal:")), 0.0)
+                need = max(float(cfg["min_available_gb"]),
+                           float(cfg.get("min_available_frac") or 0) * total)
+                if gb < need:
                     return False, f"{gb:.0f} GB available"
     except OSError:
         pass

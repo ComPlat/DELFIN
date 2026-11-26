@@ -183,12 +183,21 @@ def _agent_entry(run, tid, log: Path, *, started=None):
 
 # -- 1. the envelope -------------------------------------------------------------------
 
-def test_the_old_scripts_stop_line_is_the_default_on_a_384_core_host(host):
-    """If the envelope is the old one, a 384-core host at load 341 -- which the
-    operator script stopped at -- must be outside it. On the shipped 1.5 x
-    cores the stop was 576, so load 341 read as healthy."""
+def test_at_the_old_scripts_line_nothing_new_starts_and_nothing_is_stopped(host, monkeypatch):
+    """Two stages (decided 2026-11-26): at load 341 on 384 cores -- where the
+    old operator script stopped everything -- the start gate launches nothing
+    new, and the running members go on; the envelope stops only past 1.5 x
+    cores, because a stop throws away every member's work and a shared host
+    is often busy with other people's jobs."""
     host["host"].update(load1=341.0, cores=384)
-    assert guard.outside_envelope() == "load 341 on 384 cores"
+    # The shipped start gate (the fixture loosens the members' own settings),
+    # reading the same faked host the envelope reads.
+    monkeypatch.setattr(wave, "Path", guard.Path)
+    shipped = dict(wave._DEFAULTS)
+    assert guard.outside_envelope() == ""
+    assert wave._room(shipped) == (False, "load 341 on 384 cores")
+    host["host"].update(load1=577.0)
+    assert guard.outside_envelope() == "load 577 on 384 cores"
 
 
 def test_a_host_just_under_the_old_stop_line_is_left_alone(host):
@@ -198,29 +207,25 @@ def test_a_host_just_under_the_old_stop_line_is_left_alone(host):
     assert guard.outside_envelope() == ""
 
 
-def test_the_memory_floor_scales_with_the_host(host):
-    """The share decides on a big host (10 % of 1511.3 = 151.1 GB, against the
-    script's 150); below 40 GB of total the 4 GB floor the tick already
-    shipped decides, so a 16 GB laptop keeps the stop it had.
-
-    Asked through ``outside_envelope`` -- the function the tick calls -- and
-    not through the helper that computes the floor: a test that called the
-    helper would be red on the base for ``AttributeError`` (the helper did not
-    exist) instead of for the bug, which is that 140 GB free on a 1.5 TB host
-    was judged healthy."""
-    # 140 GB free of 1511.3: under the 151.1 share, far over the flat 4 GB.
-    host["host"].update(cores=384, total_gb=1511.3, avail_gb=140.0)
-    assert guard.outside_envelope() == "140.0 GB available"
-    # The same 140 GB on a 16 GB host is plenty: the floor there is 4 GB.
-    host["host"].update(cores=8, total_gb=16.0, avail_gb=14.0)
+def test_the_start_gate_holds_back_at_a_tenth_of_the_memory(host, monkeypatch):
+    """140 GB free of 1511.3 GB is under a tenth: nothing new starts, nothing
+    is stopped (the stop keeps the 4 GB floor). On a 16 GB host 14 GB free is
+    room to start."""
+    host["host"].update(cores=384, total_gb=1511.3, avail_gb=140.0, load1=1.0)
+    monkeypatch.setattr(wave, "Path", guard.Path)
+    shipped = dict(wave._DEFAULTS)
     assert guard.outside_envelope() == ""
+    assert wave._room(shipped) == (False, "140 GB available")
+    host["host"].update(cores=8, total_gb=16.0, avail_gb=14.0)
+    assert wave._room(shipped)[0] is True
 
 
-def test_low_available_memory_stops_a_large_host(host):
-    """120 GB free on a 1.5 TB host is 8 % -- under the 10 % share, and 30 GB
-    under the old script's floor. A flat 4 GB default called this healthy."""
+def test_only_memory_under_the_floor_stops_a_host(host):
+    """The envelope stops below the 4 GB floor, on any host."""
     host["host"].update(cores=384, total_gb=1511.3, avail_gb=120.0)
-    assert guard.outside_envelope() == "120.0 GB available"
+    assert guard.outside_envelope() == ""
+    host["host"].update(avail_gb=3.0)
+    assert guard.outside_envelope() == "3.0 GB available"
 
 
 def test_a_small_host_with_6_gb_free_is_inside_the_envelope(host):
@@ -255,12 +260,16 @@ def test_the_envelope_limits_stay_settings(host):
     assert guard.outside_envelope().startswith("load 400")
 
 
-def test_two_ticks_outside_the_new_envelope_stop_everything(host):
-    """The duty end to end: no member stops on the first tick outside, the
-    second one stops them and writes the hold flag."""
+def test_two_ticks_outside_the_envelope_stop_everything(host):
+    """The duty end to end: a busy host (load 400) stops nothing; past the stop
+    line no member stops on the first tick outside, the second one stops them
+    and writes the hold flag."""
     M.h_start("r1", [_task("a", "sleep:30")], str(host["repo"]))
     host["alive"].add(wave.load_state("r1")["agents"]["a"]["pid"])
     host["host"]["load1"] = 400.0
+    assert guard.tick()["stopped"] is None
+    assert guard.tick()["stopped"] is None
+    host["host"]["load1"] = 600.0
     assert guard.tick()["stopped"] is None
     out = guard.tick()["stopped"]
     assert out["stopped"] == {"r1": ["a"]}
@@ -829,12 +838,9 @@ def test_the_guard_prose_does_not_claim_a_start_gate_above_the_stop_line():
     )
     # And whatever the prose says about the two numbers, the code agrees:
     # the start gate is at the stop line, not above it.
-    assert start <= stop, f"start gate {start} is above the stop line {stop}"
-    assert start == stop, (
-        "the header argues the two knobs are deliberately different, but "
-        f"they are now identical ({start}): either restore the argument or "
-        "state the new relationship"
-    )
+    assert start < stop, (
+        f"two stages: the start gate ({start}) must hold back before the stop "
+        f"line ({stop}) ends anything")
     # The sentence that carried the falsehood named a stale value.
     m = re.search(r"``max_load_per_core`` \(default ([0-9.]+)\)", header)
     if m:

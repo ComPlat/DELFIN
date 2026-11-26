@@ -66,8 +66,8 @@ PROMPT_MARKER = "[swarm-guard]"
 #: host (1.7x the script's 340) and 4 GB is 2% of its 150 GB -- a shared
 #: host was left unguarded, which is the one job this guard has.
 #:
-#: 0.885 load per core and ``max(4 GB, 10 % of total)`` reproduce the old
-#: protection on that host, measured on it (384 cores, MemTotal 1511.3 GiB,
+#: 0.885 load per core and 10 % of the total are the old
+#: protection's numbers on that host; they are now the START gate, measured on it (384 cores, MemTotal 1511.3 GiB,
 #: ``os.cpu_count`` 384): 0.885 x 384 = 339.8 against the script's 340, and
 #: 10 % of 1511.3 = 151.1 GiB against its 150. It scales with the machine so
 #: a small one is not stopped at idle: on 8 cores the load stop is 7.1, and
@@ -83,18 +83,19 @@ PROMPT_MARKER = "[swarm-guard]"
 #: ``guard_min_memory_frac`` / ``guard_min_memory_floor_gb``), so a host
 #: that genuinely wants the looser 1.5 keeps it by name.
 #:
-#: The load stop is the envelope's only LOAD number, and ``wave._room``
-#: holds its own ``max_load_per_core`` for a different question: how many
-#: members may *start*. The two are deliberately equal (both 0.885), so a
-#: host the envelope is about to stop can never be one the tick keeps
-#: launching onto -- there is no band between them. They are duplicated
-#: rather than imported because the guard imports this module and the
-#: dependency cannot run the other way; they are pinned together by
-#: ``test_the_start_gate_stops_before_the_envelope_does``. A start gate
-#: left above the stop line would mean launching work onto a host the
-#: envelope condemns, which is what that test exists to prevent.
-_GUARD_DEFAULTS = {"guard_max_load_per_core": 0.885,
-                   "guard_min_memory_frac": 0.10,
+#: The load stop is the envelope's only LOAD number. ``wave._room`` holds
+#: the start gate (0.885 per core, a tenth of the memory free), deliberately
+#: BELOW this stop line: between the two the host is busy, nothing new
+#: starts, and the members already running go on. Pinned by
+#: ``test_the_start_gate_stops_before_the_envelope_does``.
+# Two stages (decided 2026-11-26): at the old script's numbers the host is
+# busy, and the START gate (``wave._room``: 0.885 load per core, 10 % of the
+# memory free) launches nothing new while running members go on; only well
+# past them does the envelope STOP everything, because a stop throws away
+# every member's work and a shared host is often busy with other people's
+# jobs (2026-11-26 04:55: load 507 from jobs outside the swarm).
+_GUARD_DEFAULTS = {"guard_max_load_per_core": 1.5,
+                   "guard_min_memory_frac": 0.0,
                    "guard_min_memory_floor_gb": 4.0,
                    # A member that ended 15+ minutes ago whose stage did
                    # nothing with it: the stage resumes on endpoint errors
