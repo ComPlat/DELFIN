@@ -3036,6 +3036,16 @@ def cmd_bench(args: argparse.Namespace) -> int:
     if action == "nightly":
         return _cmd_bench_nightly(args)
 
+    if action in ("history", "trend", "diff", "schedule"):
+        # The kept-round read side and the opt-in installer. Delegated
+        # whole to bench_history so the parser here and the module that
+        # answers cannot drift apart (the `swarm`/cli_swarm pattern).
+        from . import bench_history as _bh
+        return {"history": _bh.cli_history,
+                "trend": _bh.cli_trend,
+                "diff": _bh.cli_diff,
+                "schedule": _bh.cli_schedule}[action](args)
+
     if action == "compare" and (getattr(args, "model", "") or "").strip():
         # History mode: classify one run against the rolling per-task
         # baseline (bench_watch). Pure file comparison — no API spend.
@@ -6199,6 +6209,80 @@ def build_parser() -> argparse.ArgumentParser:
                                help="Override the runs directory "
                                     "(default: ~/.delfin/benchmark_runs)")
     bench_nightly.set_defaults(bench_action="nightly")
+
+    # bench history | trend | diff | schedule — the read side of the kept
+    # benchmark rounds and the opt-in installer. Registered here, handled
+    # entirely in bench_history.py (the same pattern as `swarm`, whose
+    # body lives in cli_swarm.py): the verbs are one argparse hunk in this
+    # file so the parser and the module that answers them cannot drift.
+    bench_hist = bench_sub.add_parser(
+        "history",
+        help="The kept benchmark rounds: pass rate per round and per task, "
+             "with the commit each round measured (only rounds that are "
+             "comparable are shown; the rest are listed with the reason)")
+    bench_hist.add_argument(
+        "--capability", default="",
+        help="Only this task family (e.g. redox_consistency)")
+    bench_hist.set_defaults(bench_action="history")
+
+    bench_trend = bench_sub.add_parser(
+        "trend",
+        help="One capability's pass rate, round by round, and which rounds "
+             "were left out of the comparison for want of a shared seed "
+             "mode, task-set version or model")
+    bench_trend.add_argument("--capability", required=True,
+                             help="The task family to trend")
+    bench_trend.set_defaults(bench_action="trend")
+
+    bench_diff = bench_sub.add_parser(
+        "diff",
+        help="What changed between two named rounds, task by task (refused "
+             "when the two are not comparable)")
+    bench_diff.add_argument("round_a", help="The earlier round id")
+    bench_diff.add_argument("round_b", help="The later round id")
+    bench_diff.add_argument("--capability", default="",
+                            help="Only this task family")
+    bench_diff.set_defaults(bench_action="diff")
+
+    bench_sched = bench_sub.add_parser(
+        "schedule",
+        help="The nightly round as a systemd user timer — OFF by default: "
+             "nothing is registered until --enable. Shows the exact command "
+             "a fired round runs (its --budget gate included)",
+        description=(
+            "Install (or show, or remove) the scheduled benchmark round.\n\n"
+            "Strictly opt-in: neither running a round nor this command "
+            "without --enable registers anything, because a round costs "
+            "real core-hours and model spend.\n\n"
+            "  delfin-agent bench schedule --enable --model <model> "
+            "[--budget H] [--instances N]\n"
+            "  delfin-agent bench schedule --disable\n\n"
+            "The budget gate is part of the command the timer fires, so a "
+            "scheduled round refuses instances over the daily core-hour "
+            "limit exactly like a hand-run one."),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    bench_sched.add_argument("--enable", action="store_true",
+                             help="Install and start the user timer")
+    bench_sched.add_argument("--disable", action="store_true",
+                             help="Stop, disable and remove it")
+    bench_sched.add_argument("--model", default="",
+                             help="The model the round measures "
+                                  "(required with --enable)")
+    bench_sched.add_argument("--provider", default="")
+    bench_sched.add_argument("--instances", type=int, default=10)
+    bench_sched.add_argument("--budget", type=float, default=50.0,
+                             help="Daily core-hour gate kept in the fired "
+                                  "command (default 50)")
+    bench_sched.add_argument("--practice", action="store_true",
+                             help="Run on the public seed, never the "
+                                  "holdout")
+    bench_sched.add_argument("--seed-path", default="", dest="seed_path",
+                             help="Path of the holdout seed file (a "
+                                  "setting; the value is never stored)")
+    bench_sched.add_argument("--on-calendar", default="", dest="on_calendar",
+                             help="systemd OnCalendar (default daily 03:00)")
+    bench_sched.set_defaults(bench_action="schedule")
 
     bench.set_defaults(func=cmd_bench, bench_action="run")
 
