@@ -336,6 +336,14 @@ def validate(manifest, workflow, kernel=None) -> Proposal:
                     needs_approval[sid] = (
                         f"{verdict.get('level')}: a person approves exactly "
                         "this action")
+            # The kernel's own reason its writes would be refused. It judges
+            # every step `ok` and then withholds the whole run on this field,
+            # so a judge that copied only the steps answered `ok: true` for a
+            # campaign on an installation where nothing can be written.
+            manifest_problem = write_check.get("manifest_problem")
+            if manifest_problem:
+                problems.append("the kernel would refuse every write: "
+                                f"{manifest_problem}")
 
     devices: list[str] = []
     for _sid, st in ordered:

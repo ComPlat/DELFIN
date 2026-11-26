@@ -174,3 +174,52 @@ def test_the_cli_runs_the_campaign_through_one_verb(lab, tmp_path):
     assert out["ok"] is True, out
     assert out["ran"] is False
     assert "nothing was written" in proc.stdout
+
+
+def test_a_plan_is_not_ok_when_the_kernel_would_refuse_every_write(lab):
+    """`ok: true` must mean "this would run", not "the steps parse".
+
+    The kernel's dry run returns its own verdict AND the reason its writes
+    would be refused -- on a fresh installation, `manifest_problem` is "the
+    manifest is not pinned". The judge copied `write_check["steps"]` and
+    dropped that field, so it reported `ok: true, problems == []` for a
+    campaign every one of whose 16 writes the kernel refuses. An agent
+    reading that answer would tell a person the campaign was ready to start.
+
+    Measured on the bundle before this fix, with this manifest written and
+    never pinned: `proposal.ok is True`, `problems == []`,
+    `write_check["ok"] is False`, `write_check["manifest_problem"]` the
+    pin message. The control case -- the same document with the manifest
+    pinned by `lab` -- stays ok, so the fix reports the kernel's problem
+    rather than refusing plans in general.
+    """
+    from delfin.lab import plan
+    from delfin.lab import manifest as _manifest, store
+    from delfin.lab.safety import Kernel, pin, pin_path
+
+    path = store.manifest_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(MANIFEST.read_text(encoding="utf-8"), encoding="utf-8")
+    # The shared fixture pins the DEMO manifest; a fresh installation that has
+    # reviewed this campaign and not yet pinned it is the state under test.
+    pin_path().unlink(missing_ok=True)
+    assert not pin_path().exists(), "the fixture must start unpinned"
+
+    manifest = _manifest.load(path)
+    doc = yaml.safe_load(CAMPAIGN.read_text(encoding="utf-8"))
+    kernel = Kernel.load()
+
+    # The kernel really does refuse: this is the precondition, not the claim.
+    assert kernel.manifest is not None
+    assert kernel._manifest_problem() is not None
+
+    proposal = plan.validate(manifest, doc, kernel)
+    assert proposal.write_check["ok"] is False
+    assert proposal.ok is False, proposal.problems
+    assert any("not pinned" in p for p in proposal.problems), proposal.problems
+
+    # The control: pinned, the same document is judged runnable again.
+    pin(manifest, by="alice")
+    pinned_proposal = plan.validate(manifest, doc, Kernel.load())
+    assert pinned_proposal.write_check["manifest_problem"] is None
+    assert pinned_proposal.ok is True, pinned_proposal.problems
