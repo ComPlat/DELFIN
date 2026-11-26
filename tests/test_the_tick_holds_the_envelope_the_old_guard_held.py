@@ -191,10 +191,19 @@ def test_a_host_just_under_the_old_stop_line_is_left_alone(host):
 def test_the_memory_floor_scales_with_the_host(host):
     """The share decides on a big host (10 % of 1511.3 = 151.1 GB, against the
     script's 150); below 40 GB of total the 4 GB floor the tick already
-    shipped decides, so a 16 GB laptop keeps the stop it had."""
-    assert guard.min_available_gb(guard._limits(), 1511.3) == pytest.approx(151.13)
-    assert guard.min_available_gb(guard._limits(), 16.0) == 4.0
-    assert guard.min_available_gb(guard._limits(), 16.0) <= 0.30 * 16.0
+    shipped decides, so a 16 GB laptop keeps the stop it had.
+
+    Asked through ``outside_envelope`` -- the function the tick calls -- and
+    not through the helper that computes the floor: a test that called the
+    helper would be red on the base for ``AttributeError`` (the helper did not
+    exist) instead of for the bug, which is that 140 GB free on a 1.5 TB host
+    was judged healthy."""
+    # 140 GB free of 1511.3: under the 151.1 share, far over the flat 4 GB.
+    host["host"].update(cores=384, total_gb=1511.3, avail_gb=140.0)
+    assert guard.outside_envelope() == "140.0 GB available"
+    # The same 140 GB on a 16 GB host is plenty: the floor there is 4 GB.
+    host["host"].update(cores=8, total_gb=16.0, avail_gb=14.0)
+    assert guard.outside_envelope() == ""
 
 
 def test_low_available_memory_stops_a_large_host(host):
