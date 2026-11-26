@@ -403,20 +403,29 @@ def test_a_diff_across_two_incomparable_rounds_is_refused(
 # Item 1, hard cases — a lost record must be loud; an old byte untouched
 # ---------------------------------------------------------------------------
 
-def test_a_record_that_cannot_be_written_fails_the_round_loudly(
+def test_a_record_that_cannot_be_written_is_named_on_the_round(
         fake_glue, tmp_path, monkeypatch, capsys):
-    """The root is a FILE, so nothing can be appended under it. The round
-    must not exit 0 with its record gone."""
+    """The root is a FILE, so nothing can be appended under it.
+
+    The round RAN and was paid for; what it must not do is report itself kept.
+    ``run()`` returns the record with the refusal on it, and ``main()`` turns
+    that into exit 4 (the CLI test below). Raising out of ``run()`` instead
+    would throw away the instances, the spend and the reason -- and leave a
+    caller unable to tell a lost store from a crash in the round.
+    """
     from delfin.agent import bench_history as bh
 
     blocked = tmp_path / "not-a-directory"
     blocked.write_text("stop")
     monkeypatch.setattr(bh, "default_root", lambda: blocked)
 
-    with pytest.raises(bh.HistoryWriteError):
-        bn.run({"model": "M", "sampler": _Sampler(), "grader": _Grader(),
-                "accounting": _FakeAccounting(), "runner": _runner(),
-                "instances": 2, "mode": "practice", "public_seed": 7})
+    record = bn.run({"model": "M", "sampler": _Sampler(), "grader": _Grader(),
+                     "accounting": _FakeAccounting(), "runner": _runner(),
+                     "instances": 2, "mode": "practice", "public_seed": 7})
+
+    assert record.history_error, (
+        "the round could not be kept and its record does not say so")
+    assert record.instances, "the round ran and returned no instances"
 
 
 def test_the_cli_says_the_round_was_not_kept(fake_glue, tmp_path,

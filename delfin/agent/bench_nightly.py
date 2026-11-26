@@ -172,6 +172,13 @@ class RunRecord:
     provider: str = ""
     seed_mode: str = ""
     task_set_version: str = ""
+    # Why this round could not be KEPT, when it could not. The round itself
+    # ran and was paid for; a store that refused the write does not undo the
+    # measurement, and a caller that gets an exception instead of a record
+    # cannot tell a lost store from a crash in the round. ``main()`` refuses
+    # to EXIT 0 while this is set -- the CLI still fails loudly, but the
+    # caller of ``run()`` keeps what it bought.
+    history_error: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -254,6 +261,29 @@ def _persist(record: RunRecord, config: dict) -> None:
         history_root=base, started_at=record.started_at)
 
 
+def _keep(record: RunRecord, config: dict) -> None:
+    """Persist the round, and record a refused write ON the record.
+
+    ``_persist`` raises, deliberately: a store that could not write must not
+    shrug. But the raise has to stop at the boundary of ``run()``, because the
+    round is already paid for by the time the store is asked, and the caller's
+    contract is "give me the record". Told with an exception, a caller cannot
+    distinguish a lost store from a crash in the round itself, and it does not
+    get the instances, the spend or the refusal reason it paid for.
+
+    ``main()`` is where the refusal becomes an exit code (4), and it says why:
+    exiting 0 would let a supervisor log a successful nightly that left nothing
+    behind. So the loudness the store wants is kept -- one layer up, where the
+    caller can also see the rest of the round.
+    """
+    from . import bench_history
+
+    try:
+        _persist(record, config)
+    except bench_history.HistoryWriteError as exc:
+        record.history_error = str(exc)
+
+
 def run(config: dict, *, clock: Callable[[], float] | None = None) -> RunRecord:
     """One nightly round: sample -> budget-gate -> run -> grade -> charge.
 
@@ -334,7 +364,7 @@ def run(config: dict, *, clock: Callable[[], float] | None = None) -> RunRecord:
 
     if seed is None:
         record.ended_at = now()
-        _persist(record, config)
+        _keep(record, config)
         return record
 
     tasks = list(sampler.sample(seed, n_instances))
@@ -431,7 +461,7 @@ def run(config: dict, *, clock: Callable[[], float] | None = None) -> RunRecord:
         record.instances.append(inst)
     record.spent_core_hours = spent
     record.ended_at = now()
-    _persist(record, config)
+    _keep(record, config)
     return record
 
 
@@ -495,17 +525,15 @@ def main(argv: Optional[list] = None) -> int:
         provider=args.provider,
     )
     cfg["daily_budget_core_hours"] = args.budget
-    from . import bench_history
-    try:
-        record = run(cfg)
-    except bench_history.HistoryWriteError as exc:
+    record = run(cfg)
+    if record.history_error:
         # m1: the round ran and its record is gone. Exiting 0 would let a
         # supervisor log a successful nightly that left nothing behind —
         # the exact silent loss this module exists to end. The runs are
         # paid for by the time this fires, so the message says what was
         # lost and where it tried to go.
         print("error: the round is NOT kept — its record could not be "
-              "written. %s" % exc, file=sys.stderr)
+              "written. %s" % record.history_error, file=sys.stderr)
         return 4
     print(json.dumps(record.to_dict(), indent=2, sort_keys=True,
                      default=str))
