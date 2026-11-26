@@ -223,6 +223,14 @@ this section is the prediction, written before them. What follows is what the
 change should make visible; the measured answer replaces it when the runs
 return.
 
+**The predictions, in one table first** (detail below; written before the runs):
+
+| probe | base should answer | branch should answer | a failing answer looks like |
+|---|---|---|---|
+| `campaign-verb` | `lab` has no `run` verb — its subcommands are approve, clear, daemon, devices, estop, manifest, node, pending, read, smoke, status | the verb exists (`delfin/lab/cli.py:98`) with options workflow, `--dry-run`, `--run-id`, `--resume`, `--parallel`; run on the shipped campaign it reports the manifest refusal and exits 1 | base quoting a `run` usage line; branch claiming a completed 65-step campaign or a Chemotion import |
+| `plan-judged-first` | no `delfin/lab/plan.py` and no `lab run`, so nothing judges a document | `plan.py` exists (19,720 bytes) and `lab run` judges before running; most likely the manifest refusal comes first. Acceptable: that refusal correctly attributed, or the judged verdict. | either side quoting the two PRE-FIX strings `op hold is not one of set, wait, transfer, measure` / `sample S-001 is declared in 'storage', not synthesis` — that would be the judge answering and still wrong |
+| `batch-read-then-write` | no `eln` subcommand, no `chemotion-eln` specialist, so both asks have no answer | write (`eln_draft`) refused in default mode pending a person's approval; read **still refused** with `mcp_side_effect`, because the allow-list patch is unapplied (measured: `grep -c eln_find delfin/agent/api_client.py` = 0) | a branch answer in which the write succeeds, or in which the read succeeds — either contradicts this branch's state |
+
 **The measured limit that governs all three.** A probe's HOME is fresh, so no
 lab manifest is pinned, and an agent session cannot pin one. Measured on this
 tree, not assumed: `lab run <campaign> --dry-run` answers
