@@ -458,6 +458,20 @@ def find_stalls(lim: dict | None = None, now: float | None = None) -> list[dict]
                                 "why": "a real run older than its ceiling"})
                 continue
             if not wave.alive(a["pid"]):
+                # "Ended with nothing done by its stage" presupposes that a
+                # stage of OURS owns the member. Every other action this tick
+                # takes is guarded the same way (see the start block below):
+                # the root may hold runs another tool started, and their
+                # members are not this tick's to judge. Measured on arm a2
+                # without this gate: a foreign run and a stages-off run both
+                # put an `ended` item in the inbox, and so did a member whose
+                # stage had already acted on it (`<tid>.asked`).
+                if state.get("driven") is not True:
+                    continue
+                marks = [m for m in ("asked", "realrun", "final")
+                         if (d / f"{tid}.{m}").exists()]
+                if marks:
+                    continue                          # the stage did act on it
                 quiet = (now - wave._ended_at(f"{run}/{tid}")) / 60
                 if quiet >= float(lim["stall_ended_min"]):
                     out.append({**at, "kind": "ended", "min": round(quiet),

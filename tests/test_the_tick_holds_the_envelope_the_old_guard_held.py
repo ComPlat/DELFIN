@@ -157,8 +157,13 @@ def _task(tid, brief="work", **kw):
 
 
 def _agent_entry(run, tid, log: Path, *, started=None):
-    """One member in state.json, ended (its pid is one no process holds)."""
+    """One member in state.json, ended (its pid is one no process holds).
+
+    ``driven`` is set the way ``h_start`` sets it: a run the tick drives is the
+    only kind whose ended member the tick judges. A test that leaves it out is
+    describing a run another tool started."""
     st = wave.load_state(run)
+    st["driven"] = True
     st.setdefault("agents", {})[tid] = {
         "pid": 4242, "branch": f"wave/{run}/{tid}", "worktree": str(wave.run_dir(run) / tid),
         "log": str(log), "started": started if started is not None else time.time(),
@@ -515,5 +520,47 @@ def test_a_task_that_was_never_started_is_not_a_stall(host):
     wave.run_dir(run).mkdir(parents=True)
     (wave.run_dir(run) / "tasks.json").write_text(json.dumps([_task("a")]))
     wave._save_state(run, {"agents": {}, "driven": True})
+    guard.tick()
+    assert host["seen"] == []
+
+
+def test_a_member_whose_stage_already_acted_is_not_a_stall(host):
+    """Control: the member ended 20 minutes ago, but its stage DID act on it --
+    it asked for a real run and is waiting for one. "Ended with nothing done by
+    its stage" is false, and the inbox must stay empty. Without this check the
+    wave raises a stall for every member it is correctly waiting on."""
+    run = "s6"
+    wave.run_dir(run).mkdir(parents=True)
+    (wave.run_dir(run) / "tasks.json").write_text(json.dumps([_task("a")]))
+    log = wave.run_dir(run) / "a.log"
+    log.write_text(json.dumps({"type": "result", "stop_reason": "end_of_turn",
+                               "tool_calls": 3}) + "\n")
+    _agent_entry(run, "a", log)
+    (wave.run_dir(run) / "a.asked").write_text("asked for a real run\n")
+    stamp = time.time()
+    os.utime(log, (stamp, stamp))
+    host["advance"](20 * 60)
+    guard.tick()
+    assert host["seen"] == []
+
+
+def test_a_run_another_tool_started_is_not_judged_for_stalls(host):
+    """Control: the root may hold runs this tick does not drive -- the start
+    block guards every action it takes with ``driven``, and a stall about a
+    stage that should have acted is the same kind of claim. A run started by
+    another tool keeps its own stage; this tick says nothing about it."""
+    run = "s7"
+    wave.run_dir(run).mkdir(parents=True)
+    (wave.run_dir(run) / "tasks.json").write_text(json.dumps([_task("a")]))
+    log = wave.run_dir(run) / "a.log"
+    log.write_text(json.dumps({"type": "result", "stop_reason": "end_of_turn",
+                               "tool_calls": 3}) + "\n")
+    _agent_entry(run, "a", log)
+    st = wave.load_state(run)
+    st.pop("driven", None)                       # another tool started it
+    wave._save_state(run, st)
+    stamp = time.time()
+    os.utime(log, (stamp, stamp))
+    host["advance"](20 * 60)
     guard.tick()
     assert host["seen"] == []
