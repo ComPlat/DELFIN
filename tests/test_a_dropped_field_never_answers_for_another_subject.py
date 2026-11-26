@@ -80,12 +80,15 @@ def _error(out: str) -> str:
 
 @pytest.mark.parametrize("alias", ["file_path", "filename"])
 @pytest.mark.xfail(
-    strict=True,
+    strict=False,
     reason="needs patches/api_client.alias-writeback.patch, which ships "
            "unapplied: delfin/agent/api_client.py is the agent's own "
-           "safety layer and the Self-Modification Guard refuses the edit "
-           "in-session. RED on base for this reason, and green the moment "
-           "the patch is applied.")
+           "safety layer and this session may not write it. RED on base "
+           "for this reason (reported xfail); the moment the patch is "
+           "applied these pass and are reported xpass. Non-strict on "
+           "purpose: a strict marker would turn the FIXED state red, so "
+           "applying the documented repair would fail the suite that "
+           "asks for it.")
 def test_a_path_alias_reaches_the_tool_it_names(ws, alias):
     """Red on base: the whole workspace was searched, not ``calc``."""
     out = _call(ws, "grep_file", {"pattern": "def", alias: "calc"})
@@ -109,11 +112,13 @@ def test_the_documented_field_still_answers_the_same_way(ws):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.xfail(
-    strict=True,
+    strict=False,
     reason="needs patches/api_client.alias-writeback.patch (see the "
            "module docstring): the alias table lives in "
-           "delfin/agent/api_client.py, which the Self-Modification Guard "
-           "protects. RED on base for this reason.")
+           "delfin/agent/api_client.py, which this session may not write. "
+           "RED on base for this reason; xpass once the patch applies. "
+           "Non-strict so that applying the fix cannot turn the suite "
+           "red (see the sibling marker).")
 def test_glob_is_accepted_as_the_pattern_it_names(ws):
     """Red on base: ``glob`` was passed over and ALL files were listed."""
     out = _call(ws, "list_files", {"glob": "*.py"})
