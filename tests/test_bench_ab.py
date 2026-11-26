@@ -40,18 +40,31 @@ from pathlib import Path
 
 import pytest
 
-from delfin.agent import bench_ab as AB
-from delfin.agent.bench_ab import (
-    AbRefused,
-    SideResult,
-    TaskAB,
-    VERDICT_IMPROVED,
-    VERDICT_NO_DIFFERENCE,
-    VERDICT_REGRESSED,
-    VERDICT_UNMEASURED,
-    newcombe_interval,
-)
-from delfin.agent.benchmark import Task
+
+class _LazyModule:
+    """``delfin.agent.bench_ab``, imported on FIRST ATTRIBUTE ACCESS.
+
+    Constructing this proxy imports nothing, so the module-level ``AB`` below
+    does not import ``bench_ab``. That matters because ``bench_ab`` does not
+    exist on ``origin/main``: a module-level import would turn every test in
+    this file -- including the control that must pass on both sides -- into a
+    collection error on the base, and a file that is wholly red there proves
+    only that a file was added. With the proxy, the control passes on the base
+    and on this branch, and each test that names new behaviour fails on the base
+    with ``No module named 'delfin.agent.bench_ab'`` -- the reason the test
+    names, rather than a side effect of collection.
+    """
+
+    def __getattr__(self, name: str):
+        from delfin.agent import bench_ab as _module
+
+        return getattr(_module, name)
+
+
+AB = _LazyModule()
+
+from delfin.agent.benchmark import Task  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # Fixtures and fakes
@@ -150,7 +163,7 @@ def _runner(outcomes: dict[str, tuple[list[bool], list[bool]]]):
         base, head = outcomes[tid]
         passes = list(base if spec.side.name == "base" else head)
         calls.append((tid, spec.side.name))
-        return SideResult(passes=passes, model=spec.model,
+        return AB.SideResult(passes=passes, model=spec.model,
                           task_digest=AB.task_digest(task))
 
     run.calls = calls
@@ -197,7 +210,7 @@ def test_the_interval_reproduces_newcombes_published_example():
     9 of 10 against a BASE of 3 of 10 -- quoted with its direction rather than
     silently reversed.
     """
-    lo, hi = newcombe_interval(3, 10, 9, 10)
+    lo, hi = AB.newcombe_interval(3, 10, 9, 10)
     assert lo == pytest.approx(0.1705, abs=5e-4)
     assert hi == pytest.approx(0.8090, abs=5e-4)
 
@@ -213,8 +226,8 @@ def test_the_interval_is_exactly_antisymmetric_in_the_two_sides():
     """
     for a, b in [((0, 3), (3, 3)), ((3, 3), (2, 3)), ((1, 3), (2, 3)),
                  ((3, 10), (9, 10))]:
-        lo, hi = newcombe_interval(*a, *b)
-        rlo, rhi = newcombe_interval(*b, *a)
+        lo, hi = AB.newcombe_interval(*a, *b)
+        rlo, rhi = AB.newcombe_interval(*b, *a)
         assert lo == pytest.approx(-rhi, abs=1e-9)
         assert hi == pytest.approx(-rlo, abs=1e-9)
 
@@ -226,14 +239,14 @@ def test_three_of_three_against_none_of_three_is_not_certain():
     tell a reader that 3 vs 0 cannot be anything but a total improvement, and
     a reader is entitled to act on that number.
     """
-    lo, hi = newcombe_interval(0, 3, 3, 3)
+    lo, hi = AB.newcombe_interval(0, 3, 3, 3)
     assert hi == 1.0
     assert lo < 0.5, f"a 3-vs-0 sweep claimed a lower bound of {lo}, which " \
                      f"three samples cannot support"
 
 
 def test_an_empty_side_yields_the_whole_range_and_so_covers_zero():
-    lo, hi = newcombe_interval(0, 0, 3, 3)
+    lo, hi = AB.newcombe_interval(0, 0, 3, 3)
     assert (lo, hi) == (-1.0, 1.0)
 
 
@@ -244,7 +257,7 @@ def test_a_clear_improvement_is_called_improved():
     assert (row["pass_base"], row["pass_head"]) == (0, 3)
     assert row["diff"] == 1.0
     assert row["contains_zero"] is False
-    assert row["verdict"] == VERDICT_IMPROVED
+    assert row["verdict"] == AB.VERDICT_IMPROVED
 
 
 def test_a_clear_regression_is_called_regressed():
@@ -252,7 +265,7 @@ def test_a_clear_regression_is_called_regressed():
     row = rep.tasks[0].as_dict()
     assert row["diff"] == -1.0
     assert row["contains_zero"] is False
-    assert row["verdict"] == VERDICT_REGRESSED
+    assert row["verdict"] == AB.VERDICT_REGRESSED
 
 
 def test_the_same_outcome_on_both_sides_says_no_measurable_difference():
@@ -261,7 +274,7 @@ def test_the_same_outcome_on_both_sides_says_no_measurable_difference():
     row = rep.tasks[0].as_dict()
     assert row["diff"] == 0.0
     assert row["contains_zero"] is True
-    assert row["verdict"] == VERDICT_NO_DIFFERENCE
+    assert row["verdict"] == AB.VERDICT_NO_DIFFERENCE
     text = AB.format_report(rep)
     assert AB.NO_DIFFERENCE in text
     # The summary line counts the verdicts; "0 improved" is the point, so the
@@ -272,7 +285,7 @@ def test_the_same_outcome_on_both_sides_says_no_measurable_difference():
     # And the task ROW must not carry the word as its verdict.
     rows = [ln for ln in text.splitlines() if ln.strip().startswith("t-alpha")]
     assert rows, "the report has no row for the measured task"
-    assert VERDICT_IMPROVED not in rows[0]
+    assert AB.VERDICT_IMPROVED not in rows[0]
     assert AB.NO_DIFFERENCE in rows[0]
     assert rep.n_no_difference == 1 and rep.n_improved == 0
 
@@ -282,12 +295,12 @@ def test_a_one_sample_gain_stays_unresolved_at_three_repeats():
 
     This is the case a rate-only report gets wrong: the head is 33 points
     lower and the honest answer is still "not resolvable". If this test ever
-    starts failing with VERDICT_REGRESSED, the interval has been loosened.
+    starts failing with AB.VERDICT_REGRESSED, the interval has been loosened.
     """
     rep = _run(Path("."), {"t-alpha": ([True] * 3, [True, True, False])})
     row = rep.tasks[0].as_dict()
     assert row["diff"] == pytest.approx(-1 / 3)
-    assert row["verdict"] == VERDICT_NO_DIFFERENCE
+    assert row["verdict"] == AB.VERDICT_NO_DIFFERENCE
 
 
 def test_an_unmeasured_side_is_not_counted_as_a_failure():
@@ -296,8 +309,8 @@ def test_an_unmeasured_side_is_not_counted_as_a_failure():
     row = rep.tasks[0].as_dict()
     assert row["rate_base"] is None
     assert row["n_base"] == 0
-    assert row["verdict"] == VERDICT_UNMEASURED
-    assert row["verdict"] != VERDICT_REGRESSED
+    assert row["verdict"] == AB.VERDICT_UNMEASURED
+    assert row["verdict"] != AB.VERDICT_REGRESSED
     assert "not measured" in AB.format_report(rep)
 
 
@@ -310,12 +323,12 @@ def test_a_different_model_on_the_two_sides_is_refused():
     """Two models measured against each other is not an A/B of the code."""
 
     def runner(task, spec):
-        return SideResult(passes=[True],
+        return AB.SideResult(passes=[True],
                           model="model-a" if spec.side.name == "base"
                           else "model-b",
                           task_digest=AB.task_digest(task))
 
-    with pytest.raises(AbRefused) as exc:
+    with pytest.raises(AB.AbRefused) as exc:
         _run(Path("."), {}, runner=runner, repeat=1)
     assert "same model" in str(exc.value)
 
@@ -324,10 +337,10 @@ def test_the_requested_model_must_be_the_one_that_ran():
     """A caller passing --model X and a side resolving Y is a mis-filed run."""
 
     def runner(task, spec):
-        return SideResult(passes=[True], model="something-else",
+        return AB.SideResult(passes=[True], model="something-else",
                           task_digest=AB.task_digest(task))
 
-    with pytest.raises(AbRefused) as exc:
+    with pytest.raises(AB.AbRefused) as exc:
         _run(Path("."), {}, runner=runner, model="the-asked-model", repeat=1)
     assert "not the requested" in str(exc.value)
 
@@ -338,9 +351,9 @@ def test_a_task_whose_text_changed_between_the_refs_is_refused():
 
     def runner(task_arg, spec):
         digest = "aaaa" if spec.side.name == "base" else "bbbb"
-        return SideResult(passes=[True], model=spec.model, task_digest=digest)
+        return AB.SideResult(passes=[True], model=spec.model, task_digest=digest)
 
-    with pytest.raises(AbRefused) as exc:
+    with pytest.raises(AB.AbRefused) as exc:
         _run(Path("."), {}, tasks=[task], runner=runner, repeat=1)
     assert "DIFFERENT question" in str(exc.value)
 
@@ -352,32 +365,32 @@ def test_the_same_task_text_on_both_sides_is_not_refused():
     working guard.
     """
     rep = _run(Path("."), {"t-alpha": ([True], [True])}, repeat=1)
-    assert rep.tasks[0].verdict == VERDICT_NO_DIFFERENCE
+    assert rep.tasks[0].verdict == AB.VERDICT_NO_DIFFERENCE
 
 
 def test_a_repeats_of_zero_is_refused():
-    with pytest.raises(AbRefused) as exc:
+    with pytest.raises(AB.AbRefused) as exc:
         _run(Path("."), {}, repeat=0)
     assert "at least 1" in str(exc.value)
 
 
 def test_no_model_is_refused():
     """Without a model each side may resolve its own; that is not a pair."""
-    with pytest.raises(AbRefused) as exc:
+    with pytest.raises(AB.AbRefused) as exc:
         _run(Path("."), {}, model="")
     assert "--model" in str(exc.value)
 
 
 def test_an_unresolvable_ref_is_refused_and_not_defaulted():
     """A silent fallback to HEAD measures the wrong baseline."""
-    with pytest.raises(AbRefused) as exc:
+    with pytest.raises(AB.AbRefused) as exc:
         _run(Path("."), {}, base="no/such/ref-exists-here")
     assert "does not name a commit" in str(exc.value)
 
 
 def test_a_selection_matching_nothing_is_refused():
     """An empty population reports a difference of zero and means nothing."""
-    with pytest.raises(AbRefused) as exc:
+    with pytest.raises(AB.AbRefused) as exc:
         _run(Path("."), {}, task_ids=["no-such-task-id-anywhere"])
     assert "matched no task" in str(exc.value)
 
@@ -395,7 +408,7 @@ def test_an_attempt_over_the_daily_budget_is_refused_and_named():
     # 10 + 0 > 5 on the very first attempt: nothing ran, and the report says
     # so rather than reporting a rate for work that never happened.
     assert accounting.charged == 0.0
-    assert row["verdict"] == VERDICT_UNMEASURED
+    assert row["verdict"] == AB.VERDICT_UNMEASURED
     assert rep.budget_refused, "the refusal was not recorded"
     assert "exceeds" in rep.budget_refused[0]
 
@@ -410,7 +423,7 @@ def test_the_budget_gate_lets_work_through_below_the_limit():
                budget=5.0, accounting=accounting)
     assert not rep.budget_refused
     assert accounting.charged == pytest.approx(0.2)   # two sides, one attempt
-    assert rep.tasks[0].verdict == VERDICT_NO_DIFFERENCE
+    assert rep.tasks[0].verdict == AB.VERDICT_NO_DIFFERENCE
 
 
 def test_a_negative_estimate_never_reduces_the_days_spend():
@@ -562,9 +575,9 @@ def _cli(argv, **patch):
                     base=AB.Side("base", kw["base"], "a" * 40),
                     head=AB.Side("head", kw["head"], "b" * 40),
                     model=kw["model"], repeat=kw["repeat"],
-                    tasks=[TaskAB("t-alpha",
-                                  SideResult(passes=[True, True, True]),
-                                  SideResult(passes=[True, True, True]))])
+                    tasks=[AB.TaskAB("t-alpha",
+                                  AB.SideResult(passes=[True, True, True]),
+                                  AB.SideResult(passes=[True, True, True]))])
             _ab_mod.run = fake_run
             return self
 
@@ -606,15 +619,57 @@ def test_bench_ab_comma_separated_tasks_and_tags_reach_the_module(capsys):
     assert seen["tags"] == ["verify", "plan"]
 
 
+def test_a_comparison_that_measured_nothing_exits_one(capsys):
+    """Exit 0 means a comparison took place. An outage is not a comparison.
+
+    Measured 2026-11-25 through this same entry point with no provider key in
+    the environment: every attempt died at engine init, the table read
+    "0/2 vs 0/2, no measurable difference", and the exit code was 0 -- so a
+    wave reading only the exit code would take an endpoint outage for a result
+    about the change. What would make this fail: returning 0 when every task's
+    verdict is "not measured", or returning 1 when a task DID measure (the
+    control below).
+    """
+    from delfin.agent import cli as _cli_mod
+    from delfin.agent import bench_ab as _ab_mod
+
+    orig = _ab_mod.run
+
+    def nothing_measured(**_kw):
+        return AB.ABReport(
+            base=AB.Side("base", "origin/main", "a" * 40),
+            head=AB.Side("head", "HEAD", "b" * 40),
+            model="m", repeat=2,
+            tasks=[AB.TaskAB(
+                "t-alpha",
+                AB.SideResult(passes=[], unmeasured=2,
+                              errors=["engine init failed: no key"]),
+                AB.SideResult(passes=[], unmeasured=2,
+                              errors=["engine init failed: no key"]))])
+
+    _ab_mod.run = nothing_measured
+    try:
+        rc = _cli_mod.main(["bench", "ab", "--model", "m"])
+    finally:
+        _ab_mod.run = orig
+    err = capsys.readouterr().err
+    assert rc == 1, (
+        "a comparison in which nothing was measured must not exit 0: "
+        f"exit {rc} reads as a result about the change")
+    assert "nothing was measured" in err, (
+        f"the reason must say it, got: {err[-300:]!r}")
+
+
 def test_a_refusal_exits_two_and_says_why(capsys):
     """A refusal is not a success with an empty table."""
+
     from delfin.agent import cli as _cli_mod
     from delfin.agent import bench_ab as _ab_mod
 
     orig = _ab_mod.run
 
     def refuse(**_kw):
-        raise AbRefused("the two sides did not use the same model")
+        raise AB.AbRefused("the two sides did not use the same model")
 
     _ab_mod.run = refuse
     try:
@@ -797,13 +852,13 @@ def test_a_runner_that_raises_does_not_take_the_comparison_down(tmp_path):
     def runner(task, spec):
         if spec.side.name == "head":
             raise RuntimeError("endpoint said no")
-        return SideResult(passes=[True], model=spec.model,
+        return AB.SideResult(passes=[True], model=spec.model,
                           task_digest=AB.task_digest(task))
 
     rep = _run(tmp_path, {}, runner=runner, repeat=1)
     row = rep.tasks[0].as_dict()
     assert row["n_base"] == 1 and row["n_head"] == 0
-    assert row["verdict"] == VERDICT_UNMEASURED
+    assert row["verdict"] == AB.VERDICT_UNMEASURED
     assert any("endpoint said no" in e for e in row["errors"])
 
 

@@ -3477,6 +3477,17 @@ def _cmd_bench_ab(args: argparse.Namespace) -> int:
     if getattr(args, "json", False):
         print()
         print(json.dumps(report.as_dict(), indent=2, default=str))
+    # Exit 1 when NOTHING was measured: this docstring promises it ("1 when the
+    # measurement could not be taken"), and without it a comparison in which
+    # every attempt died at the endpoint exited 0 -- the same defect one layer
+    # up from the worker's, since a caller reading only the exit code would take
+    # an outage for a result. A partial measurement stays 0: it is a result,
+    # printed with its unmeasured count beside it.
+    if report.tasks and report.n_unmeasured == len(report.tasks):
+        print("\nbench ab: nothing was measured on any task. The exit code is 1 "
+              "because no comparison took place, not because the change made "
+              "no difference.", file=sys.stderr)
+        return 1
     return 0
 
 

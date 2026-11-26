@@ -506,17 +506,25 @@ try:
     payload["task_digest"] = digest(task)
     result = br.run_task(task, model=model, backend=backend or "api",
                          provider=provider, repeats=int(repeats))
-    # per_run_success already excludes unmeasured replicates (see
-    # aggregate_replicates), so these are attempts that MEASURED something.
     flags = list(result.per_run_success or [])
-    payload["passes"] = [bool(x) for x in flags]
     payload["n_samples"] = int(result.n_samples or 0)
     payload["model"] = str(result.model or "")
     payload["success"] = bool(result.success)
-    # An unmeasured attempt is not a failure of the model and must never be
-    # counted as one: it is an attempt that never put the question.
-    if not flags:
+    # `unmeasured` is the field that answers "did anything measure?", and it is
+    # asked FIRST, because `per_run_success` cannot answer it on its own:
+    # aggregate_replicates marks a result unmeasured only when EVERY replicate
+    # was, and in that case it KEEPS them carrying success=False -- so
+    # per_run_success is [False, False], not empty. Reading the flags alone
+    # therefore scored an endpoint outage as two failures of the model: measured
+    # 2026-11-25 with no provider key present, the verb printed "0/2 vs 0/2,
+    # no measurable difference" and exited 0 for a comparison that called
+    # nothing. An unmeasured attempt is not a failure of the model; it is an
+    # attempt that never put the question.
+    if getattr(result, "unmeasured", False) or not flags:
         payload["unmeasured"] = max(1, int(result.n_samples or 1))
+        payload["passes"] = []
+    else:
+        payload["passes"] = [bool(x) for x in flags]
     payload["error"] = str(result.error or "")[:400]
 except BaseException as exc:
     payload["error"] = ("%s: %s" % (type(exc).__name__, exc))[:400]
