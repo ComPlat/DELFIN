@@ -1851,6 +1851,24 @@ def main(argv: list[str] | None = None) -> int:
             logger.debug("MANTA construction environment: %d flags set",
                          len(_manta_env))
 
+    # Anchor the run in its workspace.
+    #
+    # ``delfin /path/to/project`` and ``delfin --control /elsewhere/CONTROL.txt``
+    # name a workspace that is not the directory the command was typed in, and
+    # until now every phase that writes CWD-relative work put it in the
+    # CALLER's directory instead: a classic run left its ``initial.inp`` /
+    # ``initial.out`` there, and ESD created ``ESD/`` there and then failed to
+    # find the very ``start.txt`` the previous step had written -- the workspace
+    # keeps ``start.txt``, the process was looking elsewhere.  The README says
+    # results are written into the workspace; a relative name now says the same.
+    # ``_finalize`` restores the previous directory, so an in-process caller
+    # (delfin.api.run) is left as it was found.
+    _previous_cwd = os.getcwd()
+    try:
+        os.chdir(workspace_root)
+    except OSError as exc:  # noqa: BLE001 - a workspace that vanished must not mask the run
+        logger.warning("Could not enter workspace %s: %s", workspace_root, exc)
+
     # Initialize global job manager with configuration
     global_mgr = get_global_manager()
     global_mgr.initialize(config)
@@ -1877,6 +1895,14 @@ def main(argv: list[str] | None = None) -> int:
             logger.info("Global job manager shutdown complete")
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"Global manager shutdown raised: {exc}")
+
+        # Leave the caller's directory as it was found: the pipeline runs in the
+        # workspace (see the chdir above), and an in-process caller such as
+        # delfin.api.run must not come back in a different directory.
+        try:
+            os.chdir(_previous_cwd)
+        except OSError as exc:  # noqa: BLE001
+            logger.debug("Could not restore working directory %s: %s", _previous_cwd, exc)
 
         if not args.no_cleanup:
             cleanup_all(str(get_runtime_dir()))
