@@ -684,6 +684,28 @@ TIMER = "delfin-bench-nightly.timer"
 DEFAULT_ON_CALENDAR = "*-*-* 03:00:00"
 
 
+def _unit_field(value, *, what: str) -> str:
+    """One operator-supplied value that will sit on a unit's own line.
+
+    A newline or a carriage return in a unit file ends the directive and starts
+    another one: a ``--model`` value carrying a newline produced a SECOND
+    ``ExecStart`` line in ``unit_text``'s output. A quote is refused for a
+    different reason -- the file's own parser is then guessing where the
+    argument ended, and a value that needs escaping is one whose escaping a
+    later edit can break. Both are refused where the unit is written, which is
+    where a person can still see the mistake; the alternative is a unit
+    systemd rejects at 03:00 with nobody watching.
+
+    ``timer_text`` carried its own copy of the newline/quote rule for
+    ``OnCalendar``. It shares this one now: two validators for the same act
+    drift, and the weaker one wins by being the one a new field is added to.
+    """
+    text = str(value if value is not None else "")
+    if "\n" in text or "\r" in text or '"' in text or "\x00" in text:
+        raise ValueError(f"not a usable {what}: {value!r}")
+    return text
+
+
 def unit_dir() -> Path:
     base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
     return Path(base) / "systemd" / "user"
@@ -703,7 +725,14 @@ def round_argv(*, model: str, provider: str = "", instances: int = 10,
     ``--budget`` is never omitted: a scheduled round that lost the gate
     would sample without limit, and the point of the gate (PL4: budget
     in code, not in prompts) is that nothing downstream can forget it.
+
+    Every operator string is validated here, once, because this is the one
+    place all of them pass through: a value that carries a newline would
+    otherwise end the ``ExecStart`` directive that carries it.
     """
+    model = _unit_field(model, what="--model value")
+    provider = _unit_field(provider, what="--provider value")
+    seed_path = _unit_field(seed_path, what="--seed-path value")
     argv = [python or sys.executable, "-P", "-W", "ignore",
             "-m", "delfin.agent.bench_nightly",
             "--model", str(model), "--instances", str(int(instances)),
@@ -746,8 +775,9 @@ def unit_text(*, model: str, provider: str = "", instances: int = 10,
 def timer_text(on_calendar: str = DEFAULT_ON_CALENDAR) -> str:
     """The timer that fires the round service. A bad OnCalendar string is
     refused here, not by systemctl at 03:00 with nobody watching."""
-    text = str(on_calendar or "").strip()
-    if not text or any(c in text for c in ("\n", "\r", '"')):
+    text = _unit_field(str(on_calendar or "").strip(),
+                       what="OnCalendar value")
+    if not text:
         raise ValueError(f"not a usable OnCalendar value: {on_calendar!r}")
     return "\n".join([
         "[Unit]",
