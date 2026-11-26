@@ -3248,6 +3248,21 @@ def _render_turn_fold_line(duration_s, outcome: str) -> str:
     return f"Stopped after {duration}"
 
 
+def _is_display_result(msg) -> bool:
+    """True for a tool message that is a result drawn for the person.
+
+    A molecule card, an image, a plot or a document preview is appended
+    as its own tool message whose content is one ``delfin-artifact``
+    card (``_append_tool_message(card)``); an ordinary tool step is a
+    call line. The fold keeps the former visible next to the answer.
+    """
+    if msg.get("role") != "tool":
+        return False
+    content = msg.get("content")
+    return (isinstance(content, str)
+            and content.lstrip().startswith('<div class="delfin-artifact'))
+
+
 def _render_transcript(msgs, render_single):
     """Render the transcript, folding finished turns' steps.
 
@@ -3261,7 +3276,10 @@ def _render_transcript(msgs, render_single):
     turn's user message fold behind one native <details>/<summary> line
     ("Worked for 12s"; "Stopped after 40s" for an error or stopped turn,
     which stays unfolded). The ending answer itself stays visible below
-    the fold line. Rejected alternative: rendering the fold inside
+    the fold line, and so does every result drawn for the person (a
+    molecule card, an image, a plot, a document preview:
+    ``_is_display_result``), in its order, between the fold line and
+    the answer. Rejected alternative: rendering the fold inside
     _render_single_msg -- the fold spans several messages, so the grouping
     must see the whole turn.
 
@@ -3298,16 +3316,21 @@ def _render_transcript(msgs, render_single):
             continue
         if j < n and msgs[j].get("turn_fold"):
             fold = msgs[j]["turn_fold"] or {}
-            folded = [render_single(m) for m in msgs[i:j]]
+            folded = [render_single(m) for m in msgs[i:j]
+                      if not _is_display_result(m)]
+            shown = [render_single(m) for m in msgs[i:j]
+                     if _is_display_result(m)]
             line = _render_turn_fold_line(fold.get("duration_s"),
                                           fold.get("outcome"))
             stopped = str(fold.get("outcome") or "").strip().lower() not in (
                 "ok", "success", "done", "")
             attrs = " open" if stopped else ""
-            parts.append(
-                f'<details class="delfin-chat-msg delfin-chat-turn-steps"'
-                f'{attrs}><summary>{_html.escape(line)}</summary>'
-                + "".join(folded) + "</details>")
+            if folded:
+                parts.append(
+                    f'<details class="delfin-chat-msg delfin-chat-turn-steps"'
+                    f'{attrs}><summary>{_html.escape(line)}</summary>'
+                    + "".join(folded) + "</details>")
+            parts.extend(shown)
             parts.append(render_single(msgs[j]))
             i = j + 1
             continue
@@ -3913,6 +3936,29 @@ _AGENT_PAGE_JS = """
             e.stopPropagation();
         }, {capture: true, passive: true});
 
+        // The look of a molecule comes from the global viewer settings,
+        // carried on the card (data-mol3d-style, data-mol3d-config); the
+        // inline card and its fullscreen view both read it here, so the
+        // two differ only in size. A style is applied AFTER the model is
+        // added: 3Dmol's setStyle on an empty viewer styles no atoms, and
+        // the model then draws in the library default (thin lines).
+        var FALLBACK_STYLE = {stick: {radius: 0.12}, sphere: {scale: 0.22}};
+        function lookOf(card) {
+            if (!card.__delfinMol3DStyle) {
+                var st = card.getAttribute('data-mol3d-style');
+                if (st) { try { card.__delfinMol3DStyle = JSON.parse(st); } catch (e) {} }
+            }
+            if (!card.__delfinMol3DConfig) {
+                var cf = card.getAttribute('data-mol3d-config');
+                if (cf) { try { card.__delfinMol3DConfig = JSON.parse(cf); } catch (e) {} }
+            }
+            var config = {};
+            var src = card.__delfinMol3DConfig || {backgroundColor: 'white'};
+            for (var k in src) config[k] = src[k];
+            return {style: card.__delfinMol3DStyle || FALLBACK_STYLE,
+                    config: config};
+        }
+
         function build(card, stage) {
             var data = card.getAttribute('data-mol3d') || '';
             var fmt = card.getAttribute('data-mol3d-fmt') || 'xyz';
@@ -3945,10 +3991,11 @@ _AGENT_PAGE_JS = """
                     host.style.setProperty('--delfin-mol3d-h', stageH);
                 }
             }
-            var viewer = $3Dmol.createViewer(stage, {backgroundColor: 'white'});
+            var look = lookOf(card);
+            var viewer = $3Dmol.createViewer(stage, look.config);
             if (fmt === 'cube') {
                 viewer.addModel(data, 'cube');
-                viewer.setStyle({}, {stick: {radius: 0.12}, sphere: {scale: 0.22}});
+                viewer.setStyle({}, look.style);
                 // The same two isosurfaces the Calculations tab draws, so
                 // an orbital looks the same wherever it is opened.
                 viewer.addVolumetricData(data, 'cube',
@@ -3957,7 +4004,7 @@ _AGENT_PAGE_JS = """
                     {isoval: -iso, color: '#b00010', opacity: 0.85});
             } else if (frames > 1) {
                 viewer.addModelsAsFrames(data, fmt);
-                viewer.setStyle({}, {stick: {radius: 0.12}, sphere: {scale: 0.22}});
+                viewer.setStyle({}, look.style);
                 // Stepped by hand instead of auto-animated: the card's
                 // control bar (play, one back, one forward, reset) drives
                 // setFrame so the trajectory can be inspected frame by
@@ -3967,7 +4014,7 @@ _AGENT_PAGE_JS = """
                 wireTrajectory(card, stage, viewer, frames);
             } else {
                 viewer.addModel(data, fmt);
-                viewer.setStyle({}, {stick: {radius: 0.12}, sphere: {scale: 0.22}});
+                viewer.setStyle({}, look.style);
             }
             viewer.zoomTo();
             // zoomTo fits the bounding sphere, which leaves a chain small in
@@ -3981,8 +4028,6 @@ _AGENT_PAGE_JS = """
             // molecule twice.
             card.__delfinMol3DData = data;
             card.__delfinMol3DTitle = label;
-            var st = card.getAttribute('data-mol3d-style');
-            if (st) { try { card.__delfinMol3DStyle = JSON.parse(st); } catch (e) {} }
             card.removeAttribute('data-mol3d');
             card.__delfinViewer = viewer;
             wireFullscreen(card, viewer, frames, iso);
@@ -4075,27 +4120,29 @@ _AGENT_PAGE_JS = """
                 // canvas. Rebuilding from the saved text is cheap and the
                 // trajectory frame index is copied back.
                 var f = viewer.getFrame();
-                var v2 = $3Dmol.createViewer(big,
-                    {backgroundColor: 'white'});
-                v2.setStyle({}, card.__delfinMol3DStyle ||
-                    {stick: {radius: 0.12}, sphere: {scale: 0.22}});
+                var look = lookOf(card);
+                var v2 = $3Dmol.createViewer(big, look.config);
                 fs.appendChild(bar);
                 fs.appendChild(big);
                 document.body.appendChild(fs);
                 var f2 = card.getAttribute('data-mol3d-fmt');
                 if (f2 === 'cube') {
                     v2.addModel(txt, 'cube');
+                    v2.setStyle({}, look.style);
                     v2.addVolumetricData(txt, 'cube',
                         {isoval: iso, color: '#0026ff', opacity: 0.85});
                     v2.addVolumetricData(txt, 'cube',
                         {isoval: -iso, color: '#b00010', opacity: 0.85});
                 } else if (nFrames > 1) {
-                    v2.addModelsAsFrames(txt, 'xyz');
+                    v2.addModelsAsFrames(txt, f2 || 'xyz');
+                    v2.setStyle({}, look.style);
                     v2.setFrame(f);
                 } else {
                     v2.addModel(txt, f2 || 'xyz');
+                    v2.setStyle({}, look.style);
                 }
                 v2.zoomTo();
+                if (f2 !== 'cube') v2.zoom(1.25);
                 v2.render();
             };
             function closeFs() {
@@ -5668,7 +5715,9 @@ def _mol3d_card_html(path, name_html: str,
     # The style the user set in the dashboard's viewer settings: the same
     # value the Calculations tab draws with, so a molecule looks identical
     # in the chat card and in the fullscreen lightbox.
-    style_js = molecule_view_style_js(get_viewer_profile()["style"])
+    profile = get_viewer_profile()
+    style_js = molecule_view_style_js(profile["style"])
+    config_js = profile.get("viewer_config_js") or '{"backgroundColor":"white"}'
     # A nav bar under every card: the Fullscreen button (right-aligned) lets
     # any structure/trajectory/orbital fill the viewport, and a trajectory
     # (frames > 1) additionally gets the play / step / reset controls. The
@@ -5712,6 +5761,7 @@ def _mol3d_card_html(path, name_html: str,
         f'data-mol3d-frames="{payload["frames"]}" '
         f'data-mol3d-iso="{payload["iso"]:g}" '
         f'data-mol3d-style="{_html.escape(style_js, quote=True)}" '
+        f'data-mol3d-config="{_html.escape(config_js, quote=True)}" '
         f'data-mol3d-title="{_html.escape(name_html, quote=True)}" '
         f'data-mol3d="{_html.escape(payload["text"], quote=True)}" '
         f'style="margin:6px 0;padding:6px;border:1px solid #e5e7eb;'
