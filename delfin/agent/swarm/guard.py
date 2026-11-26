@@ -13,12 +13,21 @@ and for the host:
 
   * leaves the envelope two ticks in a row (load above
     ``guard_max_load_per_core`` x cores, or less than
-    ``guard_min_available_gb``): every member is stopped;
+    ``min_available_gb()`` -- the larger of a floor and a share of the
+    host's total): every member is stopped;
   * a process a member started listens beyond the loopback: every member is
     stopped. The socket guard binds every member's socket to the loopback,
     so this should never happen; it is the check that the guard held
     (2026-11-24: an agent's MPI listened on 0.0.0.0 for three minutes, and
     this check, run outside DELFIN then, ended it).
+  * a member sits stalled -- ended 15+ minutes ago with nothing done by its
+    stage, alive with a log that has not grown for 60 minutes, or a real run
+    past its ceiling -- is raised once through the attention path
+    (``find_stalls``);
+  * what the members ran into is counted as it appears (``friction.sweep``,
+    each log read from where the last tick stopped) into
+    ``<root>/.friction.jsonl``, and ``<root>/friction.json`` is rewritten
+    at most once an hour.
 
 A stop writes ``<root>/EMERGENCY_STOPPED``; while it exists a tick only
 records, and starts or resumes nothing, until a person clears it
@@ -44,10 +53,68 @@ import sys
 import time
 from pathlib import Path
 
-from . import stages, wave
+from . import friction, stages, wave
 
 PROMPT_MARKER = "[swarm-guard]"
-_GUARD_DEFAULTS = {"guard_max_load_per_core": 1.5, "guard_min_available_gb": 4}
+
+#: The envelope the tick holds the host inside, and why these numbers.
+#:
+#: The operator script the tick replaced (a cron line every five minutes,
+#: until 2026-11-24) stopped everything at ``load1 > 340`` or
+#: ``MemAvailable < 150 GB``, read twice in a row. The first defaults below
+#: were looser than that on every machine: 1.5 x cores is 576 on a 384-core
+#: host (1.7x the script's 340) and 4 GB is 2% of its 150 GB -- a shared
+#: host was left unguarded, which is the one job this guard has.
+#:
+#: 0.885 load per core and ``max(4 GB, 10 % of total)`` reproduce the old
+#: protection on that host, measured on it (384 cores, MemTotal 1511.3 GiB,
+#: ``os.cpu_count`` 384): 0.885 x 384 = 339.8 against the script's 340, and
+#: 10 % of 1511.3 = 151.1 GiB against its 150. It scales with the machine so
+#: a small one is not stopped at idle: on 8 cores the load stop is 7.1, and
+#: the 4 GB floor -- the number the tick shipped with -- decides below 40 GB
+#: of total, so a 16 GB laptop keeps the stop it already had and only hosts
+#: above 40 GB get a stricter one. An 8 GB floor would have been 50 % of a
+#: 16 GB laptop, far heavier in proportion than 150 GB of 1.5 TB, which is
+#: the stopped-at-idle failure this is meant to avoid. The script's numbers
+#: were absolute and belonged to one machine; per core and per total, one set
+#: of defaults protects a laptop and the cluster host alike.
+#:
+#: Both stay a setting (``agent.swarm.guard_max_load_per_core`` /
+#: ``guard_min_memory_frac`` / ``guard_min_memory_floor_gb``), so a host
+#: that genuinely wants the looser 1.5 keeps it by name.
+#:
+#: The load stop is the envelope's only LOAD number, and it is not the
+#: number that decides how many members start. ``wave._room`` holds its own
+#: ``max_load_per_core`` (default 1.0) for that: starting members onto an
+#: already-loud host is a different question from stopping the whole slice,
+#: and one knob for both would mean either starting nothing on a busy host
+#: or running members past the stop line.
+_GUARD_DEFAULTS = {"guard_max_load_per_core": 0.885,
+                   "guard_min_memory_frac": 0.10,
+                   "guard_min_memory_floor_gb": 4.0,
+                   # A member that ended 15+ minutes ago whose stage did
+                   # nothing with it: the stage resumes on endpoint errors
+                   # only after a 900 s pause, so the floor sits just past
+                   # that pause -- below it every resumed member would
+                   # raise an alarm on its way to being resumed.
+                   "stall_ended_min": 15.0,
+                   # A live member whose log has not grown in an hour.
+                   # ``wave.observe`` records a "silent" event from 60
+                   # minutes; a member that is merely thinking for a few
+                   # minutes is normal, so this is an attention item, not a
+                   # stop.
+                   "stall_silent_min": 60.0,
+                   # A real run (base + branch, each probe) that is still
+                   # going after 2 h 30: each side carries a 1500 s ceiling
+                   # of its own, so this is several probes deep, or the
+                   # thread that started it died with the marker left
+                   # behind (2026-11-24: an integrator's real run held a
+                   # wave for hours and nothing said so).
+                   "stall_realrun_min": 150.0,
+                   # The friction ledger appends every tick (it reads each
+                   # log from the byte it stopped at); the grouped report is
+                   # rewritten at most this often.
+                   "friction_report_min": 60.0}
 
 
 def _flag() -> Path:
@@ -73,6 +140,12 @@ def _save(st: dict) -> None:
     os.replace(tmp, p)
 
 
+def _now() -> float:
+    """This pass's idea of now. One seam so a test can move the clock the
+    stall and report-age checks read without touching the members' timing."""
+    return time.time()
+
+
 def _attention(kind: str, title: str, detail: str) -> None:
     try:
         from delfin.agent.attention import emit_attention
@@ -82,31 +155,75 @@ def _attention(kind: str, title: str, detail: str) -> None:
 
 
 def _limits() -> dict:
+    """``agent.swarm`` over the defaults, with one translation: a host that
+    already set the old absolute ``guard_min_available_gb`` keeps it, as the
+    floor -- an override a person wrote must not stop working because the
+    ceiling beside it became a share."""
     try:
         from delfin.user_settings import load_settings
         own = ((load_settings() or {}).get("agent") or {}).get("swarm") or {}
     except Exception:
         own = {}
-    return {k: own.get(k, v) for k, v in _GUARD_DEFAULTS.items()}
+    lim = {k: own.get(k, v) for k, v in _GUARD_DEFAULTS.items()}
+    if "guard_min_available_gb" in own and "guard_min_memory_floor_gb" not in own:
+        lim["guard_min_memory_floor_gb"] = own["guard_min_available_gb"]
+    return lim
+
+
+def _meminfo_kb() -> dict:
+    """``MemTotal`` and ``MemAvailable`` of this host in kB ({} when /proc
+    cannot say)."""
+    try:
+        out = {}
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith(("MemTotal:", "MemAvailable:")):
+                parts = line.split()
+                out[parts[0][:-1]] = int(parts[1])
+        return out
+    except (OSError, IndexError, ValueError):
+        return {}
+
+
+def host_readings() -> tuple:
+    """``(load1, cores, available_gb, total_gb)`` as this host reports them.
+
+    One seam on purpose: what decides a stop is the arithmetic in
+    :func:`outside_envelope`, and a test that fakes this can pin that
+    arithmetic on a 384-core host and on a laptop without either reaching
+    /proc."""
+    try:
+        load1 = os.getloadavg()[0]
+    except OSError:
+        load1 = 0.0
+    info = {k: v / 1048576 for k, v in _meminfo_kb().items()}
+    # None means "the host did not say", which is not the same as 0.0: an
+    # available memory of zero is total exhaustion and must stop, so a test
+    # of truthiness here would fail open on exactly the host in trouble.
+    return (load1, os.cpu_count() or 1, info.get("MemAvailable"), info.get("MemTotal"))
+
+
+def min_available_gb(lim: dict | None = None, total_gb: float | None = None) -> float:
+    """The memory floor of the envelope: the larger of a floor and a share
+    of this host's total, so the same default stops a 1.5 TB host at 151 GB
+    and a 16 GB one at the 4 GB floor. With no MemTotal to read, the floor
+    alone."""
+    lim = lim or _limits()
+    if total_gb is None:
+        total_gb = host_readings()[3]
+    if total_gb is None:
+        return float(lim["guard_min_memory_floor_gb"])
+    return max(float(lim["guard_min_memory_floor_gb"]),
+               float(lim["guard_min_memory_frac"]) * float(total_gb))
 
 
 def outside_envelope() -> str:
     """Why the host is outside the envelope now, or ""."""
     lim = _limits()
-    try:
-        load1, cores = os.getloadavg()[0], os.cpu_count() or 1
-        if load1 > cores * float(lim["guard_max_load_per_core"]):
-            return f"load {load1:.0f} on {cores} cores"
-    except OSError:
-        pass
-    try:
-        for line in Path("/proc/meminfo").read_text().splitlines():
-            if line.startswith("MemAvailable:"):
-                gb = int(line.split()[1]) / 1048576
-                if gb < float(lim["guard_min_available_gb"]):
-                    return f"{gb:.1f} GB available"
-    except OSError:
-        pass
+    load1, cores, avail_gb, total_gb = host_readings()
+    if load1 > cores * float(lim["guard_max_load_per_core"]):
+        return f"load {load1:.0f} on {cores} cores"
+    if avail_gb is not None and avail_gb < min_available_gb(lim, total_gb):
+        return f"{avail_gb:.1f} GB available"
     return ""
 
 
@@ -189,6 +306,7 @@ def tick(*, start_tasks: bool = True) -> dict:
 def _tick(start_tasks: bool) -> dict:
     did: dict = {"runs": {}, "stopped": None}
     st = _load()
+    lim = _limits()
     flag = _flag()
     if flag.exists():
         for run in wave.runs():
@@ -233,12 +351,145 @@ def _tick(start_tasks: bool) -> dict:
         ev = wave.observe(run)
         rd["events"] = ev
         for e in ev:
-            if e["kind"] in ("silent", "traceback"):
+            # "silent" is NOT alerted here any more: find_stalls below owns
+            # every stall and deduplicates it, and alerting the same quiet
+            # member from both paths sent it twice per tick. The event is
+            # still recorded in the run's log by observe.
+            if e["kind"] == "traceback":
                 _attention("session_state", f"Swarm {run}/{e['id']}: {e['kind']}",
                            json.dumps({k: v for k, v in e.items() if k not in ("t", "run")}))
         did["runs"][run] = rd
+    found = find_stalls(lim)
+    if found:
+        did["stalls"] = raise_stalls(found, st.setdefault("stalls", {}))
+    did["friction"] = _ledger(lim)
     _save(st)
     return did
+
+
+def _ledger(lim: dict) -> dict:
+    """Count what the members ran into, once per tick, cheaply.
+
+    ``friction.sweep`` reads each member log from the byte the last sweep
+    stopped at, so a tick over a full waves root costs a stat per log plus
+    the bytes written since the last one; the grouped report is rewritten
+    at most every ``friction_report_min`` minutes (it re-reads the whole
+    ledger, and per-model rates do not move every minute). The age that
+    decides it is the report file's own mtime, not a counter in the tick's
+    state: a report that stopped being rewritten because the root went
+    quiet still has to catch up, and a restarted tick inherits the truth
+    from disk. A ledger that cannot be written (a full root, a locked file)
+    is said in the tick's line and tried again next tick -- the count is the
+    point, not the alert."""
+    try:
+        out = friction.sweep()
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {str(exc)[:160]}"}
+    every = float(lim["friction_report_min"]) * 60
+    report = wave.root() / "friction.json"
+    try:
+        age = _now() - report.stat().st_mtime
+    except OSError:
+        age = every + 1.0                             # never written
+    if age >= every:
+        try:
+            out["report"] = friction.write_report()["records"]
+        except Exception as exc:
+            out["report_error"] = str(exc)[:160]
+    return out
+
+
+# -- stalls ---------------------------------------------------------------------------
+
+#: A member can sit in three ways, and until the tick took over none of them
+#: was said aloud: a member that ended and whose stage did nothing with it
+#: (the stage resumes on endpoint errors and asks for real runs; a member
+#: that falls through every branch simply stops being anyone's business), a
+#: member alive but writing nothing for an hour, and a real run whose thread
+#: died and left its ``<tid>.realrun_running`` marker behind -- the stage
+#: then refuses the member forever, because the marker says a run is in
+#: flight. ``observe`` records the first two as events in the run's own log,
+#: which nobody read, so a wave could hold for hours with the tick passing
+#: over it happily. Each one goes to the attention inbox ONCE per member and
+#: kind (``stalls`` in the tick's state), not once per tick; a member that
+#: stops being stalled is forgotten, so it can be reported again later.
+def find_stalls(lim: dict | None = None, now: float | None = None) -> list[dict]:
+    """Every member sitting stalled, each with ``run``, ``id``, ``kind``,
+    ``min`` and ``why``. Reads only; raises nothing."""
+    lim = lim or _limits()
+    now = _now() if now is None else now
+    out = []
+    for run in wave.runs():
+        try:
+            state = wave.load_state(run)
+        except wave.WaveError:
+            continue
+        d = wave.run_dir(run)
+        try:
+            task_ids = [t["id"] for t in json.loads((d / "tasks.json").read_text())]
+        except (OSError, ValueError, KeyError, TypeError):
+            task_ids = []
+        agents = state["agents"]
+        for tid in (task_ids or list(agents)):
+            a = agents.get(tid)
+            if a is None or (d / f"{tid}.final").exists():
+                continue                              # never started, or done
+            at = {"run": run, "id": tid}
+            # The real run first, and before the member's own state: the
+            # stage starts it for a member that has ENDED, so "ended" must
+            # not swallow it -- and while its marker stands, the stage
+            # leaves the member alone, which is exactly when a stale marker
+            # (a thread that died with it) holds the wave forever.
+            marker = d / f"{tid}.realrun_running"
+            if marker.exists():
+                try:
+                    who = int(marker.read_text().strip())
+                    age = (now - marker.stat().st_mtime) / 60
+                except (OSError, ValueError):
+                    out.append({**at, "kind": "realrun", "min": 0,
+                                "why": "its real run's marker cannot be read"})
+                    continue
+                if not wave.alive(who):
+                    out.append({**at, "kind": "realrun", "min": round(age),
+                                "why": "its real run's marker is held by a process "
+                                       "that is gone"})
+                elif age >= float(lim["stall_realrun_min"]):
+                    out.append({**at, "kind": "realrun", "min": round(age),
+                                "why": "a real run older than its ceiling"})
+                continue
+            if not wave.alive(a["pid"]):
+                quiet = (now - wave._ended_at(f"{run}/{tid}")) / 60
+                if quiet >= float(lim["stall_ended_min"]):
+                    out.append({**at, "kind": "ended", "min": round(quiet),
+                                "why": "ended and the stage did nothing with it"})
+                continue
+            try:
+                idle = (now - Path(a["log"]).stat().st_mtime) / 60
+            except OSError:
+                idle = 0
+            if idle >= float(lim["stall_silent_min"]):
+                out.append({**at, "kind": "silent", "min": round(idle),
+                            "why": "alive, nothing written to its log"})
+    return out
+
+
+def raise_stalls(found: list[dict], seen: dict) -> int:
+    """Send each newly found stall through the attention path once, and
+    forget the ones no longer seen so they can be raised again. Returns how
+    many were sent this pass."""
+    raised = 0
+    for s in found:
+        key = f"{s['run']}/{s['id']}:{s['kind']}"
+        if key in seen:
+            continue
+        seen[key] = s["min"]
+        raised += 1
+        _attention("session_state", f"Swarm {s['run']}/{s['id']} stalled ({s['kind']})",
+                   json.dumps({k: v for k, v in s.items() if k != "run"}))
+    live = {f"{s['run']}/{s['id']}:{s['kind']}" for s in found}
+    for key in [k for k in seen if k not in live]:
+        seen.pop(key, None)
+    return raised
 
 
 # -- the scheduler entry -------------------------------------------------------------
@@ -292,7 +543,9 @@ def loop(every_s: float = 60, *, ticks: int = 0, sleep=time.sleep, log=print) ->
             log(json.dumps({"t": time.strftime("%Y-%m-%d %H:%M:%S"), "runs": len(runs),
                             "moved": {r: k for r, k in moved.items() if k},
                             "held": bool(did.get("held")), "busy": bool(did.get("busy")),
-                            "stopped": bool(did.get("stopped"))}))
+                            "stopped": bool(did.get("stopped")),
+                            "stalls": did.get("stalls") or 0,
+                            "friction": (did.get("friction") or {}).get("appended", 0)}))
         except Exception as exc:
             log(f"tick failed: {type(exc).__name__}: {str(exc)[:300]}")
         n += 1
