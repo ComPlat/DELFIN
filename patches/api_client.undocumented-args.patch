@@ -1,0 +1,62 @@
+diff --git a/delfin/agent/api_client.py b/delfin/agent/api_client.py
+index 2867e7d40..2addcfe8c 100644
+--- a/delfin/agent/api_client.py
++++ b/delfin/agent/api_client.py
+@@ -2383,6 +2383,20 @@ _LABEL_ONLY: frozenset[tuple[str, str]] = frozenset({
+     ("subagent", "description"),
+ })
+ 
++# Arguments a tool HONOURS though its schema does not advertise them, so the
++# stray-field refusal must not read the schema's property list as the set of
++# arguments the tool accepts. ``notebook_read`` reads max_output_chars out of
++# the call and passes it down; the catalogue leaves it out on purpose (see
++# the comment beside max_source_chars in delfin/agent/tool_catalog.py: a knob
++# in every request is paid for whether or not anyone turns it). Refusing the
++# call as an "unknown field" answers a working request with a typo warning.
++# Measured: it broke test_a_long_output_is_capped_from_the_front, which passes
++# on origin/main, and told the caller to use max_source_chars -- a different
++# cap that would have left the output uncapped.
++_UNDOCUMENTED_ARGS: dict[str, frozenset[str]] = {
++    "notebook_read": frozenset({"max_output_chars"}),
++}
++
+ # Tools that carry their OWN plan-mode refusal in their body, past the
+ # entry gate. Both are on the plan-mode safe list -- reading a task list
+ # is fine -- and refuse deeper down because it is the STATUS change, not
+@@ -2467,6 +2481,17 @@ def _malformed_arguments(name: str, arguments: dict) -> Optional[str]:
+                         break
+         required = [r for r in schema.get("required") or []
+                     if (bare, r) not in _LABEL_ONLY]
++        # A field the tool honours though the schema does not advertise it is
++        # a KNOWN field, not a stray. Adding it to `properties` is what makes
++        # the stray rule leave it alone, and what keeps the refusal aimed at
++        # the defensible question -- "did you misspell a field that exists?" --
++        # instead of "is this field in the catalogue?".
++        honoured = _UNDOCUMENTED_ARGS.get(bare)
++        if honoured:
++            props = {**props}
++            for _f in honoured:
++                props.setdefault(_f, {})
++            schema = {**schema, "properties": props}
+         result = _tool_args.check({**schema, "required": required}, probe,
+                                   unknown="hint")
+         if not result.ok:
+@@ -20422,7 +20447,17 @@ class _DocToolExecutor:
+                 continue
+             # Match against the bare filename too, so a pattern like "*.py"
+             # (no directory component) matches nested files as users expect.
+-            if fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(fp.name, pattern):
++            #
++            # ``fnmatch`` is not a glob: ``**`` means nothing to it, so
++            # ``**/*.md`` did not match ``one.md`` at the top level of the
++            # directory the caller named -- only files below a subdirectory.
++            # A real run asked for exactly that pattern in a directory of 67
++            # ``.md`` files and got "No files matching pattern.", then had to
++            # fall back to ``ls``. A leading ``**/`` means "here and below",
++            # so strip it and keep the suffix rule; without the prefix the
++            # matcher below is unchanged.
++            _pfx = pattern[3:] if pattern.startswith("**/") else pattern
++            if (fnmatch.fnmatch(rel, _pfx) or fnmatch.fnmatch(fp.name, _pfx)):
+                 matches.append(rel)
+                 if len(matches) > 50:
+                     break
