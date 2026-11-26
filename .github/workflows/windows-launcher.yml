@@ -19,3 +19,6 @@ jobs:
       - name: Validate with Windows PowerShell 5.1
         shell: powershell
         run: ./tools/windows-launcher/Test-Launcher.ps1 -SkipOpenSSHCheck
+      - name: Install, update and uninstall in an isolated folder
+        shell: powershell
+        run: ./tools/windows-launcher/Test-InstallRoundTrip.ps1
