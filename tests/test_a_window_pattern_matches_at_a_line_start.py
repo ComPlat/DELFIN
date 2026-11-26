@@ -48,6 +48,11 @@ def _perms(ws):
     return perms
 
 
+def _read(ws, **arguments):
+    """Through ``_dispatch`` -- the entry a model's tool call reaches."""
+    return _DocToolExecutor()._dispatch("read_file", arguments, _perms(ws))
+
+
 @pytest.fixture
 def ws(tmp_path):
     d = tmp_path / "ws"
@@ -58,9 +63,7 @@ def ws(tmp_path):
 
 def test_a_caret_anchored_pattern_finds_the_definition_line(ws):
     """``^def check`` is the spelling grep accepts; it must find line 8."""
-    out = _DocToolExecutor()._execute_read_file(
-        {"path": "mod.py", "around": "^def check", "context": 1},
-        _perms(ws))
+    out = _read(ws, path="mod.py", around="^def check", context=1)
     assert "not found" not in out, out
     # The window is reported 1-based and grep-compatible.
     assert out.splitlines()[0].startswith("7  "), out
@@ -69,17 +72,13 @@ def test_a_caret_anchored_pattern_finds_the_definition_line(ws):
 
 def test_a_dollar_anchored_pattern_finds_the_end_of_a_line(ws):
     """``return value$`` must match the line, not only end-of-file."""
-    out = _DocToolExecutor()._execute_read_file(
-        {"path": "mod.py", "around": "return value$", "context": 0},
-        _perms(ws))
+    out = _read(ws, path="mod.py", around="return value$", context=0)
     assert "not found" not in out, out
     assert "return value" in out
 
 
 def test_an_unanchored_pattern_still_behaves_as_before(ws):
     """Control: no anchors, so MULTILINE must change nothing at all."""
-    out = _DocToolExecutor()._execute_read_file(
-        {"path": "mod.py", "around": "def helper", "context": 1},
-        _perms(ws))
+    out = _read(ws, path="mod.py", around="def helper", context=1)
     assert "not found" not in out, out
     assert "def helper(value):" in out
