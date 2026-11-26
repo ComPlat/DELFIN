@@ -30,6 +30,7 @@ was written after a measured defect, with its cost.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from . import wave
@@ -186,6 +187,14 @@ LANDER_RULES = tuple(LANDING_RULES)
 #: The fixer edits the bundle itself, so it carries the two rules that decide
 #: what a line of that bundle may look like -- not the merge rules.
 FIXER_RULES = ("B", "E")
+
+#: What a revision name may carry into a brief. The briefs are full of shell
+#: commands the members are told to run, and ``base`` is filled into them, so
+#: the accepted set is git's own for a branch or commit name: no spaces, no
+#: quotes, no ``$``/``;``/``|``/``&``/backticks and no newline.
+_BASE_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/~^-]*$")
+
+
 #: An arm or an integrator commits too, and its commit messages are read on
 #: the branch someone else merges. Only the public-text rule is theirs: they
 #: merge nothing, and the other five would dilute their own package text.
@@ -245,6 +254,37 @@ def _branch_of(ref: str) -> str:
         return f"wave/{ref}"
 
 
+def _validate_base(base: Any) -> str:
+    """The revision every brief is told to run against -- and nothing else.
+
+    ``base`` is interpolated into shell commands the members are INSTRUCTED to
+    run (``git log --oneline {base}..HEAD | wc -l`` in the reviewer brief, the
+    integrator's control step, rule F). It arrives from a spec file, so it is
+    an input like a task id -- and it was the one such input that reached a
+    mandated command unvalidated: ``origin/main && echo INJECTED`` used to be
+    composed into every reviewer's first instruction.
+
+    A revision name is what git accepts as a branch or commit: letters, digits
+    and ``._/-``, plus ``~`` and ``^`` for ancestry. Spaces, quotes, ``$``,
+    ``;``, ``|``, ``&``, backticks and newlines are not in that set, and a
+    refusal names the value rather than silently rewriting it.
+
+    Rejected: escaping or quoting the value into the command. The briefs are
+    read by a model, not only by a shell, and a backslash in an instruction is
+    a second thing to get wrong; refusing an input that is not a revision keeps
+    the instruction identical to the string a person would type.
+    """
+    text = str(base if base is not None else "").strip()
+    if not text:
+        raise wave.WaveError("base must name a revision (empty is not a branch)")
+    if not _BASE_OK.match(text):
+        raise wave.WaveError(
+            f"base {text!r} is not a revision name: it may carry letters, "
+            "digits and . _ / - ~ ^ only, because the members are told to run "
+            "`git log --oneline <base>..HEAD` and a base is not a shell command")
+    return text
+
+
 def _validate_packages(packages: Any) -> list[dict]:
     if not isinstance(packages, list) or not packages:
         raise wave.WaveError("packages must be a non-empty list of {id, title, body}")
@@ -277,6 +317,7 @@ def compose(run: str, packages: list[dict], *, arms: list[dict], integrator: dic
     collects those instead of new ones -- a wave whose integration stage was
     stopped is continued without running its arms again."""
     packages = _validate_packages(packages)
+    base = _validate_base(base)
     arm_refs = dict(arm_refs or {})
     if "arms" in stages and len(arms) < 1:
         raise wave.WaveError("arms needs at least one {provider, model}")
