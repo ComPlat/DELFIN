@@ -1,5 +1,12 @@
 # A self-driving bench: a campaign, a closed loop, its ELN hand-over, and the loop's plan judged before anything moves
 
+**DRAFT: this branch does not land as it stands.** 11 tests are red at HEAD
+`bc56dc79b`, all of them for one mechanical reason — two product edits live in
+`delfin/agent/api_client.py`, which the agent layer refuses to let me write —
+and the §2 patches fix exactly those eleven. A person runs the two `git apply`
+lines in §2 and they go green; nothing else is red on the branch that is not
+also red on `origin/main` (§7).
+
 Five lab packages from wave 44, merged into one bundle, then reviewed four
 ways and fixed here. Branch `wave/w44/zz-fix`, based on the lander's
 `wave/w44/zz-land`, itself branched from `origin/main` at
@@ -80,8 +87,9 @@ git apply scratch/eln-approve-as-command-text.patch     # refuses `eln approve` 
 
 | patch | what it changes | measured before → after |
 |---|---|---|
-| `lab-run-dispatch.patch` | `_LAB_TOOL_NAMES` (:12347) gains `lab_run`; the `_DocToolExecutor` dispatch tuple (:18516) gains it; `_is_honoured_dry_run` (:8977) learns `lab_run`'s argument-conditional `dry_run` | 6 tests red with `Unknown tool: lab_run. Did you mean: lab_run, lab_read, lab_set?` → green |
-| `eln-reads-in-the-gate-allowlist.patch` | the read-only allow-list gains `eln_find`, `eln_read`, `eln_pending` | 5 tests red with `eln_find reads and changes nothing, but the gate does not know it` → green |
+| *(the two rows below marked † are the red side as measured this turn; their green side was measured by the earlier session that copied the module, not re-run here — the protected file cannot be written to re-measure it)* | | |
+| `lab-run-dispatch.patch` † | `_LAB_TOOL_NAMES` (:12347) gains `lab_run`; the `_DocToolExecutor` dispatch tuple (:18516) gains it; `_is_honoured_dry_run` (:8977) learns `lab_run`'s argument-conditional `dry_run` | red side re-measured this turn: 11 failed over the three files, of which the `lab_run` share is 6, with `advertised with no executor and no dispatch: lab_run` → green (earlier session) |
+| `eln-reads-in-the-gate-allowlist.patch` † | the read-only allow-list gains `eln_find`, `eln_read`, `eln_pending` | red side re-measured this turn: the 5 `test_an_eln_read_is_reachable_and_its_writes_are_not.py` cases → green (earlier session) |
 | `eln-approve-as-command-text.patch` | `answer_command` matches `eln approve\|deny\|answer` as well as `approvals …`, and a Python `grant(` beside its module | 6 of 11 new cases red → 11 green (measured on a copy of the module; the tree is untouched) |
 
 **What is measured on this head, per file** (`-m "not slow"`, CI
