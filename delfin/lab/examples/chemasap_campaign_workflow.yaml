@@ -15,8 +15,9 @@
 #
 # The hazardous writes (each reactor's setpoint above 40 degC, each column's
 # timed purge) pause the run at `waiting_approval` until a person approves
-# them, one grant per action. A person may pre-approve the whole plan with
-# `--approve-plan`; an agent session may not.
+# them: `lab approve <id>`, one grant per action, then the same command with
+# `--resume`. There is no plan-wide pre-approval: an agent session may not
+# grant one, and the CLI has no flag that would.
 id: chemasap-campaign
 samples:
   S-001:

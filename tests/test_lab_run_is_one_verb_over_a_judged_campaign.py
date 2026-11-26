@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -223,3 +224,44 @@ def test_a_plan_is_not_ok_when_the_kernel_would_refuse_every_write(lab):
     pinned_proposal = plan.validate(manifest, doc, Kernel.load())
     assert pinned_proposal.write_check["manifest_problem"] is None
     assert pinned_proposal.ok is True, pinned_proposal.problems
+
+
+def test_the_shipped_examples_only_name_flags_the_parser_accepts():
+    """A usage line in an example is a promise; this holds it to the parser.
+
+    `chemasap_campaign_workflow.yaml` told a reader to pre-approve the plan
+    with `--approve-plan`. No such option exists -- `lab run` takes workflow,
+    `--dry-run`, `--run-id`, `--resume`, `--parallel` -- and the approval path
+    is one grant per action, `lab approve <id>`. A person following the
+    example would have had the command rejected after reading the plan.
+
+    Measured on the bundle before this fix: the example's comment named
+    `--approve-plan` and the parser refused it. Every `--flag` in every
+    shipped example now has to be one the `lab` parser declares, so the next
+    comment that drifts is caught here rather than by a person at a bench.
+    """
+    from delfin.lab import cli
+
+    parser = cli.build_parser()
+    declared = set()
+    for action in parser._actions:
+        if not hasattr(action, "choices") or not action.choices:
+            continue
+        for sub in action.choices.values():
+            for sub_action in sub._actions:
+                declared.update(sub_action.option_strings)
+
+    # Only `lab`'s own flags, not the global ones: an example that names
+    # `--help` is not the interesting case.
+    mentioned = {}
+    for path in sorted(EXAMPLES.glob("*.yaml")):
+        text = path.read_text(encoding="utf-8")
+        for line in text.splitlines():
+            if not line.lstrip().startswith("#"):
+                continue
+            for flag in re.findall(r"(?<![\w-])--[a-z][a-z0-9-]+", line):
+                mentioned.setdefault(flag, []).append(path.name)
+    unknown = {f: where for f, where in mentioned.items() if f not in declared}
+    assert not unknown, (
+        "an example names a flag the lab parser does not accept: "
+        f"{unknown}; declared: {sorted(declared)}")
