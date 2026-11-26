@@ -426,9 +426,15 @@ def test_the_counts_still_match_what_was_measured():
     # tasks_w28_tf1.yaml ts-finder tasks, graded on recorded artifacts.
     # science 58 -> 62 (XE1, wave 28, agent/s5-xe1b): the four
     # tasks_w28_xe1.yaml xyz-editor tasks (task_class science_analysis).
-    assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 62, "chemistry": 32, "generalist": 26,
-                      "other": 96}, counts
+    # five tasks on 2026-11-25 (M2, wave 49, wave/w49/m2-a1): the
+    # tasks_w49_m2.yaml capability-census tasks, one per newly measured
+    # capability and named for it -- office 13 -> 14 (read_file),
+    # science 62 -> 63 (read_document), chemistry 32 -> 33 (search_calcs),
+    # other 96 -> 98 (the two coding tasks: grep_file, bash). Setup
+    # m2_capability_fixtures.py; accept/m2_a{1,2,3,5,6}_*_verify.py.
+    assert counts == {"office": 14, "behavior": 18, "generic_project": 24,
+                      "science": 63, "chemistry": 33, "generalist": 26,
+                      "other": 98}, counts
 
 
 # ---------------------------------------------------------------------------

@@ -775,6 +775,14 @@ def test_the_copied_scan_matches_the_original_where_both_are_present():
     Where a tree holds both, the two must answer the same, or the copy has
     drifted. No skip: on a tree without the original there is nothing to
     compare, and the test above is what holds in that case.
+
+    The comparison is over the SAME population, which is the original's own
+    ``_SCAN_DIRS``: the copy takes one root, the original walks a tuple of them,
+    so the copy is asked once per directory and merged in the original's order
+    with the original's first-wins rule. Without that the check reports a
+    population difference as drift, which is what it did when the census was
+    widened from ``delfin/agent`` to three directories -- the copy had not
+    drifted at all.
     """
     original = ROOT / "tests" / "test_every_capability_has_a_caller.py"
     if original.is_file():
@@ -782,8 +790,11 @@ def test_the_copied_scan_matches_the_original_where_both_are_present():
         spec = importlib.util.spec_from_file_location("orig_scan", original)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        assert mod._definitions() == pools_mod._definitions(
-            ROOT / "delfin" / "agent", ROOT)
+        copied: dict[str, tuple[str, int]] = {}
+        for sub in mod._SCAN_DIRS:
+            for name, where in pools_mod._definitions(ROOT / sub, ROOT).items():
+                copied.setdefault(name, where)
+        assert mod._definitions() == copied
 
 
 # --------------------------------------------------------------------------

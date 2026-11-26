@@ -5327,7 +5327,7 @@ def _quoted_text_spans(cmd: str, owners: Optional[frozenset] = None) -> list:
 
 
 def _word_spans(cmd: str, start: int, end: int) -> list:
-    """(start, end) of each shell word in cmd[start:end], offsets kept.
+    r"""(start, end) of each shell word in cmd[start:end], offsets kept.
 
     Quotes and backslashes are honoured the way the shell reads them, so
     ``"a b"`` and ``a\ b`` are one word each.
