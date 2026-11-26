@@ -148,15 +148,17 @@ _ACCOUNT_NUMBER = re.compile(r"^\s*(\d+)\+")
 def proof_rows(pr_text: str) -> list[dict]:
     """The packages in a ``scratch/PR.md`` decision table, one dict each.
 
-    Input: the text of PR.md. Output: ``[{"package", "test", "realrun"}]`` in
+    Input: the text of PR.md. Output: ``[{"item", "test", "realrun"}]`` in
     table order, one entry per data row. Header rows, the ``|---|`` separator,
-    and every table that has no ``package`` column are skipped: a wave report
-    carries several tables (items, measurements, suites) and only the decision
-    table is the package's claim about itself. An empty list means the branch
-    wrote no decision table, which the caller refuses.
+    and every table that has neither a ``package`` nor an ``item`` column are
+    skipped: a wave report carries several tables (measurements, suites) and
+    only the decision table is the package's claim about itself. An empty list
+    means the branch wrote no decision table, which the caller refuses.
 
-    The test is taken from a code span when the cell holds one, and from the
-    whole cell otherwise.
+    Both words are accepted because the wave names the row "item"
+    (``compose.DELIVERY_RULES`` 17: "one table row per item") and the package
+    names it "package". Accepting only the second refused every branch written
+    to the wave's own rule for carrying no table at all.
     """
     rows: list[dict] = []
     header: list[str] | None = None
@@ -169,14 +171,14 @@ def proof_rows(pr_text: str) -> list[dict]:
         cells = [c.strip() for c in m.group("cells").split("|")]
         if header is None:
             lowered = [c.lower() for c in cells]
-            if not any("package" in c for c in lowered):
+            if not any(("package" in c or c == "item") for c in lowered):
                 continue
             header = lowered
 
             def find(*words):
                 return next((j for j, c in enumerate(lowered)
                              if any(w in c for w in words)), None)
-            pkg_col, test_col = find("package"), find("test")
+            pkg_col, test_col = find("package", "item"), find("test")
             run_col = find("real run", "realrun", "run")
             continue
         if all(set(c) <= set("-: ") for c in cells):
@@ -185,7 +187,7 @@ def proof_rows(pr_text: str) -> list[dict]:
         def cell(j):
             return cells[j] if j is not None and j < len(cells) else ""
         span = _CODE_SPAN.search(cell(test_col))
-        rows.append({"package": cell(pkg_col).strip("` "),
+        rows.append({"item": cell(pkg_col).strip("` "),
                      "test": (span.group(1) if span else cell(test_col)).strip("` "),
                      "realrun": cell(run_col).strip("` ")})
     return rows
@@ -326,7 +328,7 @@ def proof_refusal(wt: Path, base: str, *, run: str = "", tid: str = "") -> str:
     """
     pr = Path(wt) / "scratch" / "PR.md"
     try:
-        rows = [r for r in proof_rows(pr.read_text()) if r["package"]]
+        rows = [r for r in proof_rows(pr.read_text()) if r["item"]]
     except OSError as exc:
         return f"no proof table: scratch/PR.md cannot be read ({exc})"
     if not rows:
@@ -335,7 +337,7 @@ def proof_refusal(wt: Path, base: str, *, run: str = "", tid: str = "") -> str:
     base_tree: str = ""
     try:
         for r in rows:
-            pkg, test = r["package"], r["test"]
+            pkg, test = r["item"], r["test"]
             if not test:
                 return f"{pkg}: the table names no test, so nothing shows the change"
             if not r["realrun"]:

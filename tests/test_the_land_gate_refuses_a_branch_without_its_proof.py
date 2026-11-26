@@ -419,3 +419,35 @@ def test_a_body_without_such_a_name_is_accepted(swarm):
               + "\nthe gate runs the test on both trees\n")
     _gate(swarm)
     assert _landing(swarm).startswith("ready:"), _landing(swarm)
+
+
+# --- 6. The table the wave itself tells members to write ---------------------
+# DELIVERY_RULES 17 says "one table row per item (item, decision, commit,
+# reason)". The proof check looked for a column called "package" and refused
+# anything else, so a branch written to the wave's own rule was refused for
+# carrying no proof table (measured: scratch/probe_house_format.py).
+
+
+_HOUSE_TABLE = ("| item | decision | test | real run | commit | reason |\n"
+                "|---|---|---|---|---|---|\n"
+                "| g1 | landed | tests/test_new.py | inline-xyz | abc1234 | measured |\n")
+
+
+def test_the_table_rule_17_describes_is_accepted(swarm):
+    """The wave's own four columns plus the two the package asks for, with the
+    row word "item". Red before this fix: refused as "no proof table"."""
+    _ready_proof(swarm)
+    _write_pr(swarm, _HOUSE_TABLE)
+    _gate(swarm)
+    assert _landing(swarm).startswith("ready:"), _landing(swarm)
+
+
+def test_a_table_with_no_test_column_is_still_refused(swarm):
+    """CONTROL: naming the row "item" does not make proof optional. The same
+    table without a test column is refused, and it names the row."""
+    _ready_proof(swarm)
+    _write_pr(swarm, "| item | decision | reason |\n|---|---|---|\n"
+                     "| g1 | landed | it looks fine |\n")
+    _gate(swarm)
+    assert _landing(swarm).startswith("refused:"), _landing(swarm)
+    assert "g1" in _landing(swarm), _landing(swarm)
