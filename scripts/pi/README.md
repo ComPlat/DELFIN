@@ -298,7 +298,24 @@ What only a person can do, in this order:
   `delfin-people` lists who is there; `delfin-people --attach NAME` shows that
   person's dashboard session.
 
-  **Letting a new person in.** `pi_harden_host.sh` sets
+  **Letting a new person in: an invitation.** One command on the Pi:
+
+  ```bash
+  delfin-people --invite anna            # [--host delfin-pi.local] [--hours 48]
+  ```
+
+  It writes `~/invites/DELFIN-anna.zip`: the Windows launcher with this
+  server's address, its host keys and a key for this invitation only. Give
+  that file to the person like a temporary password. They extract it,
+  double-click `Install.cmd`, and press Start in DELFIN: the first Start
+  registers their PC's own key with the invitation (no password, no
+  fingerprint question) and the invitation is used up. Its line in
+  `authorized_keys` can do nothing but that (`restrict`, a forced
+  `--enroll`, `expiry-time`), and stops working by itself after the given
+  hours. `delfin-people --keys` lists open invitations (`delfin-invite-*`);
+  deleting the line withdraws one.
+
+  **Without an invitation.** `pi_harden_host.sh` sets
   `PasswordAuthentication no`, and the launcher registers a PC by appending
   its key during the first *password* login — so on a hardened box that
   first login cannot happen and a new person is locked out by a key that is

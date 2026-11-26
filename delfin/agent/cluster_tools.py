@@ -61,6 +61,7 @@ cluster, command or files, job ids, approval and outcome.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -108,9 +109,61 @@ if [ -d "$p" ]; then echo dir; elif [ -e "$p" ]; then echo file; else echo none;
 '''
 
 
+#: The package the remote layer is built on. It is a core dependency, so a
+#: machine that submits to no cluster can still be missing it (a partial
+#: install, an update that skipped it), and then every cluster tool used to
+#: raise ``ModuleNotFoundError`` out of ``execute``: the model got
+#: ``tool 'cluster_status' failed: No module named 'cluster_tunnel'`` -- a
+#: Python package name where the documented answer is a refusal code, and no
+#: hint that the user has something to install. The doctor settled the same
+#: question for its own check (``delfin/doctor.py:487``, a missing package is
+#: reported as missing, never as a DELFIN bug); the tool path is answered the
+#: same way here.
+_TUNNEL = "cluster_tunnel"
+
+
+def _tunnel_missing(exc: BaseException) -> bool:
+    """Whether ``exc`` is the remote layer failing because the tunnel is absent.
+
+    Only that: a ``ModuleNotFoundError`` naming this package, or an
+    ``ImportError`` that names it in its message. Any other error keeps
+    travelling, so a real defect is not disguised as a missing package.
+    """
+    if isinstance(exc, ModuleNotFoundError):
+        return (exc.name or "") == _TUNNEL or (exc.name or "").startswith(_TUNNEL + ".")
+    if isinstance(exc, ImportError):
+        return _TUNNEL in str(exc)
+    return False
+
+
+def _answers_without_the_tunnel(tool):
+    """``tool`` answers ``tunnel_not_installed`` where the tunnel is absent.
+
+    Every cluster tool reaches the remote layer -- ``delfin.remote`` imports
+    ``clusters``, which imports the tunnel at module level
+    (``delfin/remote/clusters.py:47``) -- so one answer belongs here rather
+    than eight times. Anything that is not the absence is re-raised.
+    """
+    @functools.wraps(tool)
+    def wrapper(*args, **kwargs):
+        try:
+            return tool(*args, **kwargs)
+        except Exception as exc:
+            if not _tunnel_missing(exc):
+                raise
+            return _error("tunnel_not_installed", (
+                "the cluster tunnel is not installed on this machine, so no "
+                "cluster can be reached. Tell the user: install it with "
+                "`pip install cluster-tunnel`, or remove remote.clusters from "
+                "~/.delfin_settings.json if they do not submit to a cluster. "
+                "Nothing was run on any cluster."))
+    return wrapper
+
+
 # --- the tools ---------------------------------------------------------------------
 
 
+@_answers_without_the_tunnel
 def status(executor, perms, *, cluster: Any = None) -> str:
     from delfin.agent import managed_policy
     if not cluster:
@@ -154,6 +207,7 @@ def status(executor, perms, *, cluster: Any = None) -> str:
         "delfin": {"commit": commit.sha[:12] if commit else "", "install": installed}})
 
 
+@_answers_without_the_tunnel
 def read_path(executor, perms, *, cluster: Any, path: Any, tail: Any = None) -> str:
     conn, refusal = _connect(perms, cluster, "cluster_read")
     if refusal:
@@ -192,6 +246,7 @@ def read_path(executor, perms, *, cluster: Any, path: Any, tail: Any = None) -> 
                                            "text": text[:READ_BYTES]})
 
 
+@_answers_without_the_tunnel
 def fetch(executor, perms, *, cluster: Any, path: Any, dest: Any = None) -> str:
     from delfin.remote.errors import LoginRequired, RemoteError
     conn, refusal = _connect(perms, cluster, "cluster_fetch")
@@ -253,6 +308,7 @@ def fetch(executor, perms, *, cluster: Any, path: Any, dest: Any = None) -> str:
     return json.dumps({"cluster": conn.name, "from": real, "to": rel, "bytes": size})
 
 
+@_answers_without_the_tunnel
 def upload(executor, perms, *, cluster: Any, src: Any, dest: Any = None) -> str:
     from delfin.remote.errors import LoginRequired, RemoteError
     conn, refusal = _connect(perms, cluster, "cluster_upload")
@@ -363,6 +419,7 @@ def _io_check_findings(job_folders: list[str]) -> list:
     return findings
 
 
+@_answers_without_the_tunnel
 def submit(executor, perms, *, cluster: Any, jobs: Any) -> str:
     from delfin.agent import managed_policy
     from delfin.remote import jobs as remote_jobs
@@ -530,6 +587,7 @@ def _watch_submitted(perms, cluster: str, done: list[dict]) -> bool:
     return ok
 
 
+@_answers_without_the_tunnel
 def cancel(executor, perms, *, cluster: Any, job_ids: Any) -> str:
     from delfin.remote import jobs as remote_jobs
     from delfin.remote.errors import LoginRequired, RemoteError
@@ -564,6 +622,7 @@ def cancel(executor, perms, *, cluster: Any, job_ids: Any) -> str:
     return json.dumps({"cluster": conn.name, "cancelled": cancelled})
 
 
+@_answers_without_the_tunnel
 def run(executor, perms, *, cluster: Any, command: Any, timeout: Any = None) -> str:
     from delfin.agent import api_client as A
     from delfin.remote.errors import LoginRequired, RemoteError
@@ -615,6 +674,7 @@ def run(executor, perms, *, cluster: Any, command: Any, timeout: Any = None) -> 
 # --- shared ------------------------------------------------------------------------
 
 
+@_answers_without_the_tunnel
 def propose(executor, perms, *, name: Any = None, preset: Any = None, user: Any = None,
             host: Any = None, partition: Any = None) -> str:
     from delfin.agent import managed_policy

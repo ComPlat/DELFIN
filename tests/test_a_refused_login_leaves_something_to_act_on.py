@@ -37,11 +37,11 @@ def _before_the_first_prompt() -> str:
     Anchored on the two remote-command builders rather than on any text
     this change added, so the test cannot pass by quoting itself: the
     dashboard block runs after the terminal one, and its first SSH call
-    is the Sync-ServerScripts that precedes it.
+    is built from the script version taken just before it.
     """
     i_terminal = APP.index("Get-RemoteCommand $p 'terminal'")
     i_dashboard = APP.index("Get-RemoteCommand $p 'dashboard'")
-    i_first_ssh = APP.rindex("Sync-ServerScripts", 0, i_dashboard)
+    i_first_ssh = APP.rindex("$version = Get-ScriptVersion", 0, i_dashboard)
     return APP[i_terminal:i_first_ssh]
 
 

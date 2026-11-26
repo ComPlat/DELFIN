@@ -149,9 +149,39 @@ def _numbers_from(output: Path) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     try:
         from delfin import energies as _energies
-        out['energy'] = _energies.find_electronic_energy(str(output))
-        out['free_energy'] = _energies.find_gibbs_energy(str(output))
-        out['zpe'] = _energies.find_ZPE(str(output))
+        from delfin import orca_read as _orca_read
+        from pathlib import Path as _P
+        _p = _P(str(output))
+        reading = None
+        try:
+            reading = _orca_read.read(str(_p.parent), _p.stem,
+                                      _orca_read.Quantity.FINAL_SINGLE_POINT_ENERGY)
+        except Exception:                            # noqa: BLE001
+            reading = None
+        if reading is not None and reading.value is not None:
+            out['energy'] = reading.value
+        else:
+            out['energy'] = _energies.find_electronic_energy(str(output))
+        reading = None
+        try:
+            reading = _orca_read.read(str(_p.parent), _p.stem,
+                                      _orca_read.Quantity.GIBBS)
+        except Exception:                            # noqa: BLE001
+            reading = None
+        if reading is not None and reading.value is not None:
+            out['free_energy'] = reading.value
+        else:
+            out['free_energy'] = _energies.find_gibbs_energy(str(output))
+        reading = None
+        try:
+            reading = _orca_read.read(str(_p.parent), _p.stem,
+                                      _orca_read.Quantity.ZPE)
+        except Exception:                            # noqa: BLE001
+            reading = None
+        if reading is not None and reading.value is not None:
+            out['zpe'] = reading.value
+        else:
+            out['zpe'] = _energies.find_ZPE(str(output))
     except Exception:                                # noqa: BLE001
         pass
     try:

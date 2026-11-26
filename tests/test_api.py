@@ -82,8 +82,20 @@ def test_pipeline_run_does_not_duplicate_flags(cli_recorder):
 
 
 def test_pipeline_prepare_argv(cli_recorder):
+    """The CONTROL file travels as ``--control``, and the input as ``--define``.
+
+    ``--define`` names the INPUT file (delfin/cli_helpers.py:127), so naming
+    the CONTROL file with it wrote the template into the process's own
+    directory and left an EMPTY file at the requested path. The assertion used
+    to pin that argv, which is why it stayed green over the defect; it now
+    pins the argv that writes where the caller said.
+    """
     delfin_api.pipeline_prepare(control_file="X.txt", overwrite=True)
-    assert cli_recorder[0] == ["--define", "X.txt", "--overwrite"]
+    argv = cli_recorder[0]
+    assert "--control" in argv, argv
+    assert argv[argv.index("--control") + 1] == "X.txt", argv
+    assert argv[argv.index("--define") + 1] == "input.txt", argv
+    assert "--overwrite" in argv, argv
 
 
 def test_run_legacy_returns_int(cli_recorder):
