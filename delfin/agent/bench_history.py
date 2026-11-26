@@ -112,11 +112,18 @@ def _setting_root() -> str:
 
 
 def _git_toplevel(path: Path) -> str:
-    """Nearest directory holding a ``.git`` entry at or above *path*."""
+    """Nearest directory holding a git ``.git`` entry at or above *path*.
+
+    A ``.git`` counts when it is a file (a worktree's ``gitdir:`` link) or
+    a directory with a ``HEAD`` in it, as git itself requires. An empty
+    ``.git`` directory left in a shared parent such as ``/tmp`` is not a
+    repository, and treating it as one refused every round below it.
+    """
     cur = path
     for _ in range(24):
         try:
-            if (cur / ".git").exists():
+            dot = cur / ".git"
+            if dot.is_file() or (dot / "HEAD").exists():
                 return str(cur)
         except OSError:
             return ""

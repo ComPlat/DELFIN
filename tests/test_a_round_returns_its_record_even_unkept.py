@@ -72,6 +72,7 @@ def test_a_round_whose_record_cannot_be_written_still_returns_it(
     from delfin.agent import bench_nightly as bn
 
     (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
     monkeypatch.setattr(bh, "default_root",
                         lambda: tmp_path / "checkout" / "rounds")
 
@@ -105,6 +106,7 @@ def test_the_cli_still_exits_non_zero_when_the_record_is_lost(
     from delfin.agent import bench_nightly as bn
 
     (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
     monkeypatch.setattr(bh, "default_root",
                         lambda: tmp_path / "checkout" / "rounds")
 

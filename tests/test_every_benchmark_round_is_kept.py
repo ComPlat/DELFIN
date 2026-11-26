@@ -615,6 +615,7 @@ def test_the_history_root_refuses_to_live_inside_a_repository(tmp_path,
     from delfin.agent import bench_history as bh
 
     (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
     monkeypatch.setattr(bh, "default_root",
                         lambda: tmp_path / "checkout" / "rounds")
     with pytest.raises(bh.HistoryWriteError) as exc:
@@ -628,9 +629,23 @@ def test_an_explicit_root_in_a_repository_is_refused_too(tmp_path):
     from delfin.agent import bench_history as bh
 
     (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
     with pytest.raises(bh.HistoryWriteError):
         bh.write_round({"round_id": "x"},
                        history_root=tmp_path / "checkout" / "r")
+
+
+def test_an_empty_dot_git_directory_is_not_a_repository(tmp_path):
+    """An empty ``.git`` left in a shared parent is not a work tree; a
+    worktree's ``gitdir:`` file is one."""
+    from delfin.agent import bench_history as bh
+
+    (tmp_path / ".git").mkdir()
+    assert bh._git_toplevel(tmp_path / "a" / "r") == ""
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (wt / ".git").write_text("gitdir: /nowhere\n")
+    assert bh._git_toplevel(wt / "r") == str(wt)
 
 
 def test_the_history_store_is_registered_as_a_redirectable_user_state():
