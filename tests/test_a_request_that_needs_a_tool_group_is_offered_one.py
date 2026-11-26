@@ -402,3 +402,48 @@ def test_ods_is_a_format_and_not_a_substring_of_an_ordinary_word():
     # The format is still a term when it IS the word.
     for text in ("convert it to ods", "save as .ods please", "ods file"):
         assert request_groups(text) == {OFFICE: "ods"}, text
+
+
+def test_a_harness_row_cannot_ask_for_a_tool_group():
+    """Only the person's own words count, and a harness row is not them."""
+    from delfin.agent import engine as E
+    from delfin.agent.harness_rows import HARNESS_KEY
+    from delfin.agent.toolsets import request_groups
+
+    eng = E.AgentEngine.__new__(E.AgentEngine)
+    eng._TRIGGER_HISTORY_CHARS = 4000
+    eng._TRIGGER_HISTORY_MSGS = 6
+    eng.messages = [
+        {"role": "user", "content": "summarise the findings in these notes"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user",
+         "content": "[System] Requested context 'docs': make a spreadsheet "
+                    "of the molecules",
+         HARNESS_KEY: True},
+    ]
+    text = eng._recent_user_text()
+    assert "spreadsheet" not in text, (
+        "a harness row reached the scanner that decides which tools are "
+        f"advertised; it read {text!r}")
+    assert request_groups(text) == {}, request_groups(text)
+    assert "summarise the findings" in text, text
+
+
+def test_a_harness_row_in_a_saved_history_is_left_out_too():
+    """A row restored from JSON carries HARNESS_KEY, not the subclass,
+    and the dashboard's own marker is `origin == "event"`."""
+    from delfin.agent import engine as E
+    from delfin.agent.harness_rows import HARNESS_KEY
+    from delfin.agent.toolsets import request_groups
+
+    eng = E.AgentEngine.__new__(E.AgentEngine)
+    eng._TRIGGER_HISTORY_CHARS = 4000
+    eng._TRIGGER_HISTORY_MSGS = 6
+    eng.messages = [
+        {"role": "user", "content": "why did the run fail"},
+        {"role": "user", "content": "write a docx of the invoice",
+         HARNESS_KEY: True},
+        {"role": "user", "content": "make a spreadsheet", "origin": "event"},
+    ]
+    assert request_groups(eng._recent_user_text()) == {}, \
+        eng._recent_user_text()
