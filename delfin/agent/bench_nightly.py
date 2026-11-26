@@ -78,6 +78,68 @@ class InstanceRecord:
     # in-process) or "slurm" when a submitter was configured.
     submit_path: str = "local"
     job_id: Optional[str] = None
+    # m1: the token spend, carried out of the runner's result so a kept
+    # round can say what it cost in tokens and not only in core-hours.
+    # The real runner (benchmark.BenchmarkResult) already reports both;
+    # before this the round recorded the cost and lost the tokens.
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+def _token_pair(result) -> tuple[int, int]:
+    """(input, output) tokens of one runner result, 0 when it says none.
+
+    Read defensively: a runner is an injected interface (any callable),
+    and a test double or a submit-path stub need not carry the fields. A
+    missing attribute is zero tokens, which is what a record means by
+    "not reported" — never a guess.
+    """
+    def one(*names: str) -> int:
+        for name in names:
+            value = getattr(result, name, None)
+            if value is None:
+                continue
+            try:
+                return max(0, int(value))
+            except (TypeError, ValueError):
+                return 0
+        return 0
+
+    return one("input_tokens", "prompt_tokens"), one("output_tokens",
+                                                    "completion_tokens")
+
+
+def _new_round_id(started_at: float, mode: str, *, now_clock=None) -> str:
+    """A round id that orders itself: ``<utc timestamp>-<mode>-<random>``.
+
+    The random suffix keeps two rounds started in the same second
+    distinct; the timestamp prefix means a plain sort of the ids matches
+    the order the rounds actually ran in, so `bench history` needs no
+    extra bookkeeping to be chronological.
+    """
+    import time
+    import uuid
+
+    stamp = time.strftime("%Y%m%dT%H%M%S",
+                          time.gmtime(int(now_clock() if now_clock else 0)
+                                      or started_at))
+    return "%s-%s-%s" % (stamp, mode or "holdout", uuid.uuid4().hex[:6])
+
+
+def _delfin_commit() -> str:
+    """The commit (or ``<sha>-dirty``) whose code this round measured.
+
+    Reused from DELFIN's own reproducibility helper rather than shelling
+    out to git here: it already resolves the environment variable a
+    cluster job sets, falls back to the baked-in ``_commit.txt`` for an
+    installed copy, and marks a dirty tree — which matters, because a
+    round run from uncommitted code is not the round a commit describes.
+    """
+    try:
+        from delfin.utils import get_git_commit_info
+        return get_git_commit_info() or ""
+    except Exception:
+        return ""
 
 
 @dataclass
@@ -101,6 +163,15 @@ class RunRecord:
     seed_log: str = ""
     # Flat-round bookkeeping for the stop verdict
     previous_rounds_gain: list = field(default_factory=list)
+    # m1: what identifies this round in the kept history, so a later read
+    # can say which round it is and whether another round may be put
+    # beside it. None of it is derived from the seed VALUE: seed_mode is
+    # "holdout"/"practice", never the seed (the QS ruling above).
+    round_id: str = ""
+    commit: str = ""
+    provider: str = ""
+    seed_mode: str = ""
+    task_set_version: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -114,6 +185,73 @@ def _read_seed(seed_path: str) -> str:
     no caller of this module prints or stores it."""
     with open(seed_path, "r", encoding="utf-8") as fh:
         return fh.read().strip()
+
+
+def task_set_version(tasks) -> str:
+    """A short hash of the drawn task set (ids + prompts), order-free.
+
+    The comparability axis the brief calls the task-set version: a pass
+    rate over tasks A, B, C does not sit on the same chart as one over
+    A, B, D, and neither does the same prompt reworded. Taking the hash
+    from the DRAWN tasks (not from a version literal someone remembers to
+    bump) means it cannot silently stay constant while the pack changes.
+
+    Order is normalised away — the same set drawn in another order is the
+    same set. The prompt is included because that, not the id, is what
+    the model actually faced.
+    """
+    import hashlib
+
+    parts = sorted("%s\x00%s" % (getattr(t, "id", ""),
+                                 getattr(t, "prompt", "")) for t in tasks)
+    blob = ("\x01".join(parts)).encode("utf-8", "surrogatepass")
+    return "ts-" + hashlib.sha256(blob).hexdigest()[:12]
+
+
+def _persist(record: RunRecord, config: dict) -> None:
+    """Append this round to the kept history. Raises HistoryWriteError.
+
+    Deliberately NOT wrapped in a try/except: the brief's contract is
+    that a round which cannot be stored fails the round loudly. The
+    silent alternative — a nightly run that spends core-hours and leaves
+    nothing behind — is the defect this exists for, and a caller cannot
+    distinguish "nothing to report" from "the report was lost" if the
+    writer shrugs.
+
+    ``config["persist"] = False`` skips it, for a caller that runs a
+    round as part of something else and keeps the record itself (a test
+    double, an interactive one-off); ``config["history_root"]`` points
+    the store at a directory of the caller's. An EMPTY or blank root is
+    refused rather than skipped: "keep it nowhere" is not what a blank
+    setting means anywhere else in DELFIN, and reading it that way would
+    turn a typo in a setting into lost rounds.
+    """
+    if config.get("persist") is False:
+        return
+    from . import bench_history
+
+    base = config.get("history_root")
+    base = None if base is None else str(base)
+    started = record.started()
+    payload = {"round_id": record.round_id, "commit": record.commit,
+               "model": record.model, "provider": record.provider,
+               "seed_mode": record.seed_mode or record.mode,
+               "task_set_version": record.task_set_version,
+               "started_at": record.started_at, "ended_at": record.ended_at,
+               "daily_budget_core_hours": record.daily_budget_core_hours,
+               "spent_core_hours": record.spent_core_hours,
+               "refused_over_budget": record.refused_over_budget,
+               "n_instances": len(record.instances),
+               "n_unmeasured": sum(1 for i in started if i.unmeasured),
+               "input_tokens": sum(i.input_tokens for i in started),
+               "output_tokens": sum(i.output_tokens for i in started),
+               "holdout_ran": record.holdout_ran,
+               "holdout_refusal_reason": record.holdout_refusal_reason,
+               "seed_log": record.seed_log}
+    bench_history.write_round(payload, history_root=base)
+    bench_history.write_instances(
+        record.round_id, [asdict(i) for i in record.instances],
+        history_root=base, started_at=record.started_at)
 
 
 def run(config: dict, *, clock: Callable[[], float] | None = None) -> RunRecord:
@@ -162,8 +300,12 @@ def run(config: dict, *, clock: Callable[[], float] | None = None) -> RunRecord:
 
     record = RunRecord(model=model, started_at=now(), mode=mode,
                        daily_budget_core_hours=budget,
+                       provider=provider, seed_mode=mode,
                        previous_rounds_gain=list(
                            config.get("previous_rounds_gain", ())))
+    record.round_id = config.get("round_id") or _new_round_id(
+        record.started_at, mode, now_clock=now)
+    record.commit = _delfin_commit()
 
     # --- holdout seed gate -------------------------------------------------
     seed: Optional[str] = None
@@ -192,9 +334,11 @@ def run(config: dict, *, clock: Callable[[], float] | None = None) -> RunRecord:
 
     if seed is None:
         record.ended_at = now()
+        _persist(record, config)
         return record
 
     tasks = list(sampler.sample(seed, n_instances))
+    record.task_set_version = task_set_version(tasks)
     spent = 0.0
     for task in tasks:
         inst = InstanceRecord(task_id=task.id, task_class=task.task_class)
@@ -265,6 +409,11 @@ def run(config: dict, *, clock: Callable[[], float] | None = None) -> RunRecord:
             t0 = now()
             result = runner(task, model=model, provider=provider)
             inst.duration_s = now() - t0
+            # m1: the token spend is recorded whether or not the run
+            # measured the model — an unmeasured run that burned 40k
+            # tokens still cost them, and dropping that from the record
+            # makes a dead round look free.
+            inst.input_tokens, inst.output_tokens = _token_pair(result)
             # HB2 D2: a result that says the run never happened is
             # recorded as such — error text kept, never graded (a dead
             # run is not a quality-0 failure of the model) and never
@@ -282,6 +431,7 @@ def run(config: dict, *, clock: Callable[[], float] | None = None) -> RunRecord:
         record.instances.append(inst)
     record.spent_core_hours = spent
     record.ended_at = now()
+    _persist(record, config)
     return record
 
 
@@ -345,7 +495,18 @@ def main(argv: Optional[list] = None) -> int:
         provider=args.provider,
     )
     cfg["daily_budget_core_hours"] = args.budget
-    record = run(cfg)
+    from . import bench_history
+    try:
+        record = run(cfg)
+    except bench_history.HistoryWriteError as exc:
+        # m1: the round ran and its record is gone. Exiting 0 would let a
+        # supervisor log a successful nightly that left nothing behind —
+        # the exact silent loss this module exists to end. The runs are
+        # paid for by the time this fires, so the message says what was
+        # lost and where it tried to go.
+        print("error: the round is NOT kept — its record could not be "
+              "written. %s" % exc, file=sys.stderr)
+        return 4
     print(json.dumps(record.to_dict(), indent=2, sort_keys=True,
                      default=str))
     if record.holdout_refusal_reason:
