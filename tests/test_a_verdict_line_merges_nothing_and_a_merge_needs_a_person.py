@@ -259,6 +259,27 @@ def test_the_unconfirmed_advice_carries_no_injected_flag(tmp_path, monkeypatch,
     assert "ERROR:" in text
 
 
+def test_the_checks_red_refusal_does_not_promise_a_record_nothing_writes():
+    """The refusal tells a person to re-run with ``--admin-override``
+    "in the same command, and it is recorded".
+
+    Nothing records it: ``merge.py`` writes no security event for the
+    override, and a merge is never executed here. A promise of an audit
+    trail is what makes a person accept a red-check merge, so a promise the
+    code does not keep is worse than none. (Commit ``09a1f75ce`` removed the
+    same claim from the ``--help`` text and left it in the message a person
+    reads at the decision point.)
+    """
+    head = "a" * 40
+    refusal = swarm_merge.decide_merge("7", head, confirmed=True,
+                                       checks_ok=False, current_head=head)
+    assert refusal["state"] == "checks_red"
+    assert "recorded" not in refusal["reason"], refusal["reason"]
+    assert "audit" not in refusal["reason"].lower(), refusal["reason"]
+    # What the code does do: the printed command carries the flag.
+    assert "--admin-override" in refusal["reason"]
+
+
 # -- the fail verdict: the member is resumed with the failure text ---------------
 
 def test_a_fail_verdict_resumes_the_member_that_failed(tmp_path, monkeypatch,

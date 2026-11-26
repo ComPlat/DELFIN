@@ -220,5 +220,6 @@ def decide_merge(pr: int | str, head: str, *, confirmed: bool,
     elif state == "checks_red":
         out["reason"] = (
             "the checks are not green. If you mean it anyway, pass "
-            "--admin-override in the same command, and it is recorded.")
+            "--admin-override in the same command; the printed command will "
+            "then carry --admin.")
     return out
