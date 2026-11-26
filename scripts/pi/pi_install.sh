@@ -14,9 +14,47 @@ set -euo pipefail
 #   .venv/      Python 3.11 venv created by pi_bootstrap.sh
 # ============================================================================
 
-ROOT="$HOME/delfin"
+# One account per person (pi_bootstrap.sh, DELFIN_PI_ACCOUNTS=1): the shared
+# installation is root's and is built by the install account, driven by
+# root's delfin-deploy -- never by the agent account, whose files a person's
+# account must never run or load. Then this script runs twice per deploy:
+#   pi_install.sh shared-build   as the install account (DELFIN_SHARED_ROOT
+#                                and DELFIN_UV from delfin-deploy): the venv,
+#                                the dependencies, the shared extras;
+#   pi_install.sh account        as the agent account: its own settings,
+#                                wrappers, services and lab units, reading the
+#                                shared installation only.
+# ~/delfin is then a link to it: resolved, so the editable install and the
+# venv record the path the others can reach.
+MODE="${1:-}"
+if [[ "$MODE" == "shared-build" || "$MODE" == "carry-tui" ]]; then
+    ROOT="${DELFIN_SHARED_ROOT:?DELFIN_SHARED_ROOT missing (run through delfin-deploy)}"
+    UV="${DELFIN_UV:-}"
+else
+    ROOT="$(readlink -f "$HOME/delfin" 2>/dev/null || echo "$HOME/delfin")"
+    UV="$HOME/.local/bin/uv"
+fi
+SHARED=0
+case "$ROOT/" in "$(readlink -f "$HOME")"/*) ;; *) SHARED=1 ;; esac
+if [[ "$SHARED" == "1" ]]; then
+    # Everything deployed is read by every person's account, never written.
+    umask 022
+    # Playwright's browser too: under ~/.cache it would be one account's alone.
+    export PLAYWRIGHT_BROWSERS_PATH="$ROOT/ms-playwright"
+    case "$MODE" in
+        shared-build|account|status|carry-tui) ;;
+        *)
+            echo "error: $ROOT is the shared installation (one account per person): root's," >&2
+            echo "       and the agent account cannot deploy it. As the admin, from your PC:" >&2
+            echo "       scripts/pi/deploy_pi.sh --shared pi@<pi>   (back: --shared-rollback)" >&2
+            exit 1 ;;
+    esac
+fi
+# The build's own state (generated requirements, dependency stamp). In the
+# shared installation the install account's .install/: root owns the
+# directory above it.
+if [[ "$SHARED" == "1" ]]; then STATE="$ROOT/.install"; else STATE="$ROOT"; fi
 VENV_PY="$ROOT/.venv/bin/python"
-UV="$HOME/.local/bin/uv"
 # PyPI has no aarch64 dist of pymol -> built from GitHub source below instead.
 SKIP_DEPS_RE='^pymol-open-source'
 # Every extra pyproject.toml defines, minus these (so new extras arrive on
@@ -44,7 +82,9 @@ DELFIN_GIT_URL="${DELFIN_GIT_URL:-https://github.com/ComPlat/DELFIN.git}"
 PYMOL_GIT="git+https://github.com/schrodinger/pymol-open-source.git@edcda80f3a73ebf0b5922991f85910d17ffbcce5"
 
 cd "$ROOT"
-[[ -x "$VENV_PY" ]] || { echo "error: $VENV_PY missing - run pi_bootstrap.sh first" >&2; exit 1; }
+if [[ "$MODE" != carry-tui && "$MODE" != status ]]; then
+    [[ -x "$VENV_PY" ]] || { echo "error: $VENV_PY missing - run pi_bootstrap.sh first" >&2; exit 1; }
+fi
 
 # Editable as a plain path on sys.path (compat), not setuptools' finder: the
 # finder sits after the path search, so from ~ the folder ~/delfin (this
@@ -67,7 +107,7 @@ ensure_compat_editable() {
 
 # requirements.pi.txt: the core and every extra not in $1.
 write_requirements() {
-    "$VENV_PY" - "$1" "$SKIP_DEPS_RE" > "$ROOT/requirements.pi.txt" <<'EOF'
+    "$VENV_PY" - "$1" "$SKIP_DEPS_RE" > "${STATE:-$ROOT}/requirements.pi.txt" <<'EOF'
 import re, sys, tomllib
 skip_extras, skip = set(sys.argv[1].split()), re.compile(sys.argv[2])
 proj = tomllib.load(open("src/pyproject.toml", "rb"))["project"]
@@ -85,7 +125,7 @@ uv_install_requirements() {
     # CPU torch: PyPI's aarch64 torch drags in multi-GB CUDA (sbsa) wheels.
     # shellcheck disable=SC2086
     "$UV" pip install --python "$VENV_PY" --torch-backend cpu "$@" \
-        -r "$ROOT/requirements.pi.txt" $EXTRA_PIP
+        -r "${STATE:-$ROOT}/requirements.pi.txt" $EXTRA_PIP
 }
 
 install_deps() {
@@ -131,7 +171,7 @@ extra_skipped() {
 # overrides and the skipped extras. A deploy that changes only this
 # script's choices (the orca extra coming in) reinstalls too; comparing
 # pyproject.toml alone never noticed.
-DEPS_STAMP="$ROOT/.deps-inputs.sha256"
+DEPS_STAMP="${STATE:-$ROOT}/.deps-inputs.sha256"
 deps_stamp() {
     { cat "$ROOT/src/pyproject.toml" "$PI_OVERRIDES" 2>/dev/null; printf 'skip=%s\n' "$SKIP_EXTRAS"; } \
         | sha256sum | cut -d' ' -f1
@@ -183,7 +223,7 @@ first_reason() {
 install_pip_group() {
     local name="$1" specs frozen out
     specs="$(group_specs "$name")"
-    frozen="$(mktemp "$ROOT/.pi-frozen.XXXXXX")"
+    frozen="$(mktemp "${STATE:-$ROOT}/.pi-frozen.XXXXXX")"
     "$UV" pip freeze --python "$VENV_PY" 2>/dev/null \
         | grep -E '^[A-Za-z0-9._-]+==' > "$frozen" || true
     # shellcheck disable=SC2086
@@ -279,10 +319,16 @@ carry_tui_modules() {
 # Bun + bun.lock packages) with the patched OpenTUI library for xterm.js
 # terminals (VS Code), Playwright's Chromium, OCR for pytesseract, the
 # manual search index, and a git checkout for the agent to work in.
-set_up_extras() {
+# shared_extras writes into the installation (the install account's part in
+# the shared layout), account_extras into the agent account's home.
+tui_setup() {
     # shellcheck disable=SC1091
     ( source "$ROOT/agent.env" && source "$ROOT/.venv/bin/activate" \
-        && cd "$ROOT/work" && python -P -m delfin.agent.cli tui --setup </dev/null ) \
+        && cd "$1" && python -P -m delfin.agent.cli tui --setup </dev/null )
+}
+
+shared_extras() {
+    tui_setup "$HOME" \
         || echo "warning: terminal UI setup failed (retry: delfin-agent tui --setup)" >&2
     if [[ -x "$ROOT/src/tui/scripts/build-opentui-native.sh" ]]; then
         ( cd "$ROOT/src/tui" && { scripts/build-opentui-native.sh --check >/dev/null 2>&1 \
@@ -304,6 +350,11 @@ set_up_extras() {
         echo "      would run unasked. Once, as an admin (pi): sudo bash $ROOT/src/scripts/pi/pi_kernel_landlock.sh build," >&2
         echo "      then: sudo bash $ROOT/src/scripts/pi/pi_kernel_landlock.sh try" >&2
     fi
+}
+
+# agent.env upgrades. In the shared layout root's file: delfin-deploy applies
+# the same lines (delfin_deploy.sh), this account cannot write it.
+agent_env_upgrades() {
     # An agent.env from before: "off" ran a command the dashboard executes for
     # the agent with the account's full rights. auto confines it.
     if grep -q '^export DELFIN_AGENT_SANDBOX=off$' "$ROOT/agent.env" 2>/dev/null; then
@@ -314,6 +365,16 @@ set_up_extras() {
         printf '%s\n' "# DELFIN's own MCP servers run in bwrap, seeing only their folders." \
             "export DELFIN_MCP_ISOLATION=builtin" >> "$ROOT/agent.env"
         echo "==> agent.env: DELFIN_MCP_ISOLATION=builtin"
+    fi
+}
+
+account_extras() {
+    # The terminal UI's own runtime (Bun) for this account. In the shared
+    # layout its packages are already in the installation (shared-build);
+    # this account only reads them.
+    if [[ "$SHARED" == "1" ]]; then
+        tui_setup "$ROOT/work" >/dev/null 2>&1 \
+            || echo "note: terminal UI setup for this account reported a problem (delfin-agent tui --setup)" >&2
     fi
     # The agent tab's defaults on this box (~/.config/delfin/pi-agent.conf),
     # written into the account's DELFIN settings on every deploy, like
@@ -362,7 +423,11 @@ EOF
     # gets ~/people/<windows user> as home (own sessions, dashboard, tmux,
     # agent service). DELFIN_PI_PEOPLE=0 leaves it off. An overview, not a
     # boundary: they are one Unix user.
-    if [[ "${DELFIN_PI_PEOPLE:-1}" == "1" && ! -f "$HOME/.config/delfin/launcher-people.conf" ]]; then
+    # With one Linux account per person (a shared root) people have their
+    # own accounts, so this account does not need the mode.
+    local people_default=1
+    [[ "$SHARED" == "1" ]] && people_default=0
+    if [[ "${DELFIN_PI_PEOPLE:-$people_default}" == "1" && ! -f "$HOME/.config/delfin/launcher-people.conf" ]]; then
         mkdir -p "$HOME/.config/delfin"
         printf '%s\n' "# Windows launcher: one home per person under ~/people (remote_bootstrap.sh)." \
             > "$HOME/.config/delfin/launcher-people.conf"
@@ -409,6 +474,9 @@ if tabs.get("order") != order or tabs.get("hidden") != hidden:
     save_settings(settings)
     print("==> dashboard tabs: " + " ".join(t for t in shown if t in ids) + " (+ settings)")
 EOF
+    # Every person's defaults (one account per person) are root's:
+    # delfin-deploy writes $ROOT/settings-defaults.json from /etc/delfin, never
+    # from this account's settings.
     # tmux waits 10 ms (3.5 default) for the rest of an escape sequence; over
     # SSH and a VPN the terminal's answer to tmux's capability query arrives
     # later, and its text ("^[[?61;1;6;...c") landed in the pane as typing.
@@ -528,7 +596,9 @@ install)
     drop_foreign_tests_pkg
     smoke
     smoke_optional
-    set_up_extras
+    shared_extras
+    agent_env_upgrades
+    account_extras
     restart_dashboard
     install_lab_units
     smoke_lab
@@ -550,16 +620,49 @@ rollback)
     drop_foreign_tests_pkg
     smoke
     smoke_optional
-    set_up_extras
+    shared_extras
+    agent_env_upgrades
+    account_extras
     restart_dashboard
     install_lab_units
     smoke_lab
+    ;;
+shared-build)
+    # As the install account, through delfin-deploy (root swapped src/ in
+    # already). Writes nothing outside the installation and its own home.
+    [[ "$SHARED" == "1" && "$(id -u)" != 0 ]] || { echo "error: shared-build is the install account's (delfin-deploy)" >&2; exit 1; }
+    install -d -m 755 "$STATE"
+    if ! deps_current; then
+        echo "==> dependency inputs changed or first deploy: installing dependencies"
+        install_deps
+    else
+        echo "==> dependency inputs unchanged: code swapped, no reinstall needed"
+    fi
+    ensure_compat_editable
+    install_optional_groups
+    drop_foreign_tests_pkg
+    smoke
+    smoke_optional
+    shared_extras
+    ;;
+account)
+    # As the agent account, after shared-build: its own files only.
+    [[ "$SHARED" == "1" ]] || { echo "error: account is the shared layout's step (one-account boxes: install)" >&2; exit 1; }
+    account_extras
+    restart_dashboard
+    install_lab_units
+    smoke_lab
+    ;;
+carry-tui)
+    # delfin-deploy, as the install account: keep tui/node_modules across a
+    # swap when its inputs are the same.
+    carry_tui_modules "${2:?}" "${3:?}"
     ;;
 status)
     cat "$ROOT/src/DEPLOYED_VERSION" 2>/dev/null || echo "nothing deployed"
     ;;
 *)
-    echo "usage: $0 {install <version> [--test]|rollback|status}" >&2
+    echo "usage: $0 {install <version> [--test]|rollback|status|shared-build|account|carry-tui FROM TO}" >&2
     exit 2
     ;;
 esac
