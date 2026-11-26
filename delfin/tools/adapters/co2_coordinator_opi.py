@@ -182,7 +182,7 @@ class Co2CoordinatorOpiAdapter(StepAdapter):
             if start_distance is None:
                 # The scan's start is the metal-C distance of the structure,
                 # which only an atoms object can give.  A caller naming both
-                # indices has been told it "never needs" one (:159-163) --
+                # indices has been told it "never needs" one (:169-173) --
                 # true only when it also names start_distance, which the
                 # message below says.  Without this check the same caller got
                 # `AttributeError: 'str' object has no attribute 'position'`
