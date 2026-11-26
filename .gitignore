@@ -17,6 +17,10 @@ __pycache__/
 *$py.class
 
 .venv/
+# Named variants of the same thing (.venv-ci, .venv-fix, ...): a virtualenv is
+# never a repository file, and one left beside the code must not be swept into
+# a `git add -A` by its name alone.
+.venv*/
 delfin_venv.tar
 
 # Local server config
@@ -163,3 +167,12 @@ RESTORE/
 # address to come back to. Generated, never edited, and it must not make
 # every dashboard start look like an uncommitted change.
 delfin_voila_runtime/
+
+# Per-wave working directories: probe scripts, suite logs and raw run
+# transcripts. They hold absolute paths inside somebody's home directory and
+# complete tool transcripts, none of which belongs in a public repository.
+# Ignored from the tracked file, not from a checkout's .git/info/exclude --
+# that rule does not travel to a clone, and one `git add -A` in a fresh
+# checkout published the traces. Tracked files under scratch/ stay tracked
+# (an ignore rule never hides a file git already follows).
+scratch/
