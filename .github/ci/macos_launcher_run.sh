@@ -24,7 +24,7 @@ export DELFIN_LAUNCHER_STORE="$work/store" DELFIN_LAUNCHER_APPS="$work/Applicati
 cleanup() {
     pkill -f 'DELFIN.sh connect' 2>/dev/null || true
     [ -n "${local_pid:-}" ] && kill "$local_pid" 2>/dev/null || true
-    [ -f "$work/sshd/pid" ] && kill "$(cat "$work/sshd/pid")" 2>/dev/null || true
+    [ -f "$work/sshd/pid" ] && sudo kill "$(cat "$work/sshd/pid")" 2>/dev/null || true
     command -v tmux >/dev/null && tmux kill-server 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -100,7 +100,11 @@ StrictModes no
 Subsystem sftp /usr/libexec/sftp-server
 SetEnv PATH=$brew_bin:$sha_dir:/usr/bin:/bin:/usr/sbin:/sbin
 EOF
-/usr/sbin/sshd -f "$work/sshd/config" -E "$work/sshd/log" || { cat "$work/sshd/log"; fail 'sshd'; }
+# As root, as on any real server: an sshd of an ordinary user gives the
+# session no terminal on macOS ("Attempt to write login records by non-root
+# user"), and tmux on the server then cannot attach. The runner's sudo
+# needs no password; nothing else here runs as root.
+sudo /usr/sbin/sshd -f "$work/sshd/config" -E "$work/sshd/log" || { sudo cat "$work/sshd/log"; fail 'sshd'; }
 user=$(id -un)
 mkdir -p ~/.ssh && chmod 700 ~/.ssh
 # The server's port lives in ~/.ssh/config, as for any server on another port.
@@ -131,7 +135,7 @@ connect() {
     # script(1) gives the connection the terminal Terminal.app would; the
     # sleep keeps its input open, as a window does.
     (sleep 900 | DELFIN_LAUNCHER_URL_FILE="$work/url" script -F -q "$work/connect-$1.log" /bin/bash "$app/DELFIN.sh" connect "$id") &
-    wait_for 300 test -s "$work/url" || { cat "$work/connect-$1.log"; tail -n 30 "$work/sshd/log"; fail "no browser URL ($1)"; }
+    wait_for 300 test -s "$work/url" || { cat "$work/connect-$1.log"; sudo tail -n 30 "$work/sshd/log"; fail "no browser URL ($1)"; }
     url=$(cat "$work/url")
     echo "browser URL: ${url%%token=*}token=..."
     tunnel_port=$(printf '%s' "$url" | sed -E 's#^http://127\.0\.0\.1:([0-9]+)/.*#\1#')
