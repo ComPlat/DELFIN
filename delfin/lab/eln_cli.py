@@ -2,8 +2,25 @@
 
 Reading (allowed everywhere): ``pending``, ``show ID``, ``collections``.
 
-The person's actions (refused in a process an agent session started, and
-refused as command text by ``approval_guard``): ``approve ID``.
+The person's action is ``approve ID``. What guards it, measured on this tree:
+the process marker -- ``_person_only`` below and
+:func:`delfin.lab.eln_write.grant` both refuse when
+``DELFIN_AGENT_SESSION`` is set, and the tool side
+(``delfin/lab/eln_tools.py``) files a request and then waits, so no tool
+call sends a write. That marker is the only layer in place: the command-text
+gate in ``delfin/agent/approval_guard.py`` matches
+``approvals approve|deny|answer`` and stops there, so this spelling of the
+same act (``answer_command("delfin-agent eln approve X")`` is ``None``, and
+``operator_command`` does not carry ``eln`` either) is **not** refused as
+command text the way ``delfin-agent approvals approve`` is. A process that
+drops the variable before it runs ``approve`` therefore still mints a grant.
+Closing that is a write to ``delfin/agent/approval_guard.py``, which is in
+the self-modification guard's protected set; the diff is shipped as
+``scratch/eln-approve-as-command-text.patch`` and is **not** applied in this
+branch. The durable fix -- a grant no descendant of an agent process can
+mint, rather than one that merely kept an environment variable -- belongs
+with ``delfin/lab/approvals.py``, which carries the same single-layer shape
+for lab actions (identical on ``origin/main``).
 
 Why a command and not a tool. An agent that could approve its own ELN
 write has no approval -- the two tools that matter here (``eln_draft``,
