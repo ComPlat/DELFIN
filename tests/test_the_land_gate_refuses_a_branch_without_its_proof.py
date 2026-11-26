@@ -108,13 +108,28 @@ def swarm(tmp_path, monkeypatch):
     return {"root": tmp_path, "wt": wt, "run": RUN, "tid": TID}
 
 
-def _record_real_run(swarm, probe="inline-xyz", *, side="branch", error="", tools=3):
+def _record_real_run(swarm, probe="inline-xyz", *, side="branch", error="", tools=3,
+                     touched=True):
     """The rows the stage records outside the member's cage, through the
-    product's own writer, plus the ``<tid>.realrun`` marker."""
+    product's own writer, plus the ``<tid>.realrun`` marker.
+
+    ``realrun._one`` writes the probe's log next to those rows, so a faithful
+    fixture writes one too: ``touched`` says whether the log shows a call on a
+    file the branch changed, which is the difference between a run that
+    reached the change and one that answered in chat.
+    """
     rows = [{"probe": probe, "side": "base", "stop": "end_turn", "tools": tools, "error": ""},
             {"probe": probe, "side": side, "stop": "end_turn", "tools": tools, "error": error}]
     wave.record(swarm["run"], "realrun", swarm["tid"], rows=rows)
     (swarm["root"] / swarm["run"] / f"{swarm['tid']}.realrun").write_text("0")
+    if error:
+        return                              # a run that failed wrote no answer
+    d = swarm["wt"] / "scratch" / "realrun"
+    d.mkdir(parents=True, exist_ok=True)
+    ev = ({"type": "tool_use", "name": "edit_file",
+           "input": {"path": "tests/test_new.py", "content": "x"}} if touched
+          else {"type": "text", "text": "I read the code and answered the question."})
+    (d / f"{probe}-{side}.jsonl").write_text(json.dumps(ev) + "\n")
 
 
 def _proof_table(*rows) -> str:
@@ -325,3 +340,82 @@ def test_a_squash_message_naming_the_site_is_refused(swarm, monkeypatch):
     _gate(swarm)
     assert _landing(swarm).startswith("refused:"), _landing(swarm)
     assert "names this site" in _landing(swarm), _landing(swarm)
+
+
+# --- 4. The reach test the first version only named --------------------------
+# Measured on this branch with scratch/measure_arms.py: a stage real-run row
+# whose probe log never touched a file the branch changed was ACCEPTED, and a
+# branch whose decision table named a row but whose probe answered in chat
+# alone passed. "The run happened" is not "the run reached the change", and the
+# package's first version measured only the first.
+
+
+def _probe_log(swarm, name="inline-xyz", *, touched=True, side="branch"):
+    """The probe's own log, in the shape ``--output-format stream-json`` writes
+    (delfin/agent/cli_stream.py:20): one JSON object per line, a tool call
+    carrying ``name`` and ``input``."""
+    d = swarm["wt"] / "scratch" / "realrun"
+    d.mkdir(parents=True, exist_ok=True)
+    if touched:
+        ev = {"type": "tool_use", "name": "edit_file",
+              "input": {"path": "tests/test_new.py", "content": "x"}}
+    else:
+        ev = {"type": "text", "text": "I read the code and answered the question."}
+    (d / f"{name}-{side}.jsonl").write_text(json.dumps(ev) + "\n")
+
+
+def test_a_real_run_that_never_touched_the_change_is_refused(swarm):
+    """The stage recorded a real run on the branch, so "the run happened" --
+    but its log shows a chat and no file the branch changed. Red before this
+    test: the gate accepted it (measured, six-case probe, case B)."""
+    _ready_proof(swarm)
+    _probe_log(swarm, touched=False)
+    _gate(swarm)
+    assert _landing(swarm).startswith("refused:"), _landing(swarm)
+    assert "reached" in _landing(swarm), _landing(swarm)
+
+
+def test_a_real_run_that_touched_a_changed_file_is_accepted(swarm):
+    """CONTROL for the reach test, on the same commit: the same stage row with
+    a log that names a file the branch changed passes. Without this the
+    refusal above could be a blanket."""
+    _ready_proof(swarm)
+    _probe_log(swarm, touched=True)
+    _gate(swarm)
+    assert _landing(swarm).startswith("ready:"), _landing(swarm)
+
+
+# --- 5. The squash message is the PR BODY, which is what is published --------
+# Measured on this branch: a model name in the PR body was ACCEPTED, because
+# the message was composed from the title and the commit subjects only. The
+# body is most of what a squash merge publishes, so a model, provider or site
+# name in it reaches the base exactly like one in the title.
+
+
+def test_a_model_name_in_the_pr_body_is_refused(swarm):
+    """Red before this test: the body was never scanned (six-case probe, D)."""
+    _ready_proof(swarm)
+    _write_pr(swarm, _proof_table(("g1", "tests/test_new.py", "inline-xyz", "done"))
+              + "\nthis bundle was built with kit.glm-5.3-flash\n")
+    _gate(swarm)
+    assert _landing(swarm).startswith("refused:"), _landing(swarm)
+    assert "model, provider or site" in _landing(swarm), _landing(swarm)
+
+
+def test_a_provider_name_in_the_pr_body_is_refused(swarm):
+    """Same rule, the provider word: a name no model family maps to."""
+    _ready_proof(swarm)
+    _write_pr(swarm, _proof_table(("g1", "tests/test_new.py", "inline-xyz", "done"))
+              + "\nserved through blablador\n")
+    _gate(swarm)
+    assert _landing(swarm).startswith("refused:"), _landing(swarm)
+
+
+def test_a_body_without_such_a_name_is_accepted(swarm):
+    """CONTROL: the same body shape with ordinary prose passes, so the two
+    refusals above measure the name and not the body's presence."""
+    _ready_proof(swarm)
+    _write_pr(swarm, _proof_table(("g1", "tests/test_new.py", "inline-xyz", "done"))
+              + "\nthe gate runs the test on both trees\n")
+    _gate(swarm)
+    assert _landing(swarm).startswith("ready:"), _landing(swarm)

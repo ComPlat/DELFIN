@@ -239,12 +239,65 @@ def _realrun_rows(run: str, tid: str) -> list[dict]:
     return rows
 
 
-def _probe_reached(rows: list[dict], probe: str) -> tuple[bool, str]:
+def _probe_log_reached(wt: Path, probe: str, changed: set[str]) -> tuple[bool, str]:
+    """Whether ``probe``'s branch log shows it TOUCHED a file the branch changed.
+
+    Input: the member's worktree, the probe's name, and the files the branch
+    changed against its base. Output: ``(reached, why)``.
+
+    The log is the one ``realrun._one`` writes, in the shape
+    ``--output-format stream-json`` emits (``delfin/agent/cli_stream.py``): one
+    JSON object per line, a tool call carrying ``name`` and ``input``. A run
+    that answered in chat alone did not reach the change, and the package's
+    first version accepted it -- "the run happened" is not "the run reached
+    the change", and only the second is the proof the package asks for.
+
+    The log lives in the member's worktree, so on its own it is text the
+    member can write; this is why the caller requires the stage's own row
+    (recorded outside the cage by ``realrun.run``) BEFORE reading it. Neither
+    half is trusted alone.
+    """
+    logs = sorted((Path(wt) / "scratch" / "realrun").glob(f"{probe}-branch.jsonl"))
+    if not logs:
+        return False, f"{probe} left no branch log in scratch/realrun/"
+    seen: list[str] = []
+    for log in logs:
+        try:
+            text = log.read_text(errors="replace")
+        except OSError as exc:
+            return False, f"{probe}'s branch log cannot be read ({exc})"
+        for line in text.splitlines():
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(ev, dict) or ev.get("type") != "tool_use":
+                continue
+            blob = json.dumps(ev.get("input") or {}) + " " + str(ev.get("input") or "")
+            for f in changed:
+                if f in blob:
+                    seen.append(f)
+    if seen:
+        return True, ""
+    return False, (f"{probe} reached no file this branch changed "
+                   f"(its log shows no call touching any of "
+                   f"{', '.join(sorted(changed)[:4])})")
+
+
+def _probe_reached(rows: list[dict], probe: str, *,
+                   wt: Path | None = None,
+                   changed: set[str] | None = None) -> tuple[bool, str]:
     """Whether ``probe`` ran on the branch side and reached the change.
 
     A row carrying an ``error`` is a run that started and never got there --
     the import check refused it, the endpoint failed, the budget ran out. It
     is not evidence, and it is named as what it was rather than as an absence.
+
+    Two independent halves, both required: the stage's own record that the run
+    happened (written outside the member's cage), and the log's evidence that
+    it touched the change (inside the worktree). A gate that read only the
+    first accepted a probe that answered in chat; one that read only the
+    second trusted the author again.
     """
     named = [r for r in rows if str(r.get("probe") or "") == probe]
     if not named:
@@ -255,6 +308,8 @@ def _probe_reached(rows: list[dict], probe: str) -> tuple[bool, str]:
     ok = [r for r in branch if not str(r.get("error") or "").strip()]
     if not ok:
         return False, f"the branch probe reached nothing ({str(branch[-1].get('error'))[:120]})"
+    if wt is not None and changed:
+        return _probe_log_reached(wt, probe, changed)
     return True, ""
 
 
@@ -299,7 +354,11 @@ def proof_refusal(wt: Path, base: str, *, run: str = "", tid: str = "") -> str:
             if on_base:
                 return (f"{pkg}: {test} passes on {base} too ({said}), so it proves "
                         "nothing about this branch")
-            reached, why = _probe_reached(_realrun_rows(run, tid), r["realrun"])
+            # The files this branch changed: what the probe had to reach for its
+            # run to be evidence about THIS branch rather than about a chat.
+            changed = set(git(["diff", "--name-only", f"{base}...HEAD"], wt).stdout.split())
+            reached, why = _probe_reached(_realrun_rows(run, tid), r["realrun"],
+                                          wt=Path(wt), changed=changed)
             if not reached:
                 return f"{pkg}: no real run reached the change -- {why}"
     finally:
@@ -365,11 +424,13 @@ def _non_public_pattern() -> re.Pattern:
                                                       key=len, reverse=True)), re.I)
 
 
-def squash_message(wt: Path, base: str, title: str, msg: str = "") -> tuple[str, str]:
+def squash_message(wt: Path, base: str, title: str, msg: str = "", *,
+                   body: str = "") -> tuple[str, str]:
     """The message a squash merge of this branch publishes, and why not, if so.
 
-    Input: the worktree, its base, the PR title and (optionally) a message the
-    lander proposes. Output: ``(message, refusal)``.
+    Input: the worktree, its base, the PR title, (optionally) a message the
+    lander proposes, and (optionally) the PR body -- the text the squash commit
+    publishes. Output: ``(message, refusal)``.
 
     The rule, and each clause of it is a defect measured on a landed branch:
     the published message carries EXACTLY ONE ``Co-Authored-By:`` line, naming
@@ -377,16 +438,22 @@ def squash_message(wt: Path, base: str, title: str, msg: str = "") -> tuple[str,
     contributors of one branch, and none leaves the agent out of the history it
     wrote -- and no word of it names the model, the provider or the site,
     because those belong to the branch and not to the base's history.
+
+    The BODY is scanned as well as the title and the commit subjects: it is
+    most of what a squash merge publishes, and the first version of this check
+    read only the title and the subjects, so a model name in the body passed
+    the gate (measured with ``scratch/measure_arms.py``, case D).
     """
     agent = coauthor_email()
     if not agent:
         return "", "no agent account is configured (agent.commit_coauthor_email)"
-    body = msg.strip() or title.strip()
+    head = msg.strip() or title.strip()
     # The lander's own wording, then the subjects of the commits it bundles.
     subjects = [s.strip() for s in
                 git(["log", "--format=%s", f"{base}..HEAD"], wt).stdout.splitlines()
                 if s.strip() and not s.strip().startswith("Merge ")]
-    text = "\n\n".join(p for p in [body, "\n".join(subjects)] if p)
+    parts = [head, body.strip(), "\n".join(subjects)]
+    text = "\n\n".join(p for p in parts if p)
     # Every trailer the commits carry is DROPPED, not carried: one line is the
     # whole of the attribution, and it is the one written below.
     text = re.sub(r"^\s*Co-Authored-By:.*$\n?", "", text, flags=re.M | re.I).strip()
@@ -1823,7 +1890,7 @@ def land(runs=None, *, dry_run: bool = True, only=None, log=print) -> list[dict]
             # before the push, because the base's history is permanent: a model,
             # a provider or a site name in it cannot be taken back, and a second
             # Co-Authored-By line makes a contributor of a branch that had one.
-            squash, sq_why = squash_message(wt, base, title)
+            squash, sq_why = squash_message(wt, base, title, body=body)
             if sq_why:
                 done("refused", sq_why)
                 continue

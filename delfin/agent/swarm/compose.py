@@ -114,11 +114,15 @@ the cost of ignoring it is written next to it.
 19. THE LAND GATE READS YOUR PROOF, AND RUNS IT. scratch/PR.md's decision
     table needs one row per package: the package, the test that shows the
     change, and the real-run probe that reached it. The gate RUNS that test
-    on the base (it must fail there) and on the branch (it must pass) and
-    reads the probe's row from the stage's own record, so a test that was
-    already green on the base, a test that does not exist, and a probe that
-    recorded an error are all refusals that name your package. Write the
-    path of the test file, and the name of the probe, not a description.
+    on the base (it must fail there) and on the branch (it must pass), and it
+    reads the probe's row from the stage's own record AND the probe's log for
+    a call on a file your branch changed -- a run that answered in chat did
+    not reach the change. So a test that was already green on the base, a
+    test that does not exist, a probe that recorded an error and a probe that
+    touched nothing you changed are all refusals that name your package. A
+    test file you ADD counts: it is red on the base because it is not there
+    yet. Write the path of the test file, and the name of the probe, not a
+    description.
 
 20. YOUR COMMITS ARE SIGNED TWICE AND CREDITED ONCE. Every author AND every
     committer is the configured identity: a commit you authored and a tool
@@ -126,8 +130,10 @@ the cost of ignoring it is written next to it.
     the DELFIN agent account, and when that address carries an account
     number the number must be the same one -- the number, not the spelling,
     is what the forge credits. The gate composes the message a squash merge
-    publishes, and it carries ONE such line and no model, provider or site
-    name: those belong to the branch, not to the base's history.
+    publishes -- the title, the BODY of scratch/PR.md and the commit subjects
+    -- and it carries exactly ONE such line and no model, provider or site
+    name anywhere in that text: those belong to the branch, not to the
+    base's history.
 
 WHAT IS NOT SCORED: the number of things you change. One change with a
 before/after measurement beats five without.
