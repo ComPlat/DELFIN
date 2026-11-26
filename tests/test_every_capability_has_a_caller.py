@@ -81,24 +81,46 @@ _BINARY = frozenset({
 
 _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
+#: Which trees the census asks the question of. Widened on 2026-11-25 from
+#: ``delfin/agent/`` alone, because the gap this check exists to catch was
+#: never agent-specific: ``delfin/tools/`` held 591 module-level callables the
+#: census had never looked at, 5 of which the product did not reach (measured
+#: on the tree before that widening; one has since been deleted and one
+#: mounted, so 3 are recorded as rows).
+#:
+#: ``delfin/agent/pack/`` is listed although it is already under
+#: ``delfin/agent/`` and so contributes nothing today -- measured: 143 pack
+#: callables, 0 of them missing from the population, its one orphan
+#: (``workflow_is``) already a row. It stays listed so that moving the packs
+#: out of ``agent/`` cannot silently drop them from the census.
+#:
+#: Order matters: the walk is first-wins (``setdefault``), so ``agent`` goes
+#: first and widening leaves every existing row's recorded file:line exactly
+#: where it was.
+_SCAN_DIRS = ("delfin/agent", "delfin/tools", "delfin/agent/pack")
+
 
 def _definitions() -> dict[str, tuple[str, int]]:
-    """``{name: (file, line)}`` for every module-level callable in the agent.
+    """``{name: (file, line)}`` for every module-level callable in the product.
 
     Module level only: a method is reached through its class and asking the
     same question of it would need the class's own reachability first.
+
+    A name defined in two modules is recorded once, at the first walk that
+    reaches it -- and see ``_mentions`` for what that costs.
     """
     out: dict[str, tuple[str, int]] = {}
-    for path in sorted((ROOT / "delfin" / "agent").rglob("*.py")):
-        try:
-            tree = ast.parse(path.read_text(errors="replace"))
-        except SyntaxError:
-            continue
-        for node in tree.body:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
-                    and not node.name.startswith("__"):
-                out.setdefault(node.name,
-                               (str(path.relative_to(ROOT)), node.lineno))
+    for sub in _SCAN_DIRS:
+        for path in sorted((ROOT / sub).rglob("*.py")):
+            try:
+                tree = ast.parse(path.read_text(errors="replace"))
+            except SyntaxError:
+                continue
+            for node in tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                        and not node.name.startswith("__"):
+                    out.setdefault(node.name,
+                                   (str(path.relative_to(ROOT)), node.lineno))
     return out
 
 
@@ -111,6 +133,19 @@ def _mentions(tree_root: Path, defs: dict, skip_own_definition: bool) -> dict:
     which is how a module named from YAML is found. With
     ``skip_own_definition`` the ``def`` line itself does not count as a
     mention of the thing it defines.
+
+    Known limit, measured 2026-11-25: only the ONE recorded ``def`` line is
+    skipped, so a name defined in two modules makes the second module's
+    ``def`` line count as a mention of it -- such a name can never read as an
+    orphan however few callers it has. 828 of the 12,200 module-level names
+    in ``delfin/`` are defined in more than one module; skipping every own
+    ``def`` line instead raises the orphan count from 168 to 172, so 4 names
+    are hidden by this today (``_first_float``, ``available_tools``,
+    ``_reset_for_tests``, ``_jupyter_server_extension_points``). Left as it is
+    deliberately: skipping every definition would also retire the reach a name
+    legitimately gains from being re-exported or dispatched by name, and 4
+    names do not pay for that. Widening the scan to ``delfin/tools/`` was
+    verified not to add any new row of this kind.
     """
     hits = {name: 0 for name in defs}
     for path in sorted(tree_root.rglob("*")):
@@ -208,6 +243,23 @@ def test_the_baseline_file_is_readable():
     rows = _baseline()
     assert rows, "the baseline is empty, so the test below asserts nothing"
     assert set(rows.values()) <= {"nowhere", "test-only"}
+
+
+def test_every_scanned_tree_exists():
+    """A scanned directory that stops existing silently stops being scanned.
+
+    ``rglob`` over a missing path yields nothing and raises nothing, so moving
+    one of these trees -- ``delfin/agent/pack/`` out of ``agent/`` is the live
+    case -- would drop its callables from the census without a single test
+    failing, which is the opposite of what widening the scan is for. The
+    listing of the pack in ``_SCAN_DIRS`` is only a safeguard while this holds.
+    """
+    missing = [d for d in _SCAN_DIRS if not (ROOT / d).is_dir()]
+    assert not missing, (
+        "these trees the census claims to scan are gone, so nothing there is "
+        f"censused any more: {missing}. Update _SCAN_DIRS with the move, and "
+        "re-measure -- the population will have changed."
+    )
 
 
 def test_no_capability_is_newly_unreachable(measured):
