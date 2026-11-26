@@ -354,8 +354,12 @@ def run_scenario(sc: dict, root: Path) -> dict:
         "gate_lines": [l for l in noise.getvalue().splitlines()
                        if "review" in l][:4],
         # REACHED: the review flow ran and a reviewer verdict was recorded.
+        # "unverified" counts: it is a verdict a reviewer's answer produced
+        # (both refused, nothing checkable came of it), not an upstream
+        # refusal like "no-brief". The base tree never emits it, so admitting
+        # it here cannot move a base number -- re-measured to show that.
         "reached": bool(len(sent) >= 2 and verdict in
-                        ("pass", "refuse", "split", "no_answer")),
+                        ("pass", "refuse", "unverified", "split", "no_answer")),
     }
 
 
@@ -439,7 +443,15 @@ def main(argv=None) -> int:
                         "land.kit_chat is faked"),
         "command": "python3 experiments/parity/w72-p3-a4/scenarios.py",
         "tree": {
-            "module_file": str(L.__file__),
+            # Relative to the repository the script sits in, plus the content
+            # hash of the file under review: an absolute path would put a home
+            # directory and an account name into a committed measurement file,
+            # and the sha is what tells the base tree from the branch when both
+            # sit at the same commit and the same relative path.
+            "module_file": os.path.relpath(str(L.__file__), str(REPO)),
+            "land_sha": subprocess.run(
+                ["git", "hash-object", str(L.__file__)], cwd=REPO,
+                capture_output=True, text=True).stdout.strip(),
             "head": subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO,
                                    capture_output=True, text=True).stdout.strip(),
             "dirty_at_runtime": subprocess.run(

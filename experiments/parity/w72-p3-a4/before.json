@@ -4,12 +4,13 @@
  "entry_point": "delfin.agent.swarm.land.main([RUN, --dry-run]), the verb delfin-agent swarm wave land forwards to; only land.kit_chat is faked",
  "command": "python3 experiments/parity/w72-p3-a4/scenarios.py",
  "tree": {
-  "module_file": "/home/qmchem_max/delfin-swarm/w72/p3-a4/scratch/base-tree/delfin/agent/swarm/land.py",
+  "module_file": "delfin/agent/swarm/land.py",
+  "land_sha": "f0a45a1a1c21ce36b6d7e1d1a98beea800445efc",
   "head": "7fafac9149ae8d66dff0c6ade8847ed4f5985750",
   "dirty_at_runtime": "",
   "python": "3.13.5"
  },
- "generated": "2026-11-26T20:00:38+0000",
+ "generated": "2026-11-26T20:35:06+0000",
  "definitions": {
   "REACHED": "a reviewer pair was reached and asked; the verdict is a reviewer verdict",
   "USED": "every reported finding carried a location that could be checked against the branch's own files (oracle: the seed)",

@@ -575,10 +575,8 @@ class DiffPlaces(NamedTuple):
     ranges: dict[str, list[tuple[int, int]]]
     whole: frozenset[str]
 
-    def files(self) -> list[str]:
-        return sorted(self.ranges)
-
     def for_file(self, path: str) -> list[tuple[int, int]]:
+        """The ranges shown for ``path``, or [] when the diff never touches it."""
         return self.ranges.get(path) or []
 
 
