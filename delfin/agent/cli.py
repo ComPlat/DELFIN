@@ -30,11 +30,13 @@ installed console script.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import json
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -427,6 +429,49 @@ def _answer_no_model_ran(engine, text: str, tool_calls, input_tokens: int,
             f"another model; `delfin-agent doctor --live` checks it.")
 
 
+def _process_attribution() -> None:
+    """Adopt the attribution this PROCESS was started with, if any.
+
+    A member of a swarm is a separate process and a fresh context. Only the
+    environment says which run it serves, so that is read here and made the
+    base context every later turn in this process merges onto: a turn then
+    records the run and the member, and a delegate of that member inherits both
+    (``subagents.run_subagent`` keeps the ids and changes only the role).
+
+    Does nothing when neither variable is set — an ordinary interactive session
+    writes six nulls, which is the honest row. Never raises: attribution is not
+    a reason for a process not to start.
+    """
+    try:
+        from . import attribution as _attr
+        got = _attr.from_env()
+        if got.is_empty():
+            return
+        # ``adopt_process``, not ``set_attribution``: the value has to survive
+        # the thread hop. repl.py runs every turn on a fresh ``threading.Thread``
+        # (repl.py:1690), where this thread's ContextVar does not exist — a
+        # member process measured ``workflow_id=None`` when this used the
+        # context alone.
+        _attr.adopt_process(
+            workflow_id=got.workflow_id, subagent_name=got.subagent_name)
+    except Exception:
+        pass
+
+
+def _attribution_for(engine):
+    """The turn's attribution scope, or a no-op when it cannot be had.
+
+    Kept a one-liner so ``_run_once`` reads as it did: what a turn served is
+    decided by :mod:`delfin.agent.attribution`, and a turn that cannot be
+    attributed must still run.
+    """
+    try:
+        from . import attribution as _attr
+        return _attr.turn_scope(engine)
+    except Exception:
+        return contextlib.nullcontext()
+
+
 def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
                  memory_context: str = "",
                  emit: Any = None,
@@ -662,11 +707,20 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
     if on_permission_denied is not None or _takes_denied:
         kwargs["on_permission_denied"] = _on_backend_denied
     with observer:
-        try:
-            full_text = engine.stream_response(**kwargs) or ""
-        except Exception as exc:
-            error = str(exc)
-            full_text = ""
+        # WHO this turn serves, opened around the model call so the turn row
+        # (turn_metrics.record, written by the engine at the end of the turn),
+        # every per-request row, and every delegate this turn starts carry it.
+        # The engine knows its role and session; the molecule / workflow / task
+        # come from whoever wrapped the turn and stay null when nobody did.
+        # The binding is on the CLIENT as well, because a background delegate
+        # runs on a new thread, where the context variable does not exist.
+        # See delfin.agent.attribution.
+        with _attribution_for(engine):
+            try:
+                full_text = engine.stream_response(**kwargs) or ""
+            except Exception as exc:
+                error = str(exc)
+                full_text = ""
 
     in_after = int((getattr(engine, "token_usage", {}) or {}).get("input", 0))
     out_after = int((getattr(engine, "token_usage", {}) or {}).get("output", 0))
@@ -2940,6 +2994,52 @@ def _run_prcheck_subcommand(args: argparse.Namespace) -> int:
     for partner in getattr(args, "partner", []):
         argv += ["--partner", partner]
     return prcheck_main(argv)
+
+
+def _run_usage_subcommand(args: argparse.Namespace) -> int:
+    """The `usage` subcommand: a read-only report grouped by attribution.
+
+    Registration and argument parsing live in build_parser(); the report
+    itself lives in report_costs so it can be tested without a parser.
+    Read-only by construction: it opens the two JSONL stores and prints.
+    """
+    from . import report_costs
+    since_s = report_costs.RECENT_WINDOW_S
+    raw = getattr(args, "since", "") or ""
+    if raw:
+        parsed = _parse_since(raw)
+        if parsed is None:
+            print(f"usage: --since {raw!r} is not a date "
+                  f"(expected YYYY-MM-DD or YYYY-MM-DDTHH:MM)",
+                  file=sys.stderr)
+            return 2
+        since_s = parsed
+    return report_costs.usage_main(
+        by=getattr(args, "by", "agent") or "agent",
+        since_s=since_s,
+        as_json=bool(getattr(args, "usage_json", False)),
+        min_rows=int(getattr(args, "min_rows", report_costs.MIN_GROUP_ROWS)),
+    )
+
+
+def _parse_since(raw: str) -> float | None:
+    """Seconds-since-epoch window for a ``--since`` value, or None.
+
+    A bare date means midnight local time; a stamp with a time is taken as
+    given. None is "not a date", never "0 seconds" -- a typo must not
+    silently report the last instant of history as if it were the window.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M",
+                "%Y-%m-%d"):
+        try:
+            when = datetime.datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+        return max(0.0, time.time() - when.timestamp())
+    return None
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -6561,6 +6661,34 @@ def build_parser() -> argparse.ArgumentParser:
     lab_p.add_argument("lab_args", nargs=argparse.REMAINDER)
     lab_p.set_defaults(func=cmd_lab)
 
+    # usage — a read-only report by attribution (molecule / workflow / task
+    # / agent). Light: it reads two local JSONL stores and prints a table,
+    # so it stays on whatever node it was typed on (see hpc_guard).
+    # Imported here, not at module scope: cli.py defers what only one
+    # subcommand needs.
+    from . import report_costs as _report_costs
+    usage_p = sub.add_parser(
+        "usage",
+        help="Read-only token/cost/tool report grouped by attribution "
+             "(delfin-agent usage --by molecule|workflow|task|agent)")
+    usage_p.add_argument(
+        "--by", default="agent",
+        choices=list(_report_costs.USAGE_BY_CHOICES),
+        help="Attribution to group by (default: agent)")
+    usage_p.add_argument(
+        "--since", default="", metavar="DATE",
+        help="Only turns since DATE (YYYY-MM-DD or YYYY-MM-DDTHH:MM). "
+             "Default: the last 7 days.")
+    usage_p.add_argument(
+        "--json", action="store_true", dest="usage_json",
+        help="Print the report as JSON instead of a table")
+    usage_p.add_argument(
+        "--min-rows", type=int, default=_report_costs.MIN_GROUP_ROWS,
+        metavar="N",
+        help=f"Mark groups below N rows (default: "
+             f"{_report_costs.MIN_GROUP_ROWS})")
+    usage_p.set_defaults(func=_run_usage_subcommand)
+
     # approvals — the other side of a supervised headless session
     appr = sub.add_parser(
         "approvals",
@@ -7527,6 +7655,13 @@ def main(argv: list[str] | None = None) -> int:
     # reads none of theirs. Applied before anything imports a sink.
     from . import state_paths as _state_paths
     _state_paths.scratch_state_from_environment()
+    # WHO THIS PROCESS works for, when DELFIN started it rather than a person:
+    # a swarm member gets ``DELFIN_SWARM_RUN``/``DELFIN_AGENT_LABEL`` from
+    # ``swarm/wave.py:_launch`` and nothing else, and its model calls are its
+    # own process's. Read once here, before any parser work, so every turn this
+    # process ever runs inherits the run it belongs to. An interactive session
+    # sets neither variable and nothing changes for it (delfin.agent.attribution).
+    _process_attribution()
     parser = build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(_route_argv(argv, _subcommand_names(parser)))

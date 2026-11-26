@@ -4172,6 +4172,9 @@ def run_subagent(
     import copy as _copy
     saved_perms = None
     restore_parent = False
+    # Bound before the try: the teardown below runs on every path, including
+    # one where the client copy itself failed and this was never reached.
+    _sa_attribution_handle = None
     try:
         sub_client = _copy.copy(parent_client)
         _isolate_sub_client(sub_client)
@@ -4189,6 +4192,39 @@ def run_subagent(
                 return False
 
         sub_client.should_stop = _stop_probe
+        # Carry the parent's attribution onto THIS client and set it as the
+        # context the delegate's calls run in, changing only who is running.
+        #
+        # Two places, because a delegate is reached by two routes. The context
+        # covers a foreground delegation, where the child's calls run in the
+        # caller's context. The binding on the client covers a BACKGROUND one:
+        # api_client spawns that on a new thread and calls this function from
+        # INSIDE it, and a new thread starts with an empty context — so an
+        # ambient-only attribution would record nothing for exactly the
+        # delegations worth attributing. The shallow copy above is what carries
+        # the binding across.
+        #
+        # The parent's ids are copied rather than re-declared: a child row that
+        # lost its parent's molecule_id puts the delegate's spend outside the
+        # answer to "what did this molecule cost?", which is the hole this
+        # fills. Whoever wrapped the parent's turn supplies them; if nobody did,
+        # every column stays null and the row says so.
+        _sa_attribution_handle = None
+        try:
+            from . import attribution as _attribution
+            _child = _attribution.child_of(
+                _attribution.inherit(parent_client),
+                role=f"subagent:{subagent_type}",
+                subagent_name=subagent_type,
+                parent_session=(getattr(parent_client, "metrics_session", "")
+                                or ""))
+            _sa_attribution_handle = _attribution.open_scope(
+                sub_client, molecule_id=_child.molecule_id,
+                workflow_id=_child.workflow_id, task_id=_child.task_id,
+                role=_child.role, subagent_name=_child.subagent_name,
+                parent_session=_child.parent_session)
+        except Exception:
+            _sa_attribution_handle = None
         # The same pair of ids, and the same idea: something the parent
         # can put down between the delegate's steps. The client drains
         # this at a round boundary and hands what it finds to the model as
@@ -4432,6 +4468,16 @@ def run_subagent(
     finally:
         _running_update(_sa_id, None)
         _CANCELLED.discard(_sa_id)
+        # Put the attribution back the way it was. A foreground delegation runs
+        # in the CALLER's context, so a scope left open here would leave the
+        # parent's own next calls — and any sibling delegate — labelled as this
+        # delegate's work. The client binding is restored too, which matters on
+        # the legacy path where sub_client IS parent_client.
+        try:
+            if _sa_attribution_handle is not None:
+                _attribution.close_scope(_sa_attribution_handle)
+        except Exception:
+            pass
         # Restore parent permissions ONLY if we fell back to running on the
         # shared parent client (the normal isolated-copy path never touched it).
         if restore_parent and hasattr(parent_client, "set_permissions"):
