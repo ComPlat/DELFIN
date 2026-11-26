@@ -349,12 +349,15 @@ connect_worker() {
     say 'Ctrl+C in the dashboard explicitly stops it, even with Keep session ON.'
     script_version
     remote=$(remote_command dashboard "$tunnel" "$LOGIN_PUBLIC")
-    ssh_options Dashboard "$local_port" 0 "$tunnel"
     work=$(mktemp -d "${TMPDIR:-/tmp}/delfin-launcher.XXXXXX") || die 'No temporary folder.'
     trap '[ -n "$watch_pid" ] && kill "$watch_pid" 2>/dev/null; [ -n "$ssh_pid" ] && kill "$ssh_pid" 2>/dev/null; rm -rf "$work"' EXIT
     while [ $attempt -lt 2 ]; do
         attempt=$((attempt + 1)); missing=0; opened=0
         rm -f "$work/out"; mkfifo "$work/out"
+        # Built for every attempt: copy_scripts and enroll_invitation set
+        # SSH_OPTS to the copy's options (no -tt, no tunnel), and the
+        # connection after a copy then reached the server without a pty.
+        ssh_options Dashboard "$local_port" 0 "$tunnel"
         # The terminal stays ssh's input: passwords, tmux keys, Ctrl+C.
         "$SSH" "${SSH_OPTS[@]}" "${IDENTITY[@]}" "$P_TARGET" "$remote" < /dev/tty > "$work/out" &
         ssh_pid=$!

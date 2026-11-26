@@ -130,35 +130,6 @@ id=$(basename "$profile" .conf)
 sed -i '' "s#^executable=.*#executable=$env/bin/python#" "$profile"
 app="$work/Applications/DELFIN.app/Contents/Resources"
 
-# -- diagnosis, before the launcher's own connection --------------------------
-# Does this server give an ssh -tt session a terminal, and does bash -ilc
-# (what the launcher's command runs) still have it? Asked with the same
-# options the launcher uses, once with a key restricted as the launcher's
-# is (restrict,port-forwarding,pty) and once unrestricted; once with no
-# terminal on this side and once inside script -F, as the launcher runs.
-# Informational: the connection test below decides.
-echo '== diagnosis: a terminal for the session?'
-sudo /usr/sbin/sshd -T -f "$work/sshd/config" -C user="$user",host=127.0.0.1,addr=127.0.0.1 \
-    | grep -i -E '^(permittty|usepam|uselogin|printlastlog|printmotd|permituserrc|subsystem|setenv) ' || true
-ssh-keygen -q -t ed25519 -N '' -C diag-restricted -f "$work/diag_restricted"
-ssh-keygen -q -t ed25519 -N '' -C diag-plain -f "$work/diag_plain"
-cp ~/.ssh/authorized_keys "$work/authorized_keys.before"
-printf 'restrict,port-forwarding,pty %s\n' "$(cut -d' ' -f1-2 "$work/diag_restricted.pub")" >> ~/.ssh/authorized_keys
-printf '%s\n' "$(cut -d' ' -f1-2 "$work/diag_plain.pub")" >> ~/.ssh/authorized_keys
-diag_cmd='tty; echo TERM=$TERM; tty -s && echo HAS_TTY || echo NO_TTY; bash -ilc '"'"'tty -s && echo BASH_ILC_HAS_TTY || echo BASH_ILC_NO_TTY'"'"' 2>&1'
-diag_opts=(-tt -o StrictHostKeyChecking=ask -o ForwardAgent=no -o ForwardX11=no -o ClearAllForwardings=yes
-    -o PermitLocalCommand=no -o ControlMaster=no -o ControlPath=none -o BatchMode=yes -o IdentitiesOnly=yes)
-for key in diag_restricted diag_plain; do
-    echo "-- $key, no terminal on this side"
-    /usr/bin/ssh "${diag_opts[@]}" -i "$work/$key" "$user@127.0.0.1" "$diag_cmd" < /dev/null 2>&1 | tr -d '\r' || true
-    echo "-- $key, inside script -F (as the launcher runs)"
-    script -F -q "$work/diag-$key.log" /usr/bin/ssh "${diag_opts[@]}" -i "$work/$key" "$user@127.0.0.1" "$diag_cmd" < /dev/null > /dev/null 2>&1 || true
-    tr -d '\r' < "$work/diag-$key.log"
-done
-echo '-- sshd log'
-sudo tail -n 40 "$work/sshd/log" || true
-cp "$work/authorized_keys.before" ~/.ssh/authorized_keys
-
 connect() {
     rm -f "$work/url"
     # script(1) gives the connection the terminal Terminal.app would; the

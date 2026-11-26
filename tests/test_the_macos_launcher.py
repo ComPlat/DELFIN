@@ -335,3 +335,74 @@ def test_a_missing_copy_is_copied_once_and_never_reported_as_a_refused_login():
     assert '[ $missing = 1 ] && [ $opened = 0 ] && [ $code = 10 ] && [ $attempt = 1 ]' in body
     assert body.index("copy_scripts") < body.index("copied=1")
     assert "elif [ $code = 255 ] && [ $opened = 0 ]" in body and body.count("refused_note") == 1
+
+
+def _run_on_a_terminal(program: str, env: dict, timeout: float = 60.0) -> tuple[int, str]:
+    """Run bash -c PROGRAM with a terminal as its controlling tty, as a
+    Terminal.app window gives the connection (it reads /dev/tty)."""
+    import pty
+    import select
+    import time
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.execve("/bin/bash", ["bash", "-c", program], env)
+    out = b""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select([fd], [], [], 0.5)
+        if ready:
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            out += chunk
+    else:
+        os.kill(pid, 9)
+    _, status = os.waitpid(pid, 0)
+    os.close(fd)
+    return os.waitstatus_to_exitcode(status), out.decode(errors="replace")
+
+
+def test_the_connection_after_the_copy_has_its_terminal_and_tunnel(tmp_path):
+    """The first start of a new launcher version: the server's check says
+    the scripts are missing (exit 10), scp copies them, ssh connects again.
+    That second connection must be the dashboard's -- with -tt and the one
+    tunnel -- not the copy's options: without a terminal, tmux on the
+    server cannot attach and the connection ends at once."""
+    fake = tmp_path / "fake"
+    fake.mkdir()
+    (fake / "ssh").write_text(
+        "#!/bin/bash\n"
+        'n=$(cat "$FAKE/count" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "$FAKE/count"\n'
+        'printf "%s\n" "$@" > "$FAKE/ssh.$n"\n'
+        'if [ $n = 1 ]; then echo DELFIN_SCRIPTS_MISSING; exit 10; fi\n'
+        "exit 0\n", encoding="ascii")
+    (fake / "scp").write_text('#!/bin/bash\nprintf "%s\n" "$@" > "$FAKE/scp.args"\nexit 0\n', encoding="ascii")
+    for tool in ("ssh", "scp"):
+        (fake / tool).chmod(0o755)
+    here = tmp_path / "resources"
+    here.mkdir()
+    for name in ("remote_bootstrap.sh", "remote_launcher.py"):
+        shutil.copy(ROOT / "tools" / "windows-launcher" / name, here / name)
+    pid = "0b8f1f7e-8b1c-4a4f-9f1e-3c5d7e9a1b2c"
+    env = {**os.environ, "FAKE": str(fake), "TMPDIR": str(tmp_path),
+           "DELFIN_LAUNCHER_STORE": str(tmp_path / "store"), "DELFIN_LAUNCHER_DESKTOP": str(tmp_path)}
+    program = (f'DELFIN_LAUNCHER_LIBRARY=1 source {_quote(str(SCRIPT))}\n'
+               f'HERE={_quote(str(here))} SSH={_quote(str(fake / "ssh"))} SCP={_quote(str(fake / "scp"))}\n'
+               f"save_profile {pid} lab delfin@192.0.2.10 '' '' 0 0 0 0\n"
+               f"connect_worker {pid}\n")
+    code, out = _run_on_a_terminal(program, env)
+    assert code == 0, out
+    assert (fake / "count").read_text().strip() == "2", out
+    assert (fake / "scp.args").is_file(), "the scripts were not copied"
+    first = (fake / "ssh.1").read_text().splitlines()
+    second = (fake / "ssh.2").read_text().splitlines()
+    for argv in (first, second):
+        assert argv[0] == "-tt", argv
+        assert "ClearAllForwardings=no" in argv and "-L" in argv, argv
+        tunnel = argv[argv.index("-L") + 1]
+        assert re.fullmatch(r"127\.0\.0\.1:\d+:/tmp/delfin-win-tunnel-[a-f0-9-]{36}/dashboard\.sock", tunnel), tunnel
+    assert first == second, "the connection after the copy is the same dashboard connection"
+    assert "The login was refused" not in out

@@ -312,7 +312,7 @@ first release that carries `delfin-macos-launcher.zip`):
 <!-- macos-install-line: written by tools/macos-launcher/build_package.py -->
 <!-- recipe: not-runnable — installs the macOS app; run it in Terminal on a Mac -->
 ```bash
-d=$(mktemp -d) && curl -fL --proto =https -o "$d/delfin.zip" https://github.com/ComPlat/DELFIN/releases/download/v1.4.0/delfin-macos-launcher.zip && echo "eea24a092237d68baaa71261c519ea046a2d225ddf3343dce3b827e43ade2908  $d/delfin.zip" | shasum -a 256 -c && ditto -x -k "$d/delfin.zip" "$d" && bash "$d/macos-launcher/Install.command"
+d=$(mktemp -d) && curl -fL --proto =https -o "$d/delfin.zip" https://github.com/ComPlat/DELFIN/releases/download/v1.4.0/delfin-macos-launcher.zip && echo "9a4ae11619c750197f8992d8815341428845fe82a34d5384afafbf1c99668ba4  $d/delfin.zip" | shasum -a 256 -c && ditto -x -k "$d/delfin.zip" "$d" && bash "$d/macos-launcher/Install.command"
 ```
 <!-- /macos-install-line -->
 
