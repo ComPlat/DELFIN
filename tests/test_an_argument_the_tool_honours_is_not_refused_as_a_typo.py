@@ -58,7 +58,7 @@ def _read(ws: Path, nb: dict, **kw) -> dict:
 
 @pytest.mark.xfail(
     strict=False,
-    reason="needs patches/api_client.undocumented-args.patch applied: the fix "
+    reason="needs patches/api_client.all-three.patch applied: the fix "
            "is in delfin/agent/api_client.py, which this session may not "
            "write. xfail = patch not applied (a1's rule refuses a working "
            "call); xpass = patch applied (the regression is gone).")

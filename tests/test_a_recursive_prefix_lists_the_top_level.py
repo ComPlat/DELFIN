@@ -56,7 +56,7 @@ def _list(ws, **arguments):
 
 @pytest.mark.xfail(
     strict=False,
-    reason="needs patches/api_client.glob-prefix.patch applied: the matcher "
+    reason="needs patches/api_client.all-three.patch applied: the matcher "
            "lives in delfin/agent/api_client.py, which this session may not "
            "write. xfail = patch not applied (the defect stands); "
            "xpass = patch applied (the defect is gone).")

@@ -1,8 +1,29 @@
 diff --git a/delfin/agent/api_client.py b/delfin/agent/api_client.py
-index 2867e7d40..2addcfe8c 100644
+index 2867e7d40..3a5b460c4 100644
 --- a/delfin/agent/api_client.py
 +++ b/delfin/agent/api_client.py
-@@ -2383,6 +2383,20 @@ _LABEL_ONLY: frozenset[tuple[str, str]] = frozenset({
+@@ -2354,8 +2354,20 @@ _REQUIRED_BY_TOOL: dict[str, tuple[str, ...]] | None = None
+ # commonest -- and ``_get_path_arg`` has tolerated that for as long as
+ # there have been weak models. A guard that reads the schema literally
+ # would take that tolerance away, so it reads it through this table.
++#
++# `pattern` is here for the same measured reason. Measured 2026-11-26:
++# `list_files(glob="*.py")` -- `glob` is the word the model reaches for --
++# carried a field the schema does not name, was silently passed over, and
++# listed the WHOLE workspace, while `pattern="*.py"` lists two files. A
++# synonym cannot be reached by similarity at all (`_suggestion("glob",
++# ["pattern", "path"])` returns None), so the table is the only place it
++# can be named. `regex` is the other word for the same field. Both are
++# accepted as names for `pattern`, never merged into it silently: the
++# value still has to be a pattern, and a caller that sent a bad one gets
++# the regex engine's own error.
+ _ARG_ALIASES: dict[str, tuple[str, ...]] = {
+     "path": ("file_path", "filename", "file", "target"),
++    "pattern": ("glob", "regex"),
+ }
+ 
+ # (tool, parameter) pairs where an EMPTY value is the point of the call.
+@@ -2383,6 +2395,20 @@ _LABEL_ONLY: frozenset[tuple[str, str]] = frozenset({
      ("subagent", "description"),
  })
  
@@ -23,8 +44,29 @@ index 2867e7d40..2addcfe8c 100644
  # Tools that carry their OWN plan-mode refusal in their body, past the
  # entry gate. Both are on the plan-mode safe list -- reading a task list
  # is fine -- and refuse deeper down because it is the STATUS change, not
-@@ -2467,6 +2481,17 @@ def _malformed_arguments(name: str, arguments: dict) -> Optional[str]:
+@@ -2465,8 +2491,38 @@ def _malformed_arguments(name: str, arguments: dict) -> Optional[str]:
+                         probe[field_name] = probe.pop(alias)
+                         alias_of[field_name] = alias
                          break
++        # The translation must reach the CALLER's dict, not only the check
++        # copy above. `grep_file` and `list_files` read
++        # ``arguments["path"]`` / ``arguments["pattern"]`` directly
++        # (api_client.py:20283, :20293, :20402); only the tools that go
++        # through ``_get_path_arg`` ever saw `file_path`. Measured
++        # 2026-11-26: `grep_file(pattern="def", file_path="calc")`
++        # therefore searched the WHOLE workspace and answered with files
++        # from outside `calc`, while the same call with `path="calc"`
++        # answered correctly -- so the alias table's promise ("Keys a tool
++        # accepts INSTEAD of the one its schema names", :2353) held for the
++        # check and not for the tool that does the work.
++        #
++        # The canonical key is ADDED; the alias the caller used is left in
++        # place, because a body that reads the alias keeps working, and
++        # ``_get_path_arg`` reads `path` first, so the canonical value wins
++        # wherever both exist.
++        for canonical, alias in alias_of.items():
++            if canonical not in arguments and alias in arguments:
++                arguments[canonical] = arguments[alias]
          required = [r for r in schema.get("required") or []
                      if (bare, r) not in _LABEL_ONLY]
 +        # A field the tool honours though the schema does not advertise it is
@@ -41,7 +83,7 @@ index 2867e7d40..2addcfe8c 100644
          result = _tool_args.check({**schema, "required": required}, probe,
                                    unknown="hint")
          if not result.ok:
-@@ -20422,7 +20447,17 @@ class _DocToolExecutor:
+@@ -20422,7 +20478,17 @@ class _DocToolExecutor:
                  continue
              # Match against the bare filename too, so a pattern like "*.py"
              # (no directory component) matches nested files as users expect.
