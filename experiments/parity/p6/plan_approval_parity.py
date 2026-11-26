@@ -122,12 +122,19 @@ MODES = {
     "submit_no_channel": ("plan", False, 0, "none", False,
                           {"stop": "awaiting_approval", "code": 11,
                            "before": []}),
+    # An approved plan is scaffolded into the task list and the scripted
+    # model never closes those tasks, so the honest ending here is
+    # incomplete (ledger open), not done. What this row measures is the
+    # approval reaching the run and the write landing AFTER it.
     "submit_supervised_approve": ("plan", True, 25, "approve", False,
-                                  {"stop": "done", "code": 0,
+                                  {"stop": "incomplete", "code": 9,
                                    "before": [], "after_ok": True}),
     "submit_supervised_deny": ("plan", True, 25, "deny", False,
                                {"stop": "refused", "code": 5, "before": []}),
-    "submit_supervised_timeout": ("plan", True, 3, "none", False,
+    # Asked, and nobody answered in time (not a rejection). An observer
+    # still watches the directory -- it must SEE the question and not answer
+    # it, which is what makes USED measurable on this row.
+    "submit_supervised_timeout": ("plan", True, 3, "observe", False,
                                   {"stop": "awaiting_approval", "code": 11,
                                    "before": []}),
     "empty_plan": ("plan", False, 0, "none", False,
@@ -200,6 +207,35 @@ def _child_env(home: Path, repo: Path, *, marker: bool) -> dict:
     return env
 
 
+def _room(env: dict) -> Path:
+    """Where THIS environment's approvals directory is, asked of the product.
+
+    ``file_confirm.requests_dir()`` is redirected by ``DELFIN_SCRATCH_STATE``
+    (the state-path table), so the room is not simply ``$HOME/.delfin``: a
+    watcher that guessed would poll a directory nothing is ever written to
+    and would report "nobody was asked" for a run that asked. The child that
+    answers resolves the same rule by itself, so only the watcher needs it.
+    """
+    # The bootstrap `delfin-agent` itself runs first (cli.main calls
+    # state_paths.scratch_state_from_environment() before any sink is
+    # imported), so asking file_confirm without it prints the HOME path
+    # while the child writes under DELFIN_SCRATCH_STATE -- and a watcher
+    # that polled the wrong directory reports "nobody was asked" about a
+    # run that asked.
+    p = subprocess.run(
+        [sys.executable, "-P", "-c",
+         "from delfin.agent import state_paths;"
+         "state_paths.scratch_state_from_environment();"
+         "from delfin.agent.file_confirm import requests_dir;"
+         "print(requests_dir())"],
+        cwd=str(Path(env["HOME"])), env=env, capture_output=True, text=True,
+        timeout=120)
+    got = p.stdout.strip().splitlines()
+    if p.returncode != 0 or not got:
+        raise RuntimeError(f"room lookup failed: {p.stderr[-300:]}")
+    return Path(got[-1])
+
+
 def _answer(home: Path, repo: Path, request_id: str, verb: str,
             marker: bool) -> dict:
     """Run the person's approvals command; return what it did."""
@@ -217,8 +253,8 @@ def _answer(home: Path, repo: Path, request_id: str, verb: str,
         return {"rc": None, "out": "answerer timed out"}
 
 
-def _watch_and_answer(home: Path, repo: Path, ws: Path, mode: dict,
-                      log: list, stop: threading.Event) -> None:
+def _watch_and_answer(room: Path, home: Path, repo: Path, ws: Path,
+                      mode: dict, log: list, stop: threading.Event) -> None:
     """Answer every question this run publishes, as the person would.
 
     An approved plan flips the session out of plan mode; the next write then
@@ -227,9 +263,8 @@ def _watch_and_answer(home: Path, repo: Path, ws: Path, mode: dict,
     measured state "before any approval", which must hold no plan artifact.
     """
     verb = {"approve": "approve", "deny": "deny",
-            "agent-deny": "deny"}[mode[3]]
+            "agent-deny": "deny", "observe": ""}[mode[3]]
     marker = mode[4]
-    room = home / ".delfin" / "approvals"
     answered: set = set()
     seen_any = False
     deadline = time.time() + 120
@@ -248,6 +283,13 @@ def _watch_and_answer(home: Path, repo: Path, ws: Path, mode: dict,
                             "id": rid,
                             "ws_at_first_request": sorted(
                                 os.listdir(ws)) if ws.is_dir() else []})
+            if not verb:
+                # "observe": the question must be seen and left unanswered,
+                # which is what the timeout row is about. Marking it handled
+                # keeps the loop from re-logging it every poll.
+                answered.add(rid)
+                log.append({"observed": True, "id": rid})
+                continue
             out = _answer(home, repo, rid, verb, marker=marker)
             answered.add(rid)
             log.append({"answered": verb, "rc": out["rc"],
@@ -304,9 +346,11 @@ def run_variant(kind: str, repo: Path, plan_fn_holder: dict) -> dict:
 
     watch_log: list = []
     stop_watch = threading.Event()
-    if answer_action in ("approve", "deny", "agent-deny"):
+    if answer_action in ("approve", "deny", "agent-deny", "observe"):
+        room = _room(env)
         t = threading.Thread(target=_watch_and_answer,
-                             args=(home, repo, ws, mode, watch_log, stop_watch),
+                             args=(room, home, repo, ws, mode, watch_log,
+                                   stop_watch),
                              daemon=True)
         t.start()
 
@@ -320,7 +364,7 @@ def run_variant(kind: str, repo: Path, plan_fn_holder: dict) -> dict:
         rc = None
         out = (exc.stdout or b"").decode() if isinstance(exc.stdout, bytes) \
             else (exc.stdout or "")
-    if answer_action in ("approve", "deny", "agent-deny"):
+    if answer_action in ("approve", "deny", "agent-deny", "observe"):
         stop_watch.set()
         t.join(timeout=15)
     else:

@@ -180,6 +180,11 @@ _ENGINE_STOP: dict[str, str] = {
     # missing is that the OUTCOME said "done", so a supervisor resuming the
     # run saw success and nothing was ever executed.
     "plan_awaiting_approval": "awaiting_approval",
+    # The person answered "no" to the plan. "refused" already means exactly
+    # this in this vocabulary -- denied_by_user is deliberately left out of
+    # APPROVABLE_REASON_CODES because somebody answered, and the answer was
+    # no -- so the turn exits 5, as a refused call does.
+    "plan_rejected": "refused",
 }
 
 
@@ -270,9 +275,12 @@ def pending_plan_reason(*, mode: str, awaiting: str, has_channel: bool,
       an empty plan is not a submission (the tool refused it), which is why
       the body is checked rather than the call alone.
 
-    Deliberately NOT the case when a channel is bound and nothing is
-    pending: the person was asked and answered, and a "no" is a settled
-    state -- the refusal they gave stands.
+    Where the person DID answer, the answer decides: approving is exactly
+    what leaves plan mode, so a turn that submitted a plan, had someone to
+    ask, and is STILL in plan mode was answered "no". That is reported as a
+    refusal, not as a finished turn: the requested change will not be made,
+    and a supervisor scripting the run must not read exit 0 as success. (The
+    tool's own answer for it is "rejected", which is what the model reads.)
 
     The names a delegate's call carries are namespaced
     (``mcp__server__tool``), so the bare name decides, as elsewhere.
@@ -281,15 +289,17 @@ def pending_plan_reason(*, mode: str, awaiting: str, has_channel: bool,
         return ""
     if str(awaiting or "").strip():
         return "plan_awaiting_approval"
-    if has_channel:
-        return ""
+    submitted = False
     for call in tool_calls or ():
         name = str((call or {}).get("name") or "")
         if name.rsplit("__", 1)[-1] != "exit_plan_mode":
             continue
         if str(((call or {}).get("input") or {}).get("plan") or "").strip():
-            return "plan_awaiting_approval"
-    return ""
+            submitted = True
+            break
+    if not submitted:
+        return ""
+    return "plan_awaiting_approval" if not has_channel else "plan_rejected"
 
 
 def classify(*, error: str, engine_stop_reason: str,
