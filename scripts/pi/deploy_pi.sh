@@ -72,14 +72,15 @@ bootstrap)
     # A name from mktemp: created 0600 by the login user, and in the sticky
     # temp directory nobody else can put another file under it before sudo
     # runs it. A fixed name could be created or swapped by any local user.
-    # The two scripts beside it go along: one account per person
-    # (DELFIN_PI_ACCOUNTS=1) installs root-owned copies of them.
+    # The scripts beside it go along: one account per person
+    # (DELFIN_PI_ACCOUNTS=1) installs root-owned copies of two of them, and
+    # DELFIN_PI_MIGRATE runs the third.
     stage="$(mktemp -d)"
     trap 'rm -rf "$stage"' EXIT
-    for f in pi_bootstrap.sh delfin_accounts.sh delfin_people.sh; do
+    for f in pi_bootstrap.sh delfin_accounts.sh delfin_people.sh pi_accounts_migrate.sh; do
         tr -d '\r' < "$HERE/$f" > "$stage/$f"
     done
-    remote="$(tar -C "$stage" -cf - pi_bootstrap.sh delfin_accounts.sh delfin_people.sh \
+    remote="$(tar -C "$stage" -cf - pi_bootstrap.sh delfin_accounts.sh delfin_people.sh pi_accounts_migrate.sh \
         | ssh "$HOST" 'd="$(mktemp -d)" && tar -xf - -C "$d" && echo "$d"')"
     [[ "$remote" == /* ]] || { echo "error: upload of pi_bootstrap.sh failed" >&2; exit 1; }
     # DELFIN_PI_* reach the bootstrap too (sudo would drop them).

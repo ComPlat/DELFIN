@@ -218,6 +218,7 @@ unchanged; then it takes seconds.
 | `pi_harden_host.sh` | Pi (root) | Host lockdown: sshd key only, nftables, fail2ban, security updates, sudo password |
 | `delfin_people.sh` | Pi (agent user) | `delfin-people`: who works in the account through the Windows launcher, `--attach NAME` to watch |
 | `delfin_accounts.sh` | Pi (root, admin) | `delfin-accounts`: one Linux account per person (opt-in, `DELFIN_PI_ACCOUNTS=1`): add with an invitation, lock, unlock, remove |
+| `pi_accounts_migrate.sh` | Pi (root, via `pi_bootstrap.sh`) | moves a running default-layout box to the per-person variant (`DELFIN_PI_MIGRATE=1`) and back (`DELFIN_PI_MIGRATE=back`) |
 | `lab/delfin-lab-estop.service`, `lab/delfin-lab-watchdog.service` | Pi (agent user, systemd user units) | Lab control: the e-stop owner and the dead-man, installed and restarted by `pi_install.sh`; the deploy then runs `python -m delfin.lab.smoke` (prints `smoke lab ok`). Admin steps: lingering (`pi_bootstrap.sh` does it), and GPIO only with `LAB_GPIO=1` (adds the agent user to `gpio`). See `docs/design/lab-control.md` |
 
 ## New card (Windows)
@@ -411,8 +412,25 @@ What is different:
   `pi-agent.conf` / `pi-tabs.conf`, nothing else) and puts Playwright's
   Chromium into `/opt/delfin/ms-playwright`. People mode stays off in the
   `delfin` account (`DELFIN_PI_PEOPLE=1` turns it on anyway).
-- Needs a fresh box: a `~delfin/delfin` that is already a directory is not
-  moved (the bootstrap stops and changes nothing).
+- On a box that already runs the default layout (`~delfin/delfin` is a
+  directory) the bootstrap stops and changes nothing, unless it is asked to
+  move it (`pi_accounts_migrate.sh`):
+
+  ```bash
+  DELFIN_PI_ACCOUNTS=1 DELFIN_PI_MIGRATE=1 scripts/pi/deploy_pi.sh --bootstrap pi@<pi>
+  scripts/pi/deploy_pi.sh delfin@<pi>     # builds /opt/delfin, restarts the services onto it
+  ```
+
+  The old installation is kept whole as `~delfin/delfin.one-account`; the
+  agent's workspace (`work/`) and `agent.env` go to `/opt/delfin`; people mode
+  in the `delfin` account is switched off. The services keep running on the
+  old tree until the deploy restarts them. What still leads into the `delfin`
+  account -- launcher keys (`delfin-launcher-*`), open invitations
+  (`delfin-invite-*`) and the `~delfin/people/*` homes -- is listed with the
+  command that removes it, not removed: give each person an account
+  (`delfin-accounts add`), then close the old way. Back:
+  `DELFIN_PI_MIGRATE=back scripts/pi/deploy_pi.sh --bootstrap pi@<pi>`, then a
+  deploy (person accounts and `/opt/delfin` are kept for the admin to remove).
 - The admin's tool `delfin-accounts` (`delfin_accounts.sh`, installed
   root-owned to `/usr/local/sbin`; `delfin-people` is installed root-owned to
   `/usr/local/lib/delfin` for the invitations). Run `deploy_pi.sh --bootstrap`

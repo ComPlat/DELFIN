@@ -30,8 +30,10 @@ set -euo pipefail
 # owned by the agent user, readable by the group delfin-people only, 0750;
 # ~/delfin is a link to it),
 # Python included, and installs delfin-accounts (delfin_accounts.sh, beside
-# this script) for the admin: sudo delfin-accounts add NAME. Needs a box
-# whose ~/delfin is not a directory yet (a fresh one).
+# this script) for the admin: sudo delfin-accounts add NAME. On a box that
+# already runs the one-account layout (~/delfin a directory), add
+# DELFIN_PI_MIGRATE=1: pi_accounts_migrate.sh moves it aside first, and
+# DELFIN_PI_MIGRATE=back sudo bash pi_bootstrap.sh is the way back.
 # ============================================================================
 
 AGENT_USER="${AGENT_USER:-delfin}"
@@ -40,17 +42,30 @@ AGENT_SUDO="${AGENT_SUDO:-$([[ "${NO_SUDO:-0}" == "1" ]] && echo none || echo se
 PY_VERSION="${PY_VERSION:-3.11}"
 ACCOUNTS="${DELFIN_PI_ACCOUNTS:-0}"
 SHARED_ROOT="${DELFIN_PI_SHARED_ROOT:-/opt/delfin}"
+MIGRATE="${DELFIN_PI_MIGRATE:-0}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 if [[ $EUID -ne 0 ]]; then
     echo "error: run with sudo" >&2
     exit 1
 fi
-if [[ "$ACCOUNTS" == "1" ]]; then
+[[ "$MIGRATE" == 0 || "$MIGRATE" == 1 || "$MIGRATE" == back ]] \
+    || { echo "error: DELFIN_PI_MIGRATE must be 1 or back (got '$MIGRATE')" >&2; exit 1; }
+[[ "$MIGRATE" != 1 || "$ACCOUNTS" == 1 ]] \
+    || { echo "error: DELFIN_PI_MIGRATE=1 moves to the per-person variant: set DELFIN_PI_ACCOUNTS=1 too" >&2; exit 1; }
+if [[ "$ACCOUNTS" == "1" || "$MIGRATE" == back ]]; then
     [[ "$SHARED_ROOT" =~ ^/[A-Za-z0-9._/-]+$ && "$SHARED_ROOT" != / ]]         || { echo "error: DELFIN_PI_SHARED_ROOT must be an absolute path (got '$SHARED_ROOT')" >&2; exit 1; }
-    for f in delfin_accounts.sh delfin_people.sh; do
+    for f in delfin_accounts.sh delfin_people.sh pi_accounts_migrate.sh; do
         [[ -f "$HERE/$f" ]] || { echo "error: $HERE/$f missing: run this script from scripts/pi (deploy_pi.sh --bootstrap copies it)" >&2; exit 1; }
     done
+fi
+# The way back from the per-person variant to the one-account layout: only
+# the moves, nothing installed (the next deploy_pi.sh repoints the starters).
+if [[ "$MIGRATE" == back ]]; then
+    back_home="$(getent passwd "$AGENT_USER" | cut -d: -f6)"
+    [[ -n "$back_home" ]] || { echo "error: no user $AGENT_USER" >&2; exit 1; }
+    bash "$HERE/pi_accounts_migrate.sh" back "$back_home" "$SHARED_ROOT"
+    exit 0
 fi
 if [[ "$(uname -m)" != "aarch64" ]]; then
     echo "warning: expected aarch64, got $(uname -m)" >&2
@@ -115,10 +130,13 @@ if [[ "$ACCOUNTS" == "1" ]]; then
     # script uses (pi_install.sh resolves it, so the venv, its scripts and
     # the editable install record the shared path, not the link).
     if [[ -e "$AGENT_HOME/delfin" && ! -L "$AGENT_HOME/delfin" ]]; then
-        echo "error: $AGENT_HOME/delfin is a directory: this box already has the one-account layout." >&2
-        echo "       The per-person variant needs the installation in $SHARED_ROOT from the start" >&2
-        echo "       (a fresh box). Nothing was changed." >&2
-        exit 1
+        if [[ "$MIGRATE" != 1 ]]; then
+            echo "error: $AGENT_HOME/delfin is a directory: this box already has the one-account layout." >&2
+            echo "       DELFIN_PI_MIGRATE=1 moves it aside first (pi_accounts_migrate.sh; nothing is" >&2
+            echo "       deleted, DELFIN_PI_MIGRATE=back returns). Nothing was changed." >&2
+            exit 1
+        fi
+        bash "$HERE/pi_accounts_migrate.sh" to "$AGENT_HOME" "$SHARED_ROOT"
     fi
     # Open to the persons' group only (0750), not to every account: the
     # agent user writes it, members of delfin-people read it, others nothing.
