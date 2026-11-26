@@ -960,9 +960,13 @@ class PromptLoader:
         ``agent.swarm_commit_coauthor`` says otherwise: its commits are merged
         as the wave's work, and the line is public text. The executor adds the
         same trailer mechanically to ``git commit`` the agent runs, so this
-        block is a fallback for the paths outside the bash executor -- and both
-        read ONE decision, ``commit_attribution.commit_coauthor_for``, because
-        the two disagreed for a whole release while each read the settings.
+        block is a fallback for the paths outside the bash executor. The
+        executor does NOT read it yet: ``api_client._commit_trailer_enabled``
+        still reads ``agent.commit_coauthor`` directly, so a member is told
+        nothing about the trailer while its ``git commit`` still gets the line.
+        One answer for both callers is the design; the second caller is not
+        wired -- ``tests/fixtures/h1-trailer-off-for-members.patch`` carries
+        the diff that does it.
         """
         try:
             from delfin.user_settings import load_settings
