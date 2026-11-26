@@ -214,6 +214,19 @@ def _channel(name, spec, where, writable, problems) -> Channel:
     text = bool(spec.get("text"))
     if text and writable and states:
         problems.append(f"{where}: a text channel cannot also declare states")
+    # A numeric bound on a text channel is a limit nothing checks: the value
+    # written is a NAME, and the kernel's range and ramp gates both skip a
+    # text channel (there is no number to take a step from). Accepting the
+    # keys meant `container: {text: true, max_step: 1}` parsed, was kept, and
+    # bound nothing -- no refusal, no warning, and a manifest that reads as
+    # if the limit were enforced. Refuse it instead, and say which key.
+    if text and writable:
+        _bounded = [k for k in ("min", "max", "max_step") if k in spec]
+        if _bounded:
+            problems.append(
+                f"{where}: a text channel takes a name, not a number, so "
+                f"{', '.join(_bounded)} cannot be enforced; remove "
+                f"{'it' if len(_bounded) == 1 else 'them'}")
     if (states or text) and unit:
         problems.append(f"{where}: a state or text channel has no unit")
     if not states and not text:
