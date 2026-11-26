@@ -973,8 +973,11 @@ def format_history(rounds: list[Round], capability: str = "") -> str:
     of the history is not shown."""
     if not rounds:
         return ("no benchmark rounds are kept yet. A round is stored "
-                "automatically by `delfin-agent bench nightly` / "
-                "`python -m delfin.agent.bench_nightly`.")
+                "automatically by `python -m delfin.agent.bench_nightly` "
+                "(the module entry point that keeps its record). The "
+                "scheduled bench watch cycle does not keep a round: it "
+                "writes its run file and report under the runs directory "
+                "instead, so this history stays empty afterwards.")
     tr = trend(rounds, capability)
     lines = []
     cap = f" (capability {capability})" if capability else ""
