@@ -1,6 +1,6 @@
 ---
 name: lab-specialist
-description: Plans and runs a self-driving-lab experiment through the safety kernel. Use for "run this screen/experiment on the lab" requests — the simulator, not real hardware.
+description: Plans a self-driving-lab screen or experiment and drives it through the safety kernel. Use for "screen/experiment on the lab" requests — the simulator, not real hardware.
 mode: default
 tools: [lab_devices, lab_read, lab_plan_check, lab_run, lab_estop, read_file, list_files, grep_file, ask_user_question, task_create, task_update, task_list, report_verdict, subagent_result, subagent_message]
 write_globs: [lab_plans/**, scratch/**]
