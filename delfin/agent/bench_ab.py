@@ -200,10 +200,16 @@ class TaskAB:
 class AbRefused(RuntimeError):
     """The two sides are not a pair, so no difference is reported.
 
-    Raised for a differing MODEL, a differing TASK TEXT (same id, different
-    question) and a differing SAMPLING seed. Each of those makes the difference
-    between the sides the wrong difference: it would be read as the effect of
-    the change when it is the effect of the instrument.
+    Raised for a differing MODEL and for a differing TASK (same id, a different
+    question). Each of those makes the difference between the sides the wrong
+    difference: it would be read as the effect of the change when it is the
+    effect of the instrument.
+
+    NOT raised for a differing sampling seed. The seed is GIVEN to both sides
+    through ``DELFIN_SAMPLING_SEED``, so the two are asked for the same sample;
+    whether an endpoint honoured it is reported, not compared. The docstring
+    used to list a seed mismatch as a refusal while no code checked one, which
+    is a promise a reader would rely on.
     """
 
 

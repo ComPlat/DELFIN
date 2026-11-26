@@ -6268,16 +6268,18 @@ def build_parser() -> argparse.ArgumentParser:
              "comparable are shown; the rest are listed with the reason)")
     bench_hist.add_argument(
         "--capability", default="",
-        help="Only this task family (e.g. redox_consistency)")
+        help="Only this task family (the stored task_class, e.g. "
+             "science_analysis)")
     bench_hist.set_defaults(bench_action="history")
 
     bench_trend = bench_sub.add_parser(
         "trend",
-        help="One capability's pass rate, round by round, and which rounds "
+        help="One task family's pass rate, round by round, and which rounds "
              "were left out of the comparison for want of a shared seed "
              "mode, task-set version or model")
     bench_trend.add_argument("--capability", required=True,
-                             help="The task family to trend")
+                             help="The task family to trend (the stored "
+                                  "task_class, e.g. science_analysis)")
     bench_trend.set_defaults(bench_action="trend")
 
     bench_diff = bench_sub.add_parser(
