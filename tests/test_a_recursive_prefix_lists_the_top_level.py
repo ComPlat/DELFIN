@@ -54,6 +54,12 @@ def _list(ws, **arguments):
     return _DocToolExecutor()._execute_list_files(arguments, _perms(ws))
 
 
+@pytest.mark.xfail(
+    strict=False,
+    reason="needs patches/api_client.glob-prefix.patch applied: the matcher "
+           "lives in delfin/agent/api_client.py, which this session may not "
+           "write. xfail = patch not applied (the defect stands); "
+           "xpass = patch applied (the defect is gone).")
 def test_a_recursive_prefix_lists_the_top_level_files_too(ws):
     """``**/*.md`` must find ``pkg/one.md``, not only ``pkg/sub/deep.md``."""
     out = _list(ws, path="pkg", pattern="**/*.md")
