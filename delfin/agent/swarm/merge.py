@@ -108,8 +108,14 @@ def record_verdict(run: str, tid: str, verdict: str, *, by: str,
     this project goes from a recorded verdict to a merge.
 
     ``by`` is required and must not be blank: a verdict nobody signed is
-    not a verdict (the operator file had no author at all).
+    not a verdict (the operator file had no author at all). It is the name
+    the caller *claims*; the OS user that ran the command is recorded beside
+    it as ``by_user``, because ``--by`` is free text and a model-driven
+    caller can type any name into it. A reader must see both to know whether
+    a human attested to this or something signed on their behalf.
     """
+    import getpass
+
     from . import wave
 
     who = str(by or "").strip()
@@ -122,10 +128,17 @@ def record_verdict(run: str, tid: str, verdict: str, *, by: str,
     if tid not in (st.get("agents") or {}):
         raise wave.WaveError(f"{run}/{tid} was never started")
 
+    try:
+        as_user = getpass.getuser()
+    except (OSError, KeyError):
+        as_user = ""
+
     text = str(detail or "").strip()
-    wave.record(run, "realrun_verdict", tid, verdict=got, by=who, detail=text)
+    wave.record(run, "realrun_verdict", tid, verdict=got, by=who,
+                by_user=as_user, detail=text)
     out: dict[str, Any] = {
         "run": run, "id": tid, "verdict": got, "by": who,
+        "by_user": as_user,
         "recorded": True, "merges": False, "resumed": False,
     }
     if got == "fail":

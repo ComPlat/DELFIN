@@ -507,3 +507,30 @@ def _events(tmp_path: Path, run: str) -> list[dict]:
         return []
     return [json.loads(line) for line in
             path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def test_a_verdict_records_who_ran_it_beside_who_it_claims(
+        tmp_path, monkeypatch):
+    """``--by`` is free text, so the OS user is recorded beside it.
+
+    The package's goal is that an authorless coordination file is replaced by
+    a person-signed verdict. ``--by`` alone does not reach that: nothing binds
+    it to the person, and a model-driven caller can type any name -- including
+    a maintainer's -- into it, which reads back as human attestation. The
+    claimed name and the account that ran the command are both recorded, so a
+    reader can tell an attestation from something signed on someone's behalf.
+    """
+    _seed_run(tmp_path, monkeypatch, {"a": _member(tmp_path, "a")})
+    monkeypatch.setattr(wave, "alive", lambda pid: True)   # no resume needed
+    monkeypatch.setattr("getpass.getuser", lambda: "the_account")
+
+    got = swarm_merge.record_verdict("r1", "a", "ok", by="a maintainer")
+    assert got["by"] == "a maintainer", "the claimed author is kept"
+    assert got["by_user"] == "the_account", (
+        "the account that ran the command must be recorded beside the claim")
+
+    events = _events(tmp_path, "r1")
+    verdicts = [e for e in events if e.get("kind") == "realrun_verdict"]
+    assert verdicts, events
+    assert verdicts[-1].get("by") == "a maintainer"
+    assert verdicts[-1].get("by_user") == "the_account"
