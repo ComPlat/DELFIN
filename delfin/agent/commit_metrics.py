@@ -379,11 +379,16 @@ def _ops_server_names(tree_root: Optional[Path] = None) -> frozenset[str]:
     if tree_root is not None:
         path = Path(tree_root) / "delfin" / "ops_server" / "server.py"
         if not path.is_file():
-            return frozenset()
+            # A tree without the ops server is not a tree whose ops server
+            # exposes nothing. Measured 2026-11-25 through build_row: the
+            # empty set published `delfin-ops: 0`, which reads as a
+            # regression against any tree that has the server.
+            raise OpsSurfaceUnreadable(f"no ops server at {path}")
         try:
             tree = ast.parse(path.read_text(errors="replace"))
-        except SyntaxError:
-            return frozenset()
+        except (SyntaxError, OSError) as exc:
+            raise OpsSurfaceUnreadable(
+                f"cannot parse {path}: {type(exc).__name__}: {exc}") from exc
         return frozenset(
             m.group(1) for node in ast.walk(tree)
             for m in [re.search(r"""\.tool\(\s*name\s*=\s*['"]([A-Za-z0-9_]+)['"]""",
@@ -391,24 +396,107 @@ def _ops_server_names(tree_root: Optional[Path] = None) -> frozenset[str]:
             if m is not None)
     try:
         from delfin.ops_server import server as ops_server
-    except Exception:                                       # noqa: BLE001
-        return frozenset()
+    except Exception as exc:                                # noqa: BLE001
+        # Reached only when no tree was given. Returning an empty set here
+        # would be the "absent reads as zero" defect: the caller cannot tell
+        # "the server exposes no tools" from "the server could not be
+        # imported". Raised instead, so `mcp_tool_names` can record which.
+        raise OpsSurfaceUnreadable(
+            f"cannot import the ops server: {type(exc).__name__}: {exc}"
+        ) from exc
     return frozenset(n[len("tool_"):] for n in dir(ops_server)
                      if n.startswith("tool_"))
 
 
-def mcp_tool_names(tree_root: Path) -> dict[str, frozenset[str]]:
+class OpsSurfaceUnreadable(RuntimeError):
+    """The ops server's tool surface could not be read at all."""
+
+
+def mcp_tool_names(tree_root: Path,
+                   errors: Optional[dict[str, str]] = None
+                   ) -> dict[str, frozenset[str]]:
     """The MCP servers production starts, and the tool names each exposes.
 
     Only the two DELFIN ships. A user's own server is discovered inside a
     turn and has nothing to measure at record time, so it is not guessed at.
 
     Both halves are read from ``tree_root``, so a row measures ONE tree.
+
+    An unreadable server is reported into *errors* rather than raised: a
+    checkout without the ops server must not fail the whole row, and must
+    not report that server as exposing zero tools either. Measured
+    2026-11-25 -- a bare ``except Exception`` made "could not read" and
+    "registers nothing" the same answer.
     """
-    return {
-        "delfin-tools": _tools_server_names(Path(tree_root)),
-        "delfin-ops": _ops_server_names(Path(tree_root)),
-    }
+    sink: dict[str, str] = {} if errors is None else errors
+    out: dict[str, frozenset[str]] = {}
+    for server, read in (("delfin-tools", _tools_server_names),
+                         ("delfin-ops", _ops_server_names)):
+        try:
+            out[server] = read(Path(tree_root))
+        except OpsSurfaceUnreadable as exc:
+            out[server] = frozenset()
+            sink[server] = str(exc)
+    return out
+
+
+def mcp_surface_row(tree_root: Path) -> dict[str, Any]:
+    """Each MCP server's tool count, and why it is missing when it is.
+
+    The row records an unreadable MCP server as an error with a reason,
+    not as a server that exposes no tools. Measured 2026-11-25 -- a bare
+    ``except Exception`` made the two indistinguishable.
+    """
+    errors: dict[str, str] = {}
+    names = mcp_tool_names(Path(tree_root), errors)
+    servers = {server: len(found) for server, found in names.items()}
+    return {"servers": servers, "errors": errors, "complete": not errors}
+
+
+def _role_sources() -> list[dict[str, Any]]:
+    """The three places a runnable role can be declared, lazily imported.
+
+    Each entry resolves its names at call time, so an import that fails is
+    caught by the caller and reported by ``role_sources_row`` rather than
+    silently reducing the row's agent count.
+    """
+
+    def _presets() -> list[str]:
+        from .subagents import subagent_type_names
+        return sorted(subagent_type_names())
+
+    def _whitelisted() -> list[str]:
+        from .engine import _ROLE_TOOL_WHITELIST
+        return sorted(_ROLE_TOOL_WHITELIST)
+
+    def _allowlisted() -> list[str]:
+        from .api_client import _ROLE_EXEC_ALLOWLIST
+        return sorted(_ROLE_EXEC_ALLOWLIST)
+
+    return [
+        {"source": "subagent presets", "names": _presets},
+        {"source": "engine role whitelist", "names": _whitelisted},
+        {"source": "api_client exec allowlist", "names": _allowlisted},
+    ]
+
+
+def role_sources_row() -> dict[str, Any]:
+    """Which role sources this row could read, and which it could not.
+
+    The row's agent count is a claim about "every agent", and a source that
+    failed to import makes that claim false while leaving the count looking
+    complete. Measured 2026-11-25: ten of twenty-one roles were absent and
+    nothing in the row said so. This is the field that says so.
+    """
+    read: dict[str, int] = {}
+    unreadable: dict[str, str] = {}
+    for source in _role_sources():
+        try:
+            read[source["source"]] = len(list(source["names"]()))
+        except Exception as exc:                            # noqa: BLE001
+            unreadable[source["source"]] = f"{type(exc).__name__}: {exc}"
+    return {"read": read, "unreadable": unreadable,
+            "complete": not unreadable}
 
 
 def role_names() -> list[str]:
@@ -435,21 +523,15 @@ def role_names() -> list[str]:
     the generalist's surface.
     """
     names = ["", "solo_agent"]
-    try:
-        from .subagents import subagent_type_names
-        names.extend(sorted(subagent_type_names()))
-    except Exception:                                       # noqa: BLE001
-        pass
-    try:
-        from .engine import _ROLE_TOOL_WHITELIST
-        names.extend(sorted(_ROLE_TOOL_WHITELIST))
-    except Exception:                                       # noqa: BLE001
-        pass
-    try:
-        from .api_client import _ROLE_EXEC_ALLOWLIST
-        names.extend(sorted(_ROLE_EXEC_ALLOWLIST))
-    except Exception:                                       # noqa: BLE001
-        pass
+    for source in _role_sources():
+        try:
+            names.extend(sorted(source["names"]()))
+        except Exception:                                   # noqa: BLE001
+            # A source that cannot be imported must not shrink the row in
+            # silence: "21 agents" and "21 agents, one source unreadable"
+            # are different claims, and only the second is honest. The
+            # reason is recorded by `role_sources_row` into the row itself.
+            continue
     seen: set[str] = set()
     out: list[str] = []
     for name in names:
@@ -483,12 +565,13 @@ def offered_tools(role: str, tree_root: Path) -> dict[str, Any]:
     surface = role_tool_surface_report([role])[role]
     catalogue_names = list(surface["names"])
     mcp: list[str] = []
-    for server, names in mcp_tool_names(tree_root).items():
+    mcp_errors: dict[str, str] = {}
+    for server, names in mcp_tool_names(tree_root, mcp_errors).items():
         for name in sorted(names):
             namespaced = f"mcp__{server}__{name}"
             if tool_unavailable_reason(namespaced, ctx) is None:
                 mcp.append(namespaced)
-    return {
+    result = {
         "declared_tools": len(allow) if allow else 0,
         "no_preset_restriction": allow is None,
         "catalogue_count": int(surface["count"]),
@@ -498,6 +581,9 @@ def offered_tools(role: str, tree_root: Path) -> dict[str, Any]:
         "catalogue_names": sorted(catalogue_names),
         "mcp_names": sorted(mcp),
     }
+    if mcp_errors:
+        result["mcp_errors"] = mcp_errors
+    return result
 
 
 def prompt_size(role: str) -> dict[str, Any]:
@@ -959,6 +1045,8 @@ def build_row(tree_root: Path, *, runs: Optional[list[dict[str, Any]]] = None,
         "commit": commit or git_commit(tree_root),
         "reachability": reachability(tree_root),
         "agents": agents_row(tree_root),
+        "agent_sources": role_sources_row(),
+        "mcp_surface": mcp_surface_row(tree_root),
         "packs": _packs_row(tree_root),
     }
     if runs:

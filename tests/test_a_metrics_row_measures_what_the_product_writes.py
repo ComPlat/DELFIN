@@ -25,11 +25,22 @@ each is named in the test that now holds it:
    engine's other session roles -- the most restricted roles in the product
    -- had no surface measured at all.
 6. **``delfin-agent metrics`` crashed.** A bare call raised
-   ``AttributeError: 'Namespace' object has no attribute 'func'``.
+   ``AttributeError: 'Namespace' object has no attribute 'func'``. On a
+   machine with no model configured it dies earlier, in ``cli.py``, with
+   ``SystemExit`` -- so the red proof of ``test_bare_metrics_prints_its_actions``
+   on the base names ``SystemExit``, not the ``AttributeError``. Both are the
+   same defect: a bare command that is not a chat prompt. The property this
+   suite pins is the machine-independent one -- ``metrics`` reaches its own
+   subcommand instead of being routed into a chat turn.
+7. **An unreadable source was counted as zero.** The ops-server import and
+   all three role sources were wrapped in a bare ``except Exception`` that
+   returned an empty set, so a failed import published "0 tools" and a
+   shrunken agent count with nothing in the row saying it had not looked.
 """
 
 from __future__ import annotations
 
+import builtins
 import json
 
 import pytest
@@ -296,3 +307,108 @@ def test_a_row_with_no_spread_is_not_compared():
     other = {"n": 3, "mean": 0.5, "min": 0.5, "max": 0.5, "stderr": 0.0}
     result = compare_number("quality.generalist", no_spread, other)
     assert result["verdict"] == "not a result", result
+
+
+# ---------------------------------------------------------------------------
+# (7) an unreadable source is named, never counted as zero
+# ---------------------------------------------------------------------------
+
+def _block_ops_import(monkeypatch):
+    """Make ``delfin.ops_server.server`` fail to import, for one test.
+
+    The failing input is a broken import, which happens for real when a
+    dependency of that server (the MCP SDK) is absent.
+    """
+    real_import = builtins.__import__
+
+    def _import(name, *a, **kw):
+        if name == "delfin.ops_server.server" or (
+                name == "delfin.ops_server" and "server" in (a[2] or ())):
+            raise ImportError("blocked for this test")
+        return real_import(name, *a, **kw)
+
+    monkeypatch.setattr(builtins, "__import__", _import)
+
+
+def test_an_unreadable_ops_surface_is_named_not_counted_as_zero(tmp_path):
+    """The failing input: a tree with no ops server at all.
+
+    The reachable form of the defect: ``build_row`` always passes a tree, so
+    the AST path is the one the product takes. On the base a tree without
+    ``delfin/ops_server/server.py`` yielded ``delfin-ops: 0`` -- a number a
+    reader compares between commits, published as if it had been measured,
+    and indistinguishable from a server that registers no tools.
+    """
+    from delfin.agent import commit_metrics
+
+    empty_tree = tmp_path / "tree"
+    (empty_tree / "delfin" / "agent").mkdir(parents=True)
+    row = commit_metrics.build_row(tree_root=empty_tree)
+    surface = row.get("mcp_surface")
+    if surface is None:
+        raise AssertionError(
+            "the row cannot report that the ops server was unreadable: a "
+            "missing server is published as a server exposing no tools")
+    assert surface["complete"] is False, surface
+    assert surface["errors"].get("delfin-ops"), surface
+    assert "ops server" in surface["errors"]["delfin-ops"], surface
+
+
+def test_a_readable_ops_surface_reports_no_error():
+    """The control case: the shipped tree, whose ops server imports.
+
+    It passes on the base and on the fix, so the test above measures the
+    failure path rather than the ordinary one.
+    """
+    from pathlib import Path
+
+    from delfin.agent import commit_metrics
+
+    names = commit_metrics._ops_server_names(Path(__file__).resolve().parents[1])
+    assert names, "the shipped ops server exposes no tools"
+
+
+def test_the_agent_count_says_when_a_role_source_was_unreadable(monkeypatch):
+    """The failing input: a role source whose import fails.
+
+    The row's agent count is a claim about *every* agent. A source that
+    cannot be imported used to shrink that count with nothing in the row
+    saying so, so "30 agents" could mean "30 of 41, and eleven had no
+    import". Asserted on the ROW -- the object a reader compares between
+    commits -- without touching a helper's name on the base.
+    """
+    from pathlib import Path
+
+    from delfin.agent import commit_metrics
+
+    def _boom():
+        raise ImportError("engine is not importable here")
+
+    sources_fn = getattr(commit_metrics, "_role_sources", None)
+    if sources_fn is None:
+        raise AssertionError(
+            "no way to ask which role sources this row can read: the row "
+            "cannot say that a source was unreadable")
+    monkeypatch.setattr(commit_metrics, "_role_sources", lambda: [
+        {"source": "a source that works", "names": lambda: ["alpha"]},
+        {"source": "a broken source", "names": _boom},
+    ])
+    row = commit_metrics.build_row(tree_root=Path(__file__).resolve().parents[1])
+    sources = row.get("agent_sources")
+    assert sources is not None, "the row does not carry agent_sources"
+    assert sources["complete"] is False, sources
+    assert sources["read"] == {"a source that works": 1}, sources
+    assert "ImportError" in sources["unreadable"]["a broken source"], sources
+
+
+def test_every_role_source_of_the_shipped_tree_is_readable():
+    """The control case for the field above, on the real tree.
+
+    Passes on both versions; it fails if a rename makes a source silently
+    unimportable, which is the defect the field exists to surface.
+    """
+    from delfin.agent import commit_metrics
+
+    row = commit_metrics.role_sources_row()
+    assert row["complete"] is True, row["unreadable"]
+    assert row["read"], row
