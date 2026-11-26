@@ -56,7 +56,12 @@ def _heat(k):
     for dev in ("stirrer", "fume_hood"):
         out = k.set(me, dev, "power", "on")
         assert out.get("ok"), out
-    assert k.release(me) or True       # benign devices: nothing goes safe
+    # Both devices are benign, so `release` has nothing to drive safe: it gives
+    # back the locks and names what it released. Asserting that list (rather
+    # than `... or True`, which was true for every value) is what makes this a
+    # check at all -- a release that quietly kept a lock would leave the loop's
+    # own writes failing on a lock, and this line is where that shows up.
+    assert sorted(k.release(me)) == ["fume_hood", "stirrer"]
 
 
 def _manifest_with_hazardous_reactor_setpoint():

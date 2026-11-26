@@ -84,9 +84,19 @@ def test_an_eln_write_is_asked_about_in_the_modes_that_can_ask(
             if tool == "eln_draft" else
             {"path": "/tmp/x.json", "element_id": 1} if tool == "eln_attach"
             else {"request_id": "r1"})
+    # The gate is deny-by-default, so `out is not None` alone is satisfied by a
+    # name nobody has ever heard of -- and measured, it is: an unknown name gets
+    # the same refusal text, word for word. Assert the CLASSIFICATION, then the
+    # gate's answer, so a name that fell out of the write set cannot pass here
+    # on the strength of being unrecognised.
+    assert tool not in _MCP_READONLY_TOOL_BASES, (
+        f"{tool} changes the ELN and must never be read-only")
     out = _gate(f"mcp__delfin-ops__{tool}", args, _perms(tmp_path, mode))
     assert out is not None, (
         f"{tool} writes an ELN record and was admitted unasked in {mode}")
+    assert tool in out, (
+        f"the refusal does not name {tool}, so it is not this tool's refusal: "
+        f"{out!r}")
 
 
 def test_the_write_refuses_a_bypass_session_without_an_approval(monkeypatch):
