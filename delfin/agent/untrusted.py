@@ -507,6 +507,12 @@ def _decoded_view(text: str) -> str:
         parsed = json.loads(str(text or ""))
     except (ValueError, TypeError):
         return ""
+    except RecursionError:
+        # ``json.loads`` has its own nesting limit and raises this on a
+        # crafted document, before the walk below is reached. The decoded
+        # view is for detection only: dropping it keeps the raw scan (and
+        # the fence with it) running instead of failing the whole result.
+        return ""
     strings: list[str] = []
 
     def _walk(node) -> None:
@@ -520,7 +526,11 @@ def _decoded_view(text: str) -> str:
             for item in node:
                 _walk(item)
 
-    _walk(parsed)
+    try:
+        _walk(parsed)
+    except RecursionError:
+        # The parsed structure can also nest deeper than the walk may recurse.
+        return ""
     return "\n".join(strings)
 
 
@@ -549,11 +559,8 @@ def shape_note(text: str) -> str:
     """
     kinds: set[str] = set()
     for view in (str(text or ""), _decoded_view(text)):
-        try:
-            kinds.update(f.split(":", 1)[0].strip()
-                         for f in instruction_shapes(view) if f)
-        except Exception:                               # noqa: BLE001
-            continue
+        kinds.update(f.split(":", 1)[0].strip()
+                     for f in instruction_shapes(view) if f)
     if not kinds:
         return ""
     return ", ".join(sorted(kinds))
