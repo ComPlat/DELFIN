@@ -68,7 +68,15 @@ def test_overflow_is_announced_not_dropped_silently(
         agent_tree, tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch, agent_tree,
           [HUGE + " variant {}".format(i) for i in range(30)])
-    out = _recall(agent_tree, task_text="draw the molecule")
+    # The task must SHARE a term with the store. Since wave 43 m1 a memory
+    # whose subject the task does not touch is withheld by the relevance gate
+    # (announced as "... and N more memories"); the budget notice is about the
+    # other cause -- too much relevant text -- and a task sharing no word with
+    # the store never reaches it. Measured: with "draw the molecule" this
+    # block is 925 chars and never overflows; with the wording below it is
+    # 3600, the hard cap, and the notice is present.
+    out = _recall(agent_tree,
+                  task_text="use wedge bonds for a ligand stereo centre")
     assert "further memories" in out, (
         "held-back entries must be counted in the block, not dropped "
         "silently: {}".format(out[-200:]))
@@ -98,6 +106,10 @@ def test_budget_is_a_setting_and_zero_restores_caller_budget(
         agent_tree, tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch, agent_tree,
           [HUGE + " variant {}".format(i) for i in range(30)])
-    out = _recall(agent_tree, task_text="draw the molecule", max_chars=3000)
+    # Task shares a term with the store, so the block is limited by the BUDGET
+    # and not withheld by the relevance gate (see the test above).
+    out = _recall(agent_tree,
+                  task_text="use wedge bonds for a ligand stereo centre",
+                  max_chars=3000)
     assert "further memories" in out
     assert len(out) <= 3000

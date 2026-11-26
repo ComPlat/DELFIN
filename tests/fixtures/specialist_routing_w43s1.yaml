@@ -1,0 +1,208 @@
+# Labelled request set for specialist routing (wave 43, package s1).
+#
+# WHAT THIS IS. Thirty user requests in the languages and domains the
+# dashboard is actually used in — German and English, across chemistry,
+# cluster operations, the lab, code and writing — each with the ONE
+# specialist that should take it, or `none` when the generalist should
+# keep it. It is the labelled set the routing measure runs over:
+# `python scripts/routing_matrix_w43s1.py` drives every row through the
+# product's real entry point and prints the confusion matrix.
+#
+# WHO LABELLED IT, AND WITH WHAT. The labels were written by the agent
+# that authored this file, from the shipped preset descriptions in
+# `delfin/agent/pack/agents/*_subagent.md`, BEFORE any matcher was
+# written (the prediction step) and reviewed once afterwards. They are
+# one reader's judgement, not an inter-annotated corpus: the matrix
+# therefore measures *how the machine's choice relates to one careful
+# reading of the descriptions*, not agreement between people. A row where
+# the machine and the label disagree is a question to adjudicate by hand,
+# never automatically a machine error — and a row where they agree is not
+# proof the label was right.
+#
+# POPULATION (rule 9). The 30 rows are not a sample of real traffic. The
+# one traffic measurement this repo has is `~/.delfin/tool_traces`: the
+# subagent tool was dispatched 50 times in 79,056 tool calls, 44 of them
+# `explore`. That population is the roles a model chose, in the work a
+# model happened to be asked for; it does not describe how often a user
+# asks for a TS in the first place. Nothing in this file is a frequency
+# estimate about users.
+#
+# `ambiguous: true` marks the rows where the honest answer is that a
+# generalist could hand the request to more than one specialist — for
+# those, `expect` records the better choice and the measure reports a
+# pick of the other acceptable one separately rather than as a plain hit.
+
+requests:
+
+  # --- chemistry: excited states, spectra, methods --------------------
+  - id: c01
+    lang: en
+    domain: chemistry
+    text: "Run an ORCA optimisation and frequency job for CCSD(T)-quality energies, then a DLPNO single point on the final geometry."
+    expect: workflow-operator
+  - id: c02
+    lang: en
+    domain: chemistry
+    text: "Which of these three .out files has the smallest HOMO-LUMO gap, and what is it in eV? Just give me a table."
+    expect: data-extractor
+  - id: c03
+    lang: de
+    domain: chemistry
+    text: "Bitte pruefe, ob meine ORCA-Eingabedatei fuer die Anglikon-Berechnung methodisch sauber ist — Funktionale, Basissatz, Dispersionskorrektur."
+    expect: chemistry-reviewer
+  - id: c04
+    lang: de
+    domain: chemistry
+    text: "Erfinde keine Methode: recherchiere, welches Funktionsal und welchen Basissatz man fuer Singulett-Triplet-Abstaende in organischen Farbstoffen nimmt, mit Quellen."
+    expect: method-researcher
+    ambiguous: true
+    also_ok: [chemistry-reviewer]
+  - id: c05
+    lang: en
+    domain: chemistry
+    text: "Compare the Gibbs energies of these five folders and tell me whether the two chains really were computed at the same level of theory."
+    expect: method-reviewer
+  - id: c06
+    lang: en
+    domain: chemistry
+    text: "I have a candidate transition-state structure with one imaginary frequency — verify it connects educt and product by IRC."
+    expect: irc-checker
+  - id: c07
+    lang: de
+    domain: chemistry
+    text: "Finde den Uebergangszustand fuer die SN2-Reaktion zwischen Brommethan und Hydroxid und verifiziere ihn."
+    expect: ts-finder
+  - id: c08
+    lang: en
+    domain: chemistry
+    text: "Build me the SMILES for the ferrocene derivative with both Cp rings eta-5 coordinated, and check the metal-ligand distances make sense."
+    expect: metal-smiles-builder
+  - id: c09
+    lang: de
+    domain: chemistry
+    text: "Das xyz von meinem Komplex hat zu wenige Wasserstoffe und die Atomnummerierung passt nicht zur Referenz — korrigiere beides und gib die Diff aus."
+    expect: xyz-editor
+  - id: c10
+    lang: en
+    domain: chemistry
+    text: "Why is my carbene nucleophilic at carbon while the phosphorus analogue is electrophilic? Route the question to whoever in the department answers it."
+    expect: reactivity-department
+  - id: c11
+    lang: de
+    domain: chemistry
+    text: "Rechne die UV/VIS-Spektren der vier Farbstoffe vor und sag mir, welcher im sichtbaren Bereich am hellsten absorbiert."
+    expect: none
+  - id: c12
+    lang: en
+    domain: chemistry
+    text: "Is the geometry in calc/opt_freq_a really a minimum, or does it still have an imaginary frequency?"
+    expect: none
+
+  # --- code: review, locate, plan, verify ------------------------------
+  - id: k01
+    lang: en
+    domain: code
+    text: "Review the diff I just committed for correctness and anything that could break the SLURM path."
+    expect: code-reviewer
+  - id: k02
+    lang: de
+    domain: code
+    text: "Such im Repo, wo die CONTROL-Datei geparst wird, und nenn mir die Dateien mit Zeilennummern — nichts aendern."
+    expect: explore
+    ambiguous: true
+    also_ok: [plan]
+  - id: k03
+    lang: en
+    domain: code
+    text: "Write me an implementation strategy for moving the scheduler's state into an explicit dataclass, step by step, without touching anything."
+    expect: plan
+  - id: k04
+    lang: en
+    domain: code
+    text: "Someone claims the recovery path now restarts a crashed ORCA step. Try to refute that claim by running the check at the base commit and now."
+    expect: verifier
+  - id: k05
+    lang: de
+    domain: code
+    text: "Pruefe, ob die Aenderung an den Permission-Regeln das Sandbox-Modell aufweicht — was darf der Agent jetzt, was vorher nicht ging?"
+    expect: security-reviewer
+  - id: k06
+    lang: en
+    domain: code
+    text: "Find out where the extra CPU hours are going: how many turns per session go to waiting for cluster jobs versus real work."
+    expect: friction-analyst
+    ambiguous: true
+    also_ok: [explore]
+  - id: k07
+    lang: en
+    domain: code
+    text: "Split this audit into four independent pieces, decide which member does which, and keep an eye on their branches."
+    expect: swarm-lead
+  - id: k08
+    lang: de
+    domain: code
+    text: "Nimm dir den PR vor, pruefe die Aenderungen und schreibe mir das Review als Kommentar — du hast vollen Werkzeugzugriff."
+    expect: general-purpose
+    ambiguous: true
+    also_ok: [code-reviewer]
+  - id: k09
+    lang: en
+    domain: code
+    text: "Rename delfin/agent/routing.py to specialist_routing.py and update every import in delfin/ and tests/."
+    expect: none
+
+  # --- cluster / runtime ----------------------------------------------
+  - id: s01
+    lang: en
+    domain: cluster
+    text: "The batch job on the cluster died with exit code 1025 — look at the run log and the DELFIN_Data.json and tell me what actually happened."
+    expect: none
+  - id: s02
+    lang: de
+    domain: cluster
+    text: "Ändere das Einreichskript so ab, dass die Jobs die richtige Partition fragen, und schick einen Testjob hinterher, der das beweist."
+    expect: general-purpose
+
+  # --- writing / administrative ---------------------------------------
+  - id: w01
+    lang: de
+    domain: writing
+    text: "Formuliere mir die Diskussion fuer den Results-Abschnitt um: knapper, und ohne dass wir Effekte behaupten, die die Fehlerbalken nicht tragen."
+    expect: none
+  - id: w02
+    lang: en
+    domain: writing
+    text: "Turn the numbers in results.csv into a Word table and put the caption under it, not above."
+    expect: none
+
+  # --- lab bench -------------------------------------------------------
+  - id: l01
+    lang: de
+    domain: lab
+    text: "Zieh aus den Messprotokollen im Lab-Ordner die Probenamen mit ihren Konzentrationen in eine einzige Tabelle."
+    expect: data-extractor
+  - id: l02
+    lang: en
+    domain: lab
+    text: "Write the safety paragraph for the Schlenk-line part of section 3, in the tense the rest of the manuscript uses."
+    expect: none
+
+  # --- a wrong name the person typed ----------------------------------
+  - id: m01
+    lang: de
+    domain: code
+    text: "Mach das mit dem code-rewiewer, bitte."
+    expect: code-reviewer
+    note: "the preset name itself is misspelled in the request"
+
+  # --- requests no specialist fits ------------------------------------
+  - id: n01
+    lang: en
+    domain: code
+    text: "Why does the tool-call gate read the permission profile twice per turn?"
+    expect: none
+  - id: n02
+    lang: de
+    domain: cluster
+    text: "Wie viele Kerne soll ich fuer die 40 Optimierungen auf dem Cluster nehmen, und wie lange brauchen sie wohl?"
+    expect: none
