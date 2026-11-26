@@ -812,8 +812,8 @@ def install_schedule(*, model: str, provider: str = "", instances: int = 10,
     if probe is None or probe.returncode != 0:
         raise HistoryWriteError(
             f"no systemd user manager here ({why}); run the round by hand "
-            "or schedule it with your own supervisor — the command is in "
-            "`bench schedule --show`.")
+            "or schedule it with your own supervisor — the exact command "
+            "is printed by `bench schedule` with no arguments.")
     d = unit_dir()
     d.mkdir(parents=True, exist_ok=True)
     (d / UNIT).write_text(s_text)

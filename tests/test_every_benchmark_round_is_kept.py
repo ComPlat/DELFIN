@@ -697,3 +697,45 @@ def test_the_seed_value_never_reaches_the_kept_history(fake_glue, history_dir,
                    for p in history_dir.glob("*.jsonl"))
     assert "424242" not in blob
     assert '"seed_mode"' in blob
+
+
+def test_the_no_systemd_message_names_a_command_that_works(fake_glue,
+                                                           monkeypatch,
+                                                           tmp_path,
+                                                           capsys):
+    """The refusal must not send the reader to a flag nobody implements.
+
+    Measured on this branch BEFORE the fix: with no systemd user manager,
+    `bench schedule --enable` said "the command is in `bench schedule
+    --show`" — and `--show` is not an argument of `bench schedule` at all.
+    The parser registers only --enable/--disable/--model/--provider/
+    --instances/--budget/--practice/--seed-path/--on-calendar
+    (cli.py:6267-6285), so following the message produced "unrecognized
+    arguments: --show" and the reader was worse off than before.
+
+    The message now names the bare command. This test holds it there AND
+    checks that the bare command really is accepted, so the help text
+    cannot drift away from the parser again.
+    """
+    from delfin.agent import bench_history as bh, cli
+
+    class _NoBus:
+        returncode = 1
+        stdout = ""
+        stderr = "Failed to connect to bus: Permission denied"
+
+    # The host's systemd is never asked: the probe is shadowed.
+    monkeypatch.setattr(bh, "_systemctl", lambda *a: _NoBus())
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+
+    with pytest.raises(bh.HistoryWriteError) as exc:
+        bh.install_schedule(model="M")
+    message = str(exc.value)
+    assert "no systemd user manager" in message
+
+    # What the message points at must be a command the parser accepts.
+    assert "--show" not in message
+    capsys.readouterr()
+    assert cli.main(["bench", "schedule"]) == 0
+    out = capsys.readouterr().out
+    assert "benchmark round schedule" in out
