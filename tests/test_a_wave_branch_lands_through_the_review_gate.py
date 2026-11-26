@@ -374,19 +374,27 @@ def test_a_refusal_without_a_file_and_line_is_not_a_refusal(swarm, replies):
 
 
 def test_a_second_answer_with_a_file_and_line_counts(swarm, replies):
-    """The retry is a real second chance, not a formality."""
+    """The retry is a real second chance, not a formality.
+
+    The place named is one the fixture's diff really shows (it adds
+    tests/test_new.py, three lines), because a finding about a file the
+    branch never touched is no longer reported as a finding at all -- see
+    test_a_finding_about_a_file_the_diff_never_touched_is_held_apart.
+    """
     replies["set"](json.dumps({"verdict": "refuse", "findings": [{"claim": "risky"}]}),
-                   _refuse(file="delfin/agent/x.py", line=42, claim="never reached"))
+                   _refuse(file="tests/test_new.py", line=2, claim="never reached"))
     ok, why, rec = pr_bot.review_gate(swarm["wt"], "night9", "n9a", swarm["agent"])
     assert not ok and rec["verdict"] == "refuse"
-    assert "delfin/agent/x.py:42" in why
+    assert "tests/test_new.py:2" in why
 
 
 def test_the_findings_are_left_on_disk_for_a_person(swarm, replies):
-    replies["set"](_refuse(file="delfin/agent/x.py", line=7))
+    # A line the fixture's diff shows (it adds tests/test_new.py, three lines),
+    # so this measures what is RECORDED, not whether the place verifies.
+    replies["set"](_refuse(file="tests/test_new.py", line=3))
     pr_bot.review_gate(swarm["wt"], "night9", "n9a", swarm["agent"])
     rec = json.loads((swarm["wt"] / "scratch" / "REVIEW.json").read_text())
-    assert rec["verdict"] == "refuse" and rec["findings"][0]["line"] == 7
+    assert rec["verdict"] == "refuse" and rec["findings"][0]["line"] == 3
     assert rec["reviewers"] == ["kit.glm-5.3-flash", "kit.deepseek-v4-flash"]
     assert rec["author_models"] == ["alias-code"]
     assert rec["a"]["model"] != rec["b"]["model"]
@@ -833,7 +841,7 @@ def test_both_passing_is_what_opens_the_gate(swarm, replies):
 def test_both_refusing_is_a_refusal_and_keeps_both_sets_of_findings(swarm, replies):
     """A refusal both reviewers reached is the only refusal the gate reports,
     and the record keeps each reviewer's own findings separately."""
-    replies["set"](_refuse(file="delfin/agent/x.py", line=9))
+    replies["set"](_refuse(file="tests/test_new.py", line=2))
     ok, why, _ = pr_bot.review_gate(swarm["wt"], "night9", "n9a", swarm["agent"])
     assert not ok and "refused by BOTH" in why
     rec = json.loads((swarm["wt"] / "scratch" / "REVIEW.json").read_text())
