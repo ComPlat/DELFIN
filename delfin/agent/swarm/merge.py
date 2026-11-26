@@ -174,18 +174,21 @@ def decide_merge(pr: int | str, head: str, *, confirmed: bool,
 
     ``executed`` is always False: this returns the command a person runs.
     """
-    state = ("blocked" if not confirmed else
-             "stale" if not current_head or str(head) != str(current_head) else
-             "ready")
     if confirmed is not True:
         state = "ask_user"
-    if state == "ready" and not checks_ok and not admin_override:
+    elif not current_head or str(head) != str(current_head):
+        # A head that has moved (or cannot be read) makes the check stale:
+        # the answer belongs to a commit that is no longer the PR's head.
+        state = "stale"
+    elif checks_ok or admin_override:
+        state = "ready"
+    else:
         state = "checks_red"
 
     command = f"gh pr merge {pr} --match-head-commit {head}"
-    if admin_override and state in ("ready", "checks_red"):
+    if admin_override and state == "ready":
         command += " --admin"
-    allow = state == "ready" or (state == "checks_red" and admin_override)
+    allow = state == "ready"
 
     out: dict[str, Any] = {
         "pr": pr, "head": str(head), "current_head": str(current_head),
