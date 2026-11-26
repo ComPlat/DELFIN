@@ -558,11 +558,18 @@ def test_a_member_whose_stage_already_acted_is_not_a_stall(host):
     assert host["seen"] == []
 
 
-def test_a_run_another_tool_started_is_not_judged_for_stalls(host):
+def test_a_run_another_tool_started_gets_no_ended_stall(host):
     """Control: the root may hold runs this tick does not drive -- the start
-    block guards every action it takes with ``driven``, and a stall about a
-    stage that should have acted is the same kind of claim. A run started by
-    another tool keeps its own stage; this tick says nothing about it."""
+    block guards every action it takes with ``driven``, and "ended and its
+    stage did nothing" is the same kind of claim: a member that ended is the
+    stage's to resume, and a foreign run keeps its own stage.
+
+    The gate is on ``ended`` only, and deliberately so: ``silent`` and
+    ``realrun`` describe a process that is already gone or wedged in THIS
+    root, which is true whoever started it. This test therefore pins one
+    kind, not a blanket silence -- a foreign run whose member is still alive
+    and whose log stopped growing is still raised as ``silent``, as it is on
+    origin/main."""
     run = "s7"
     wave.run_dir(run).mkdir(parents=True)
     (wave.run_dir(run) / "tasks.json").write_text(json.dumps([_task("a")]))
@@ -578,6 +585,38 @@ def test_a_run_another_tool_started_is_not_judged_for_stalls(host):
     host["advance"](20 * 60)
     guard.tick()
     assert host["seen"] == []
+
+
+def test_a_foreign_runs_live_member_is_still_called_silent(host):
+    """The other half of the gate above, so its scope cannot drift: ``ended``
+    is withheld from a run this tick does not drive, ``silent`` is not. A
+    member that is still alive with a log that stopped growing is a wedged
+    process in this root whoever started it, and origin/main raises it too --
+    this is the case that would fail if the ``driven`` gate were widened to
+    swallow every kind."""
+    run = "s8"
+    wave.run_dir(run).mkdir(parents=True)
+    (wave.run_dir(run) / "tasks.json").write_text(json.dumps([_task("a")]))
+    log = wave.run_dir(run) / "a.log"
+    log.write_text("")
+    stamp = time.time() - 2 * 3600
+    os.utime(log, (stamp, stamp))
+    _agent_entry(run, "a", log, started=stamp)     # started long ago too
+    st = wave.load_state(run)
+    st.pop("driven", None)
+    st["agents"]["a"]["pid"] = 777
+    wave._save_state(run, st)
+    host["alive"].add(777)                         # the host says it runs
+    host["advance"](120 * 60)
+    guard.tick()
+    assert len(host["seen"]) == 1, host["seen"]
+    kind, title, _ = host["seen"][0]
+    # The behaviour, not the wording: one session_state alert about this
+    # member's silence. The title differs between the two trees ("silent" on
+    # origin/main, "stalled (silent)" here), and a control that pins the
+    # wording would be green on one tree only.
+    assert kind == "session_state", kind
+    assert "s8/a" in title and "silent" in title.lower(), title
 
 
 def test_a_member_the_stage_just_resumed_is_not_silent(host):
