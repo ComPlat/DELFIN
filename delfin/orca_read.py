@@ -15,6 +15,13 @@ Rules, in order:
    ORCA >= 6.1.1, the property JSON OPI reads is present, and the run
    terminated normally with a converged SCF (both checked on the text,
    the same way OPI checks them). Otherwise the text parser answers.
+   Only ``<base>.property.json`` is asked for: ``.property.txt`` is the
+   *input* of ``orca_2json``, never a file OPI's reader opens, so
+   requiring it refused runs whose JSON was right there. And only the
+   property half is parsed (``read_gbw_json=False``): the default
+   ``parse()`` also runs ``orca_2json`` for a ``<base>.gbw``, which every
+   real DELFIN run folder keeps, and raised ``FileNotFoundError`` from a
+   read that needed nothing from the ``.gbw``.
 2. Shadow check: when both readers give a value, they must agree within
    the tolerance of the phase-1 tests (1e-6 Eh for energies, 1e-6 for
    <S**2> -- the text prints 8 resp. 6 decimals). On a mismatch the TEXT
@@ -223,8 +230,6 @@ def _opi_ready(work_dir: Path, base_name: str,
                        f"predates the minimum {'.'.join(map(str, _MIN_ORCA_VERSION))}")
     if not (work_dir / f"{base_name}.property.json").is_file():
         return False, "property JSON missing"
-    if not (work_dir / f"{base_name}.property.txt").is_file():
-        return False, "property txt missing"
     if not _terminated_normally_text(out_path):
         return False, "run did not terminate normally"
     if not _scf_converged_text(text):
@@ -251,13 +256,22 @@ def _opi_values(work_dir: Path, base_name: str) -> dict:
 
     ``{"error": ...}`` when OPI could not parse the run at all; every
     OPI failure degrades to the text parser, never to an exception.
+
+    Only the property half is parsed (``read_gbw_json=False``). The default
+    ``parse()`` also runs ``create_missing_gbw_json``, i.e. ``orca_2json``,
+    whenever a ``<base>.gbw`` sits beside the output -- and every real
+    DELFIN calculation folder keeps its ``.gbw``. That raised
+    ``FileNotFoundError`` on any host without ``orca_2json`` in OPI's ORCA
+    bin folder, from a read that needed nothing the ``.gbw`` holds: the
+    energies, charge, multiplicity, ``<S**2>`` and geometry all come from the
+    property JSON (``get_s2`` greps the ``.out``). Measured 2026-11-26.
     """
     from opi.output.core import Output
 
     result: dict = {}
     try:
         out = Output(base_name, working_dir=work_dir, version_check=False)
-        out.parse()
+        out.parse(read_gbw_json=False)
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}
 
