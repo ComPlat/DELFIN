@@ -467,6 +467,24 @@ def make_worktree(repo: Path | str, commit: str, *, parent: Path | str | None = 
                               base_ref=commit)
 
 
+#: ``Task`` fields that annotate a task instead of asking it, and are
+#: therefore outside its digest. Each side hashes its own task, so a field one
+#: side's dataclass does not have would read as a changed question: every
+#: comparison against a commit older than the field would be refused, and the
+#: refusal would blame the task's text. Only fields that change nothing the
+#: model is asked or judged on may be listed -- ``capability`` says which
+#: product capability a task is meant to measure, which is bookkeeping about
+#: the suite, not part of the question it puts to the model.
+#:
+#: The list is a deny-list on purpose. An allow-list would silently ignore a
+#: field added later that DOES shape the question, and the refusal it guards
+#: would stop firing exactly when it should.
+#:
+#: Defined above the worker source because the worker is standalone text that
+#: cannot import this module; it is substituted into that text below, so there
+#: is one list and no third place for the two copies of the rule to drift.
+NOT_THE_QUESTION: tuple[str, ...] = ("capability",)
+
 #: The program run in a side's worktree. Kept as source, not as a file inside
 #: the tree: the BASE side predates this module, so a helper file committed here
 #: would not exist there -- and a helper that exists on one side only is an
@@ -477,6 +495,7 @@ def make_worktree(repo: Path | str, commit: str, *, parent: Path | str | None = 
 #: the import came from somewhere else.
 _WORKER_SOURCE = r'''
 import json, sys
+NOT_THE_QUESTION = __NOT_THE_QUESTION__
 task_id, model, provider, backend, repeats, out_path = sys.argv[1:7]
 payload = {"error": "", "delfin_file": "", "passes": [], "unmeasured": 0,
            "n_samples": 0, "task_digest": "", "success": None, "model": ""}
@@ -490,6 +509,10 @@ def digest(task):
     importing the parent's copy would digest the parent's dataclass and
     compare a question against itself. What must be compared is what each
     side's own code would ask, so each side hashes its own.
+
+    Fields named in ``NOT_THE_QUESTION`` are left out for the same reason in
+    both copies: they annotate a task instead of asking it, and a side that
+    predates one would otherwise report every task as a changed question.
     """
     import dataclasses, hashlib
     try:
@@ -497,6 +520,8 @@ def digest(task):
     except TypeError:
         body = {"id": str(getattr(task, "id", "")),
                 "prompt": str(getattr(task, "prompt", "") or "")}
+    for field_name in NOT_THE_QUESTION:
+        body.pop(field_name, None)
     return hashlib.sha256(
         json.dumps(body, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()
@@ -540,6 +565,10 @@ finally:
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh)
 '''
+# The worker is text, so the field list is carried into it literally: one
+# definition, substituted where the worker is defined rather than kept in two.
+_WORKER_SOURCE = _WORKER_SOURCE.replace(
+    "__NOT_THE_QUESTION__", repr(tuple(NOT_THE_QUESTION)))
 
 
 @dataclass
@@ -568,13 +597,16 @@ def task_digest(task: Any) -> str:
     is not the effect of the change under test.
 
     ``skill:`` is deliberately outside the digest: it changes no field the
-    runner reads, so a skill rename is not a new question.
+    runner reads, so a skill rename is not a new question. ``NOT_THE_QUESTION``
+    names the fields left out for the same kind of reason.
     """
     try:
         payload = dataclasses.asdict(task)
     except TypeError:                                          # pragma: no cover
         payload = {"id": str(getattr(task, "id", "")),
                    "prompt": str(getattr(task, "prompt", "") or "")}
+    for field_name in NOT_THE_QUESTION:
+        payload.pop(field_name, None)
     blob = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
