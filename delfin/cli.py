@@ -974,9 +974,9 @@ def _run_cleanup_subcommand(argv: list[str]) -> int:
         print(f"ORCA processes detected: {report['processes_found']}")
         for entry in report["terminated_groups"]:
             print(f"  pgid {entry['pgid']}: {entry['status']} (pids={entry['pids']})")
-        if report["occuper_dirs_removed"]:
+        if report["occuper_dirs_kept"]:
             print("Kept OCCUPIER folders (resume state, not scratch):")
-            for path in report["occuper_dirs_removed"]:
+            for path in report["occuper_dirs_kept"]:
                 print(f"  {path}")
         if report["scratch_dirs_removed"]:
             print("Removed ORCA scratch directories:")
@@ -1320,9 +1320,9 @@ def _run_stop_subcommand(argv: list[str]) -> int:
             print(f"ORCA processes detected: {report['processes_found']}")
             for entry in report["terminated_groups"]:
                 print(f"  pgid {entry['pgid']}: {entry['status']} (pids={entry['pids']})")
-            if report["occuper_dirs_removed"]:
+            if report["occuper_dirs_kept"]:
                 print("Kept OCCUPIER folders (resume state, not scratch):")
-                for path in report["occuper_dirs_removed"]:
+                for path in report["occuper_dirs_kept"]:
                     print(f"  {path}")
             if report["scratch_dirs_removed"]:
                 print("Removed ORCA scratch directories:")

@@ -308,7 +308,12 @@ def cleanup_orca(workspace: str | Path = ".",
     return {
         "processes_found": len(processes),
         "terminated_groups": termination_report,
-        "occuper_dirs_removed": kept_occuper,
+        "occuper_dirs_kept": kept_occuper,
+        # The name this key carried while the function deleted these folders.
+        # It still reports the same paths so a caller that reads it keeps
+        # working, but the paths in it were kept, never removed; new code
+        # should read ``occuper_dirs_kept``.
+        "occuper_dirs_removed": [],
         "scratch_dirs_removed": removed_scratch,
         "files_removed": cleaned_files,
         "dry_run": dry_run,

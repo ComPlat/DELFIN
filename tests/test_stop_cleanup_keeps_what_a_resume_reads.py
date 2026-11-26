@@ -198,3 +198,30 @@ def test_stop_cleanup_still_removes_true_scratch(run_cli, tmp_path):
         "*.tmp inside a kept stage is still true scratch")
     assert not (ws / "initial_OCCUPIER" / "run.cpcm").exists(), (
         "*.cpcm inside a kept stage is still true scratch")
+
+
+def test_the_cleanup_report_does_not_call_a_kept_stage_removed():
+    """A report key must say what it holds: the kept paths are not removals.
+
+    Red on the pre-fix ``cleanup_orca``, where the stage paths came back under
+    ``occuper_dirs_removed`` while nothing had been removed. A caller that
+    trusts that key -- or an operator reading a log built from it -- would
+    conclude the resume state was gone. ``occuper_dirs_removed`` must also
+    stay present and empty, because it is the name existing callers read.
+    """
+    import tempfile
+
+    from delfin.cleanup import cleanup_orca
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ws = Path(tmp)
+        (ws / "initial_OCCUPIER").mkdir()
+        (ws / "initial_OCCUPIER" / "OCCUPIER.txt").write_text(
+            OCCUPIER_TXT, encoding="utf-8")
+        report = cleanup_orca(ws, dry_run=True)
+
+        assert report["occuper_dirs_removed"] == [], (
+            "the removed-key must not carry paths that were kept")
+        assert [Path(p).name for p in report["occuper_dirs_kept"]] == [
+            "initial_OCCUPIER"], (
+            "the kept paths belong under occuper_dirs_kept")
