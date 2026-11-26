@@ -4067,15 +4067,44 @@ def run_subagent(
     if resume_from:
         prior = load_subagent_session(resume_from) or {}
         if not prior:
+            # A wrong id should not dead-end. The generalist's usual reason
+            # for having one is that its own turn was compacted since the
+            # delegate finished, so the ids that ARE resumable are the
+            # answer it needs -- reading the store costs no model tokens.
+            #
+            # Scoped to the asking session, deliberately: the store is
+            # account-wide, and naming another session's runs would hand a
+            # generalist ids it has no business resuming (the same scope the
+            # running-delegate listing takes). An unnamed caller gets the
+            # old wording rather than the whole account's work.
+            _owner = str(getattr(parent_perms, "task_session_id", "") or "").strip()
+            try:
+                _cands = list_finished(5, session=_owner) if _owner else []
+            except Exception:
+                _cands = []
+            if _cands:
+                _hint = (
+                    "no stored subagent session found. Resting subagents "
+                    "this session can resume: "
+                    + ", ".join(
+                        str(c.get("sa_id", ""))
+                        + f" ({c.get('subagent_type', '')}: "
+                        + str(c.get("description", ""))[:40] + ")"
+                        for c in _cands)
+                    + ". Use one of those sa_ids, or a sa_id returned by a "
+                      "previous subagent call."
+                )
+            else:
+                _hint = (
+                    "no stored subagent session found. No subagent this "
+                    "session started is resting either, so there is nothing "
+                    "to resume -- run the task as a fresh delegate."
+                )
             return SubagentResult(
                 subagent_type=subagent_type,
                 description=description,
                 final_text="",
-                error=(
-                    f"unknown resume id {resume_from!r}: no stored "
-                    "subagent session found. Use a sa_id returned by a "
-                    "previous subagent call."
-                ),
+                error=f"unknown resume id {resume_from!r}: {_hint}",
             )
         subagent_type = prior.get("subagent_type") or subagent_type
         description = description or prior.get("description", "")
