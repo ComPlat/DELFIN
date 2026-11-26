@@ -2,7 +2,7 @@
   "package": "p3-a1",
   "contract_module_present": false,
   "commit": "f29261cff-dirty",
-  "measured_tree": "/home/qmchem_max/delfin-swarm/w72/p3-a1",
+  "measured_tree": "worktree of commit f29261cff (p3-a1 arm)",
   "command": "python experiments/parity/p3-a1/measure.py --out experiments/parity/p3-a1/after.json",
   "variants": 12,
   "reached": 12,
