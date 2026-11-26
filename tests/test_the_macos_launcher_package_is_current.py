@@ -10,6 +10,7 @@ check its download against a checksum the sources no longer match.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -46,7 +47,10 @@ def test_the_zip_holds_the_current_sources():
         names = [n for n in archive.namelist() if not n.endswith("/") and not n.startswith(SIGNATURE)]
         assert sorted(names) == sorted("macos-launcher/" + n for n in build.NAMES + ["SHA256SUMS.txt"])
         for name in build.NAMES:
-            assert archive.read("macos-launcher/" + name) == files[name], (
+            # Digests, not bytes: a byte diff of a mismatching icon or ZIP
+            # entry is what pytest then renders, for minutes.
+            got = hashlib.sha256(archive.read("macos-launcher/" + name)).hexdigest()
+            assert got == hashlib.sha256(files[name]).hexdigest(), (
                 f"{name} changed since the ZIP was built: python tools/macos-launcher/build_package.py "
                 "(from an LF checkout)")
         assert archive.read("macos-launcher/SHA256SUMS.txt").decode() == build.checksums(files)

@@ -41,7 +41,7 @@ env="$work/store/local/env"
 mkdir -p "$work/DELFIN"
 # script(1) gives it the terminal Terminal.app would: delfin-voila then runs
 # its server in the background, as it does for a person.
-(sleep 900 | DELFIN_LOCAL_WORKDIR="$work/DELFIN" BROWSER=true script -q "$work/local.log" \
+(sleep 900 | DELFIN_LOCAL_WORKDIR="$work/DELFIN" BROWSER=true script -F -q "$work/local.log" \
     /bin/bash "$pkg/DELFIN.app/Contents/Resources/DELFIN.sh" local) &
 local_pid=$!
 # The detached server keeps its port and token in its own record
@@ -59,7 +59,7 @@ read -r port dashboard_key <<EOF2
 $(record)
 EOF2
 echo "local dashboard on 127.0.0.1:$port"
-grep -q 'keeps running in the background' "$work/local.log" || { diagnose; fail 'not started in the background from a terminal'; }
+wait_for 60 grep -q 'keeps running in the background' "$work/local.log" || { diagnose; fail 'not started in the background from a terminal'; }
 code=$(curl -s -o /dev/null -w '%{http_code}' -L --max-redirs 5 "http://127.0.0.1:$port/?token=$dashboard_key")
 [ "$code" = 200 ] || { diagnose; fail "with the token: HTTP $code"; }
 code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/voila/render/delfin_dashboard.ipynb")
@@ -126,7 +126,7 @@ connect() {
     rm -f "$work/url"
     # script(1) gives the connection the terminal Terminal.app would; the
     # sleep keeps its input open, as a window does.
-    (sleep 900 | DELFIN_LAUNCHER_URL_FILE="$work/url" script -q "$work/connect-$1.log" /bin/bash "$app/DELFIN.sh" connect "$id") &
+    (sleep 900 | DELFIN_LAUNCHER_URL_FILE="$work/url" script -F -q "$work/connect-$1.log" /bin/bash "$app/DELFIN.sh" connect "$id") &
     wait_for 300 test -s "$work/url" || { cat "$work/connect-$1.log"; tail -n 30 "$work/sshd/log"; fail "no browser URL ($1)"; }
     url=$(cat "$work/url")
     echo "browser URL: ${url%%token=*}token=..."
