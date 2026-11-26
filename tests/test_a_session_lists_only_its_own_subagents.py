@@ -201,7 +201,18 @@ def test_the_dashboard_reads_scoped_lists():
                src.index("agent_archive_dropdown.observe")]
     assert "read_running(session=_owner)" in body
     assert "list_finished(_ARCHIVE_LIMIT, session=_owner)" in body
-    assert "unassigned=True" in body
+    # The archive is built from THIS session's records only. A comment that
+    # merely names the account-wide query satisfies a plain substring test,
+    # so the check is on executable lines: the tab must not pass the
+    # account-wide fold, which showed every session's pre-attribution
+    # delegates to every session. The store's own
+    # ``list_finished(unassigned=True)`` stays (test_a_session_lists_...
+    # covers it); what is asserted here is that the TAB does not call it.
+    code = [ln for ln in body.splitlines()
+            if not ln.lstrip().startswith("#")]
+    assert not any("unassigned=True" in ln for ln in code), (
+        "the tab passes the account-wide unassigned fold to the archive:"
+        f" {[ln.strip() for ln in code if 'unassigned=True' in ln]!r}")
     # The fold header is a label, never a view a pick can open.
     pick = src.split("def _on_archive_pick")[1].split("\n\n")[0]
     assert "_ARCHIVE_UNASSIGNED_HEADER" in pick
