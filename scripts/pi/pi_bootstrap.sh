@@ -26,11 +26,13 @@ set -euo pipefail
 # One Linux account per person (opt-in; the default is people mode, everyone
 # in the agent user's account under ~/people/<name>):
 #   DELFIN_PI_ACCOUNTS=1 sudo bash pi_bootstrap.sh
-# puts the installation into $DELFIN_PI_SHARED_ROOT (default /opt/delfin,
-# owned by the agent user, readable by the group delfin-people only, 0750;
-# ~/delfin is a link to it),
-# Python included, and installs delfin-accounts (delfin_accounts.sh, beside
-# this script) for the admin: sudo delfin-accounts add NAME. On a box that
+# puts the agent's build of the installation into $DELFIN_PI_SHARED_ROOT
+# (default /opt/delfin, the agent user's alone, 0750; ~/delfin is a link to
+# it), Python included, prepares the persons' copy $DELFIN_PI_PERSONS_ROOT
+# (default /opt/delfin-persons: root-owned, readable by the group
+# delfin-people only; filled by `sudo delfin-accounts publish` after each
+# deploy) and installs delfin-accounts (delfin_accounts.sh, beside this
+# script) for the admin: sudo delfin-accounts add NAME. On a box that
 # already runs the one-account layout (~/delfin a directory), add
 # DELFIN_PI_MIGRATE=1: pi_accounts_migrate.sh moves it aside first, and
 # DELFIN_PI_MIGRATE=back sudo bash pi_bootstrap.sh is the way back.
@@ -42,6 +44,7 @@ AGENT_SUDO="${AGENT_SUDO:-$([[ "${NO_SUDO:-0}" == "1" ]] && echo none || echo se
 PY_VERSION="${PY_VERSION:-3.11}"
 ACCOUNTS="${DELFIN_PI_ACCOUNTS:-0}"
 SHARED_ROOT="${DELFIN_PI_SHARED_ROOT:-/opt/delfin}"
+PERSONS_ROOT="${DELFIN_PI_PERSONS_ROOT:-/opt/delfin-persons}"
 MIGRATE="${DELFIN_PI_MIGRATE:-0}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
@@ -54,7 +57,12 @@ fi
 [[ "$MIGRATE" != 1 || "$ACCOUNTS" == 1 ]] \
     || { echo "error: DELFIN_PI_MIGRATE=1 moves to the per-person variant: set DELFIN_PI_ACCOUNTS=1 too" >&2; exit 1; }
 if [[ "$ACCOUNTS" == "1" || "$MIGRATE" == back ]]; then
-    [[ "$SHARED_ROOT" =~ ^/[A-Za-z0-9._/-]+$ && "$SHARED_ROOT" != / ]]         || { echo "error: DELFIN_PI_SHARED_ROOT must be an absolute path (got '$SHARED_ROOT')" >&2; exit 1; }
+    for r in "$SHARED_ROOT" "$PERSONS_ROOT"; do
+        [[ "$r" =~ ^/[A-Za-z0-9._/-]+$ && "$r" != / && "$r" != */ && "$r" != *..* ]] \
+            || { echo "error: DELFIN_PI_SHARED_ROOT / DELFIN_PI_PERSONS_ROOT must be absolute paths (got '$r')" >&2; exit 1; }
+    done
+    [[ "$PERSONS_ROOT" != "$SHARED_ROOT" && "$PERSONS_ROOT" != "$SHARED_ROOT"/* && "$SHARED_ROOT" != "$PERSONS_ROOT"/* ]] \
+        || { echo "error: DELFIN_PI_PERSONS_ROOT must lie outside DELFIN_PI_SHARED_ROOT" >&2; exit 1; }
     for f in delfin_accounts.sh delfin_people.sh pi_accounts_migrate.sh; do
         [[ -f "$HERE/$f" ]] || { echo "error: $HERE/$f missing: run this script from scripts/pi (deploy_pi.sh --bootstrap copies it)" >&2; exit 1; }
     done
@@ -124,11 +132,11 @@ fi
 AGENT_HOME="$(getent passwd "$AGENT_USER" | cut -d: -f6)"
 
 if [[ "$ACCOUNTS" == "1" ]]; then
-    echo "==> one account per person: shared installation in $SHARED_ROOT"
-    # The installation every person reads: owned by the agent user (deploys
-    # write it), 0755, outside any home. ~/delfin stays the path every other
-    # script uses (pi_install.sh resolves it, so the venv, its scripts and
-    # the editable install record the shared path, not the link).
+    echo "==> one account per person: agent build in $SHARED_ROOT, persons' copy in $PERSONS_ROOT"
+    # The agent's build: owned by the agent user (deploys write it), outside
+    # any home. ~/delfin stays the path every other script uses
+    # (pi_install.sh resolves it, so the venv, its scripts and the editable
+    # install record the real path, not the link).
     if [[ -e "$AGENT_HOME/delfin" && ! -L "$AGENT_HOME/delfin" ]]; then
         if [[ "$MIGRATE" != 1 ]]; then
             echo "error: $AGENT_HOME/delfin is a directory: this box already has the one-account layout." >&2
@@ -138,15 +146,19 @@ if [[ "$ACCOUNTS" == "1" ]]; then
         fi
         bash "$HERE/pi_accounts_migrate.sh" to "$AGENT_HOME" "$SHARED_ROOT"
     fi
-    # Open to the persons' group only (0750), not to every account: the
-    # agent user writes it, members of delfin-people read it, others nothing.
+    # The build is the agent's alone. What persons source and run is the
+    # root-owned copy `delfin-accounts publish` makes of it: the agent
+    # account (agent, CLI backends, MCP servers) writes the build, so a
+    # person's login never runs a file from there.
     getent group delfin-people >/dev/null || groupadd --system delfin-people
-    install -d -m 750 -o "$AGENT_USER" -g delfin-people "$SHARED_ROOT"
+    install -d -m 750 -o "$AGENT_USER" -g "$AGENT_USER" "$SHARED_ROOT"
+    install -d -m 755 -o root -g root "$(dirname "$PERSONS_ROOT")"
+    install -d -m 750 -o root -g delfin-people "$PERSONS_ROOT"
     ln -sfn "$SHARED_ROOT" "$AGENT_HOME/delfin"
     chown -h "$AGENT_USER:$AGENT_USER" "$AGENT_HOME/delfin"
     install -d -m 755 /etc/delfin
     printf '%s
-' "# One Linux account per person (pi_bootstrap.sh, delfin-accounts)."         "DELFIN_SHARED_ROOT=$SHARED_ROOT" "DELFIN_DEPLOY_USER=$AGENT_USER" > /etc/delfin/accounts.conf.tmp
+' "# One Linux account per person (pi_bootstrap.sh, delfin-accounts)."         "DELFIN_SHARED_ROOT=$SHARED_ROOT" "DELFIN_PERSONS_ROOT=$PERSONS_ROOT" "DELFIN_DEPLOY_USER=$AGENT_USER" > /etc/delfin/accounts.conf.tmp
     chmod 644 /etc/delfin/accounts.conf.tmp
     mv /etc/delfin/accounts.conf.tmp /etc/delfin/accounts.conf
     # Root-owned copies: the admin runs delfin-accounts as root, and an
@@ -363,7 +375,10 @@ fi
 echo
 echo "Bootstrap done. Agent user: $AGENT_USER (sudo: $AGENT_SUDO)"
 if [[ "$ACCOUNTS" == "1" ]]; then
-    echo "One account per person: installation in $SHARED_ROOT; after the deploy, as the admin:"
+    echo "One account per person: agent build in $SHARED_ROOT; after each deploy, as the admin:"
+    echo "  sudo delfin-accounts publish     (the persons' root-owned copy, $PERSONS_ROOT)"
     echo "  sudo delfin-accounts add NAME    (or: delfin-people --add-person NAME)"
+    # Loud while people mode still holds data or keys in the agent account.
+    bash "$HERE/pi_accounts_migrate.sh" status "$AGENT_HOME" "$SHARED_ROOT" || true
 fi
 echo "Next (from your PC): scripts/pi/deploy_pi.sh $AGENT_USER@<pi-host>"

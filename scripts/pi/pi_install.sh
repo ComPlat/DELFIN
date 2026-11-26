@@ -431,8 +431,9 @@ if tabs.get("order") != order or tabs.get("hidden") != hidden:
 EOF
     # Every person's defaults (one account per person): the same agent and
     # tab choices, from this account's settings, and nothing else of them
-    # (its settings file stays its own). Each person's login shell layers
-    # it under their own file (DELFIN_SETTINGS_DEFAULTS, delfin_accounts.sh).
+    # (its settings file stays its own). This file is a proposal in the
+    # agent's build: persons read the copy `delfin-accounts publish` (root)
+    # rebuilds from it, with an allow-list and no profile that stops asking.
     if [[ "$SHARED" == "1" ]]; then
         env -u DELFIN_SETTINGS_DEFAULTS "$VENV_PY" - "$ROOT/settings-defaults.json" <<'EOF' || echo "warning: could not write the shared settings defaults" >&2
 import json, os, sys
@@ -452,6 +453,7 @@ os.chmod(tmp, 0o644)
 os.replace(tmp, sys.argv[1])
 print("==> shared settings defaults: " + sys.argv[1])
 EOF
+        echo "==> persons run a root-owned copy: as the admin, sudo delfin-accounts publish"
     fi
     # tmux waits 10 ms (3.5 default) for the rest of an escape sequence; over
     # SSH and a VPN the terminal's answer to tmux's capability query arrives

@@ -397,20 +397,37 @@ own. It is chosen at setup and changes nothing on a box set up without it.
 DELFIN_PI_ACCOUNTS=1 scripts/pi/deploy_pi.sh --bootstrap pi@<pi>   # or on the Pi:
 sudo DELFIN_PI_ACCOUNTS=1 bash scripts/pi/pi_bootstrap.sh
 scripts/pi/deploy_pi.sh delfin@<pi>                                 # deploy as usual
+ssh pi@<pi> sudo delfin-accounts publish                            # after every deploy
 ```
 
 What is different:
 
-- The installation lives in `/opt/delfin` (`DELFIN_PI_SHARED_ROOT`), owned by
-  `delfin`, group `delfin-people`, mode 750 (the persons read it, other
-  accounts see nothing), Python included (`/opt/delfin/python`); `~delfin/delfin`
-  is a link to it, so deploys, services and every other script work as
-  before. `/opt/delfin/work` (the `delfin` account's own workspace) stays 700.
+- The agent's build lives in `/opt/delfin` (`DELFIN_PI_SHARED_ROOT`), owned
+  by `delfin`, mode 750 with `delfin`'s own group (persons and other accounts
+  see nothing), Python included (`/opt/delfin/python`); `~delfin/delfin` is a
+  link to it, so deploys, services and every other script work as before.
+  `/opt/delfin/work` (the `delfin` account's own workspace) stays 700.
   `pi_install.sh` resolves the link, so the venv and the editable install
   record `/opt/delfin`, and deploys with umask 022. It also writes
   `/opt/delfin/settings-defaults.json` (the agent and tab defaults of
   `pi-agent.conf` / `pi-tabs.conf`, nothing else) and puts Playwright's
-  Chromium into `/opt/delfin/ms-playwright`. People mode stays off in the
+  Chromium into `/opt/delfin/ms-playwright`.
+- What persons source and run is a second tree, `/opt/delfin-persons`
+  (`DELFIN_PI_PERSONS_ROOT`): owned by root, group `delfin-people`, mode 750,
+  no group or other write bit inside. `sudo delfin-accounts publish` (the
+  admin, after each deploy) copies `src`, `.venv`, `python` and
+  `ms-playwright` from the build into it, rewrites the build path in text
+  files and links, refuses a link that leaves the tree (other than into
+  `/usr` or `/etc`) and any device or FIFO, strips set-id bits, and swaps it
+  in (the previous copy stays as `.old` until the next publish). `agent.env`
+  and `settings-defaults.json` are not copied but rebuilt: `agent.env` keeps
+  only `DELFIN_AGENT_SANDBOX` (not `off`), `DELFIN_AGENT_SANDBOX_TIMEOUT`,
+  `DELFIN_MCP_ISOLATION` (not `off`/`none`) and `PLAYWRIGHT_BROWSERS_PATH`
+  (every person can read the file, so a secret placed in the build's
+  `agent.env` is dropped and named); the defaults keep `agent.mode`,
+  `provider`, `model`, `effort`, `permission_profile` (only `plan`, `ask_all`,
+  `repo_free`) and `ui.tabs`. Until the first publish a person has no
+  installation. People mode stays off in the
   `delfin` account (`DELFIN_PI_PEOPLE=1` turns it on anyway).
 - On a box that already runs the default layout (`~delfin/delfin` is a
   directory) the bootstrap stops and changes nothing, unless it is asked to
@@ -422,7 +439,8 @@ What is different:
   ```
 
   The old installation is kept whole as `~delfin/delfin.one-account`; the
-  agent's workspace (`work/`) and `agent.env` go to `/opt/delfin`; people mode
+  agent's workspace (`work/`) and `agent.env` go to `/opt/delfin` (created
+  700 before anything moves in); people mode
   in the `delfin` account is switched off. The services keep running on the
   old tree until the deploy restarts them. What still leads into the `delfin`
   account -- launcher keys (`delfin-launcher-*`), open invitations
@@ -431,6 +449,8 @@ What is different:
   (`delfin-accounts add`), then close the old way. Back:
   `DELFIN_PI_MIGRATE=back scripts/pi/deploy_pi.sh --bootstrap pi@<pi>`, then a
   deploy (person accounts and `/opt/delfin` are kept for the admin to remove).
+  The bootstrap ends with a loud warning as long as people-mode homes or
+  launcher keys remain in the `delfin` account.
 - The admin's tool `delfin-accounts` (`delfin_accounts.sh`, installed
   root-owned to `/usr/local/sbin`; `delfin-people` is installed root-owned to
   `/usr/local/lib/delfin` for the invitations). Run `deploy_pi.sh --bootstrap`
@@ -445,10 +465,11 @@ sudo delfin-accounts invite anna   # a new invitation (another PC, or the first 
 sudo delfin-accounts list          # = delfin-people --persons
 sudo delfin-accounts lock anna     # = --lock-person; unlock anna undoes it
 sudo delfin-accounts remove anna   # = --remove-person; [--keep-home]
+sudo delfin-accounts publish       # the persons' root-owned copy of the last deploy
 ```
 
 - `add` creates the account `anna` (group `delfin-people`, home 700, no
-  password: keys only), appends the shared installation to her `~/.bashrc`
+  password: keys only), appends the persons' installation to her `~/.bashrc`
   (venv, `agent.env`, `DELFIN_SETTINGS_DEFAULTS`), adds her to sshd's
   `AllowUsers` in the hardening drop-in `40-delfin-hardening.conf` (`sshd -t`
   before the reload; a list sshd refuses is put back; not a drop-in of its
@@ -456,7 +477,9 @@ sudo delfin-accounts remove anna   # = --remove-person; [--keep-home]
   and makes the invitation `~/invites/DELFIN-anna.zip` in the admin's home.
   It is `delfin-people --invite` run as `anna`: the invitation key, its forced
   `--enroll` (the root-owned copy) and the expiry are in her own
-  `authorized_keys`, and the file leads to `anna@<pi>` with the host keys
+  `authorized_keys`; the launcher inside is the one of `/opt/delfin-persons`,
+  and root reads the finished file as `anna` (`runuser ... cat`), refusing a
+  link, and the file leads to `anna@<pi>` with the host keys
   pinned. The Windows launcher finds DELFIN through the venv her login shell
   activates; she enters her own API key in the dashboard's settings
   (`~anna/.delfin`, unreadable for others).
@@ -473,9 +496,13 @@ sudo delfin-accounts remove anna   # = --remove-person; [--keep-home]
 
 What stays shared, and what is the `delfin` account's alone:
 
-- Whoever controls `delfin` controls the code every person runs (it owns
-  `/opt/delfin`, as root owns `/usr`). Keep `delfin` for deploys and the
-  services; people work in their own accounts.
+- Trust: persons are separated from each other by Unix accounts (homes 700).
+  The `delfin` account runs the agent, its CLI backends and MCP servers and
+  owns the build; it cannot write anything a person's login sources or
+  runs (`/opt/delfin-persons`, root's). Root is the admin. What `delfin`
+  deploys reaches persons only through the admin's `publish`: the admin
+  decides when, and a publish copies the build as it is at that moment, so
+  run it right after the deploy you checked.
 - Each person's dashboard runs in their own account on a loopback port with
   its own token; the dashboard enforces the token (jupyter-server extension
   mode), so another account on the box cannot use it without the token.

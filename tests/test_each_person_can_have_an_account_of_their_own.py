@@ -96,6 +96,9 @@ echo "sshd $*" >> "$FAKE/log"
     "loginctl": '#!/usr/bin/env bash\necho "loginctl $*" >> "$FAKE/log"\n',
     "pkill": '#!/usr/bin/env bash\necho "pkill $*" >> "$FAKE/log"\n',
     "pgrep": '#!/usr/bin/env bash\necho 0\n',
+    # Ownership is root's to change: logged, so a test reads what the
+    # publish handed to root, and the files stay the test user's.
+    "chown": '#!/usr/bin/env bash\necho "chown $*" >> "$FAKE/log"\n',
 }
 
 
@@ -122,7 +125,14 @@ def _box(tmp_path: pathlib.Path):
     with zipfile.ZipFile(shared / "src" / "tools" / "delfin-windows-launcher.zip", "w") as z:
         z.writestr("windows-launcher/Install.cmd", "@echo off\r\n")
     conf = fake / "accounts.conf"
-    conf.write_text(f"DELFIN_SHARED_ROOT={shared}\nDELFIN_DEPLOY_USER=delfin\n")
+    persons = tmp_path / "opt" / "delfin-persons"
+    # The directory above the persons' copy: root's alone on the box (here
+    # the test user's, without group or other write).
+    (tmp_path / "opt").chmod(0o755)
+    (shared / ".venv" / "bin").mkdir(parents=True)
+    (shared / ".venv" / "bin" / "activate").write_text(f"VIRTUAL_ENV='{shared}/.venv'\n")
+    conf.write_text(f"DELFIN_SHARED_ROOT={shared}\nDELFIN_PERSONS_ROOT={persons}\n"
+                    "DELFIN_DEPLOY_USER=delfin\n")
     host_keys = fake / "etc-ssh"
     host_keys.mkdir()
     subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f",
@@ -140,6 +150,9 @@ def _box(tmp_path: pathlib.Path):
         ('PEOPLE_TOOL="/usr/local/lib/delfin/delfin-people"', f'PEOPLE_TOOL="{bin_dir / "delfin-people"}"'),
         ('ARCHIVE_DIR="/var/backups/delfin-people"', f'ARCHIVE_DIR="{fake / "archive"}"'),
         ('[[ $EUID -eq 0 ]] || die "run with sudo"', ': stubbed-root-check'),
+        # The directory above the persons' installation must be root's on
+        # the box; here it is the test user's.
+        ('ROOT_UID=0', f'ROOT_UID={os.getuid()}'),
     ):
         assert text.count(old) == 1, old
         text = text.replace(old, new)
@@ -166,6 +179,7 @@ def _allow(sshd_conf):
 # --------------------------------------------------------------------------
 def test_adding_a_person_makes_an_account_without_password_and_lets_it_through_sshd(tmp_path):
     fake, script, env, sshd_conf, shared = _box(tmp_path)
+    persons = shared.parent / "delfin-persons"
     r = _run(script, env, "add", "anna", "--no-invite")
     assert r.returncode == 0, r.stderr + r.stdout
     log = (fake / "log").read_text()
@@ -179,7 +193,9 @@ def test_adding_a_person_makes_an_account_without_password_and_lets_it_through_s
     assert oct(home.stat().st_mode & 0o777) == "0o700"
     bashrc = (home / ".bashrc").read_text()
     assert bashrc.startswith("# skel\n"), "the account's own .bashrc is kept, the block appended"
-    assert f". '{shared}/.venv/bin/activate'" in bashrc
+    # The persons' root-owned copy, never the agent's build.
+    assert f". '{persons}/.venv/bin/activate'" in bashrc
+    assert f"'{shared}/" not in bashrc
     assert oct((home / ".ssh" / "authorized_keys").stat().st_mode & 0o777) == "0o600"
 
 
@@ -257,6 +273,7 @@ def test_an_allow_list_sshd_refuses_is_put_back(tmp_path):
 
 def test_the_invitation_leads_into_the_persons_own_account(tmp_path):
     fake, script, env, _, _ = _box(tmp_path)
+    assert _run(script, env, "publish").returncode == 0
     r = _run(script, env, "add", "anna", "--host", "box.example", "--hours", "6")
     assert r.returncode == 0, r.stderr + r.stdout
     admin_zip = fake / "home" / "pi" / "invites" / "DELFIN-anna.zip"
@@ -376,7 +393,7 @@ def test_the_shared_install_is_opt_in_and_resolves_to_the_shared_path():
     assert "install -D -m 755 -o root -g root \"$HERE/delfin_accounts.sh\" /usr/local/sbin/delfin-accounts" in boot
     assert 'export UV_PYTHON_INSTALL_DIR="$ROOT/python"' in boot
     # Open to the persons' group, not to every account on the box.
-    assert 'install -d -m 750 -o "$AGENT_USER" -g delfin-people "$SHARED_ROOT"' in boot
+    assert 'install -d -m 750 -o root -g delfin-people "$PERSONS_ROOT"' in boot
     install = (PI / "pi_install.sh").read_text(encoding="utf-8")
     assert 'ROOT="$(readlink -f "$HOME/delfin"' in install
     deploy = (PI / "deploy_pi.sh").read_text(encoding="utf-8")

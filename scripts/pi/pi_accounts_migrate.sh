@@ -21,7 +21,15 @@ set -euo pipefail
 # launcher keys and invitations in the agent account, the person accounts
 # -- is listed with the command that changes it, never changed here.
 #
-#   pi_accounts_migrate.sh to|back AGENT_HOME SHARED_ROOT
+#   pi_accounts_migrate.sh to|back|status AGENT_HOME SHARED_ROOT
+#
+# status prints a loud warning (stderr) while people mode still holds homes
+# or keys in the agent account; pi_bootstrap.sh runs it last.
+#
+# agent.env is copied into the shared root, which is the agent account's
+# alone (0700 here, 0750 with the agent's own group after the bootstrap).
+# Persons never read it: they source the copy `delfin-accounts publish`
+# rebuilds from an allow-list of non-secret variables.
 #
 # The installation moves by rename (one file system on a Pi: instant, and
 # the open files of running services stay valid), so the services keep
@@ -31,8 +39,8 @@ set -euo pipefail
 direction="${1:-}"
 home="${2:-}"
 shared="${3:-}"
-[[ "$direction" == to || "$direction" == back ]] && [[ "$home" == /* && "$shared" == /* ]] \
-    || { echo "usage: pi_accounts_migrate.sh to|back AGENT_HOME SHARED_ROOT" >&2; exit 2; }
+[[ "$direction" == to || "$direction" == back || "$direction" == status ]] && [[ "$home" == /* && "$shared" == /* ]] \
+    || { echo "usage: pi_accounts_migrate.sh to|back|status AGENT_HOME SHARED_ROOT" >&2; exit 2; }
 [[ "$shared" != / && "$home" != / ]] || { echo "error: refusing / as a path" >&2; exit 2; }
 
 ACCOUNTS_CONF="${DELFIN_ACCOUNTS_CONF:-/etc/delfin/accounts.conf}"
@@ -60,6 +68,24 @@ report_access() {
     fi
 }
 
+if [[ "$direction" == status ]]; then
+    keys="$(grep -oE ' delfin-(launcher|invite)-[a-z0-9_-]+$' "$home/.ssh/authorized_keys" 2>/dev/null | sed 's/^ //' | sort -u || true)"
+    homes=""
+    [[ -d "$home/people" ]] && compgen -G "$home/people/*/" >/dev/null && homes=1
+    if [[ -n "$keys" || -n "$homes" ]]; then
+        {
+            echo
+            echo "################################################################"
+            echo "WARNING: people mode still lives in the agent account ($home)."
+            echo "  Its persons share ONE Unix user with the agent; the per-person"
+            echo "  accounts protect nobody until this is moved and removed."
+            report_access
+            echo "################################################################"
+        } >&2
+    fi
+    exit 0
+fi
+
 if [[ "$direction" == to ]]; then
     if [[ -L "$current" ]]; then
         echo "==> $current is already a link ($(readlink "$current")): nothing to move"
@@ -72,8 +98,11 @@ if [[ "$direction" == to ]]; then
         exit 1
     fi
     echo "==> moving the one-account installation aside: $kept"
+    # Closed from the first moment (a plain mkdir under root's umask 022
+    # would leave the agent's workspace world-readable until the bootstrap
+    # restricts it); the bootstrap then sets the intended group and mode.
+    install -d -m 700 "$shared"
     mv "$current" "$kept"
-    mkdir -p "$shared"
     if [[ -d "$kept/work" ]]; then
         # The agent's workspace is data, not installation: it moves along
         # (a rename), and moves back on `back`.
