@@ -65,7 +65,13 @@ class TestDownstreamStages:
 
 
 class TestInvalidateStageFiles:
-    def test_removes_out_inp_fprint(self):
+    def test_removes_inp_and_fprint_but_keeps_the_out(self):
+        """The .out is what the stage's result is; it is replaced, never deleted.
+
+        Deleting it here is what lost a finished output: a rerun that failed
+        left its junk in the place the result had been.  The stage reruns
+        because it is in the force set, not because its output is missing.
+        """
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / "red_step_1.out").write_text("data")
@@ -74,9 +80,10 @@ class TestInvalidateStageFiles:
 
             _invalidate_stage_files("red_step_1", root)
 
-            assert not (root / "red_step_1.out").exists()
             assert not (root / "red_step_1.inp").exists()
             assert not (root / "red_step_1.inp.fprint").exists()
+            assert (root / "red_step_1.out").read_text() == "data", \
+                "the finished output survives until a rerun replaces it"
 
     def test_nonexistent_files_no_error(self):
         with tempfile.TemporaryDirectory() as tmpdir:
