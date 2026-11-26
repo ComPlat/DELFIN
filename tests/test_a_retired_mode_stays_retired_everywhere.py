@@ -101,13 +101,14 @@ def test_the_four_that_remain_are_the_four_that_are_declared():
     mode declared at one hop and dropped at the next is the same defect
     whether it is being retired or introduced.
 
-    `lab` is deliberately NOT in the dashboard's picker lists yet:
-    `_SINGLE_AGENT_MODES` and `_LAUNCH_INDEPENDENT_MODES` live in
-    `delfin/dashboard/tab_agent.py`, which is in the self-modification
-    guard's protected set, so that half arrives as
-    `scratch/lab-run-dispatch.patch`. What this test asserts is the manifest
-    and the mode file -- what `available_modes()` reads -- and the CLI, the
-    delegation route and `--mode lab` all work from that.
+    `lab` is deliberately NOT in the dashboard's picker lists:
+    `_SINGLE_AGENT_MODES` and `_LAUNCH_INDEPENDENT_MODES` in
+    `delfin/dashboard/tab_agent.py` still read `dashboard, solo, office,
+    research`. That half is neither in this bundle nor in either of its
+    patch files -- both patches touch only `delfin/agent/api_client.py`, so
+    nothing here ships it and nothing here tests it. What this test asserts
+    is the manifest and the mode file -- what `available_modes()` reads --
+    and the CLI, the delegation route and `--mode lab` all work from that.
     """
     from delfin.agent.prompt_loader import PromptLoader
     modes = PromptLoader(repo_dir=_ROOT / "delfin" / "agent").available_modes()
