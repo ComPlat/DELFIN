@@ -7,7 +7,7 @@ tests/test_every_capability_has_a_caller.py uses.
 
 Why this test exists. Two rows of that fixture were measured on
 2026-11-22 and have since been repaired or deleted, but the prose beside
-them kept describing the defects in the present tense. A wave-45 package
+them kept describing the defects in the present tense. An earlier package
 read that prose as a standing order ("three redirect forms currently RUN
 unasked; the repair is the two classes above, in api_client.py; the
 self-modification guard refuses it to an unattended session") and was
@@ -64,9 +64,10 @@ def _mentions_outside_the_fixture(name: str) -> list[str]:
     Comments and docstrings are not counted: they are prose about history,
     not a surface the product reaches, and the test below pins exactly that
     ("named by running code again"). Measured 2026-11-25 while integrating
-    two arms: a ledger test that names these four symbols in its docstring,
-    to explain why they are gone, tripped a scan that read raw text -- so
-    the honest test of one arm failed the honest fixture of the other.
+    two packages: a ledger test that names these four symbols in its
+    docstring, to explain why they are gone, tripped a scan that read raw
+    text -- so the honest test of one package failed the honest fixture of
+    the other.
     """
     hits: list[str] = []
     for root in (REPO / "delfin", REPO / "tests"):
