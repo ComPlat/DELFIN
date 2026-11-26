@@ -397,6 +397,11 @@ def member_argv(run: str, task: dict, *, session: str = "", cfg: dict | None = N
         cmd += ["--model", str(task["model"])]
     if session:
         cmd += ["--session", session]
+    # Read-only folders outside the worktree (a language environment the
+    # task needs); the chat's launch guard still refuses a credential
+    # directory, a parent of the workspace and a forbidden root.
+    for d in task.get("read_dirs") or []:
+        cmd += ["--read-dir", str(Path(str(d)).expanduser())]
     return cmd
 
 
