@@ -33,6 +33,7 @@ import collections
 import json
 import os
 import re
+import stat
 from pathlib import Path
 
 from . import wave
@@ -222,12 +223,27 @@ def _load_cursor() -> dict:
         return {}
 
 
+def _replace_private(tmp: Path, p: Path) -> None:
+    """Move *tmp* onto *p* so the result is readable by its owner only.
+
+    The ledger, the cursor and the report sit beside the wave state, and the
+    ledger carries member log excerpts: a world-readable copy in a shared
+    waves root is other accounts' reading matter. DELFIN's other writers of
+    this kind (attention.py, audit_log.py, approval_code.py) create 0o600.
+    """
+    os.replace(tmp, p)
+    try:
+        os.chmod(p, 0o600)
+    except OSError:
+        pass
+
+
 def _save_cursor(cur: dict) -> None:
     p = _cursor_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(cur))
-    os.replace(tmp, p)
+    _replace_private(tmp, p)
 
 
 def _sources(run: str, tid: str, a: dict) -> list[tuple[Path, str]]:
@@ -304,8 +320,17 @@ def sweep(run_names: list[str] | None = None) -> dict:
                                          for k, c, d in records(done.decode("utf-8", "replace")
                                                                 .splitlines())]}
         appended = 0
-        _ledger_path().parent.mkdir(parents=True, exist_ok=True)
-        with open(_ledger_path(), "a") as fh:
+        led = _ledger_path()
+        led.parent.mkdir(parents=True, exist_ok=True)
+        # Created owner-only, and an older world-readable ledger is corrected:
+        # the records quote member logs (see _replace_private).
+        fd = os.open(str(led), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a") as fh:
+            try:
+                if stat.S_IMODE(os.fstat(fh.fileno()).st_mode) != 0o600:
+                    os.fchmod(fh.fileno(), 0o600)
+            except OSError:
+                pass
             for key, e in new.items():
                 for r in e["recs"]:
                     fh.write(json.dumps(r, default=str) + "\n")
@@ -341,5 +366,5 @@ def write_report(top: int = 30) -> dict:
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(rep, indent=1, default=str))
-    os.replace(tmp, p)
+    _replace_private(tmp, p)
     return {"path": str(p), "records": rep["records"]}

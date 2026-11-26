@@ -737,3 +737,34 @@ def test_the_start_gate_stops_before_the_envelope_does(host):
         f"stops everything above {stop} x cores: between the two the tick "
         f"launches onto a host it is about to stop. Keep the start gate at or "
         f"below the stop line.")
+
+
+def test_the_ledger_cursor_and_report_are_owner_only(host):
+    """The friction files quote member logs, so they are not world-readable.
+
+    ``.friction.jsonl`` records snippets of what each member's log said, and
+    it sits beside the wave state -- which on the cluster is a shared path.
+    The three files were written with the process umask (0644 on a normal
+    host), so any other account could read them. DELFIN's other writers of
+    this kind (attention.py, audit_log.py, approval_code.py) create 0o600.
+    """
+    import stat
+
+    from delfin.agent.swarm import friction
+
+    run = "s7"
+    wave.run_dir(run).mkdir(parents=True)
+    (wave.run_dir(run) / "tasks.json").write_text(json.dumps([_task("a")]))
+    log = wave.run_dir(run) / "a.log"
+    log.write_text(json.dumps({"type": "result", "stop_reason": "end_of_turn",
+                               "tool_calls": 1}) + "\n")
+    _agent_entry(run, "a", log)
+    host["alive"].add(4242)
+
+    friction.sweep()
+    friction.write_report()
+    for path in (friction._ledger_path(), friction._cursor_path(),
+                 wave.root() / "friction.json"):
+        assert path.exists(), f"{path} was not written"
+        mode = stat.S_IMODE(path.stat().st_mode)
+        assert mode == 0o600, f"{path.name} is {oct(mode)}, not 0o600"
