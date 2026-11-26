@@ -111,6 +111,24 @@ the cost of ignoring it is written next to it.
     scratch/realrun.json (REAL RUNS): you cannot run DELFIN against a
     model yourself, the cage removes every key from your shell.
 
+19. THE LAND GATE READS YOUR PROOF, AND RUNS IT. scratch/PR.md's decision
+    table needs one row per package: the package, the test that shows the
+    change, and the real-run probe that reached it. The gate RUNS that test
+    on the base (it must fail there) and on the branch (it must pass) and
+    reads the probe's row from the stage's own record, so a test that was
+    already green on the base, a test that does not exist, and a probe that
+    recorded an error are all refusals that name your package. Write the
+    path of the test file, and the name of the probe, not a description.
+
+20. YOUR COMMITS ARE SIGNED TWICE AND CREDITED ONCE. Every author AND every
+    committer is the configured identity: a commit you authored and a tool
+    committed is still refused. Every Co-Authored-By line must be exactly
+    the DELFIN agent account, and when that address carries an account
+    number the number must be the same one -- the number, not the spelling,
+    is what the forge credits. The gate composes the message a squash merge
+    publishes, and it carries ONE such line and no model, provider or site
+    name: those belong to the branch, not to the base's history.
+
 WHAT IS NOT SCORED: the number of things you change. One change with a
 before/after measurement beats five without.
 """
