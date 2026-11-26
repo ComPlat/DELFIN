@@ -104,19 +104,14 @@ def _stand_ins(folder: Path) -> Path:
     folder.mkdir()
     keygen = folder / "ssh-keygen"
     keygen.write_text(
-        "#!/bin/bash
-"
-        'while [ $# -gt 0 ]; do case $1 in -f) out=$2; shift 2 ;; -C) comment=$2; shift 2 ;; *) shift ;; esac; done
-'
-        f"printf '%s\nc3RhbmQtaW4=\n-----END OPENSSH PRIVATE KEY-----\n' '{_KEY_HEADER}' > "$out"
-"
-        'printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHN0YW5kLWluLWZvci10aGUtaW52aXRhdGlvbjAw %s\n' "$comment" > "$out.pub"
-',
+        "#!/bin/bash\n"
+        "while [ $# -gt 0 ]; do case $1 in -f) out=$2; shift 2 ;; -C) comment=$2; shift 2 ;; *) shift ;; esac; done\n"
+        f"printf '%s\\nc3RhbmQtaW4=\\n-----END OPENSSH PRIVATE KEY-----\\n' '{_KEY_HEADER}' > \"$out\"\n"
+        "printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHN0YW5kLWluLWZvci10aGUtaW52aXRhdGlvbjAw %s\\n'"
+        " \"$comment\" > \"$out.pub\"\n",
         encoding="ascii")
     date = folder / "date"
-    date.write_text("#!/bin/bash
-echo 202612010000Z
-", encoding="ascii")
+    date.write_text("#!/bin/bash\necho 202612010000Z\n", encoding="ascii")
     for tool in (keygen, date):
         tool.chmod(0o755)
     return folder
