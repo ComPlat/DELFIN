@@ -203,6 +203,62 @@ def test_only_the_boolean_is_a_yes():
     assert decided["state"] == "ask_user" and decided["allow"] is False
 
 
+# -- the printed command is a shell line, so its fields are not free text -------
+
+@pytest.mark.parametrize("pr", ["7 --admin", "7;echo INJECTED", "7 && echo X",
+                                "7 | tee /tmp/x", "$(id)", "7\n8", " "])
+def test_a_pr_number_that_is_not_a_number_never_reaches_the_printed_command(pr):
+    """``pr`` goes into ``gh pr merge <pr> …`` -- the line a person pastes.
+
+    A free-text ``pr`` is a way to add a flag the decision refused: with
+    ``--admin`` in the number, the "administrator rights are refused unless
+    asked in this same command" rule held in ``state`` while the printed
+    command carried the flag anyway.
+    """
+    head = "a" * 40
+    with pytest.raises(swarm_merge.TriageError):
+        swarm_merge.decide_merge(pr, head, confirmed=True, checks_ok=True,
+                                 current_head=head)
+
+
+@pytest.mark.parametrize("head", ["a" * 40 + ";echo INJECTED",
+                                  "a" * 40 + " && echo X",
+                                  "a" * 40 + " | tee /tmp/x",
+                                  "$(id)", "", "not-a-commit", "abc"])
+def test_a_head_that_is_not_a_commit_never_reaches_the_printed_command(head):
+    """``head`` goes into ``--match-head-commit <head>``, same rule as ``pr``.
+
+    ``abc`` is refused on length, not shape: a short hash cannot pin the
+    commit the checks were read for, which is the whole point of the flag.
+    """
+    with pytest.raises(swarm_merge.TriageError):
+        swarm_merge.decide_merge("7", head, confirmed=True, checks_ok=True,
+                                 current_head="a" * 40)
+
+
+def test_the_unconfirmed_advice_carries_no_injected_flag(tmp_path, monkeypatch,
+                                                         capsys):
+    """The ``ask_user`` text is read by a person and pasted from.
+
+    This is the exact shape the review reported: an unconfirmed call with
+    ``pr="7 --admin"`` printed an ``--admin`` merge command although the
+    decision had set ``admin_override=False``.
+    """
+    head = "a" * 40
+    with pytest.raises(swarm_merge.TriageError):
+        swarm_merge.decide_merge("7 --admin", head, confirmed=False,
+                                 checks_ok=True, current_head=head)
+    rc = _run(["swarm", "merge-run", "7 --admin", "--head", head])
+    assert rc != 0
+    printed = capsys.readouterr()
+    text = printed.out + printed.err
+    # Refused before any command is built: no merge line to paste, and the
+    # error names the bad input rather than resolving to a runnable one.
+    assert "gh pr merge" not in text
+    assert "run this yourself" not in text
+    assert "ERROR:" in text
+
+
 # -- the fail verdict: the member is resumed with the failure text ---------------
 
 def test_a_fail_verdict_resumes_the_member_that_failed(tmp_path, monkeypatch,

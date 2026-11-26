@@ -19,6 +19,37 @@ from typing import Any
 from .triage import TriageError
 
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_HEAD_SHA = re.compile(r"^[0-9a-fA-F]{7,40}$")
+
+
+def _printed_pr(pr: int | str) -> str:
+    """*pr* as it may appear in a printed command: digits only.
+
+    ``pr`` arrives from a command line, so it is free text. It goes into
+    ``gh pr merge <pr> …``, a line a person pastes into a shell -- anything
+    but a number there can add a flag the decision refused.
+    """
+    text = str(pr).strip()
+    if not text.isdigit():
+        raise TriageError(
+            f"pull request {pr!r} is not a number -- it goes into a printed "
+            f"command, so it must be the PR number only")
+    return text
+
+
+def _printed_head(head: str) -> str:
+    """*head* as it may appear in a printed command: a commit hash.
+
+    Same rule as :func:`_printed_pr`. A short hash is refused too: the
+    ``--match-head-commit`` pin exists to bind the merge to the commit the
+    checks were read for, and a few characters do not do that.
+    """
+    text = str(head).strip()
+    if not _HEAD_SHA.match(text):
+        raise TriageError(
+            f"head {head!r} is not a commit hash (7-40 hex characters) -- it "
+            f"goes into a printed command")
+    return text
 
 
 def merge_plan(package: str, *, base: str = "main") -> dict[str, Any]:
@@ -148,6 +179,8 @@ def decide_merge(pr: int | str, head: str, *, confirmed: bool,
 
     ``executed`` is always False: this returns the command a person runs.
     """
+    pr = _printed_pr(pr)
+    head = _printed_head(head)
     if confirmed is not True:
         state = "ask_user"
     elif not current_head or str(head) != str(current_head):
