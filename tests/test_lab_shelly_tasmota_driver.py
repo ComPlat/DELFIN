@@ -300,6 +300,21 @@ def _kernel(clock=None):
     return _safety.Kernel.load(clock=clock or time.time)
 
 
+def _approved_set(k, actor, device, channel, value):
+    """A write to real hardware, after the person's single-use grant.
+
+    A device whose driver is not the simulator always needs a person's
+    approval (``tests/test_a_real_device_always_needs_a_person.py``); the
+    grant is obtained first so these tests keep measuring the driver.
+    """
+    from delfin.lab import approvals
+    first = k.set(actor, device, channel, value)
+    assert first.get("code") == "approval_required", first
+    approvals.grant(first["approval_request"])
+    return k.set(actor, device, channel, value,
+                 approval=first["approval_request"])
+
+
 def _device(driver):
     from delfin.lab.drivers.base import Driver
     d = _make_driver(driver)
@@ -446,7 +461,7 @@ def test_estop_confirms_a_shelly_through_its_readback_channel(plug):
     server, _ws = plug
     k = _kernel()
     actor = _safety.Actor.here("s1")
-    assert k.set(actor, "plug_shelly", "power", "on")["ok"]
+    assert _approved_set(k, actor, "plug_shelly", "power", "on")["ok"]
     out = estop.trigger(reason="test", by="alice", kernel=k)
     assert "plug_shelly" in out["stopped"] and out["not_confirmed"] == [], out
     assert server.fake.output is False
@@ -458,7 +473,7 @@ def test_shelly_write_read_and_readback(plug):
     server, ws = plug
     k = _kernel()
     actor = _safety.Actor.here("s1")
-    out = k.set(actor, "plug_shelly", "power", "on")
+    out = _approved_set(k, actor, "plug_shelly", "power", "on")
     assert out["ok"], out
     assert server.fake.output is True
     # readback under the declared reads
@@ -471,7 +486,7 @@ def test_tasmota_write_read_and_readback(plug):
     server, ws = plug
     k = _kernel()
     actor = _safety.Actor.here("s1")
-    out = k.set(actor, "plug_tasmota", "power", "on")
+    out = _approved_set(k, actor, "plug_tasmota", "power", "on")
     assert out["ok"], out
     assert server.fake.output is True
     rd = k.read("plug_tasmota")
@@ -486,7 +501,7 @@ def test_transport_error_on_write_makes_the_kernel_go_safe(plug):
     server.fake.fail = True
     k = _kernel()
     actor = _safety.Actor.here("s1")
-    out = k.set(actor, "plug_shelly", "power", "on")
+    out = _approved_set(k, actor, "plug_shelly", "power", "on")
     assert out["ok"] is False
     assert out["code"] == "driver_error"
     # the kernel latched the device, so no further write can happen
@@ -545,8 +560,13 @@ def test_no_driver_write_without_kernel_set_via_tools(plug, monkeypatch):
 
     monkeypatch.setattr(_safety.Kernel, "set", patched)
     perms = type("P", (), {"task_session_id": "s1"})()
-    out = _tools.execute("lab_set", {"device": "plug_shelly",
-                                     "channel": "power", "value": "on"},
+    args = {"device": "plug_shelly", "channel": "power", "value": "on"}
+    first = json.loads(_tools.execute("lab_set", args, perms))
+    assert first.get("code") == "approval_required", first
+    from delfin.lab import approvals
+    approvals.grant(first["approval_request"])
+    out = _tools.execute("lab_set",
+                         {**args, "approval": first["approval_request"]},
                          perms)
     assert json.loads(out)["ok"] is True
     assert called, "lab_set did not route through Kernel.set"
