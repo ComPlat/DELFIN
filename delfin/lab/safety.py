@@ -484,7 +484,12 @@ class Kernel:
                                  f"{holder.get('person')} a moment ago")
             elif self.estopped(d, doc):
                 doc_out = refuse("estop", "e-stop arrived during the check")
-            elif level == "hazardous" and not approval:
+            elif (level == "hazardous" or d.driver != "simulator") and not approval:
+                # A device that is not the simulator is real hardware: every
+                # write to it needs a person's single-use grant, whatever its
+                # level and whatever the permission mode (the maintainer,
+                # 2026-11-26: open slowly; a harmless step on a real stirrer
+                # is still an act in the lab).
                 rec = _approvals.file_request(
                     doc, digest_=dig, person=actor.person,
                     session=actor.session, device=d.id, channel=ch.name,
@@ -492,7 +497,7 @@ class Kernel:
                 doc_out = refuse(
                     "approval_required",
                     f"{key} = {num if ch.is_state else format(num, 'g')}{' ' + ch.unit if ch.unit else ''} is "
-                    f"hazardous: a person approves exactly this action with "
+                    f"{'hazardous' if level == 'hazardous' else 'on real hardware'}: a person approves exactly this action with "
                     f"`delfin-agent lab approve {rec['id']}`, then repeat the "
                     f"call with approval={rec['id']}",
                     approval_request=rec["id"])
