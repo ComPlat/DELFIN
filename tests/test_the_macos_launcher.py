@@ -377,6 +377,7 @@ def test_the_connection_after_the_copy_has_its_terminal_and_tunnel(tmp_path):
         "#!/bin/bash\n"
         'n=$(cat "$FAKE/count" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "$FAKE/count"\n'
         'printf "%s\n" "$@" > "$FAKE/ssh.$n"\n'
+        'printf "%s\n" "${TERM-unset}" > "$FAKE/term.$n"\n'
         'if [ $n = 1 ]; then echo DELFIN_SCRIPTS_MISSING; exit 10; fi\n'
         "exit 0\n", encoding="ascii")
     (fake / "scp").write_text('#!/bin/bash\nprintf "%s\n" "$@" > "$FAKE/scp.args"\nexit 0\n', encoding="ascii")
@@ -387,7 +388,7 @@ def test_the_connection_after_the_copy_has_its_terminal_and_tunnel(tmp_path):
     for name in ("remote_bootstrap.sh", "remote_launcher.py"):
         shutil.copy(ROOT / "tools" / "windows-launcher" / name, here / name)
     pid = "0b8f1f7e-8b1c-4a4f-9f1e-3c5d7e9a1b2c"
-    env = {**os.environ, "FAKE": str(fake), "TMPDIR": str(tmp_path),
+    env = {**os.environ, "FAKE": str(fake), "TMPDIR": str(tmp_path), "TERM": "dumb",
            "DELFIN_LAUNCHER_STORE": str(tmp_path / "store"), "DELFIN_LAUNCHER_DESKTOP": str(tmp_path)}
     program = (f'DELFIN_LAUNCHER_LIBRARY=1 source {_quote(str(SCRIPT))}\n'
                f'HERE={_quote(str(here))} SSH={_quote(str(fake / "ssh"))} SCP={_quote(str(fake / "scp"))}\n'
@@ -406,3 +407,13 @@ def test_the_connection_after_the_copy_has_its_terminal_and_tunnel(tmp_path):
         assert re.fullmatch(r"127\.0\.0\.1:\d+:/tmp/delfin-win-tunnel-[a-f0-9-]{36}/dashboard\.sock", tunnel), tunnel
     assert first == second, "the connection after the copy is the same dashboard connection"
     assert "The login was refused" not in out
+    # tmux on the server refuses TERM=dumb ("terminal does not support
+    # clear"); ssh announces a type that can, as DELFIN.ps1's console does.
+    assert (fake / "term.2").read_text().strip() == "xterm-256color"
+
+
+def test_a_real_terminal_keeps_its_own_type():
+    assert _lib("TERM=screen-256color connection_term") == "screen-256color"
+    assert _lib("unset TERM; connection_term") == "xterm-256color"
+    assert _lib("TERM=dumb connection_term") == "xterm-256color"
+    assert _lib("printf %s \"${TERM-unset}\"", {"TERM": "dumb"}) == "dumb", "nothing is exported"

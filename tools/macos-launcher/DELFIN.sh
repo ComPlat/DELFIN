@@ -317,6 +317,10 @@ refused_note() {
     say '  Send it to whoever runs the server, then start DELFIN again.'
 }
 
+connection_term() {
+    case ${TERM:-} in ''|dumb|unknown) printf '%s' xterm-256color ;; *) printf '%s' "$TERM" ;; esac
+}
+
 connect_worker() {
     load_profile "$1"
     printf '\033]0;SSH Dashboard - %s\007' "$P_NAME"
@@ -359,7 +363,11 @@ connect_worker() {
         # connection after a copy then reached the server without a pty.
         ssh_options Dashboard "$local_port" 0 "$tunnel"
         # The terminal stays ssh's input: passwords, tmux keys, Ctrl+C.
-        "$SSH" "${SSH_OPTS[@]}" "${IDENTITY[@]}" "$P_TARGET" "$remote" < /dev/tty > "$work/out" &
+        # tmux on the server refuses a terminal type that cannot clear the
+        # screen ("terminal does not support clear"): with no TERM or TERM=dumb
+        # (a start from a wrapper) ssh announces xterm-256color, the type
+        # DELFIN.ps1 sets for its console. Only for this ssh, nothing exported.
+        TERM=$(connection_term) "$SSH" "${SSH_OPTS[@]}" "${IDENTITY[@]}" "$P_TARGET" "$remote" < /dev/tty > "$work/out" &
         ssh_pid=$!
         exec 3< "$work/out"
         while IFS= read -r line <&3; do
