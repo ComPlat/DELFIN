@@ -95,6 +95,11 @@ _NOT_EXERCISED_HERE = {
     "lab_set": "tests/test_lab_safety_kernel.py — needs the simulated lab",
     "lab_plan_check": "tests/test_lab_safety_kernel.py",
     "lab_estop": "tests/test_lab_deadman_and_estop.py",
+    # lab_run is EXERCISED, not just accounted for: the new file drives it
+    # through this same executor against the simulator, judges a plan, runs
+    # it, and checks that a hazardous step stops without writing. It is
+    # named here because it also needs a pinned manifest in a scratch lab.
+    "lab_run": "tests/test_a_lab_experiment_runs_through_the_kernel.py",
     # Cluster resources this machine does not have.
     "watch_job": "needs SLURM",
     "cluster_status": "tests/test_the_agent_reaches_a_cluster_only_through_"

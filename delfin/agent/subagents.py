@@ -147,34 +147,260 @@ _TELEMETRY_MAX_LINES = 5000
 # actual task briefing.
 _INHERIT_RULES_MAX_CHARS = 2000
 _INHERIT_MEMORY_MAX_CHARS = 1500
-# Only these typed-memory kinds are inherited: they encode durable
-# user/project preferences. Task-scoped or auto-distilled kinds stay out.
+# These typed-memory kinds are ALWAYS inherited: they encode durable
+# user/project preferences and standing corrections, which apply to a
+# delegate whatever its task turns out to be.
+#
+# They are no longer the ONLY kinds that can cross. Measured on a
+# three-specialist delegation (2026-11-24, driving run_subagent with a
+# scripted model): the block used 736 of its 1500 chars, carried the same
+# four memories into all three tasks, and every project/lesson/reference
+# memory was dropped by this type filter BEFORE the ranking ran — so a
+# method specialist sent to choose a dispersion correction was told about
+# pytest conventions and given nothing about the method question, with
+# half its memory budget empty. A type filter cannot express "relevant to
+# THIS task"; relevance is what decides now (see _inherited_context).
 _INHERIT_MEMORY_TYPES = ("feedback", "user")
+# These kinds cross only when the task matches them (BM25 score > 0 against
+# the delegate's prompt). They are facts about the work — a decision, a
+# reusable caution, a pointer — which is exactly what a specialist is sent
+# to use, and they are the kinds a generalist's own prompt already carries.
+_INHERIT_RELEVANT_TYPES = ("project", "lesson", "reference", "finding")
 
 
 #: The share of a delegate's system prompt the repository lessons may take
 #: (knowledge.load_block); the parent's own prompt carries its own.
 _INHERIT_KNOWLEDGE_MAX_CHARS = 800
 
+#: How much of the session's request a delegate is shown. A goal is a sentence
+#: or two; this is the ceiling that keeps a pasted document from becoming the
+#: child's prompt. Truncation is announced, never silent.
+_INHERIT_GOAL_MAX_CHARS = 1200
 
-def _inherited_context(workspace, prompt: str) -> str:
+#: A request this short is a go-ahead rather than a goal ("ja", "weiter",
+#: "los", "ok", "do it"), so the assistant text it answers is carried too --
+#: the same pair ``api_client._turn_opening`` returns for that reason.
+_GO_AHEAD_MAX_CHARS = 40
+
+_GO_AHEAD_ONLY_RE = re.compile(
+    r"(?i)^[\s\W]*("
+    r"ja|jap|jep|yes|yep|ok|okay|sure|go|weiter|mach|mach das|machs|"
+    r"los|leg los|bitte|please|do it|go ahead|proceed|fortfahren|danke|"
+    r"passt|genau|exakt|stimmt|einverstanden|gerne"
+    r")[\s\W]*$"
+)
+
+
+def _session_goal(client) -> str:
+    """The request that opened the parent's turn, or "" when unknown.
+
+    A delegate used to receive only the brief the parent wrote, so the user's
+    own request -- the thing the whole turn serves -- never reached it. A
+    specialist asked to review a method had no way to know which question the
+    method was for, and one asked to find a file had no way to know why.
+
+    Read from the parent client's live row list, never from a store: the rows
+    are the request as the model saw it, and ``_turn_opening`` already applies
+    the rule for which row that is (the last user row that is not a harness
+    note, and the assistant answer a bare "ja" replies to).
+
+    EVERY path is capped by ``_INHERIT_GOAL_MAX_CHARS``, including the two that
+    used to return early: the fenced one and the go-ahead one. The goal is
+    injected whole into every child's prompt, so an uncapped goal is an
+    uncapped child prompt -- measured before this, a go-ahead reply whose
+    offered answer was long produced a 19,829-character goal against a
+    1,200-character cap, and a relayed fenced message produced 5,091.
+
+    Best-effort and signature-tolerant: a client without the rows (an
+    externally attached runner, a test double) yields "", so a spawn never
+    depends on this.
+    """
+    rows = getattr(client, "_turn_rows", None)
+    # A Mock attribute is truthy and iterable-looking; only a real row list is
+    # a turn. Without this the goal block would be built from a MagicMock's
+    # repr in every test that spawns a delegate against one.
+    if not isinstance(rows, (list, tuple)) or not rows:
+        return ""
+    try:
+        from .api_client import _turn_opening
+        user_text, offered = _turn_opening(list(rows))
+    except Exception:
+        return ""
+    # A text that ALREADY carries a fence keeps its line structure: the fence
+    # is a line-oriented marker family, and flattening whitespace here
+    # destroyed the opener/closer of a relayed ``session_message`` -- measured
+    # by test_a_goal_that_is_already_fenced_keeps_its_fence, which went red on
+    # the first version of this function.
+    raw = str(user_text or "")
+    if _already_fenced(raw):
+        return _cap_goal_preserving_fence(raw.strip())
+    user_text = " ".join(raw.split())
+    offered = " ".join(str(offered or "").split())
+    if not user_text:
+        return ""
+    if len(user_text) <= _GO_AHEAD_MAX_CHARS and _GO_AHEAD_ONLY_RE.match(
+            user_text):
+        # The user answered something. That something is the goal; the
+        # go-ahead alone would tell the child nothing.
+        if not offered:
+            return ""
+        return _cap_goal(f"{offered} (the user then answered: {user_text})")
+    return _cap_goal(user_text)
+
+
+def _goal_is_the_parents_answer(client) -> bool:
+    """True when ``_session_goal``'s answer is the PARENT's own words.
+
+    On the go-ahead path the goal is the assistant answer the user replied
+    "ja" to, not a request the user typed -- so the heading that calls it "the
+    user's own words" would be the parent asserting its own authority over its
+    own text. Measured before this: the goal body was "I will now do the
+    following things: …" under that heading.
+    """
+    rows = getattr(client, "_turn_rows", None)
+    if not isinstance(rows, (list, tuple)) or not rows:
+        return False
+    try:
+        from .api_client import _turn_opening
+        user_text, offered = _turn_opening(list(rows))
+    except Exception:
+        return False
+    text = " ".join(str(user_text or "").split())
+    if not text or len(text) > _GO_AHEAD_MAX_CHARS:
+        return False
+    return bool(_GO_AHEAD_ONLY_RE.match(text) and str(offered or "").strip())
+
+
+def _cap_goal(text: str) -> str:
+    """Cut a goal to the cap, announcing the cut."""
+    text = str(text or "")
+    if len(text) <= _INHERIT_GOAL_MAX_CHARS:
+        return text
+    return (text[:_INHERIT_GOAL_MAX_CHARS].rstrip()
+            + " [… goal truncated here — ask the session if the rest matters]")
+
+
+def _cap_goal_preserving_fence(text: str) -> str:
+    """Cap a fenced goal INSIDE its body, so the markers stay intact.
+
+    Cutting from the front would delete the closing marker and leave text that
+    no longer unwraps; cutting the whole string at cap length would separate
+    opener from closer. So the body between the markers is cut and the fence is
+    rebuilt around it, which is what ``untrusted.wrap`` produced in the first
+    place.
+    """
+    text = str(text or "")
+    if len(text) <= _INHERIT_GOAL_MAX_CHARS:
+        return text
+    try:
+        from .untrusted import unwrap
+        body = unwrap(text)
+    except Exception:
+        return _cap_goal(text)
+    notice = (" [… goal truncated here — ask the session if the rest matters]")
+    try:
+        from .untrusted import _OPEN_RE
+        match = _OPEN_RE.search(text)
+        if match is None:
+            return _cap_goal(text)
+        header = text[:match.end()]
+        closer = text[match.end():].rstrip()
+        # The scaffold is charged against the cap too: the goal is injected
+        # whole into every child's prompt, so it is the WHOLE text the child
+        # receives that has to fit, not just its body. Measured: a fence wraps
+        # ~300 characters of markers, so a body cut to the cap alone came out
+        # at 1,501 against a 1,200 cap.
+        closing = [ln for ln in closer.splitlines() if "END UNTRUSTED" in ln]
+        tail = "\n" + closing[-1] if closing else ""
+        keep = max(0, _INHERIT_GOAL_MAX_CHARS - len(header) - len(tail)
+                   - len(notice))
+        cut_body = " ".join(body.split())[:keep].rstrip() + notice
+        return f"{header}{cut_body}{tail}"
+    except Exception:
+        return _cap_goal(text)
+
+
+def _goal_section_heading(goal_is_parents_answer: bool) -> str:
+    """The heading over the inherited goal, labelled by whose words it is.
+
+    On the ordinary path the goal IS the user's request, and the label tells
+    the child so -- that is the whole point of the section. On the go-ahead
+    path ("ja") it is the PARENT assistant's answer, which the user merely
+    agreed to, so the same label would be the parent asserting a user's
+    authority over its own text. Measured before this: the body was "I will
+    now do the following things: …" under "the user's own words".
+    """
+    if goal_is_parents_answer:
+        return ("## The session's goal (inherited; the assistant answer the "
+                "user agreed to)\n")
+    return "## The session's goal (inherited; the user's own words)\n"
+
+
+def _already_fenced(text: str) -> bool:
+    """True when ``text`` carries an untrusted fence anywhere in it."""
+    try:
+        from .untrusted import contains_fence
+        return bool(contains_fence(text or ""))
+    except Exception:
+        return False
+
+
+def _fence_goal(goal: str) -> str:
+    """Put the session's request in the prompt without asserting authority.
+
+    The goal is the USER's own words, so it is not untrusted text: fencing it
+    would say the user is not the user. It is also not the child's assignment
+    -- that is the brief the parent wrote -- so it needs a boundary the child
+    can act on, and the heading above it says exactly that.
+
+    The one case that must not lose its marker: a goal that already carries a
+    fence (the user's request was itself a relayed ``session_message``, or a
+    pasted tool result). Those are detected and left byte-identical, because
+    re-wrapping a delegate's report or another session's message would launder
+    exactly the text the fence exists to mark.
+    """
+    body = str(goal or "").strip()
+    if not body:
+        return ""
+    if _already_fenced(body):
+        return body
+    return "«" + body + "»"
+
+
+def _inherited_context(workspace, prompt: str, *, goal: str = "",
+                       goal_is_parents_answer: bool = False) -> str:
     """Project rules + standing memories for a child's system prompt.
 
-    (a) Project rules: ``load_project_memory`` walking up from the child's
+    (a) The session's goal, when the caller could read it: the request the
+        child's work serves, fenced as the user's own words so it is not
+        mistaken for the parent's brief.
+    (b) Project rules: ``load_project_memory`` walking up from the child's
         workspace (DELFIN.MD / AGENTS.md), capped at
         ``_INHERIT_RULES_MAX_CHARS``.
-    (b) Standing memory: feedback/user typed memories from the child
-        workspace's store, BM25-ranked against the subagent prompt so the
-        most task-relevant ones survive the ``_INHERIT_MEMORY_MAX_CHARS``
-        cap (ties broken by recency).
+    (b) Memory: typed memories from the child workspace's store, BM25-ranked
+        against the subagent prompt. Standing preferences (feedback/user,
+        ``_INHERIT_MEMORY_TYPES``) always go, in score-then-recency order;
+        the work-fact kinds (``_INHERIT_RELEVANT_TYPES``) go behind them and
+        only when the task matches them. Both are fenced as data and pay the
+        same ``_INHERIT_MEMORY_MAX_CHARS`` cap.
 
     Every step is best-effort: a memory failure must never break a spawn,
     so ANY exception collapses to omitting that block. Returns "" when the
-    workspace is unknown or nothing is found.
+    workspace is unknown, the goal is empty and nothing is found.
     """
-    if workspace is None:
-        return ""
     parts: list[str] = []
+    goal = str(goal or "").strip()
+    if goal and not _already_fenced(goal):
+        goal = " ".join(goal.split())
+    if goal:
+        parts.append(
+            _goal_section_heading(goal_is_parents_answer)
+            + "The work you were handed is one piece of this request. It is "
+            "context, not your assignment: your task is the one in your "
+            "first user message, and your permissions are unchanged.\n"
+            + _fence_goal(goal))
+    if workspace is None:
+        return ("\n\n" + "\n\n".join(parts)) if parts else ""
     try:
         from .project_memory import load_project_memory
         rules = load_project_memory(
@@ -187,8 +413,7 @@ def _inherited_context(workspace, prompt: str) -> str:
         pass
     try:
         from . import memory_store as _ms
-        recs = [r for r in _ms.list_typed_memories(workspace)
-                if (r.get("type") or "") in _INHERIT_MEMORY_TYPES]
+        recs = list(_ms.list_typed_memories(workspace))
         if recs:
             texts = [
                 " ".join(x for x in (r.get("name"), r.get("description"),
@@ -199,26 +424,85 @@ def _inherited_context(workspace, prompt: str) -> str:
                 scores = _ms.bm25_scores(prompt or "", texts)
             except Exception:
                 scores = [0.0] * len(recs)
-            order = sorted(
-                range(len(recs)),
-                key=lambda i: (-scores[i],
-                               -int(recs[i].get("updated_at") or 0)))
+            # Two tiers, one budget. Standing preferences (feedback/user)
+            # keep the front of the queue in their old order — score first,
+            # recency for ties — because they hold whatever the task turns
+            # out to be, so relevance must never evict them. Behind them
+            # come the work-fact kinds (project/lesson/reference/finding),
+            # ranked against THIS task and only those it actually matches
+            # (score > 0): a `project` fact about the scheduler is what the
+            # specialist sent to fix the scheduler needs and is noise for
+            # one sent to pick a dispersion correction, and the score is
+            # the only thing here that can tell those two apart. A type
+            # filter cannot. A kind in neither tier is not sent, so the
+            # pool stays closed and a new kind must be considered before it
+            # can reach a delegate.
+            #
+            # With the wider pool, the child gets the two defences the
+            # parent's own recall path already has (prompt_loader
+            # ._memory_entry_chunk): a model-written note carrying an
+            # instruction channel is withheld rather than replayed, and the
+            # block is fenced as data. Without them, widening the pool
+            # would hand a `project` or `lesson` note to a delegate less
+            # guarded than the generalist that reads it.
+            standing = [i for i, r in enumerate(recs)
+                        if (r.get("type") or "") in _INHERIT_MEMORY_TYPES]
+            relevant = [i for i, r in enumerate(recs)
+                        if (r.get("type") or "") in _INHERIT_RELEVANT_TYPES
+                        and scores[i] > 0.0]
+            standing.sort(key=lambda i: (-scores[i],
+                                         -int(recs[i].get("updated_at") or 0)))
+            relevant.sort(key=lambda i: (-scores[i],
+                                         -int(recs[i].get("updated_at") or 0)))
+            # The cap governs the memory LINES, as it always has: the base
+            # code counted only lines into `used` and left the block heading
+            # outside the budget, so the fence that wraps the block below is
+            # envelope too, not content. Charging the fence was tried and
+            # measured (2026-11-24): it cost the delegate two standing
+            # preferences in a saturated store (7 delivered -> 5) and bought
+            # nothing — a label that starves the memory it labels is a worse
+            # trade than ~470 uncounted characters of header and closer.
             lines: list[str] = []
             used = 0
-            for i in order:
+            for i in standing + relevant:
                 r = recs[i]
                 body = " ".join(
                     str(r.get("body") or r.get("description") or "").split())
+                if r.get("source") == _ms.SOURCE_AGENT:
+                    try:
+                        reasons = _ms.memory_instruction_refusals(body)
+                    except Exception:
+                        reasons = []
+                    if reasons:
+                        kinds = ", ".join(x.split(":", 1)[0] for x in reasons)
+                        body = (f"[withheld: the note carries text shaped as "
+                                f"an instruction ({kinds})]")
                 line = f"- [{r.get('type', 'user')}] {r.get('name', '')}: {body[:300]}"
-                if used + len(line) > _INHERIT_MEMORY_MAX_CHARS and lines:
-                    break
+                if used + len(line) > _INHERIT_MEMORY_MAX_CHARS:
+                    # Skip rather than stop: the queue is relevance-ordered,
+                    # not size-ordered, so a later (shorter) memory the task
+                    # matched may still fit what this one cannot.
+                    if not lines:
+                        break
+                    continue
                 lines.append(line)
                 used += len(line) + 1
             if lines:
-                parts.append("## Standing memory (inherited)\n"
-                             + "\n".join(lines))
+                from .untrusted import wrap_as as _wrap_as
+                from .project_memory import _fence_nonce
+                block = "## Standing memory (inherited)\n" + "\n".join(lines)
+                parts.append(_wrap_as("notes", "memory", block,
+                                      nonce=_fence_nonce(block)))
     except Exception:
         pass
+    # The task-scoped memories (``project`` and the other work-fact kinds)
+    # arrive in the block above, through ``_INHERIT_RELEVANT_TYPES``: they are
+    # ranked by the same score, admitted only when the task matches them, and
+    # fenced as data. There is deliberately NO second pass with its own budget
+    # here. Two arms solved this independently and the designs were measured
+    # against each other; a second additive budget would hand the delegate the
+    # same facts twice, once fenced and once not, and would let an agent-written
+    # note reach the child with system authority by the unfenced route.
     try:
         from .knowledge import load_block
         lessons = load_block(task_text=prompt or "", workspace=workspace,
@@ -1376,9 +1660,20 @@ _BUILTIN_PRESETS: dict[str, SubagentPreset] = {
     "explore": SubagentPreset(
         name="explore",
         description=(
-            "Read-only research agent for locating code. Use for "
-            "'where is X defined?', 'find all callers of Y', 'how is "
-            "Z structured?'."
+            # The EXAMPLES FIRST, deliberately. The description used to
+            # open "Read-only research agent for locating code." and put
+            # the three things it is actually for -- where X is defined,
+            # all callers of Y, how Z is structured -- in a second
+            # sentence, and `decision_table` renders only the FIRST
+            # CLAUSE of a description. So neither the model's table nor
+            # the router ever saw them, and a request that quotes the
+            # preset's own documentation verbatim ("find all callers of
+            # parse_control") scored zero shared words with it and fell to
+            # the catch-all. Measured, not stylistic: the cut costs the
+            # row the only words a user repeats back.
+            "Locates code: where X is defined, callers of Y, how Z works. "
+            "Read-only research agent -- it reads and greps and never "
+            "edits."
         ),
         system_prompt=(
             "You are a read-only Explore sub-agent. Your job is to "
@@ -1425,8 +1720,19 @@ _BUILTIN_PRESETS: dict[str, SubagentPreset] = {
     "general-purpose": SubagentPreset(
         name="general-purpose",
         description=(
-            "Full-tool sub-agent that can read, edit, run bash, etc. "
-            "Use sparingly — most tasks fit a narrower preset."
+            # The criterion FIRST, deliberately. The description used to
+            # open "Full-tool sub-agent that can read, edit, run bash",
+            # and `decision_table` renders only the first clause -- so
+            # what the chooser actually read was three of the most common
+            # verbs a user writes ("read", "edit", "run"), and the
+            # sentence that says when to use it ("most tasks fit a
+            # narrower preset") was cut at 64 characters. On a 30-row
+            # labelled request set that made the catch-all the top scorer
+            # for work two specialists had narrower cues for. The
+            # restriction is now the cue; the tool list is what the cut
+            # keeps, and it is the part a reader gets from /subagents.
+            "Use when no narrower preset fits; full tool set — read, "
+            "edit, run bash, etc."
         ),
         system_prompt=(
             "You are a general-purpose sub-agent. Complete the "
@@ -1855,22 +2161,60 @@ def subagent_type_names() -> list[str]:
 #: order to CHOOSE is the first one.
 _CUE_END = re.compile(r"(?<=[.!?])\s|\s[—–-]\s|;\s")
 
+#: A sentence that opens by naming the SITUATION, not the capability:
+#: "Use for ...", "Use when ...", "Use to ...", "Use before ...",
+#: "Use sparingly".
+#:
+#: Measured 2026-11-24 on the 18 shipped presets: 11 of their descriptions
+#: carry such a sentence and ``_cue`` took it in 0 of those 11 -- it kept
+#: the first clause, which says what the role IS. The table then read
+#: "| `ts-finder` | Finds and verifies a reaction transition state. |", so
+#: every row named a capability the preset's own NAME already carries
+#: while the sentence that would let a model decide whether THIS request
+#: belongs to that role was dropped before the prompt was built.
+#:
+#: The fallback is unchanged, so a description without such a sentence
+#: keeps exactly the cue it had.
+_CUE_TRIGGER = re.compile(
+    r"(?i)^\s*use\s+(for|when|to|before|sparingly)\b")
+
 #: The cue column stays inside this many characters. The table sits in
 #: the system prompt, so every row is paid for by every turn of every
-#: session; a description that wants more room has ``/subagents``. Each
-#: preset's description is written so that its FIRST CLAUSE fits here
-#: and reads as the cue -- the limit is the budget, not a formatter.
+#: session; a description that wants more room has ``/subagents``. The
+#: limit is the budget, not a formatter.
+#:
+#: What a cut costs, stated because it is not obvious from the code: the
+#: table renders ``_situation_cue``, which prefers the "Use when/before ..."
+#: sentence, and that sentence is cut HERE -- not at the first clause. A
+#: description whose situation sentence is longer than this therefore loses
+#: its what-clause from the only row the model reads. `method-reviewer` is
+#: exactly that case: its cell reads "Use before comparing results from two
+#: or more calculations ..." and what the role IS must be inferred from the
+#: name. Measured 2026-11-26 in real runs on both sides of the change, where
+#: each side said so unprompted. Left as it is: this constant is a prompt
+#: budget every session pays on every turn, so widening it is its own change,
+#: with the whole table's cost re-measured -- see
+#: ``test_no_row_outgrows_the_budget_it_is_paid_from``.
 _CUE_LIMIT = 64
 
 
 def _cue(description: str, limit: int = _CUE_LIMIT) -> str:
-    """One line saying what a preset is FOR, from its own description.
+    """One line saying what a preset is FOR: its first clause.
 
     Input: the ``description`` a preset already carries. Output: its
     first clause, within ``limit`` characters, ending in a full stop or
-    an ellipsis. No second field is introduced for this: two fields for
-    one purpose is how the table and the enum drifted apart in the first
-    place.
+    an ellipsis.
+
+    Two callers, with different reasons, and that is why this stays a
+    separate function from ``_situation_cue``:
+
+    * ``_cue_tokens`` -- the routed scorer's vocabulary. Every routing
+      number in ``scratch/`` was measured with THIS wording, so it must
+      not travel when someone rewords the prompt's column. Measured:
+      letting it read the situation sentence drops it from 0.846 to 0.615
+      accuracy-where-picked, and letting it read the whole description
+      buys one thing and spends another (see ``_cue_tokens``).
+    * nothing else; the table uses ``_situation_cue``.
     """
     text = " ".join((description or "").split())
     if not text:
@@ -1883,6 +2227,49 @@ def _cue(description: str, limit: int = _CUE_LIMIT) -> str:
     if len(text) > limit:
         return text[:limit].rsplit(" ", 1)[0].rstrip(" ,;:.") + " …"
     return text.rstrip(" .") + "."
+
+
+def _situation_cue(description: str) -> str:
+    """One line saying WHEN to pick a preset, from its own description.
+
+    Input: the ``description`` a preset already carries. Output: the
+    sentence that states the situation ("Use when ..."), else the first
+    clause -- the behaviour ``_cue`` had before -- within ``_CUE_LIMIT``
+    characters and ending in a full stop or an ellipsis.
+
+    Used by ``decision_table`` only. The situation sentence is preferred
+    because a cue that only says what a role IS names a capability the
+    preset's own name already implies ("`ts-finder` | Finds a transition
+    state"), while what a model has to decide is whether THIS request is
+    that role's situation. Measured 2026-11-24: 11 of 18 descriptions
+    carry such a sentence, the first clause never was it, and the table
+    reached none of that information.
+
+    The preference has a cost this docstring used to leave out: because the
+    SENTENCE is what gets cut, a description whose situation sentence runs
+    past ``_CUE_LIMIT`` shows its when and loses its what, where the first
+    clause would have shown the what. `method-reviewer` is the measured case
+    (see ``_CUE_LIMIT``).
+
+    No second field is introduced for this: two fields for one purpose is
+    how the table and the enum drifted apart in the first place.
+    """
+    text = " ".join((description or "").split())
+    if not text:
+        return ""
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text)
+                 if s.strip()]
+    for sentence in sentences[1:]:
+        if _CUE_TRIGGER.match(sentence):
+            # The sentence IS the cue; it is cut by the same budget rule
+            # rather than returned whole, because the table is paid for on
+            # every turn of every session.
+            cut = " ".join(sentence.split())
+            if len(cut) > _CUE_LIMIT:
+                return (cut[:_CUE_LIMIT].rsplit(" ", 1)[0]
+                        .rstrip(" ,;:.") + " …")
+            return cut.rstrip(" .") + "."
+    return _cue(text)
 
 
 def decision_table() -> str:
@@ -1906,8 +2293,522 @@ def decision_table() -> str:
     rows = ["| `subagent_type` | For |", "|---|---|"]
     for name in sorted(SUBAGENT_PRESETS):
         preset = SUBAGENT_PRESETS[name]
-        rows.append(f"| `{name}` | {_cue(getattr(preset, 'description', ''))} |")
+        rows.append(f"| `{name}` | {_situation_cue(getattr(preset, 'description', ''))} |")
     return "\n".join(rows)
+
+
+# ---------------------------------------------------------------------------
+# Which specialist: a deterministic reading of the SAME cues the model reads
+# ---------------------------------------------------------------------------
+
+#: A request-shaped word. Hyphens SPLIT, because "ORCA-Eingabedatei" is
+#: how a German user compounds a tool name onto a noun and both halves are
+#: signal. German concatenated compounds ("Eingabedatei") stay one word:
+#: splitting them needs a word list and a wrong split invents a match.
+_ROUTE_WORD = re.compile(r"[a-z0-9]+")
+
+#: Function words that carry no signal about WHO should do the work, in
+#: both languages. Deliberately NO content verbs: the cues are written as
+#: verb clauses ("Runs a calculation through the adapters", "Read-only
+#: audit of a chemistry input"), so removing "run"/"audit"/"check" from a
+#: request while leaving them in the cue -- or vice versa -- deletes the
+#: one word that distinguishes a specialist. A verb is weak signal, but it
+#: is signal, and the margin below is what decides whether it is enough.
+#:
+#: German words here are matchers over what the USER writes, which is the
+#: one place this project allows a language besides English (see
+#: tests/test_the_code_is_english_and_the_matchers_are_german.py).
+_ROUTE_STOP = frozenset("""
+der die das den dem des ein eine einen einer einem und oder aber sondern denn
+weil wenn dass als wie zu nach von mit bei ohne fuer um durch bis an auf ueber
+unter vor hinter in im am ans zum zur nicht kein keine nichts man ich du er sie
+es wir ihr mich dich sich mir dir uns euer dieses dieser diese jenem dann sowie
+obwohl waehrend nachdem bevor wieder weiter werden wird wurde worden sein hat
+haben hatte hätte wäre könnte müsste doch mal etwa schon noch sehr mehr wenig
+mein dein außer ausser alle allen jede jeder jedes etwas viel wenig heute
+the a an of and or to in on for with without from into about at by as is are be
+been being do does did done have has had it its this that these those there
+here they them their we our you your he him his she her me my so if then than
+can could would should will shall may might must please also just now what
+which who whom whose how when where why want wants needed not no yes
+""".split()
+# The umlaut spellings people write instead of ae/oe/ue.
+                            + "für über außer außerdem wäre hätte könnte müsst".split()
+                            )
+
+#: Inflectional tails, longest first. ``_stem`` removes ONE tail, which
+#: is deliberately crude: "Pruefe" -> "pruef", "Pruefung" -> "pruef",
+#: "checks" -> "check". It over-stems on purpose (a false merge of two
+#: words costs one false co-hit; a missed merge loses the cue entirely).
+_SUFFIXES_DE = ("ungen", "ung", "heit", "keit", "chen", "lein", "ismus",
+                "ismus", "ieren", "ierte", "ierst", "iert", "ier",
+                "ern", "em", "en", "er", "es", "e", "s")
+_SUFFIXES_EN = ("ization", "izations", "ing", "ities", "ity", "ies", "ers",
+                "er", "ed", "es", "s")
+
+
+#: German request vocabulary -> the English stems the cues are written
+#: with. The measured reason this exists: every preset description is
+#: English (``pack/agents/*_subagent.md``), and on a 30-row labelled set
+#: the German rows scored ZERO shared words with every cue in seven cases
+#: out of thirteen -- not because no specialist fitted, but because
+#: "Basissatz" and "basis set" share no surface letters. A router that
+#: reads only surface letters is an English-only router, and this
+#: framework's users write German.
+#:
+#: Keys are STEMS (what ``_stem`` leaves), values are English stems. This
+#: is a matcher over what the user writes, which is the one place this
+#: project allows a language other than English (see
+#: ``tests/test_the_code_is_english_and_the_matchers_are_german.py``); the
+#: code, comments and this comment stay English.
+#:
+#: Deliberately small and domain-shaped, and it is NOT a dictionary: an
+#: unmapped German word costs one lost word, and the row then reports
+#: "unsure"/"no pick" rather than a guess. Growing it should follow the
+#: confusion matrix, not a word list.
+_DE_BRIDGE: dict[str, tuple[str, ...]] = {
+    # asking for the work — kept here rather than as a stop-word because
+    # which verb it is IS the signal: pruefen -> audit, recherchieren ->
+    # research, schreiben -> write.
+    "pruef": ("audit", "check", "review", "verifi"),
+    "kontrollier": ("check", "review"),
+    "recherch": ("research", "source", "investig"),
+    "such": ("search", "find", "locat", "look"),
+    "find": ("find", "locat"),
+    "bestimm": ("determin", "find"),
+    "formulier": ("write", "phrase", "draft", "rephrase"),
+    "schreib": ("write",),
+    "aender": ("edit", "chang", "modifi"),
+    "bearbeit": ("edit",),
+    "korrigier": ("fix", "correct"),
+    "beheb": ("fix",),
+    "ergenz": ("add", "extend"),
+    "berechn": ("calculat", "comput", "run"),
+    "rechn": ("calculat", "comput"),
+    "simulier": ("simul",),
+    "extrahier": ("extract",),
+    "zieh": ("extract", "read"),
+    "list": ("list", "tabulat"),
+    "zahl": ("number", "count"),
+    "zahlreich": ("many",),
+    "mess": ("measur", "data"),
+    "auswert": ("analys", "evaluat"),
+    "analysier": ("analys",),
+    "vergleich": ("compar", "compare"),
+    "gegenuberstell": ("compar",),
+    "erklar": ("explain", "describ"),
+    "beschreib": ("describ",),
+    "benenn": ("name", "list"),
+    "skizzier": ("draft", "plan"),
+    "plan": ("plan",),
+    "konzipier": ("plan", "design"),
+    "entwurf": ("plan", "draft"),
+    "aufteil": ("split",),
+    "split": ("split",),
+    "koordinier": ("lead", "coordinat"),
+    "reich": ("submit",),
+    "reich ein": ("submit",),
+    "absend": ("submit", "send"),
+    "abbrechen": ("cancel",),
+    "pruefung": ("audit", "check", "test"),
+    "test": ("test",),
+    "beweis": ("test", "prove", "verifi"),
+    "beleg": ("evidence", "source"),
+    "quelle": ("source",),
+    "begruendung": ("reason", "source"),
+    # what the work is ON — the nouns that separate one specialist from
+    # another. A missing one costs a row, and the row says so.
+    "eingab": ("input",),
+    "datei": ("file",),
+    "ordner": ("folder", "director"),
+    "verzeichn": ("director",),
+    "struktur": ("structur",),
+    "code": ("code",),
+    "quelltext": ("code", "source"),
+    "aenderung": ("chang", "diff"),
+    "diff": ("diff",),
+    "commit": ("commit", "diff"),
+    "verfahren": ("method",),
+    "methode": ("method",),
+    "method": ("method",),
+    "basissatz": ("basis",),
+    "basis": ("basis",),
+    "funktion": ("function",),
+    "funktional": ("functional",),
+    "funktionsal": ("functional",),
+    "losungsmodell": ("solvent",),
+    "dispersion": ("dispers",),
+    "korrektur": ("correction",),
+    "genauigkeit": ("accurac", "quality"),
+    "energie": ("energi", "energy"),
+    "geometrie": ("geometri",),
+    "strukturparameter": ("geometri",),
+    "spektrum": ("spectrum", "absorption"),
+    "absorption": ("absorption", "spectrum"),
+    "anregungszustand": ("excited", "state"),
+    "anglikon": ("excited",),
+    "orbital": ("orbital",),
+    "gap": ("gap", "homo"),
+    "ladung": ("charg",),
+    "spin": ("spin",),
+    "zustand": ("state",),
+    "reaktion": ("reaction",),
+    "reaktiv": ("reactiv",),
+    "reaktionspfad": ("mechanism",),
+    "mechanismus": ("mechanism",),
+    "uebergangszustand": ("transition", "state", "ts"),
+    "uebergangs": ("transition",),
+    "barriere": ("barrier",),
+    "pfad": ("path",),
+    "endpunkt": ("endpoint",),
+    "ausgangsstoff": ("reactant",),
+    "produkt": ("product",),
+    "komplex": ("complex",),
+    "metall": ("metal",),
+    "ligand": ("ligand",),
+    "wasserstoff": ("hydrogen",),
+    "wasserstoffbruecke": ("hydrogen",),
+    "molekul": ("molecul",),
+    "farbstoff": ("dye",),
+    "probe": ("sample", "probe"),
+    "konzentration": ("concentration",),
+    "messprotokoll": ("log", "result"),
+    "protokoll": ("log",),
+    "journal": ("log",),
+    "ergebnis": ("result",),
+    "resultat": ("result",),
+    "tabelle": ("table",),
+    "wert": ("value", "number"),
+    "summe": ("sum",),
+    "mittelwert": ("mean",),
+    "streuung": ("spread", "deviation"),
+    "fehlerbalken": ("error", "bar"),
+    "unsicherheit": ("uncertainti",),
+    "einheit": ("unit",),
+    "absatz": ("paragraph", "section"),
+    "schnittstelle": ("interfac",),
+    "kapitel": ("chapter", "section"),
+    "manuskript": ("manuscript", "paper", "text"),
+    "text": ("text", "write"),
+    "papier": ("paper",),
+    "diskussion": ("discussion",),
+    "aufgabe": ("task",),
+    "paket": ("packag",),
+    "arbeitspaket": ("packag", "work"),
+    "team": ("swarm", "member"),
+    "schwarm": ("swarm",),
+    "mitglied": ("member",),
+    "sitzung": ("session",),
+    "anfrage": ("request", "question"),
+    "frage": ("question",),
+    "antwort": ("answer",),
+    "werkzeug": ("tool",),
+    "umgebung": ("environment",),
+    "einrichtung": ("setup", "install"),
+    "installation": ("install",),
+    "partition": ("partition", "queue"),
+    "warteschlange": ("queue",),
+    "kern": ("core",),
+    "knoten": ("node",),
+    "cluster": ("cluster",),
+    "job": ("job",),
+    "skript": ("script",),
+    "rechner": ("machine", "comput"),
+    "genehmigung": ("permission", "approval"),
+    "erlaubnis": ("permission", "allow"),
+    "berechtigung": ("permission", "allow"),
+    "regel": ("rule",),
+    "sandbox": ("sandbox",),
+    "sicherheit": ("security",),
+    "sicherheitsmodell": ("security", "sandbox"),
+    "anwendung": ("applicat",),
+    "programmier": ("code",),
+    "fehler": ("error", "bug"),
+    "absturz": ("crash",),
+    "zeit": ("time", "latency"),
+    "laufzeit": ("runtime", "time"),
+    "verzug": ("latency", "delay"),
+    "wartezeit": ("wait", "latency"),
+    "bremse": ("slow", "block"),
+    "langsam": ("slow",),
+    "engpass": ("bottleneck", "slow"),
+    "kosten": ("cost",),
+    "budget": ("budget", "cost"),
+    "aufwand": ("cost", "effort"),
+    "verursach": ("caus",),
+    "ursach": ("caus", "reason"),
+    "warum": ("whi", "caus"),
+    "warumnicht": ("whi",),
+    "genehmigungsprofil": ("permission",),
+    "genehmigungsregel": ("permission", "rule"),
+    "zustandig": ("respons",),
+    "verantwortlich": ("respons",),
+    "erforderlich": ("need", "requir"),
+    "verfueg": ("avail",),
+    "vorhanden": ("exist", "avail"),
+    "fehlend": ("miss", "lack"),
+    "vollstandig": ("complet", "whole"),
+    "kurz": ("brief", "short"),
+    "knapp": ("brief", "short"),
+    "detailliert": ("detailed", "detail"),
+    "uebersichtlich": ("clean", "clear"),
+    "sauber": ("clean", "correct"),
+    "korrekt": ("correct",),
+    "schluessig": ("consist",),
+    "widerspr": ("refut", "contradict"),
+    "entkraft": ("refut",),
+    "widerleg": ("refut",),
+    "verifiz": ("verifi",),
+    "validier": ("valid",),
+    "plausib": ("plausib", "believ"),
+    "schaetz": ("estim", "guess"),
+    "schatz": ("estim", "guess"),
+    "annahme": ("assumpt", "guess"),
+    "vermu": ("guess", "assumpt"),
+}
+
+#: Compound nouns split on the hyphen the user wrote ("ORCA-Eingabedatei")
+#: PLUS the whole word, so a compound can hit on either half.
+_COMPOUND_SPLIT = re.compile(r"[a-z0-9]+")
+
+
+def _stem(word: str, english: bool = False) -> str:
+    """One crude stem, for matching a request word to a cue word.
+
+    Input: a lower-cased word. Output: the word with one removable tail
+    dropped, never shorter than 3 characters. ``english`` only picks
+    which tail list to try.
+
+    This is NOT a stemmer. A real one (Snowball) would be a dependency
+    for a scorer of last resort, and would over-stem differently than the
+    descriptions were written. What it must do -- merge ``pruefe``,
+    ``pruefung`` and ``Prüfung`` onto one form -- it does, and a
+    merge that goes too far shows up in the confusion matrix as a
+    specific wrong column, not as a silent failure.
+    """
+    w = word
+    # Only the RESULT has a floor, never the word: an earlier
+    # ``if len(w) < 5: return w`` guard left "runs" as "runs" while a
+    # request's "run" stayed "run", so the cue "Runs a calculation" never
+    # matched the most natural verb a user writes. Measured: that one
+    # guard sent one labelled row to the wrong specialist.
+    tails = _SUFFIXES_EN if english else _SUFFIXES_DE
+    for tail in tails:
+        if w.endswith(tail) and len(w) - len(tail) >= 3:
+            return w[:-len(tail)]
+    # Try the other language's tails too: a German session writes English
+    # technical nouns ("basis set", "functional"), and the request is not
+    # checked for its language. A tail both languages share is removed
+    # once, which is all the matching needs.
+    other = _SUFFIXES_DE if english else _SUFFIXES_EN
+    for tail in other:
+        if w.endswith(tail) and len(w) - len(tail) >= 3:
+            return w[:-len(tail)]
+    return w
+
+
+#: ``_DE_BRIDGE`` keyed by STEM, so a key reaches the lookup no matter how
+#: it was hand-written. Without this the table is a list of hopes: the
+#: first version had 62 of its 149 keys unreachable, because the lookup
+#: stems the request and the table was keyed on full words
+#: ("Prüfung" stems to "pruef", not "pruefung").
+_DE_BRIDGE_STEMMED: dict[str, tuple[str, ...]] = {
+    _stem(k): tuple(v) for k, v in _DE_BRIDGE.items()
+}
+
+
+def _route_tokens(text: str, bridge: bool = True) -> "list[str]":
+    """Stemmed content words of a request, German spellings folded first.
+
+    ``_de.transliterate`` folds ``ä/ö/ü/ß`` to ``ae/oe/ue/ss`` (the
+    project's one rule, ``german.py``), so ``Prüfung`` and ``pruefung``
+    -- the two ways the same user writes the same word in the same
+    session -- reach the same stem.
+
+    ``bridge=True`` ADDS the English stems ``_DE_BRIDGE`` knows for each
+    word, keeping the original: an English request matches itself, and a
+    German one matches both its own words (a user may name a specialist by
+    its English cue word) and the cue vocabulary. The original is never
+    replaced, because a bridge entry that is wrong should ADD a wrong
+    candidate, not erase the word the user actually wrote.
+    """
+    folded = _de.transliterate(str(text or "")).lower()
+    out: list[str] = []
+    for raw in _ROUTE_WORD.findall(folded):
+        if raw in _ROUTE_STOP:
+            continue
+        stem = _stem(raw)
+        if stem in _ROUTE_STOP:
+            continue
+        out.append(stem)
+        if bridge:
+            out.extend(_DE_BRIDGE_STEMMED.get(stem, ()))
+    return out
+
+
+def _cue_tokens(name: str, description: str) -> "set[str]":
+    """The stems a preset is recognisable by: its name and its cue.
+
+    The NAME is included because a user who writes "mach das mit dem
+    code-rewiewer" is quoting the row they read, and the cue because a
+    user who writes "pruefe meine ORCA-Eingabedatei" is describing the
+    work.
+
+    It calls ``_cue``, NOT ``_situation_cue``: this vocabulary is the
+    one every routing number in ``scratch/`` was measured on, so it is
+    pinned to the wording it was measured with. Widening it to the whole
+    description was tried and MEASURED to trade one thing for another --
+    accuracy on the 21 specialist rows 0.524 -> 0.619, but a request that
+    should reach no specialist ("turn the csv into a word table") started
+    claiming ``data-extractor`` and
+    ``test_an_unresolvable_request_refuses_to_pick_and_names_the_rivals``
+    went red. Counting matches over a longer text buys recall by spending
+    the negative case, and this scorer's job includes saying nothing.
+    """
+    toks = set(_route_tokens(name.replace("-", " "), bridge=False))
+    toks |= set(_route_tokens(_cue(description or ""), bridge=False))
+    return toks
+
+
+def _cue_weights(presets: "dict[str, SubagentPreset]") -> dict[str, float]:
+    """How much a shared cue word is worth: 1 / (how many cues claim it).
+
+    NOT used by ``specialist_scores`` -- kept because it was measured and
+    lost. Read ``specialist_scores`` for the numbers. Computed from the
+    registry alone (never from the label set), so re-measuring it costs
+    one call: ``read`` and ``only`` sit in 9 of the 18 shipped cues,
+    ``review`` in 5, ``audit`` and ``check`` in 3, while 81 of 97 cue
+    words belong to exactly one preset.
+    """
+    import collections
+    docs = collections.Counter()
+    for name, preset in presets.items():
+        for tok in _cue_tokens(name, getattr(preset, "description", "")):
+            docs[tok] += 1
+    return {tok: 1.0 / n for tok, n in docs.items()}
+
+
+def specialist_scores(request: str,
+                      presets: "dict[str, SubagentPreset] | None" = None,
+                      ) -> list[tuple[str, int]]:
+    """Every preset scored by how many of the request's cue words it claims.
+
+    Input: the request text, optionally a registry (for tests and for a
+    caller that already holds one). Output: ``(name, count)`` pairs,
+    highest first, ties broken by name so the order is stable across
+    sessions. A preset the request shares no cue word with is NOT
+    returned -- the caller tells "nothing matched" from "this matched" by
+    the list being empty.
+
+    One signal, counted, with NO weights. An inverse-document-frequency
+    weighting was tried first and MEASURED WORSE on the labelled set
+    (12 right / 4 wrong against 12 right / 2 wrong, accuracy-where-picked
+    0.750 against 0.857): down-weighting words that many cues share let
+    four rows pick confidently and wrongly. The registry fact that
+    motivated it is real -- ``read`` and ``only`` sit in 9 of 18 cues --
+    and it is fixed where it belongs, in the descriptions (a cue that
+    opens "Read-only" is not saying what the specialist is for), not by
+    arithmetic that discounts the user's own words. Kept in
+    ``_cue_weights`` so the weighting can be re-measured, not re-guessed.
+    """
+    registry = presets if presets is not None else SUBAGENT_PRESETS
+    stems = set(_route_tokens(request))
+    if not stems:
+        return []
+    scored = []
+    for name, preset in registry.items():
+        hits = len(stems & _cue_tokens(name,
+                                       getattr(preset, "description", "")))
+        if hits:
+            scored.append((name, hits))
+    scored.sort(key=lambda kv: (-kv[1], kv[0]))
+    return scored
+
+
+#: How much more the best preset must claim than the runner-up for the
+#: pick to be reported as a choice rather than a guess. 1 means a 2-vs-1
+#: lead counts as decided; a 1-vs-1 tie never does. Raised, the fallback
+#: says "unsure" more often; at 0 every tie picks alphabetically and the
+#: matrix fills with rows that look decided and are not.
+_ROUTE_MARGIN = 1
+
+
+def suggest_specialist(request: str,
+                       presets: "dict[str, SubagentPreset] | None" = None,
+                       ) -> tuple[str, str, list[tuple[str, int]]]:
+    """Which specialist a request would go to, and WHY in one clause.
+
+    Input: free text, German or English. Output:
+    ``(name, reason, ranked)`` where ``ranked`` is ``specialist_scores``;
+    ``name`` is ``""`` when nothing in the registry matches or the top two
+    are too close to call.
+
+    The reason is a clause, not a number: it names the shared stems, so a
+    person reading the fallback line can see the match and disagree with
+    it. A bare score ("0.71") is not falsifiable by reading.
+
+    Ambiguity is a RESULT, not a failure. When two presets are within
+    ``_ROUTE_MARGIN`` of each other the reason says which two and the
+    caller declines to pick -- a fallback that guesses and says "used
+    explore" is how a wrong route becomes invisible.
+    """
+    ranked = specialist_scores(request, presets)
+    if not ranked:
+        return "", "", ranked
+    registry = presets if presets is not None else SUBAGENT_PRESETS
+    top_name, top_hits = ranked[0]
+    if len(ranked) > 1 and (top_hits - ranked[1][1]) < _ROUTE_MARGIN:
+        return "", (
+            f"unsure: {top_name!r} and {ranked[1][0]!r} both fit "
+            f"({top_hits} and {ranked[1][1]} cue words in common)"
+        ), ranked
+    shared = sorted(
+        set(_route_tokens(request))
+        & _cue_tokens(top_name,
+                      getattr(registry.get(top_name), "description", "")))
+    return top_name, (
+        f"matched {top_name!r} on {', '.join(shared[:4])}"
+        + (f" (+{len(shared) - 4} more)" if len(shared) > 4 else "")
+    ), ranked
+
+
+def nearest_specialist(name: str,
+                       presets: "dict[str, SubagentPreset] | None" = None,
+                       cutoff: float = 0.6) -> str:
+    """The registered preset a mistyped ``subagent_type`` most nears, or "".
+
+    Input: a name that is NOT a key of the registry, and the similarity a
+    candidate must reach. Output: the closest key above ``cutoff``, else
+    ``""``. Never raises, and never returns a name that is not registered.
+
+    ``cutoff`` is a parameter because the cost of a wrong answer is not the
+    same in the two places that ask:
+
+    * In a REFUSAL (the ``subagent_type`` the tool rejected) the default
+      0.6 is right -- the call is refused either way and the full list is
+      shown beside the hint, so a loose hint can only help. This is the
+      floor ``repl_commands.nearest_builtin`` measured for command typos.
+    * In a DELEGATION (``/delegate <text>``, where a suggestion becomes
+      the destination and the mistyped word is dropped from the briefing)
+      a wrong guess silently reroutes work, so the caller must pass a
+      typo-grade floor. Measured over the 18 registered names with
+      ``difflib.SequenceMatcher``: a real typo scores 0.875-0.923
+      (``code-rewiewer`` 0.923, ``ts-find`` 0.875, ``plann`` 0.889), while
+      a task word that merely sits near a name scores 0.640-0.783
+      (``extractor`` 0.783, ``reviewer`` 0.762, ``verify`` 0.714,
+      ``planning`` 0.667). ``slash_commands._TYPO_CUTOFF`` = 0.85 sits in
+      that gap: it admits only tokens that are almost the name itself.
+    """
+    raw = str(name or "").strip().lower()
+    if not raw:
+        return ""
+    registry = presets if presets is not None else SUBAGENT_PRESETS
+    if raw in registry:
+        return ""
+    import difflib
+    close = difflib.get_close_matches(raw, sorted(registry), n=1,
+                                      cutoff=cutoff)
+    return close[0] if close else ""
 
 
 #: Extra prefixes this check refuses beyond the gate's own list, for the
@@ -4275,13 +5176,22 @@ def run_subagent(
         + f"\n\nWorkspace: {sub_perms.workspace if sub_perms else '(none)'}"
         + f"\nTask label: {description}"
     )
-    # Context inheritance: project rules + standing memories, best-effort
-    # (a failure inside _inherited_context degrades to "" — spawning must
-    # never depend on the memory subsystem being healthy).
+    # Context inheritance: the session's goal, project rules, standing
+    # memories and task memories, best-effort (a failure inside
+    # _inherited_context degrades to "" — spawning must never depend on the
+    # memory subsystem being healthy).
+    #
+    # The goal is read from the PARENT client, and the fallback to
+    # ``parent_client`` is deliberate: the isolated copy is a ``copy.copy``
+    # of it, so it carries the same ``_turn_rows`` -- but the legacy
+    # fallback path above runs the child ON the parent client, and both must
+    # see the same turn.
     if inherit_context:
         try:
             system_prompt += _inherited_context(
-                getattr(sub_perms, "workspace", None), prompt)
+                getattr(sub_perms, "workspace", None), prompt,
+                goal=_session_goal(parent_client),
+                goal_is_parents_answer=_goal_is_the_parents_answer(parent_client))
         except Exception:
             pass
     if output_schema and isinstance(output_schema, dict):

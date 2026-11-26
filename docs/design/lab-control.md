@@ -22,7 +22,7 @@ does not read the permission mode at all.
 | simulator driver with physics, faults and a device-side timer | SiLA 2 and OPC UA LADS drivers, discovery: phase 4 |
 | the coordinator–edge interface (signed envelopes, replay window, manifest pin) | an mTLS transport and node enrolment: phase 3 |
 | modules, a sequential/graph workflow, sample hand-over, resume, run record | parallel scheduler across many modules: phase 5 |
-| five agent tools; `delfin-agent lab ...`; systemd units for the Pi | Chemotion upload (export file only now); operator view in the dashboard: phase 5 |
+| six agent tools (`lab_run` judges a whole workflow, then runs it through the ONE coordinator); `delfin-agent lab ...`, including `lab run`; systemd units for the Pi | Chemotion upload (export file only now); operator view in the dashboard: phase 5 |
 
 The reference case is a modular Materials Acceleration Platform such as KIT's
 ChemASAP: storage, synthesis, purification and analysis modules for automated,
@@ -198,8 +198,23 @@ measurements, deviations, the samples and their positions, and FAIR metadata
 (identifier, creator, licence, provenance and timestamps [fair]).
 `ml_train` (other branch) reads these records.
 
-Chemotion: `to_chemotion()` writes `chemotion_export.json`, a research-plan /
-LabIMotion-shaped payload, and nothing is uploaded yet.
+Chemotion: `to_chemotion()` maps the record to the ELN import model and
+`chemotion.write_import()` writes `chemotion_import.zip` (with
+`chemotion_import.json` beside it as the readable twin), a file a person
+uploads; nothing is sent. The model carries the research plan, one reaction
+with the run's `set` steps as its conditions, one sample per run sample whose
+analyses are the container tree the ELN persists (analysis -> dataset -> the
+measurement's data file), the record and its provenance, and the FAIR slots.
+The shapes were read from the ELN's own source and from the official client
+(`chemotion.SOURCES`): a container request carries only `description`,
+`children` and `attachments`, so the values ride in the dataset's
+`extended_metadata`; and `Container#create_analysis_with_dataset!` is where
+analysis -> dataset comes from. The upload's sample create sends that same
+container (`request_sequence`), not a second, flatter shape: the file a person
+imports and the request an upload sends are one model. What is still
+unverified — the ZIP layout the ELN's own importer expects, the research-plan
+create params — is named in the payload's `unverified` list rather than
+assumed.
 
 | Fact | Status |
 |---|---|

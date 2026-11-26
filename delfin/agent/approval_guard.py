@@ -67,11 +67,21 @@ _ROOM_NAMES = ("approvals", "terminal_confirmations", "cli_gate",
 #: The subcommands that answer. ``ls``, ``show`` and ``watch`` read.
 _ANSWER_VERBS = ("approve", "deny", "answer")
 
-# After quotes and backslashes are removed: ``approvals`` followed by an
-# answering verb, flags allowed between. ``del'fin'-agent "approvals"
-# appro\ve`` reads as the shell will run it.
+# After quotes and backslashes are removed: one of the two answering rooms
+# followed by an answering verb, flags allowed between. ``del'fin'-agent
+# "approvals" appro\ve`` reads as the shell will run it.
+#
+# Two rooms answer, not one. ``approvals approve`` answers the agent's
+# pending approvals; ``eln approve`` answers a filed Chemotion ELN write,
+# and it is the same person's act reached one verb over -- so a command
+# that can reach the one is refused as text for the other too. It was
+# measured reaching it: ``answer_command("delfin-agent eln approve X")``
+# was None, while ``grant`` refused on nothing but the process marker, so a
+# process that dropped DELFIN_AGENT_SESSION minted a grant.
+_ANSWER_ROOMS = ("approvals", "eln")
 _ANSWER_COMMAND_RE = re.compile(
-    r"(?<![\w.-])approvals\s+(?:-{1,2}[\w-]+(?:=\S+)?\s+)*"
+    r"(?<![\w.-])(" + "|".join(_ANSWER_ROOMS) + r")\s+"
+    r"(?:-{1,2}[\w-]+(?:=\S+)?\s+)*"
     r"(" + "|".join(_ANSWER_VERBS) + r")(?![\w-])", re.IGNORECASE)
 
 # ``service stop|restart|end`` under any program name, after the same
@@ -93,6 +103,14 @@ _ANSWER_MODULE_RE = re.compile(
     r"\b(?:file_confirm|approval_answers|terminal_confirm|cli_gate)\b")
 _ANSWER_CALL_RE = re.compile(r"\banswer\s*\(|\bimport\b[^\n;]*\banswer\b")
 _IMPORT_RE = re.compile(r"\bimport\b|__import__|importlib")
+
+# The Python route to a grant, one import away from the CLI:
+# ``from delfin.lab import eln_write; eln_write.grant("eln-…")`` -- and the
+# same for a lab action's approval. Named only together with its module and
+# an import, the same rule the answer functions above follow, so a command
+# that merely reads one of those files is not refused.
+_GRANT_MODULE_RE = re.compile(r"\b(?:eln_write|lab\.approvals)\b")
+_GRANT_CALL_RE = re.compile(r"\bgrant\s*\(")
 
 # The agent service's socket and run files, where a window answers a
 # session's approvals: ``/…/delfin-<uid>/agent.sock`` and
@@ -223,14 +241,21 @@ def answer_command(cmd: str) -> Optional[str]:
     """What in *cmd* answers an approval, or None.
 
     Input: a shell command, commit-message prose already blanked by the
-    caller. Output: a short description of the match. Four shapes:
-    the ``approvals approve|deny|answer`` subcommand under any program
-    name, ``service stop|restart|end`` (the agent service holds the
-    sessions whose approvals a window answers), the Python functions that
-    write an answer, and any naming of an answer file or answer location.
+    caller. Output: a short description of the match. Five shapes:
+    the ``approvals`` (or ``eln``) ``approve|deny|answer`` subcommand
+    under any program name, ``service stop|restart|end`` (the agent
+    service holds the sessions whose approvals a window answers), the
+    Python functions that write an answer, a Python ``grant(`` on the
+    module that files those requests, and any naming of an answer file or
+    answer location.
     """
     if _ANSWER_COMMAND_RE.search(_unquoted(cmd)):
         return "the command answers a pending approval"
+    _grant_text = _dequoted(cmd)
+    if (_GRANT_MODULE_RE.search(_grant_text)
+            and _GRANT_CALL_RE.search(_grant_text)
+            and _IMPORT_RE.search(_grant_text)):
+        return "the command mints an approval grant"
     stop = _SERVICE_STOP_RE.search(_unquoted(cmd))
     if stop and stop.group(1).lower() == "end":
         return ("the command ends sessions of the agent service, which are "

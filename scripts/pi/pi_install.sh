@@ -332,7 +332,7 @@ set_up_extras() {
             "# mode: solo = Code; permission_profile: ask_all | repo_free | all_free (= Bypass)." \
             "# effort empty = the model profile's default." \
             "mode=solo" "provider=kit" "model=kit.glm-5.3-flash" \
-            "permission_profile=all_free" "effort=" > "$agent_conf"
+            "permission_profile=repo_free" "effort=" > "$agent_conf"
     fi
     env -u DELFIN_SETTINGS_DEFAULTS "$VENV_PY" - "$agent_conf" <<'EOF' || echo "warning: could not apply $agent_conf" >&2
 import sys

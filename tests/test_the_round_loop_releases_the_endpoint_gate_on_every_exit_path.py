@@ -25,6 +25,8 @@ from delfin.agent import model_capabilities as mc
 
 
 URL = "https://fake-endpoint.example/v1"
+# Bound at import, before any test patches the process-wide time.sleep.
+_REAL_SLEEP = time.sleep
 
 
 class _Delta:
@@ -365,7 +367,17 @@ def test_the_slot_is_free_during_a_retry_backoff(monkeypatch, tmp_path):
     # Only the backoff before the retry (>= 1 s, _STREAM_RETRY delay) is
     # measured: the short ticks while a round waits for its first byte run
     # with the slot held on purpose.
+    # A.time is the process-wide time module: background threads left by
+    # other tests in the same process (e.g. a dashboard queue worker's
+    # time.sleep(30) loop) reach this fake too. Only the thread that drives
+    # the round is measured; every other thread keeps the real sleep, so it
+    # neither spins nor records a sample taken while the round streams.
+    real_sleep = _REAL_SLEEP
+    round_thread = threading.get_ident()
+
     def _sleep(seconds=0, *a, **k):
+        if threading.get_ident() != round_thread:
+            return real_sleep(seconds, *a, **k)
         if float(seconds or 0) >= 1.0:
             held_during_sleep.append(_held_slots_for_url(gate_root, client._base_url))
     monkeypatch.setattr(A.time, "sleep", _sleep)
@@ -387,6 +399,8 @@ def test_the_slot_is_free_during_a_retry_backoff(monkeypatch, tmp_path):
     out = _drive(client)
     assert "second" in "".join(out)
     assert held_during_sleep and all(n == 0 for n in held_during_sleep), held_during_sleep
+    # One transient failure, one backoff: the round's own sleeps only.
+    assert len(held_during_sleep) == 1, held_during_sleep
     timeouts = [e for e in reports if isinstance(e, APITimeoutError)]
     assert len(timeouts) == 1, reports
     assert _held_slots_for_url(gate_root, client._base_url) == 0

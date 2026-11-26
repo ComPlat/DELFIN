@@ -37,3 +37,16 @@ modes:
     file: modes/workflow.md
     route:
       - workflow-operator
+  # The lab specialist, declared the same way and for the same reason: the
+  # route names the PRESET, so its prompt and its tool surface each come
+  # from that one file. Deliberately NOT in _SINGLE_AGENT_MODES or
+  # _LAUNCH_INDEPENDENT_MODES (delfin/dashboard/tab_agent.py) -- those are
+  # in the self-modification guard's protected set, and a mode reaches them
+  # through a patch (scratch/lab-run-dispatch.patch) that must be applied
+  # before the dashboard offers it. Until then the mode is reachable from
+  # the CLI and by delegation, and the dashboard's picker falls back.
+  - id: lab
+    file: modes/lab.md
+    route:
+      - lab-specialist
+

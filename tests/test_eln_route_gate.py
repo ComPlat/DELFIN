@@ -85,10 +85,19 @@ def test_eln_gate_allows_a_search_post_as_a_read():
 # -- fail closed ---------------------------------------------------------------
 
 def test_eln_gate_refuses_an_unknown_route():
-    """A route the table does not hold is refused. /api/v1/reactions is a
-    plausible route for this server and is deliberately NOT in the table:
-    that is what refusing unlisted routes must feel like."""
-    for path in ("/api/v1/reactions", "/api/v1/definitely_not_a_route",
+    """A route the table does not hold is refused.
+
+    This test used ``/api/v1/reactions`` as its worked example, because it
+    was a plausible route the table did not hold while its two siblings --
+    ``POST /api/v1/samples``, ``POST /api/v1/research_plans`` -- WERE in
+    it. The ELN specialist drafts a reaction, so the route is now in the
+    table (from ``reaction_api.rb``), and the example moves to a route that
+    is still absent. What this test protects is unchanged and still
+    measured below: an unlisted path is refused, by name, with the path in
+    the reason.
+    """
+    for path in ("/api/v1/wellplates",          # a real route, still absent
+                 "/api/v1/definitely_not_a_route",
                  "/api/v1/search",            # the family with no scope
                  "/api/v1/search/samples/",   # trailing slash: not its string
                  "/api/v1/search/samples/extra"):
@@ -209,4 +218,8 @@ def test_eln_gate_allows_reads_and_refuses_writes_across_the_whole_table():
             assert token == "read", (row.path, decision.reason)
         assert decision.writes is row.writes, (row.path, decision.writes)
         assert row.reason, f"{row.path} carries no reason"
-        assert row.source in ("@3657b15", "exporter"), row.path
+        # Every entry names where its route string came from. The two
+        # classes the table started with, plus the source-read class this
+        # branch added (@main <date>), so a new entry has to say which.
+        assert (row.source in ("@3657b15", "exporter")
+                or row.source.startswith("@main ")), row.path
