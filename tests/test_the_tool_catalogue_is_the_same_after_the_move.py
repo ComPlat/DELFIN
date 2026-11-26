@@ -25,6 +25,19 @@ moved 11,678 -> 11,718 (+40, measured) and the token estimate 11,766 ->
 11,806, which the budget test accounts for. The tool COUNT and the name
 order did not move, and those two pins still carry their original
 baseline.
+
+Re-taken again on 2026-11-26 (wave 58, package n1). THE DELIBERATE CAUSE:
+the ``subagent`` tool's description gained the sentence "resume_id resumes
+a finished run.", and the ``resume_id`` property text was shortened to pay
+for it ("sa_id of a FINISHED subagent to continue with its context
+replayed." -> "Finished run's sa_id."). Measured, not estimated: the
+catalogue total went 11,865 -> 11,862 and the estimate 11,954 -> 11,951,
+i.e. it is 3 tokens CHEAPER, and the count and the name order are unmoved.
+The reason the sentence belongs in the description at all: ``subagent`` is
+in ``_HOT_TOOL_NAMES``, so the description is the field every request
+carries, while a property description is only read by a model that already
+decided to look for it -- the arm measured that a capability living only
+in the property is a capability the model does not use.
 """
 import hashlib
 import json
@@ -52,11 +65,11 @@ PINNED_COUNT = 97
 PINNED_NAMES_SHA256 = (
     "f408d5f11d9175d82cb4f288bbe4475428a6b8ffbd44332114ba42f3e4283933")
 PINNED_BLOB_SHA256 = (
-    "24cb51ddf95f06af3069ddd7318e7be7f32b8198444f0cc91e8294c74fb94900")
-PINNED_ESTIMATE = 11954
+    "63991604840ea258643c445e917e2da065fffe45f681d183cc095a314dd095a2")
+PINNED_ESTIMATE = 11951
 PINNED_REPORT_SHA256 = (
-    "371cb8551a189ba2a086e21ef8dabf67d1a262292a8f4c18927029e528073dbc")
-PINNED_REPORT_TOTAL_TOKENS = 11865
+    "84a5a97e648912ea8d19062e70ac3b837ebc8fd3e88bf222e282bf297a6aff03")
+PINNED_REPORT_TOTAL_TOKENS = 11862
 
 
 def _names_sha256() -> str:
