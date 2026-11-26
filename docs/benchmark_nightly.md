@@ -118,3 +118,17 @@ step, capped by `cluster_efficiency.advise` PAL vs
 A real holdout baseline is run by the person with the real seed file;
 practice runs (`--practice`) measure the wiring on fakes and never
 touch the seed.
+
+## Per-commit metrics (`delfin-agent metrics`)
+
+`delfin-agent metrics record` keeps one row per commit with the numbers
+that need no model: the unmounted-capability count against the ratchet
+ceiling, and for the generalist and every specialist the tools offered
+(catalogue plus MCP servers) and the composed prompt size.
+`metrics show` adds quality for that commit, read from the rounds this
+page's `bench nightly` keeps, overall and per capability tag
+(`task_class`), with the min/max of the per-round pass rates.
+`metrics compare --old A --new B` prints better / worse / within noise
+per number; for quality the verdict comes from
+`bench_ab.newcombe_interval` on the pooled pass counts, and rounds that
+differ in seed mode, task-set version or model are not compared.
