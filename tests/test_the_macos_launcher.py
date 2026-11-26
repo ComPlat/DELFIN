@@ -323,3 +323,15 @@ def test_the_app_is_copied_as_built_never_assembled():
     assert 'ditto "$BUNDLE" "$new"' in body
     assert "CFBundleExecutable" not in script and "iconutil" not in script and "sips " not in script
     assert "launchd" not in script and "LaunchAgents" not in script, "nothing runs in the background"
+
+
+def test_a_missing_copy_is_copied_once_and_never_reported_as_a_refused_login():
+    """Exit 10 is the server's check (DELFIN_SCRIPTS_MISSING), not ssh's: the
+    scripts are copied and the connection opened once more, as DELFIN.ps1
+    does; only ssh's own failure (255) leaves the key note on the desktop."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    body = text[text.index("connect_worker() {"):text.index("# -- DELFIN on this Mac")]
+    assert "while [ $attempt -lt 2 ]" in body, "at most one retry"
+    assert '[ $missing = 1 ] && [ $opened = 0 ] && [ $code = 10 ] && [ $attempt = 1 ]' in body
+    assert body.index("copy_scripts") < body.index("copied=1")
+    assert "elif [ $code = 255 ] && [ $opened = 0 ]" in body and body.count("refused_note") == 1

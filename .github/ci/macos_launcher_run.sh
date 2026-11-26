@@ -80,9 +80,11 @@ wait_for 60 sh -c "! lsof -nP -iTCP:$port -sTCP:LISTEN >/dev/null" || fail 'delf
 echo '== 2. An invitation and a connection over SSH'
 command -v tmux >/dev/null || brew install tmux
 brew_bin=$(dirname "$(command -v tmux)")
-# The check on the server is GNU sha256sum, as on a Linux server.
-if command -v sha256sum >/dev/null; then sha_dir=$(dirname "$(command -v sha256sum)")
-else brew install coreutils; sha_dir="$(brew --prefix coreutils)/libexec/gnubin"; fi
+# The check on the server is GNU sha256sum (-c --status), as on a Linux
+# server; macOS's own sha256sum is a BSD tool with other options.
+brew list coreutils >/dev/null 2>&1 || brew install coreutils
+sha_dir="$(brew --prefix coreutils)/libexec/gnubin"
+"$sha_dir/sha256sum" --version | head -n 1
 mkdir -p "$work/sshd"
 ssh-keygen -q -t ed25519 -N '' -f "$work/sshd/host_key"
 cat > "$work/sshd/config" <<EOF

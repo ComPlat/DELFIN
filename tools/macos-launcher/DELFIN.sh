@@ -320,7 +320,7 @@ refused_note() {
 connect_worker() {
     load_profile "$1"
     printf '\033]0;SSH Dashboard - %s\007' "$P_NAME"
-    local local_port tunnel remote attempt=0 line url opened=0 missing=0 code=0 closed=0 marker
+    local local_port tunnel remote attempt=0 line url opened=0 missing=0 code=0 closed=0 copied=0 marker
     # Global, not local: the EXIT trap runs after this function has returned.
     work=''; ssh_pid=''; watch_pid=''
     local_port=$(free_local_port "$P_PORT")
@@ -389,13 +389,22 @@ connect_worker() {
         ssh_pid=''
         if [ $missing = 1 ] && [ $opened = 0 ] && [ $code = 10 ] && [ $attempt = 1 ]; then
             copy_scripts
+            copied=1
             continue
         fi
         break
     done
     [ $closed = 1 ] && code=0
     say "SSH ended (exit code $code)."
-    if [ $code != 0 ] && [ $opened = 0 ] && [ -n "$LOGIN_KEY" ]; then refused_note; fi
+    # Exit 10 is the server's check (DELFIN_SCRIPTS_MISSING), not ssh: after
+    # the copy it means the check itself cannot pass there. Only ssh's own
+    # failure (255: refused login, unreachable host) gets the key note.
+    if [ $code = 10 ] && [ $copied = 1 ]; then
+        warn 'The server still reports the launcher scripts as missing, right after they were copied.'
+        warn "Its check needs GNU sha256sum (coreutils) and a writable ~/$V_FOLDER; ask whoever runs the server."
+    elif [ $code = 255 ] && [ $opened = 0 ] && [ -n "$LOGIN_KEY" ]; then
+        refused_note
+    fi
     if [ $code != 0 ]; then printf 'Press Enter to close. '; read -r _ < /dev/tty; fi
 }
 
