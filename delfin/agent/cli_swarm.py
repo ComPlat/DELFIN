@@ -122,6 +122,46 @@ def configure_parser(
         "merge", help="Pre-PR check + print the merge command")
     p_merge.add_argument("package", help="The package to merge")
 
+    p_verdict = sub.add_parser(
+        "verdict",
+        help="Record a real-run verdict (ok|fail). It merges nothing",
+        description=("Records a real-run verdict for one member of a wave, "
+                     "with the person who recorded it, in the run's event "
+                     "log. A 'fail' verdict resumes that member with the "
+                     "failure text. Recording a verdict NEVER merges a pull "
+                     "request -- that is `swarm merge-run`, which needs "
+                     "--confirmed and the head that was checked."))
+    p_verdict.add_argument("run", help="The wave run name")
+    p_verdict.add_argument("member", help="The member id")
+    p_verdict.add_argument("verdict", choices=("ok", "fail"),
+                           help="What the real run showed")
+    p_verdict.add_argument("--by", required=True,
+                           help="Who recorded this verdict (a person)")
+    p_verdict.add_argument("--detail", default="",
+                           help="The failure text (given to the member)")
+
+    p_merge_run = sub.add_parser(
+        "merge-run",
+        help="Merge PR <n>, only with --confirmed and the head that was checked",
+        description=("The one merge path in this CLI. It refuses without "
+                     "--confirmed, refuses when the pull request's head has "
+                     "moved away from --head (a check answered for a "
+                     "different commit does not count), and refuses "
+                     "--admin-override unless you pass it in this command. "
+                     "The command it prints is what runs; this verb runs "
+                     "nothing."))
+    p_merge_run.add_argument("pr", help="The pull request number")
+    p_merge_run.add_argument("--head", required=True,
+                             help="The head commit the checks were read for")
+    p_merge_run.add_argument("--confirmed", action="store_true",
+                             help="A person's yes for this merge")
+    p_merge_run.add_argument("--checks-ok", action="store_true",
+                             help="The checks on --head passed")
+    p_merge_run.add_argument("--admin-override", action="store_true",
+                             help="Use administrator rights when the checks "
+                                  "are red: the printed command carries "
+                                  "--admin")
+
     p_wave = sub.add_parser(
         "wave", help="Waves: a task list of agents, run, watched and steered",
         description=("A wave is a task list; each task is one caged agent session in its "
@@ -211,6 +251,10 @@ def run_args(args: argparse.Namespace) -> int:
         return _cmd_triage(args)
     if args.swarm_cmd == "merge":
         return _cmd_merge(args)
+    if args.swarm_cmd == "verdict":
+        return _cmd_verdict(args)
+    if args.swarm_cmd == "merge-run":
+        return _cmd_merge_run(args)
     if args.swarm_cmd == "wave":
         return _cmd_wave(args)
     return 2
@@ -538,3 +582,62 @@ def _cmd_merge(args: argparse.Namespace) -> int:
     print(f"  {plan['checkout_command']}")
     print(f"  {plan['merge_command']}")
     return 0
+
+
+def _cmd_verdict(args: argparse.Namespace) -> int:
+    """`delfin-agent swarm verdict RUN MEMBER ok|fail --by WHO`.
+
+    Records the verdict and, for a fail, resumes the member. Merges
+    nothing: the printed line says so, because the operator script this
+    replaces merged on exactly such a line.
+    """
+    from .swarm import lead as _lead
+    from .swarm.triage import TriageError
+    from .swarm.wave import WaveError
+
+    try:
+        got = _lead.swarm_verdict(args.run, args.member, args.verdict,
+                                  by=args.by, detail=args.detail)
+    except (TriageError, WaveError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(f"recorded: {got['verdict']} for {got['run']}/{got['id']} "
+          f"by {got['by']}")
+    if got["verdict"] == "fail":
+        state = "resumed" if got.get("resumed") else (
+            f"not resumed ({got.get('why') or 'unknown'})")
+        print(f"  member {state}")
+    print("  merges nothing: a merge needs `swarm merge-run --confirmed` "
+          "with the head that was checked")
+    return 0
+
+
+def _cmd_merge_run(args: argparse.Namespace) -> int:
+    """`delfin-agent swarm merge-run PR --head SHA [--confirmed]`.
+
+    Prints the merge command only when a person confirmed it and the head
+    is the one whose checks were read. It runs nothing itself.
+    """
+    from .swarm import lead as _lead
+    from .swarm.triage import TriageError
+
+    try:
+        decided = _lead.swarm_merge(
+            args.pr, args.head, confirmed=args.confirmed,
+            checks_ok=args.checks_ok,
+            admin_override=args.admin_override,
+            where=str(Path.cwd()))
+    except TriageError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(f"PR {decided['pr']} at head {decided['head']}: {decided['state']}")
+    if decided.get("reason"):
+        print(f"  {decided['reason']}")
+    if decided.get("ask_user"):
+        print(f"  {decided['ask_user']}")
+    if decided["allow"]:
+        print("run this yourself:")
+        print(f"  {decided['merge_command']}")
+        if decided["admin_override"]:
+            print("  (administrator rights, as you asked in this command)")
+    return 0 if decided["allow"] else 1

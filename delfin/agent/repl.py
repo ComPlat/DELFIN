@@ -760,6 +760,20 @@ def prepare_fresh_turn(engine, prompt: str, *, workspace=None,
         return prompt
 
 
+def _attribution_for(engine):
+    """The turn's attribution scope, or a no-op when it cannot be had.
+
+    One line so ``run_turn`` reads as it did: the work of deciding WHAT a turn
+    served belongs to :mod:`delfin.agent.attribution`, and a turn that cannot
+    be attributed must still run.
+    """
+    try:
+        from . import attribution as _attr
+        return _attr.turn_scope(engine)
+    except Exception:
+        return contextlib.nullcontext()
+
+
 def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
              max_tokens: int = 0, memory_context: str | None = None,
              context_budget=None, task_state=None,
@@ -953,56 +967,61 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
             if isinstance(prompt, HarnessText):
                 user_message = HarnessText(user_message)
     with observer:
-        try:
-            full_text = engine.stream_response(
-                user_message=user_message,
-                memory_context=memory_context,
-                on_token=_on_token,
-                on_notice=_on_notice,
-                on_wait=_on_wait,
-                on_thinking=_on_thinking,
-                on_tool_use=_on_tool_use,
-                on_tool_result=_on_tool_result,
-                on_tool_result_meta=_on_tool_result_meta,
-                on_permission_denied=_on_denied,
-                max_tokens=max_tokens,
-            ) or ""
-        except Exception as exc:
-            result.error = str(exc)
-            full_text = ""
-            _emit(RenderItem("error", text=result.error))
-    _outcome = observer.summary(
-        error=result.error,
-        engine_stop_reason=str(
-            getattr(engine, "last_turn_stop_reason", "") or ""))
-    result.schema_version = _outcome["schema_version"]
-    result.stop_reason = _outcome["stop_reason"]
-    result.denials = _outcome["denials"]
-    result.files_changed = _outcome["files_changed"]
+        with _attribution_for(engine) as _attr_handle:
+            try:
+                full_text = engine.stream_response(
+                    user_message=user_message,
+                    memory_context=memory_context,
+                    on_token=_on_token,
+                    on_notice=_on_notice,
+                    on_wait=_on_wait,
+                    on_thinking=_on_thinking,
+                    on_tool_use=_on_tool_use,
+                    on_tool_result=_on_tool_result,
+                    on_tool_result_meta=_on_tool_result_meta,
+                    on_permission_denied=_on_denied,
+                    max_tokens=max_tokens,
+                ) or ""
+            except Exception as exc:
+                result.error = str(exc)
+                full_text = ""
+                _emit(RenderItem("error", text=result.error))
+            _outcome = observer.summary(
+                error=result.error,
+                engine_stop_reason=str(
+                    getattr(engine, "last_turn_stop_reason", "") or ""))
+            result.schema_version = _outcome["schema_version"]
+            result.stop_reason = _outcome["stop_reason"]
+            result.denials = _outcome["denials"]
+            result.files_changed = _outcome["files_changed"]
 
-    _flush_pending()
-    in_after, out_after = _usage(engine)
-    result.text = (full_text or "".join(chunks)).strip()
-    result.tool_calls = tool_calls
-    result.input_tokens = max(0, in_after - in_before)
-    result.output_tokens = max(0, out_after - out_before)
+            _flush_pending()
+            in_after, out_after = _usage(engine)
+            result.text = (full_text or "".join(chunks)).strip()
+            result.tool_calls = tool_calls
+            result.input_tokens = max(0, in_after - in_before)
+            result.output_tokens = max(0, out_after - out_before)
 
-    # KG4 phase 1: the metrics contract agent_metrics.py states ("one
-    # JSONL line per finished agent turn") was kept only by the
-    # dashboard's turn footer; a `delfin-agent chat` turn never wrote a
-    # line. run_turn is the one place a non-dashboard turn ends with its
-    # numbers computed -- record here from exactly those numbers.
-    # Best-effort: record_chat_turn swallows every failure, a metrics
-    # write never breaks the turn it describes.
-    try:
-        from . import agent_metrics as _metrics
-        _metrics.record_chat_turn(
-            engine, result,
-            duration_s=time.monotonic() - _turn_started,
-            mode=str(getattr(engine, "mode", "") or ""),
-        )
-    except Exception:
-        pass
+            # KG4 phase 1: the metrics contract agent_metrics.py states ("one
+            # JSONL line per finished agent turn") was kept only by the
+            # dashboard's turn footer; a `delfin-agent chat` turn never wrote a
+            # line. run_turn is the one place a non-dashboard turn ends with its
+            # numbers computed -- record here from exactly those numbers.
+            # Best-effort: record_chat_turn swallows every failure, a metrics
+            # write never breaks the turn it describes.
+            #
+            # INSIDE the attribution scope on purpose: record_chat_turn reads the
+            # attribution in force, and a row written after the scope closed
+            # would carry six nulls for a turn that knew exactly whose it was.
+            try:
+                from . import agent_metrics as _metrics
+                _metrics.record_chat_turn(
+                    engine, result,
+                    duration_s=time.monotonic() - _turn_started,
+                    mode=str(getattr(engine, "mode", "") or ""),
+                )
+            except Exception:
+                pass
 
     # The answer was streamed before the sanitiser ran on it, and a
     # terminal cannot un-print. Say so rather than let the screen and the

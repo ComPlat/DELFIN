@@ -30,6 +30,7 @@ was written after a measured defect, with its cost.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from . import wave
@@ -167,6 +168,68 @@ runs yourself: name in scratch/PR.md the probes (prompt, workspace,
 expected difference) that would show your change, for the integrator.
 """
 
+#: The rules that decide what reaches the base, one string per rule so a
+#: brief can carry a chosen subset. Each was added after a landing that
+#: measured its absence: the sentence after the dash is what it cost.
+#:
+#: They are data, not prose welded into the lander's brief text, for the
+#: same reason the delivery rules are: the fixer needs B and E but not A,
+#: and a rule an operator has to retype into a task by hand is a rule that
+#: is missing from every wave nobody remembered to patch (w42i/w48).
+LANDING_RULES = {
+    "A": """ONE BRANCH. Build the bundle on this worktree's own branch \
+(wave/{land_ref}) and on no second branch: a wave that built the bundle on a \
+second branch left every reviewer's checkout with an empty diff, so four \
+reviews were written against nothing.""",
+    "B": """NOTHING RED LANDS. A package whose test is red on the finished \
+bundle is fixed or left out -- never merged with a red test because its own \
+arm reported it green: run it on the bundle, which is the only tree that \
+matters.""",
+    "C": """A PACKAGE THAT NEEDS A PATCH IS A PACKAGE YOU APPLY. If a report \
+says it lands only with a scratch/*.patch, apply that patch as its own commit \
+with its test; if you will not, leave the package out and say why in the \
+report. A patch nobody applied is code that never reached the base.""",
+    "D": """NO ENTRY POINT, NO CAPABILITY. A package that no entry point \
+reaches -- nothing in delfin/ calls it -- does not land as a capability; an \
+import is not a caller. Land it as dead code only if the report says so in \
+those words.""",
+    "E": """A COMMIT MESSAGE IS PUBLIC TEXT. The person is the author; an \
+agent's commit carries exactly ONE `Co-Authored-By:` line, for DELFIN's agent \
+account, and no other trailer -- no second co-author line and no \
+`Agent: ... via ...` line. No model, provider, assistant product, institution \
+or host names anywhere in a commit message, trailer included: strip them from \
+what you bundle. No home paths, account names or person names either.""",
+    "F": """AN INTEGRATOR BRANCH 0 COMMITS AHEAD OF THE BASE CARRIES NOTHING. \
+`git log --oneline {base}..<branch> | wc -l` is 0 for a branch whose report \
+describes work: it has no commits, so there is nothing to merge. Find the \
+branch its report actually measured, or record that the package is empty and \
+say so.""",
+}
+
+#: The keys of each stage's share of ``LANDING_RULES``.
+LANDER_RULES = tuple(LANDING_RULES)
+#: The fixer edits the bundle itself, so it carries the two rules that decide
+#: what a line of that bundle may look like -- not the merge rules.
+FIXER_RULES = ("B", "E")
+
+#: What a revision name may carry into a brief. The briefs are full of shell
+#: commands the members are told to run, and ``base`` is filled into them, so
+#: the accepted set is git's own for a branch or commit name: no spaces, no
+#: quotes, no ``$``/``;``/``|``/``&``/backticks and no newline.
+_BASE_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/~^-]*$")
+
+
+#: An arm or an integrator commits too, and its commit messages are read on
+#: the branch someone else merges. Only the public-text rule is theirs: they
+#: merge nothing, and the other five would dilute their own package text.
+COMMIT_RULES = ("E",)
+
+
+def _rules_text(keys, *, land_ref: str, base: str) -> str:
+    """The named rules as brief text, in the order named, filled in."""
+    return "\n\n".join(LANDING_RULES[k].format(land_ref=land_ref, base=base)
+                       for k in keys)
+
 REVIEW_FOCUS = {
     "behaviour": """Nothing that worked before may work worse. Read the WHOLE diff
 `git diff {base}...HEAD`. For every changed function: who calls it (grep
@@ -215,6 +278,37 @@ def _branch_of(ref: str) -> str:
         return f"wave/{ref}"
 
 
+def _validate_base(base: Any) -> str:
+    """The revision every brief is told to run against -- and nothing else.
+
+    ``base`` is interpolated into shell commands the members are INSTRUCTED to
+    run (``git log --oneline {base}..HEAD | wc -l`` in the reviewer brief, the
+    integrator's control step, rule F). It arrives from a spec file, so it is
+    an input like a task id -- and it was the one such input that reached a
+    mandated command unvalidated: ``origin/main && echo INJECTED`` used to be
+    composed into every reviewer's first instruction.
+
+    A revision name is what git accepts as a branch or commit: letters, digits
+    and ``._/-``, plus ``~`` and ``^`` for ancestry. Spaces, quotes, ``$``,
+    ``;``, ``|``, ``&``, backticks and newlines are not in that set, and a
+    refusal names the value rather than silently rewriting it.
+
+    Rejected: escaping or quoting the value into the command. The briefs are
+    read by a model, not only by a shell, and a backslash in an instruction is
+    a second thing to get wrong; refusing an input that is not a revision keeps
+    the instruction identical to the string a person would type.
+    """
+    text = str(base if base is not None else "").strip()
+    if not text:
+        raise wave.WaveError("base must name a revision (empty is not a branch)")
+    if not _BASE_OK.match(text):
+        raise wave.WaveError(
+            f"base {text!r} is not a revision name: it may carry letters, "
+            "digits and . _ / - ~ ^ only, because the members are told to run "
+            "`git log --oneline <base>..HEAD` and a base is not a shell command")
+    return text
+
+
 def _validate_packages(packages: Any) -> list[dict]:
     if not isinstance(packages, list) or not packages:
         raise wave.WaveError("packages must be a non-empty list of {id, title, body}")
@@ -247,6 +341,7 @@ def compose(run: str, packages: list[dict], *, arms: list[dict], integrator: dic
     collects those instead of new ones -- a wave whose integration stage was
     stopped is continued without running its arms again."""
     packages = _validate_packages(packages)
+    base = _validate_base(base)
     arm_refs = dict(arm_refs or {})
     if "arms" in stages and len(arms) < 1:
         raise wave.WaveError("arms needs at least one {provider, model}")
@@ -260,6 +355,7 @@ def compose(run: str, packages: list[dict], *, arms: list[dict], integrator: dic
 
     tasks: list[dict] = []
     finals: list[str] = []
+    land_ref = f"{run}/zz-land"
     for p in packages:
         pid, title, body = p["id"], p.get("title") or p["id"], p["body"]
         arm_ids = list(arm_refs.get(pid) or [])
@@ -269,7 +365,8 @@ def compose(run: str, packages: list[dict], *, arms: list[dict], integrator: dic
                 arm_ids.append(f"{run}/{tid}")
                 tasks.append({"id": tid, "base": base, "seconds": 7200, "turns": 120, **m(spec),
                               "no_realrun": True,
-                              "brief": f"PACKAGE {pid}: {title}\n\n{body}\n{ARM_NOTE}\n{rules}"})
+                              "brief": f"PACKAGE {pid}: {title}\n\n{body}\n{ARM_NOTE}"
+                                       f"{_rules_text(COMMIT_RULES, land_ref=land_ref, base=base)}\n{rules}"})
         if "integrate" in stages:
             listing = "\n".join(f"  - {a}: branch {_branch_of(a)}, its scratch/ in scratch/arms/{a.split('/')[1]}/"
                                 for a in arm_ids) or "  (none: you work the package yourself)"
@@ -305,6 +402,7 @@ STEPS
 The package:
 {body}
 {real_runs}
+{_rules_text(COMMIT_RULES, land_ref=land_ref, base=base)}
 {rules}"""}
             if arm_ids:
                 t.update(after=arm_ids, collect=arm_ids, after_min=min(quorum, len(arm_ids)),
@@ -333,22 +431,35 @@ scratch/arms/<pkg>-int/realrun/). Bundle what their reports say should land:
    one row per package (landed or not, commits, measured effect), the
    full suite numbers with their control, the real-runs table. No account
    names, home paths, host names or person names in it.
+
+THE LANDING RULES -- each one is a landing that measured its absence:
+
+{_rules_text(LANDER_RULES, land_ref=land_ref, base=base)}
 {real_runs}
 {rules}"""})
-    land_ref = f"{run}/zz-land"
     revs = []
     if "review" in stages and "land" in stages:
         for key, text in REVIEW_FOCUS.items():
             rid = f"zz-rev-{key}"
             revs.append(f"{run}/{rid}")
             tasks.append({"id": rid, "base": f"wave/{land_ref}", "seconds": 10800, "turns": 150,
-                          **m(reviewer), "after": [f"{land_ref}.final"], "collect": [land_ref],
+                          **m(reviewer), "after": [f"{land_ref}.final"],
+                          "collect": [land_ref, *finals],
                           "no_realrun": True, "land": "none",
                           "brief": f"""REVIEWER ({key}) of the bundle another model built.
 
 Your worktree is the lander's branch (wave/{land_ref}); its reports are in
-scratch/arms/zz-land/. You CHANGE NOTHING in the code and commit nothing:
-you read, run and report.
+scratch/arms/zz-land/, and every integrator of this run reports in
+scratch/arms/<pkg>-int/ -- all of those directories are collected here, so
+the claims you check are the integrators' as well as the lander's. You CHANGE
+NOTHING in the code and commit nothing: you read, run and report.
+
+BEFORE ANYTHING ELSE: `git log --oneline {base}..HEAD | wc -l`. If it is 0 the
+bundle is EMPTY and that is the first line of scratch/REVIEW.md -- there is
+nothing else to review, and naming it is the whole finding. Then run the suite
+the way the lander RECORDED running it (its PR.md names the interpreter and
+the command): a `pytest` that does not exist on PATH is the WRONG INTERPRETER,
+not a red test. Say which interpreter you used.
 
 {text.format(base=base)}
 
@@ -373,5 +484,9 @@ scratch/arms/zz-rev-*/REVIEW.md, the lander's in scratch/arms/zz-land/.
 4. When resumed: write scratch/PR.md as the final pull-request text -- the
    lander's text updated, plus a table of every review finding and what
    was done with it. No account names, home paths or person names.
+
+Two of the landing rules bind every line you add to wave/{land_ref}:
+
+{_rules_text(FIXER_RULES, land_ref=land_ref, base=base)}
 {real_runs}"""})
     return wave.validate_tasks(tasks)

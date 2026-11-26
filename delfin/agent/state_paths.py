@@ -960,6 +960,12 @@ USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     # Skill proposals, patches included: a run that proposes one must not
     # leave it in the queue the user accepts from.
     ("delfin.agent.skill_proposals", "_proposals_dir", "skills/_proposals"),
+    # The kept benchmark rounds (one JSONL per round, plus one per drawn
+    # instance). A test that ran a round must not append its fixture
+    # records to the history the operator reads trends from — a fabricated
+    # pass rate there is indistinguishable from a real one, and the store
+    # is append-only, so nothing later removes it.
+    ("delfin.agent.bench_history", "default_root", "bench_history"),
 )
 
 #: Constants that point into the user's real ``~/.delfin`` DELIBERATELY:

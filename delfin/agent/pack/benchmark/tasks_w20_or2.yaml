@@ -71,6 +71,9 @@ tasks:
     max_tool_calls: 25
 
   - id: w20-or2-03
+    # Measures the OCCUPIER workflow: the answer is which spin state that
+    # workflow's candidate scan prefers, graded from the run's own files.
+    capability: [workflow:OCCUPIER]
     skill: orca-spectra-spin-occupier
     task_class: chemistry
     mode: solo
@@ -103,6 +106,9 @@ tasks:
     max_tool_calls: 40
 
   - id: w20-or2-04
+    # Measures the redox workflow: E_ox and the reference electrode come
+    # from that workflow, and the verifier checks the thermodynamic cycle.
+    capability: [workflow:redox]
     skill: redox-potential
     task_class: chemistry
     mode: solo

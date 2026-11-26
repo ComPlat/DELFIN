@@ -49,6 +49,14 @@ _DEFAULT_TASKS_PATH = (
 )
 _DEFAULT_RUNS_DIR = Path.home() / ".delfin" / "benchmark_runs"
 
+#: The capability namespaces a benchmark task may tag, in the order the
+#: product registers them. Kept as data here so the loader can validate a
+#: tag's SHAPE without importing the registries (which would make the
+#: benchmark package depend on the agent's tool catalogue); whether a name
+#: EXISTS in its namespace is the census test's question, asked against
+#: the live registries, never against this tuple.
+_CAPABILITY_KINDS = ("tool", "preset", "workflow")
+
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -392,6 +400,25 @@ class Task:
     # reported BESIDE success/quality_0_100. Always empty unless the
     # task declares ``rubric:`` -- no existing task's scoring changes.
     rubric: tuple = ()
+    # Which DELFIN capability this task measures, each as
+    # ``<kind>:<name>`` with kind in tool | preset | workflow and name
+    # spelled exactly as the product's own registry spells it (the
+    # advertised tool catalogue, ``subagent_type_names()``, the workflow
+    # list). A tuple because a task can genuinely exercise more than one
+    # -- a workflow AND the tool that drives it -- and forcing a single
+    # tag would make the census under-count by design.
+    #
+    # EMPTY MEANS UNTAGGED, and an untagged task measures no capability:
+    # it is not a wildcard that covers everything. Using "no tag" as
+    # "measures whatever you like" is how this census would pass while
+    # measuring nothing, which is the same shape as the allow-list
+    # defect in tests/test_every_capability_has_a_caller.py's header.
+    #
+    # Named ``capability`` and not ``skill`` because ``skill`` is already
+    # read by tasks as prose and is dropped by ``_coerce_task`` -- a key
+    # the loader does not name is data nothing can measure.
+    # ``tests/test_every_capability_is_measured.py`` is the consumer.
+    capability: tuple = ()
 
 
 def english_variant(task: Task) -> Optional[Task]:
@@ -722,7 +749,40 @@ def _coerce_task(raw: dict) -> Task:
             for m in (raw.get("mid_run_messages") or [])
             if isinstance(m, dict) and str(m.get("text", "") or "")),
         rubric=rubric,
+        capability=tuple(_capability_tags(raw.get("capability"))),
     )
+
+
+def _capability_tags(value) -> list[str]:
+    """The task's ``capability:`` entries, normalised and validated.
+
+    Accepts a single string or a list. Each entry must be
+    ``<kind>:<name>`` so that a tool, a preset and a workflow can never be
+    confused for one another -- the three namespaces are separate
+    registries in the product, and a bare ``plan`` is both a preset and a
+    mode. A malformed tag raises at load time: silently dropping it would
+    leave the task looking untagged, which the census reads as "measures
+    nothing", turning an authoring typo into a phantom hole in coverage.
+
+    Unknown *names* are NOT rejected here. Whether ``tool:nonsense`` names
+    a real tool is the census's question, asked against the live
+    registries, and the loader has no business importing them.
+    """
+    if not value:
+        return []
+    items = [value] if isinstance(value, str) else list(value)
+    out: list[str] = []
+    for raw_tag in items:
+        tag = str(raw_tag or "").strip()
+        if not tag:
+            continue
+        kind, sep, name = tag.partition(":")
+        if not sep or not name.strip() or kind.strip() not in _CAPABILITY_KINDS:
+            raise ValueError(
+                f"task capability {tag!r} is not '<kind>:<name>' with kind "
+                f"one of {'|'.join(_CAPABILITY_KINDS)}")
+        out.append(f"{kind.strip()}:{name.strip()}")
+    return out
 
 
 def load_tasks(path: Path | None = None) -> list[Task]:

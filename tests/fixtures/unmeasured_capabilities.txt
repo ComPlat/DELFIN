@@ -1,0 +1,139 @@
+# Capabilities no benchmark task measures yet -- and why.
+#
+# WRITTEN BY MEASUREMENT on the tree that added tests/test_every_capability_is_measured.py:
+# 128 capabilities in the universe (97 advertised tools + 18 presets + 13 workflows),
+# 9 covered by a tagged task, 119 listed here. Regenerate the count, never the reasons:
+#   PYTHONPATH=. python3 -c "from delfin.agent.benchmark import load_tasks; ..."
+#
+# THE LIST MAY ONLY SHRINK. tests/test_every_capability_is_measured.py fails both ways:
+# a capability with no task and no line here is a new hole, and a line here whose
+# capability HAS a task is a stale entry. Covering a capability forces its removal, so
+# the line count stays an honest count of what is unmeasured.
+#
+# THE REASONS ARE GROUPED, NOT COPIED. Most entries share one of a few obstacles, and
+# the obstacle is what matters: a real SLURM controller, physical lab hardware,
+# per-installation index state, an outward action, or a difference that only appears
+# across sessions. A line whose reason says a fixture COULD exercise it is a promise
+# for a later wave, not an exemption -- it is listed here only so the census can tell
+# "known and pending" from "forgotten".
+#
+# Format: <kind>:<name> <TAB> <why no task measures it yet>
+preset:chemistry-reviewer	a preset's output is a delegated judgement; no workspace fixture makes a followed role reproduce a different number, so the difference is not mechanically checkable here
+preset:code-reviewer	a preset's output is a delegated judgement; no workspace fixture makes a followed role reproduce a different number, so the difference is not mechanically checkable here
+preset:data-extractor	a preset's output is a delegated judgement; no workspace fixture makes a followed role reproduce a different number, so the difference is not mechanically checkable here
+preset:explore	a preset's output is a delegated judgement; no workspace fixture makes a followed role reproduce a different number, so the difference is not mechanically checkable here
+preset:friction-analyst	a preset's output is a delegated judgement; no workspace fixture makes a followed role reproduce a different number, so the difference is not mechanically checkable here
+preset:general-purpose	a preset's output is a delegated judgement; no workspace fixture makes a followed role reproduce a different number, so the difference is not mechanically checkable here
+preset:irc-checker	a preset's output is a delegated judgement; no workspace fixture makes a followed role reproduce a different number, so the difference is not mechanically checkable here
+preset:metal-smiles-builder	a preset's output is a delegated judgement; no workspace fixture makes a followed role reproduce a different number, so the difference is not mechanically checkable here
+preset:method-researcher	a preset's output is a delegated judgement; no workspace fixture makes a followed role reproduce a different number, so the difference is not mechanically checkable here
+preset:method-reviewer	a preset's output is a delegated judgement; no workspace fixture makes a followed role reproduce a different number, so the difference is not mechanically checkable here
+preset:plan	a preset's output is a delegated judgement; no workspace fixture makes a followed role reproduce a different number, so the difference is not mechanically checkable here
+preset:reactivity-department	a preset's output is a delegated judgement; no workspace fixture makes a followed role reproduce a different number, so the difference is not mechanically checkable here
+preset:security-reviewer	a preset's output is a delegated judgement; no workspace fixture makes a followed role reproduce a different number, so the difference is not mechanically checkable here
+preset:swarm-lead	a preset's output is a delegated judgement; no workspace fixture makes a followed role reproduce a different number, so the difference is not mechanically checkable here
+preset:ts-finder	a preset's output is a delegated judgement; no workspace fixture makes a followed role reproduce a different number, so the difference is not mechanically checkable here
+preset:verifier	a preset's output is a delegated judgement; no workspace fixture makes a followed role reproduce a different number, so the difference is not mechanically checkable here
+preset:workflow-operator	a preset's output is a delegated judgement; no workspace fixture makes a followed role reproduce a different number, so the difference is not mechanically checkable here
+preset:xyz-editor	a preset's output is a delegated judgement; no workspace fixture makes a followed role reproduce a different number, so the difference is not mechanically checkable here
+tool:apply_patch	applies a unified diff; the same end state is reachable with write_file, so a task would not isolate this capability
+tool:ask_user_question	asks the user a question; the benchmark has no user to answer, so the turn would block or time out by construction
+tool:bash_background	background/kill/status/output are the streaming half of tool:bash; tool:bash itself is now measured by m2_a2_bash_mean_cycle_time
+tool:bash_kill	background/kill/status/output are the streaming half of tool:bash; tool:bash itself is now measured by m2_a2_bash_mean_cycle_time
+tool:bash_output	background/kill/status/output are the streaming half of tool:bash; tool:bash itself is now measured by m2_a2_bash_mean_cycle_time
+tool:bash_status	background/kill/status/output are the streaming half of tool:bash; tool:bash itself is now measured by m2_a2_bash_mean_cycle_time
+tool:calc_summary	summarises the installation's indexed calculations, i.e. per-installation state rather than a workspace fixture
+tool:check_environment	reports environment/tooling readiness; the answer describes THIS host, which rule 6 forbids a test from asserting
+tool:cluster_cancel	needs a reachable SLURM controller; the benchmark workspace cannot provide one, and a stubbed submit would measure the stub
+tool:cluster_fetch	needs a reachable SLURM controller; the benchmark workspace cannot provide one, and a stubbed submit would measure the stub
+tool:cluster_propose	needs a reachable SLURM controller; the benchmark workspace cannot provide one, and a stubbed submit would measure the stub
+tool:cluster_read	needs a reachable SLURM controller; the benchmark workspace cannot provide one, and a stubbed submit would measure the stub
+tool:cluster_run	needs a reachable SLURM controller; the benchmark workspace cannot provide one, and a stubbed submit would measure the stub
+tool:cluster_status	needs a reachable SLURM controller; the benchmark workspace cannot provide one, and a stubbed submit would measure the stub
+tool:cluster_submit	needs a reachable SLURM controller; the benchmark workspace cannot provide one, and a stubbed submit would measure the stub
+tool:cluster_upload	needs a reachable SLURM controller; the benchmark workspace cannot provide one, and a stubbed submit would measure the stub
+tool:compare_tables	compares two tables; needs two table fixtures AND a judgement about which differences matter, so the verifier would grade the judgement
+tool:create_docx	writes a .docx/.pdf whose quality is judged by a reader; the exists/not-exists difference is too weak to be a measurement
+tool:create_pdf	writes a .docx/.pdf whose quality is judged by a reader; the exists/not-exists difference is too weak to be a measurement
+tool:cron_create	schedules work across sessions; the difference only shows after wall-clock time passes, which a single benchmark turn does not span
+tool:cron_delete	schedules work across sessions; the difference only shows after wall-clock time passes, which a single benchmark turn does not span
+tool:cron_list	schedules work across sessions; the difference only shows after wall-clock time passes, which a single benchmark turn does not span
+tool:describe_native_tool	returns a tool's schema; the answer is a restatement of the catalogue, so it measures the catalogue against itself
+tool:draft_email	producing an email draft has no checkable ground truth -- a good draft and a bad one differ in tone, not in a number
+tool:edit_file	edits a file/sheet in place; read_file/write_file already cover the same primitive, and the sheet half needs an .xlsx fixture
+tool:edit_sheet	edits a file/sheet in place; read_file/write_file already cover the same primitive, and the sheet half needs an .xlsx fixture
+tool:enter_worktree	enters a worktree; covered in effect by the generalist merge-conflict tasks, which assert the resulting tree
+tool:exit_plan_mode	ends a plan/worktree mode; the observable is a mode flag on the next turn, not an artifact of this one
+tool:exit_worktree	ends a plan/worktree mode; the observable is a mode flag on the next turn, not an artifact of this one
+tool:fill_docx_template	fills a template/form; needs a binary template fixture whose layout the verifier would have to parse back, so it would measure the parser
+tool:fill_pdf_form	fills a template/form; needs a binary template fixture whose layout the verifier would have to parse back, so it would measure the parser
+tool:fill_series	fills a template/form; needs a binary template fixture whose layout the verifier would have to parse back, so it would measure the parser
+tool:find_definition	locates definitions/references by symbol index; needs a built symbol index over a fixture repository
+tool:find_references	locates definitions/references by symbol index; needs a built symbol index over a fixture repository
+tool:forget	deletes from persistent memory; the effect is visible in a later session, not in the turn that ran it
+tool:get_calc_info	reads one indexed calculation record; same per-installation index as search_calcs
+tool:history_get	searches past session history, which is per-installation state a fixture cannot populate
+tool:history_search	searches past session history, which is per-installation state a fixture cannot populate
+tool:lab_devices	drives physical lab hardware (devices, e-stop); no fixture can stand in without measuring the stand-in instead of the device
+tool:lab_estop	drives physical lab hardware (devices, e-stop); no fixture can stand in without measuring the stand-in instead of the device
+tool:lab_plan_check	drives physical lab hardware (devices, e-stop); no fixture can stand in without measuring the stand-in instead of the device
+tool:lab_read	drives physical lab hardware (devices, e-stop); no fixture can stand in without measuring the stand-in instead of the device
+tool:lab_set	drives physical lab hardware (devices, e-stop); no fixture can stand in without measuring the stand-in instead of the device
+tool:list_changes_made	enumerates docs/sections/changes/files; the answer is a list whose exact contents depend on per-installation state
+tool:list_docs	enumerates docs/sections/changes/files; the answer is a list whose exact contents depend on per-installation state
+tool:list_files	enumerates docs/sections/changes/files; the answer is a list whose exact contents depend on per-installation state
+tool:list_sections	enumerates docs/sections/changes/files; the answer is a list whose exact contents depend on per-installation state
+tool:make_plot	renders a plot; the artifact is an image whose correctness is visual
+tool:merge_pdfs	merges PDFs; the ground truth is page order and content of a binary the checker would have to render
+tool:multi_edit	applies several edits atomically; the difference is all-or-nothing, which a single-turn task cannot distinguish from one edit
+tool:notebook_edit	edits a notebook; the cell format needs a real .ipynb fixture, and the check degrades into comparing JSON keys
+tool:notebook_read	edits a notebook; the cell format needs a real .ipynb fixture, and the check degrades into comparing JSON keys
+tool:orca_check_input	reports ORCA keyword semantics; correctness is a statement about the manual, not about a workspace state
+tool:orca_explain	reports ORCA keyword semantics; correctness is a statement about the manual, not about a workspace state
+tool:orchestrate	runs a multi-step orchestration; a single benchmark turn cannot close the loop it starts
+tool:project_introspect	introspects the live project; the answer depends on which repository is open, not on a fixture the setup can build
+tool:publish_report	publishing a report is an outward action; grading it means grading prose, not a fact a fixture can fix
+tool:push_notification	delivers to an external notification channel; the delivery is an outward action with no workspace-visible artifact
+tool:read_section	reads one indexed doc section; depends on the same document index as search_docs
+tool:remember	changes persistent memory; the effect is visible in a later session, not in the turn that ran it
+tool:remember_permission	changes persistent memory; the effect is visible in a later session, not in the turn that ran it
+tool:remember_permission_bundle	changes persistent memory; the effect is visible in a later session, not in the turn that ran it
+tool:remote_trigger	triggers work on a remote host; requires a configured remote endpoint the fixture cannot create
+tool:report_verdict	files a review verdict; the content is a judgement about work in progress, with no fixture-fixed truth
+tool:run_tests	runs the project's test suite; the population is whatever tests exist, so the answer is not fixed by the task fixture
+tool:schedule_wakeup	arranges a future wake-up; like cron, the difference only appears after wall-clock time passes
+tool:search_docs	answers from the per-installation document index under the state dir, which a setup script cannot build and the sandbox hides
+tool:session_message	talks to the session or a running delegate; the exchange is conversational and has no fixture-fixed ground truth
+tool:session_search	talks to the session or a running delegate; the exchange is conversational and has no fixture-fixed ground truth
+tool:show_molecule	opens a molecule viewer; the effect is a UI action, not a file the verifier can read
+tool:skill	loads a playbook the model must then FOLLOW; the observable difference is a procedure, and no fixture makes it reproduce a different number
+tool:skill_propose_patch	loads a playbook the model must then FOLLOW; the observable difference is a procedure, and no fixture makes it reproduce a different number
+tool:skill_share	loads a playbook the model must then FOLLOW; the observable difference is a procedure, and no fixture makes it reproduce a different number
+tool:split_pdf	splits a PDF; same obstacle as merge_pdfs -- the answer is inside a binary the checker would have to render
+tool:subagent_message	spawning and collecting a delegate is already measured by tool:subagent via sa0_expert_cannot_spawn; the remaining two are the message/result halves of the same exchange
+tool:subagent_result	spawning and collecting a delegate is already measured by tool:subagent via sa0_expert_cannot_spawn; the remaining two are the message/result halves of the same exchange
+tool:sum_column	totals a spreadsheet column; the answer is one number, but the fixture must be an .xlsx, so the check would measure the xlsx reader
+tool:task_adopt	mutates the session task list; the state is per-session bookkeeping, and asserting on it measures the bookkeeping, not an answer
+tool:task_create	mutates the session task list; the state is per-session bookkeeping, and asserting on it measures the bookkeeping, not an answer
+tool:task_get	mutates the session task list; the state is per-session bookkeeping, and asserting on it measures the bookkeeping, not an answer
+tool:task_list	mutates the session task list; the state is per-session bookkeeping, and asserting on it measures the bookkeeping, not an answer
+tool:task_update	mutates the session task list; the state is per-session bookkeeping, and asserting on it measures the bookkeeping, not an answer
+tool:undo_changes	reverts changes; the difference is whether a prior edit is gone, which needs a multi-turn scripted run this pack's single-turn tasks do not provide
+tool:view_image	shows an image to the user; the effect is on the human's screen, not on the workspace
+tool:watch_job	no task measures it yet: it is a workspace-visible tool that a fixture COULD exercise, so it belongs in the next wave of tasks rather than in an exemption
+tool:web_fetch	queries live external sources whose content changes between runs, so a fixed expected answer would encode today's internet
+tool:web_search	queries live external sources whose content changes between runs, so a fixed expected answer would encode today's internet
+tool:workflow_candidates	suggests candidate workflows; the output is a ranked recommendation, which has no single correct value
+tool:worktree_merge	manages git worktrees; measuring it needs a repository with a specific worktree topology, and the generalist tasks already cover the topology case
+tool:write_file	writes a file; every other task in this pack writes files, so a dedicated task would measure the harness
+workflow:ESD	needs a real TDDFT run through ORCA; the pack forbids real QM runs
+workflow:IMAG	needs a real frequency run through ORCA
+workflow:classic	runs the full CONTROL.txt pipeline, which needs a real QM binary
+workflow:co2	coordinates a metal complex build; needs the full builder and a real QM confirmation
+workflow:conformer_dG	needs a conformer ensemble plus a real QM refinement
+workflow:conformer_energy	needs a conformer ensemble plus real QM energies
+workflow:full_workflow	runs the whole staged pipeline, which needs a real QM binary
+workflow:multi_level_energy	needs real QM single points at several levels
+workflow:opt_freq_energy	needs a real optimise+frequency+energy chain
+workflow:redox_potential	needs real QM runs on both redox partners; the single-point potential is a different workflow from the measured workflow:redox
+workflow:xtb_thermochemistry	needs a real xTB binary; the pack forbids real QM/xTB runs
