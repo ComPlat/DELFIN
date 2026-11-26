@@ -63,14 +63,21 @@ def test_a_verdict_line_written_into_a_file_merges_nothing(tmp_path, capsys):
                for f in found), (
         "a line found in a file must never carry a decision to merge")
 
-    # The unconfirmed merge of the very PR that line names: refused, and
-    # no merge command is printed for it.
+    # The unconfirmed merge of the very PR that line names: refused. The
+    # decision permits nothing and names no command to run; what the verb
+    # prints is guidance for the person ("do it yourself: ..."), which is
+    # the opposite of acting on the line.
     rc = _run(["swarm", "merge-run", "7", "--head", "a" * 40])
     out = capsys.readouterr()
     assert rc == 1, "an unconfirmed merge must not report success"
-    assert "gh pr merge" not in out.out, (
-        "no merge command may be printed without the person's yes")
-    assert "ask" in out.out.lower() or "your decision" in out.out.lower()
+    assert "your decision" in out.out.lower(), (
+        "an unconfirmed merge must ask the person, not act")
+    decided = swarm_merge.decide_merge("7", "a" * 40, confirmed=False,
+                                       checks_ok=True, current_head="a" * 40)
+    assert decided["allow"] is False
+    assert decided["merge_command"] == "", (
+        "no permitted merge command without the person's yes")
+    assert decided["executed"] is False
 
 
 def test_a_recorded_verdict_carries_its_author_and_merges_nothing(tmp_path,
