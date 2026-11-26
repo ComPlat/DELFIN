@@ -280,6 +280,87 @@ def test_the_checks_red_refusal_does_not_promise_a_record_nothing_writes():
     assert "--admin-override" in refusal["reason"]
 
 
+# -- a merge needs an author, and a merge is the only thing that merges -------------
+
+def test_the_shipped_merge_command_can_be_reached_by_the_shipped_verb(
+        tmp_path, monkeypatch, capsys):
+    """``swarm merge-run --confirmed`` must be able to reach ``ready``.
+
+    It never did: ``current_head_of`` ran ``gh pr view`` with
+    ``cwd=tempfile.gettempdir()`` and no ``--repo``, and ``gh`` resolves the
+    repository from the working directory. A temp dir is not a repository, so
+    the read failed, the head stayed unknown, and the decision fell closed to
+    ``stale`` on every call from the shipped verb. The success path was green
+    only because every test injected ``current_head`` or replaced this
+    function.
+
+    The assertion is on the argv ``gh`` receives, not on a live read: the
+    repository must be named (``-R``) or the read must happen in a real
+    checkout.
+    """
+    import os
+    import subprocess
+
+    head = "a" * 40
+    seen: list = []
+
+    def fake_run(argv, *a, **kw):
+        seen.append((list(argv), kw.get("cwd")))
+        if "view" in argv:
+            return subprocess.CompletedProcess(
+                argv, 0, json.dumps({"headRefOid": head}), "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    got = swarm_merge.current_head_of("7")
+    assert got == head, f"the head was not read at all: {got!r}"
+    argv, cwd = seen[-1]
+    named = "-R" in argv or "--repo" in argv
+    in_a_checkout = cwd is not None and os.path.exists(
+        os.path.join(str(cwd), ".git"))
+    assert named or in_a_checkout, (
+        f"gh runs in {cwd!r} with no -R/-repo: gh resolves the repository "
+        f"from the working directory, and a temp dir is not one, so this "
+        f"read fails on every host and `ready` is unreachable from the CLI")
+
+
+def test_the_admin_flag_reaches_the_decision_through_the_shipped_verb(
+        monkeypatch, capsys):
+    """``--admin-override`` on the command line must reach ``decide_merge``.
+
+    It was pinned only at the function level: replacing
+    ``admin_override=args.admin_override`` with ``admin_override=False`` --
+    the flag silently never arriving -- left the whole file green.
+    """
+    head = "a" * 40
+    monkeypatch.setattr(swarm_merge, "current_head_of",
+                        lambda pr, **kw: head)
+    rc = _run(["swarm", "merge-run", "7", "--head", head, "--confirmed",
+               "--admin-override"])
+    assert rc == 0
+    printed = capsys.readouterr().out
+    assert "--admin" in printed, printed
+    assert "administrator rights" in printed, printed
+
+
+def test_without_the_flag_the_shipped_verb_prints_no_admin_command(monkeypatch,
+                                                                  capsys):
+    """Control: the same run without the flag must not carry --admin.
+
+    Red checks and no override is a refusal, so nothing runnable is printed.
+    """
+    head = "b" * 40
+    monkeypatch.setattr(swarm_merge, "current_head_of", lambda pr, **kw: head)
+    rc = _run(["swarm", "merge-run", "7", "--head", head, "--confirmed"])
+    assert rc == 1
+    text = capsys.readouterr()
+    printed = text.out + text.err
+    # Nothing runnable: the refusal may mention the flag it would need, but it
+    # must not print a merge command carrying it.
+    assert "gh pr merge" not in printed, printed
+    assert "run this yourself" not in printed, printed
+
+
 # -- the fail verdict: the member is resumed with the failure text ---------------
 
 def test_a_fail_verdict_resumes_the_member_that_failed(tmp_path, monkeypatch,

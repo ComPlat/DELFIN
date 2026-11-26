@@ -13,6 +13,7 @@ letters, digits, hyphen, underscore, dot only.
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any
 
@@ -137,20 +138,35 @@ def record_verdict(run: str, tid: str, verdict: str, *, by: str,
     return out
 
 
-def current_head_of(pr: int | str, *, where: str = "") -> str:
+def current_head_of(pr: int | str, *, where: str = "", repo: str = "") -> str:
     """The pull request's head commit now, or "" when it cannot be read.
 
     ``gh pr view <pr> --json headRefOid``. Tests replace this function, so
     nothing in the suite talks to GitHub. An unreadable head returns ""
     and :func:`decide_merge` then refuses: failing closed is the only safe
     direction for a check that must match a commit.
+
+    ``gh`` resolves the repository from its working directory, so one of the
+    two must name it: *repo* (a remote key such as ``owner/name``, passed as
+    ``-R``, in the temp directory so no checkout's configuration is read) or
+    *where* (a real checkout). This mirrors ``api_client._gh_pr_view``. With
+    neither, the read used to run in a temp dir -- not a repository -- so it
+    failed on every host and ``ready`` was unreachable from the shipped verb.
     """
     import subprocess
     import tempfile
 
     argv = ["gh", "pr", "view", str(pr), "--json", "headRefOid"]
+    # No fallback to the temp directory: gh resolves the repository from the
+    # working directory, so a temp dir can only fail. The person's own
+    # directory is a checkout when they run this, and when it is not, gh
+    # fails and this returns "" -- the fail-closed direction.
+    cwd = where or os.getcwd()
+    if repo and not str(repo).startswith("/"):
+        argv += ["-R", str(repo)]
+        cwd = tempfile.gettempdir()
     try:
-        r = subprocess.run(argv, cwd=where or tempfile.gettempdir(),
+        r = subprocess.run(argv, cwd=cwd,
                            capture_output=True, text=True, timeout=20)
         if r.returncode != 0:
             return ""

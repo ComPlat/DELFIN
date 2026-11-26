@@ -131,17 +131,20 @@ def swarm_verdict(run: str, member: str, verdict: str, *, by: str,
 
 def swarm_merge(pr: int | str, head: str, *, confirmed: bool = False,
                 checks_ok: bool = False, current_head: str | None = None,
-                admin_override: bool = False) -> dict[str, Any]:
+                admin_override: bool = False, where: str = "",
+                repo: str = "") -> dict[str, Any]:
     """Propose a merge of PR *pr*, checked at *head*. Merging needs a yes.
 
     Nothing is executed here: without ``confirmed=True`` this returns the
     ``ask_user`` verdict and the command, exactly as
     :func:`request_swarm_start` does for starting a swarm. ``current_head``
-    is read from GitHub when the caller does not supply it.
+    is read from GitHub when the caller does not supply it; *where* (a
+    checkout) or *repo* (a remote key) then has to name the repository, as
+    ``gh`` resolves it from the working directory.
     """
     from . import merge as _merge
-    now = (_merge.current_head_of(pr) if current_head is None
-           else str(current_head))
+    now = (_merge.current_head_of(pr, where=where, repo=repo)
+           if current_head is None else str(current_head))
     return _merge.decide_merge(
         pr, head, confirmed=confirmed, checks_ok=checks_ok,
         current_head=now, admin_override=admin_override,

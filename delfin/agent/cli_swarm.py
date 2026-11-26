@@ -625,7 +625,8 @@ def _cmd_merge_run(args: argparse.Namespace) -> int:
         decided = _lead.swarm_merge(
             args.pr, args.head, confirmed=args.confirmed,
             checks_ok=args.checks_ok,
-            admin_override=args.admin_override)
+            admin_override=args.admin_override,
+            where=str(Path.cwd()))
     except TriageError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
