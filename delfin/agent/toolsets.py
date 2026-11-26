@@ -24,7 +24,11 @@ or not, with the reason. A group is offered when
   files (``.xlsx``, ``.docx``, ``.pdf`` ...), or
 * the user enabled it (``/tools enable <group>``), or
 * the session already called one of its tools (a resumed history
-  included).
+  included), or
+* the person's request NAMES the group (``request_groups``: "make me a
+  docx", "the LUMO of this molecule"). Read once, from the first turn's
+  own words, so a later turn cannot move a head the prefix cache has
+  already served.
 
 Semantics, chosen for the prefix cache: the workspace facts are read
 ONCE, at the first query (the first turn, after any benchmark setup has
@@ -39,11 +43,20 @@ a hidden tool is exactly as allowed as before, so a call that reaches it
 runs, and enables its group from the next turn on.
 
 Rejected alternatives: re-detecting per turn (the head would change
-whenever the agent writes an ``.xyz``); a text classifier on the task
-(``energy``, ``scan`` and ``charge`` fire on ordinary code tasks);
-not spawning the hidden servers (the tool index of the ops server is
+whenever the agent writes an ``.xyz``); a GENERAL text classifier on the
+task -- one that reads the whole request for topical hints -- because
+``energy``, ``scan`` and ``charge`` fire on ordinary code tasks; not
+spawning the hidden servers (the tool index of the ops server is
 still what ``list_tools`` reads once the group is enabled, and the spawn
 cost is paid at startup either way).
+
+Not in that rejected list, and added deliberately: a vocabulary of terms
+that NAME a group, matched at a word start (``request_groups``). It is
+narrower than a classifier by construction -- every term names a document
+format, a document kind or a chemistry method, and the tests pin both
+directions (every term has a request that needs it; a request that needs
+neither group stays without one). It decides only the first turn, from the
+person's own words, so the head cannot move under the prefix cache.
 """
 
 from __future__ import annotations
