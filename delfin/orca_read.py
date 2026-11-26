@@ -263,8 +263,12 @@ def _opi_values(work_dir: Path, base_name: str) -> dict:
     DELFIN calculation folder keeps its ``.gbw``. That raised
     ``FileNotFoundError`` on any host without ``orca_2json`` in OPI's ORCA
     bin folder, from a read that needed nothing the ``.gbw`` holds: the
-    energies, charge, multiplicity, ``<S**2>`` and geometry all come from the
-    property JSON (``get_s2`` greps the ``.out``). Measured 2026-11-26.
+    energies, charge and multiplicity come from the property JSON, and
+    ``<S**2>`` is grepped from the ``.out``. The geometry was never served
+    by the ``.gbw`` half either: ``get_structure()`` returns ``None`` in
+    all four combinations of ``.gbw``/``.json`` present or absent, which is
+    why ``read_gbw_json=False`` removes nothing the property half asks for.
+    Measured 2026-11-26.
     """
     from opi.output.core import Output
 
