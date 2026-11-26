@@ -436,6 +436,14 @@ def resolve_commit(repo: Path | str, ref: str) -> str:
     baseline, which is the failure this whole module exists to prevent.
     """
     from . import safe_git
+    if not safe_git.is_repository(repo):
+        # A copied tree has no refs and no remote, so "fetch it" is advice the
+        # user cannot follow. Said separately, because the cause is different:
+        # nothing is missing here, the comparison is simply not possible.
+        raise AbRefused(
+            f"{str(repo)!r} is not a git repository, so {ref!r} names no "
+            f"commit. A comparison needs a checkout with both sides in it; a "
+            f"copy of a tree has neither.")
     r = safe_git.run(["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
                      str(repo), timeout=30)
     commit = (r.stdout or "").strip()

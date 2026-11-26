@@ -388,6 +388,27 @@ def test_an_unresolvable_ref_is_refused_and_not_defaulted():
     assert "does not name a commit" in str(exc.value)
 
 
+def test_a_tree_that_is_not_a_repository_says_so(tmp_path):
+    """A copied tree has no ref to fetch, so "Fetch it" is the wrong advice.
+
+    Measured: the same refusal served a directory that is not a repository at
+    all, and both real-run sides were told to fetch a ref from a tree with no
+    ``.git``. The control is the sibling case directly below, where a real
+    repository genuinely lacks the ref and "Fetch it" IS the right advice: that
+    one keeps its wording, so this is a branch on the cause, not a rewording of
+    one message.
+    """
+    not_a_repo = tmp_path / "copied-tree"
+    not_a_repo.mkdir()
+    with pytest.raises(AB.AbRefused) as exc:
+        _run(tmp_path, {}, base="origin/main", repo=not_a_repo)
+    text = str(exc.value)
+    assert "not a git repository" in text, text
+    assert "Fetch it" not in text, text
+    # The ref is still named: a refusal that hides what failed cannot be acted on.
+    assert "origin/main" in text, text
+
+
 def test_a_selection_matching_nothing_is_refused():
     """An empty population reports a difference of zero and means nothing."""
     with pytest.raises(AB.AbRefused) as exc:
