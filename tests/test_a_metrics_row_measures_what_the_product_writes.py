@@ -5,14 +5,8 @@ own tests while being wrong in a way a reader would never have seen. The
 defects were measured on 2026-11-25, each through a real entry point, and
 each is named in the test that now holds it:
 
-1. **The quality half had never read a real run.** ``quality_row`` understood
-   only an invented ``{"agent": {...}}`` shape that nothing in the product
-   writes, so a file from ``delfin-agent bench run`` recorded ``agents: {}``
-   -- and ``agents: {}`` reads like "quality was fine". The failing input is
-   exactly what ``benchmark.write_run`` produces.
-2. **A zero spread was read as certainty.** Three identical repeats are a
-   coincidence, not a measurement of no noise; ``0.93/0.93/0.93`` against
-   ``0.92/0.92/0.92`` was called ``worse``.
+1-2. (The quality half now reads ``bench_history``; its checks live in
+   ``tests/test_a_commit_row_measures_every_agent.py``.)
 3. **A root the scan could not read reported a clean bill of health.**
    ``unmounted: 0, within_ceiling: true`` for a directory that does not
    exist, which is a row about nothing that reads as a row about everything.
@@ -41,9 +35,7 @@ each is named in the test that now holds it:
 from __future__ import annotations
 
 import builtins
-import json
 
-import pytest
 
 from delfin.agent import cli
 
@@ -67,107 +59,11 @@ def test_bare_metrics_prints_its_actions(capsys):
     assert rc == 0, rc
     for action in ("record", "show", "compare"):
         assert action in out, out
-    assert "not a result" in out, out
+    assert "within noise" in out, out
 
 
 # ---------------------------------------------------------------------------
-# (1) the quality half reads a real benchmark run file
-# ---------------------------------------------------------------------------
-
-def _write_bench_file(path, qualities, profile="kit.model-a", unmeasured=False):
-    """One run file, in the exact shape ``benchmark.write_run`` writes.
-
-    The first line is the ``run_header`` -- provenance, not a result -- and
-    every further line is one task's result.
-    """
-    lines = [json.dumps({"run_header": {"model": profile,
-                                        "settings": {"repeats": 1}}})]
-    for index, quality in enumerate(qualities):
-        lines.append(json.dumps({
-            "task_id": f"t{index}",
-            "task_class": "chem",
-            "model": profile,
-            "profile_name": profile,
-            "mode": "solo",
-            "success": quality >= 50,
-            "quality_0_100": quality,
-            "unmeasured": unmeasured,
-        }))
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return path
-
-
-def test_one_real_run_file_is_read_at_all(tmp_path):
-    """The failing input: ONE file in the shape ``bench run`` writes.
-
-    Sharper than the three-file test above: this one has no comma-path or
-    repeat counting in the way, so it fails on the defect itself -- the row
-    recorded ``agents: {}`` for a real run file, which reads as "no agent had
-    a quality" and as "quality was not bad" at the same time.
-    """
-    bench = _write_bench_file(tmp_path / "run.jsonl", [90, 80], profile="kit.m")
-    history = tmp_path / "h"
-    rc = _main(["metrics", "record", "--tree", ".", "--bench-runs", str(bench),
-                "--history", str(history), "--json"])
-    assert rc == 0, rc
-    quality = json.loads(
-        (history / "rows.jsonl").read_text().splitlines()[-1])["quality"]
-    assert "kit.m" in quality["agents"], quality
-    stats = quality["agents"]["kit.m"]
-    assert stats["mean"] == pytest.approx(85.0), stats
-    # One file is one repeat, and one repeat is not a result.
-    assert stats["is_result"] is False, stats
-
-
-def test_three_real_run_files_are_three_repeats(tmp_path):
-    """The failing input: a real run file, which gave ``agents: {}``.
-
-    Three files, because one ``bench run`` invocation is one repeat and the
-    noise rule needs three. The check is on the ROW the command records, so
-    the count and the file-reading are measured together.
-    """
-    files = []
-    for index, qualities in enumerate(([90, 80], [60, 70], [100, 75])):
-        files.append(_write_bench_file(tmp_path / f"run{index}.jsonl",
-                                       qualities))
-    history = tmp_path / "h"
-    rc = _main(["metrics", "record", "--tree", ".", "--bench-runs",
-                ",".join(str(f) for f in files), "--history", str(history),
-                "--json"])
-    assert rc == 0, rc
-    row = json.loads((history / "rows.jsonl").read_text().splitlines()[-1])
-    quality = row["quality"]
-    assert quality["grouped_by"] == "profile_name", quality
-    stats = quality["agents"]["kit.model-a"]
-    # 85, 65, 87.5 -- one sample per FILE, not one per task.
-    assert stats["n"] == 3, stats
-    assert stats["is_result"] is True, stats
-    assert stats["min"] == pytest.approx(65.0), stats
-    assert stats["max"] == pytest.approx(87.5), stats
-
-
-def test_a_run_file_of_unmeasured_rows_is_not_a_score_of_zero(tmp_path):
-    """The failing input: booking a run that never reached the model as 0.
-
-    ``aggregate_replicates`` excludes unmeasured replicates for exactly this
-    reason: a zero lowers a baseline permanently and silently.
-    """
-    files = [_write_bench_file(tmp_path / f"u{i}.jsonl", [90, 80],
-                               profile="kit.model-b", unmeasured=True)
-             for i in range(3)]
-    history = tmp_path / "h"
-    rc = _main(["metrics", "record", "--tree", ".", "--bench-runs",
-                ",".join(str(f) for f in files), "--history", str(history),
-                "--json"])
-    assert rc == 0, rc
-    quality = json.loads(
-        (history / "rows.jsonl").read_text().splitlines()[-1])["quality"]
-    assert "kit.model-b" not in quality["agents"], quality
-    assert "not a quality of zero" in quality["note"], quality
-
-
-# ---------------------------------------------------------------------------
-# (3) a clean bill of health needs something to have been read
+# (3) an unreadable root is not a count of zero
 # ---------------------------------------------------------------------------
 
 def test_an_unreadable_root_is_not_a_count_of_zero():
@@ -258,55 +154,6 @@ def test_every_role_the_product_restricts_is_measured():
     measured = set(role_names())
     missing = (set(_ROLE_EXEC_ALLOWLIST) | set(_ROLE_TOOL_WHITELIST)) - measured
     assert not missing, sorted(missing)
-
-
-# ---------------------------------------------------------------------------
-# (2) three identical repeats are not certainty
-# ---------------------------------------------------------------------------
-
-def test_coincidentally_identical_repeats_do_not_grant_a_direction():
-    """The failing input: 0.93 vs 0.92 over three identical repeats each.
-
-    Both sides have ``stderr == 0``. The old rule read that as "any
-    difference is outside the spread" and said ``worse`` about a 0.01 move
-    that three coincidences cannot distinguish from noise.
-    """
-    from delfin.agent.commit_metrics import compare_number, spread
-
-    old = spread([0.93, 0.93, 0.93])
-    new = spread([0.92, 0.92, 0.92])
-    result = compare_number("quality.generalist", old, new)
-    assert result["verdict"] == "within noise", result
-    assert result["threshold"] == pytest.approx(1.0 / 3.0), result
-
-
-def test_a_large_move_on_identical_repeats_is_still_called():
-    """The mirror: the floor must not swallow a real move.
-
-    Three repeats each, 0.9 down to 0.1. If the floor above were implemented
-    as "zero spread means within noise", this would fail and the whole rule
-    would be unable to report a regression.
-    """
-    from delfin.agent.commit_metrics import compare_number, spread
-
-    result = compare_number("quality.generalist",
-                            spread([0.9, 0.9, 0.9]), spread([0.1, 0.1, 0.1]))
-    assert result["verdict"] == "worse", result
-
-
-def test_a_row_with_no_spread_is_not_compared():
-    """The failing input: a mean and an n, with ``stderr`` absent.
-
-    An absent spread used to read as 0.0 and take the same path as agreement
-    between repeats. It is not a measurement of zero noise; it is the absence
-    of the measurement.
-    """
-    from delfin.agent.commit_metrics import compare_number
-
-    no_spread = {"n": 3, "mean": 0.9, "min": 0.9, "max": 0.9, "stderr": None}
-    other = {"n": 3, "mean": 0.5, "min": 0.5, "max": 0.5, "stderr": 0.0}
-    result = compare_number("quality.generalist", no_spread, other)
-    assert result["verdict"] == "not a result", result
 
 
 # ---------------------------------------------------------------------------

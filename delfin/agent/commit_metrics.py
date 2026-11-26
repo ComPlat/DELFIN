@@ -10,15 +10,15 @@ for the same commit:
 * **What each agent is OFFERED** -- the tool surface and the system-prompt
   size of the generalist and of EVERY specialist separately. One count for
   "the agent" answers a question about no agent that runs.
-* **Quality with repeats** -- the benchmark result with its spread. A single
-  run is not a result: measured on the committed reference, one task scored
-  45, 93, 93 across three runs of unchanged code, so a comparison built on
-  one run per side would call that a regression or an improvement at random.
+* **Quality with repeats** -- read from the benchmark rounds
+  ``bench_history`` already keeps (``delfin-agent bench nightly`` writes them),
+  overall and per capability tag, with the min/max of the per-round pass
+  rates as the spread. Nothing here stores a benchmark result a second time.
 
-The fourth part is the comparison, and its rule is the point of the whole
-module: a difference is ``better`` or ``worse`` only when it is larger than
-the spread of the repeats says it could be by chance. Otherwise it is
-``within noise``, including when the means moved a lot.
+The fourth part is the comparison: a quality difference is ``better`` or
+``worse`` only when ``bench_ab.newcombe_interval`` on the pooled pass counts
+excludes zero, and rounds that differ on a ``bench_history.comparable`` axis
+are not compared at all.
 
 Why the reachability scan is here rather than imported
 ------------------------------------------------------
@@ -59,11 +59,8 @@ from __future__ import annotations
 import ast
 import io
 import json
-import math
 import re
-import statistics
 import tokenize
-from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -77,34 +74,9 @@ _REACHABILITY_CEILING = 86
 #: a broken or foreign root trips it, never a tree that lost code.
 _MIN_DEFINITIONS = 300
 
-#: Below this many repeats per agent per side, no comparison is made. Two
-#: runs cannot tell a spread from a coincidence, and one run has no spread at
-#: all -- the difference between "measured" and "looked at once".
-_MIN_REPEATS = 3
-
-#: How many standard errors a difference must clear before it is called
-#: better or worse. Two, because the row is read by a person deciding whether
-#: to look further, and the cost of a false "worse" is a wasted bisect while
-#: the cost of a false "better" is a regression merged.
-_NOISE_SIGMAS = 2.0
-
-
-def _zero_spread_floor(n: int) -> float:
-    """The smallest difference that cannot be a repeat coincidence, for *n*.
-
-    Used only when every repeat on both sides agreed and the measured spread
-    is therefore exactly 0. The score is a rate over a task set, so one task
-    flipping moves the rate by ``1/k`` for a set of ``k`` tasks; the set size
-    is not in the row, so the conservative reading is one repeat's worth of
-    resolution, ``1/n``. Conservative in the direction that matters: it makes
-    a zero-spread comparison HARDER to call, never easier.
-
-    A project whose repeats are genuinely deterministic (an exact classifier,
-    say) pays for this with repeats -- ``n >= 20`` gets the floor below 0.05
-    -- which is the honest price of a claim that the change moved something.
-    """
-    return 1.0 / max(int(n), 1)
-
+#: The trees the ratchet censuses (``_SCAN_DIRS`` in
+#: ``tests/test_every_capability_has_a_caller.py``), first-wins in this order.
+_SCAN_DIRS = ("delfin/agent", "delfin/tools", "delfin/agent/pack")
 
 _BINARY_SUFFIXES = frozenset({
     ".png", ".jpg", ".jpeg", ".gif", ".pdf", ".ico", ".woff", ".woff2",
@@ -113,12 +85,6 @@ _BINARY_SUFFIXES = frozenset({
 
 _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _DOTTED = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+")
-
-#: The key that marks which repeat (which run FILE) a result row came from.
-#: Added by ``load_bench_runs`` when it reads several files, so the quality
-#: half can count repeats instead of pooling every row into one sample.
-_REPEAT_KEY = "_metrics_repeat"
-
 
 # ---------------------------------------------------------------------------
 # Reachability
@@ -132,25 +98,27 @@ def definitions(tree_root: Path, definition_root: Optional[Path] = None
     its class, and asking the same question of it would need the class's own
     reachability first.
 
-    *definition_root* defaults to ``<tree_root>/delfin/agent``, which is the
-    scope the ratchet and its 86-name ceiling were measured on. It is a
+    *definition_root* defaults to the ratchet's own ``_SCAN_DIRS``, the scope
+    its ceiling is measured on. It is a
     parameter so the same question can be asked of another root without
     copying the function again.
     """
-    root = Path(definition_root) if definition_root else Path(tree_root) / "delfin" / "agent"
+    roots = ([Path(definition_root)] if definition_root
+             else [Path(tree_root) / d for d in _SCAN_DIRS])
     out: dict[str, tuple[str, int]] = {}
-    if not root.is_dir():
-        return out
-    for path in sorted(root.rglob("*.py")):
-        try:
-            tree = ast.parse(path.read_text(errors="replace"))
-        except SyntaxError:
+    for root in roots:
+        if not root.is_dir():
             continue
-        for node in tree.body:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
-                    and not node.name.startswith("__"):
-                out.setdefault(node.name,
-                               (str(path.relative_to(tree_root)), node.lineno))
+        for path in sorted(root.rglob("*.py")):
+            try:
+                tree = ast.parse(path.read_text(errors="replace"))
+            except SyntaxError:
+                continue
+            for node in tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                        and not node.name.startswith("__"):
+                    out.setdefault(node.name,
+                                   (str(path.relative_to(tree_root)), node.lineno))
     return out
 
 
@@ -263,7 +231,7 @@ def reachability(tree_root: Path) -> dict[str, Any]:
     """The unmounted capabilities, their tiers, and the ratchet's ceiling.
 
     Reported as counts over a STATED population: module-level callables under
-    ``delfin/agent/``. A count from another root answers another question and
+    the ratchet's ``_SCAN_DIRS``. A count from another root answers another question and
     is not quoted against the 86 ceiling.
     """
     tree_root = Path(tree_root)
@@ -278,7 +246,7 @@ def reachability(tree_root: Path) -> dict[str, Any]:
     # 2026-11-25 this tree defined 5368.
     if len(defs) < _MIN_DEFINITIONS:
         return {
-            "population": "module-level callables under delfin/agent/",
+            "population": "module-level callables under " + ", ".join(_SCAN_DIRS[:2]),
             "callables_defined": len(defs),
             "unmounted": None,
             "unmounted_names": [],
@@ -308,7 +276,7 @@ def reachability(tree_root: Path) -> dict[str, Any]:
     newly = sorted(n for n in unmounted if n not in baseline)
     stale = sorted(n for n in baseline if n not in unmounted)
     return {
-        "population": "module-level callables under delfin/agent/",
+        "population": "module-level callables under " + ", ".join(_SCAN_DIRS[:2]),
         "callables_defined": len(defs),
         "unmounted": len(unmounted),
         "unmounted_names": unmounted,
@@ -627,304 +595,161 @@ def agents_row(tree_root: Path) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Quality: repeats, spread, and the noise rule
+# Quality: read from the kept benchmark rounds, never stored a second time
 # ---------------------------------------------------------------------------
+#
+# The benchmark rounds are already kept by ``bench_history`` (one line per
+# round, one per instance, each instance carrying its capability tag), and
+# the interval on a difference of pass rates is ``bench_ab.newcombe_interval``.
+# This section only READS those: a metrics row does not copy a quality number
+# into its own file, so the two can never disagree.
 
-def spread(values: list[float]) -> dict[str, Any]:
-    """mean, min, max and the standard error of a set of repeats.
+def _rounds_for(rounds: list, commit: str) -> list:
+    """The kept rounds of one commit, matched by prefix in either direction."""
+    c = str(commit or "").split("-dirty")[0]
+    if not c:
+        return []
+    return [r for r in rounds
+            if r.commit and (r.commit.startswith(c) or c.startswith(r.commit))]
 
-    The standard error is computed from the sample's own spread, so a row
-    measured with more repeats tightens every comparison made from it by
-    itself, rather than a percentage fixed in advance that is too loose at
-    three runs and absurd at thirty.
+
+def _tally(rounds: list) -> dict[str, dict[str, Any]]:
+    """Pass counts overall and per capability tag over *rounds*.
+
+    The capability tag is ``bench_history.inst_capability`` -- the field the
+    benchmark writer stamps on every instance. An instance without a tag is
+    counted under ``(untagged)`` rather than dropped.
     """
-    n = len(values)
-    if n == 0:
-        return {"n": 0, "mean": None, "min": None, "max": None, "stderr": None}
-    mean = statistics.fmean(values)
-    if n < 2:
-        return {"n": n, "mean": mean, "min": min(values), "max": max(values),
-                "stderr": None}
-    stdev = statistics.stdev(values)
-    return {
-        "n": n,
-        "mean": mean,
-        "min": min(values),
-        "max": max(values),
-        "stdev": stdev,
-        "stderr": stdev / math.sqrt(n),
-    }
+    from .bench_history import inst_capability
 
-
-def quality_row(runs: list[dict[str, Any]]) -> dict[str, Any]:
-    """Per-agent quality from repeated benchmark runs.
-
-    *runs* is one dict per repeat. Two shapes are accepted, and the reason is
-    a defect measured on 2026-11-25: the first shape below was the only one
-    this module understood, and NOTHING in the product writes it, so feeding
-    it the file ``delfin-agent bench run`` actually produces recorded
-    ``agents: {}`` -- a quality half that had never read a real run.
-
-    * what ``benchmark.write_run`` writes, one result row per (task, repeat):
-      ``{"task_id", "quality_0_100", "success", "profile_name", ...}``. Grouped
-      here by ``profile_name``, which is the MODEL profile the result was
-      stamped with. That is not an agent role, and this module does not
-      pretend it is: per-agent quality needs a run in which the agent is
-      known, which is why the summary says which column it grouped by.
-    * the agent-labelled summary this command was designed for:
-      ``{"agent": {name: score}, "delegation": {...}, "delegation_expected":
-      {...}}``. A caller that knows which agent produced each score -- a
-      harness that runs the generalist and a specialist and labels the rows
-      -- writes this, and then the row IS per agent.
-
-    An agent measured fewer than ``_MIN_REPEATS`` times is reported with its
-    mean and marked ``is_result: false``: the number is what was seen, and
-    saying it is a result would be the lie the repeats exist to prevent.
-    """
-    labelled = [r for r in runs if isinstance(r.get("agent"), dict)]
-    if labelled:
-        per_agent: dict[str, list[float]] = {}
-        for run in labelled:
-            for agent, value in (run.get("agent") or {}).items():
-                if value is None:
-                    continue
-                per_agent.setdefault(agent, []).append(float(value))
-        grouped_by = "agent"
-    else:
-        per_agent, grouped_by = _per_agent_from_bench_rows(runs)
-
-    agents: dict[str, Any] = {}
-    for agent, values in sorted(per_agent.items()):
-        stats = spread(values)
-        stats["is_result"] = stats["n"] >= _MIN_REPEATS
-        stats["values"] = values
-        agents[agent] = stats
-
-    delegation = delegation_accuracy(runs)
-    out: dict[str, Any] = {
-        "repeats": len(runs),
-        "min_repeats": _MIN_REPEATS,
-        "grouped_by": grouped_by,
-        "agents": agents,
-        "delegation": delegation,
-    }
-    if not agents:
-        out["note"] = (
-            f"{len(runs)} row(s) were read but none carried a score to group: "
-            "expected benchmark result rows (quality_0_100 / success) or an "
-            "`agent` mapping. This is not a quality of zero.")
-    elif grouped_by == "profile_name":
-        out["note"] = (
-            "grouped by profile_name, which is the MODEL profile stamped on "
-            "each result -- not an agent role. Per-agent quality needs a run "
-            "that records which agent produced each score.")
+    out: dict[str, dict[str, Any]] = {}
+    for rnd in rounds:
+        per_round: dict[str, list[int]] = {}
+        for inst in rnd.graded():
+            ok = 1 if inst.get("success") else 0
+            for key in ("all", f"capability:{inst_capability(inst) or '(untagged)'}"):
+                per_round.setdefault(key, [0, 0])
+                per_round[key][0] += ok
+                per_round[key][1] += 1
+        for key, (p, n) in per_round.items():
+            entry = out.setdefault(key, {"passed": 0, "n": 0, "rounds": 0,
+                                         "round_rates": []})
+            entry["passed"] += p
+            entry["n"] += n
+            entry["rounds"] += 1
+            entry["round_rates"].append(p / n)
+    for entry in out.values():
+        rates = entry["round_rates"]
+        entry["rate"] = entry["passed"] / entry["n"] if entry["n"] else None
+        entry["min"] = min(rates) if rates else None
+        entry["max"] = max(rates) if rates else None
     return out
 
 
-def _per_agent_from_bench_rows(
-        runs: list[dict[str, Any]]) -> tuple[dict[str, list[float]], str]:
-    """Group real benchmark result rows into per-profile quality samples.
+def quality_for(commit: str, history_root: Optional[Path] = None
+                ) -> dict[str, Any]:
+    """Quality of one commit from the kept benchmark rounds, with spread.
 
-    A "repeat" here is one *file*: one complete pass of the suite. The score
-    for that repeat is the mean ``quality_0_100`` over the tasks it covered,
-    so a repeat that covered more tasks cannot outweigh one that covered
-    fewer, and a suite half-run is reported as the rate it is.
-
-    Unmeasured rows are skipped, exactly as ``aggregate_replicates`` skips
-    them: a run that never reached the model is not a failing model. When
-    every row is unmeasured the profile gets no sample at all rather than a
-    zero -- ``is_result`` stays false and the caller sees ``n: 0``.
+    Repeats are the kept rounds of that commit; the spread is the min/max of
+    the per-round pass rates. Per AGENT quality is not available: a kept
+    round records the model, not which agent produced each answer, and the
+    row says so instead of relabelling the model as an agent.
     """
-    per_profile: dict[str, list[tuple[int, float]]] = {}
-    for row in runs:
-        if not isinstance(row, dict) or row.get("quality_0_100") is None:
-            continue
-        if row.get("unmeasured"):
-            continue
-        who = str(row.get("profile_name") or row.get("model") or "default")
-        # The file this row came from IS the repeat. Without the index every
-        # row of every file pooled into a single sample, so three run files
-        # came out as one repeat and the noise rule could never be reached
-        # for a real benchmark. Measured 2026-11-25: three files recorded
-        # `n: 1` over the mean of all six rows.
-        repeat = int(row.get(_REPEAT_KEY, 0))
-        per_profile.setdefault(who, []).append(
-            (repeat, float(row["quality_0_100"])))
-    out: dict[str, list[float]] = {}
-    for who, pairs in per_profile.items():
-        by_repeat: dict[int, list[float]] = {}
-        for repeat, value in pairs:
-            by_repeat.setdefault(repeat, []).append(value)
-        # One sample per FILE: the mean over that repeat's tasks, so a file
-        # that covered more tasks cannot outweigh one that covered fewer.
-        out[who] = [sum(values) / len(values)
-                    for _r, values in sorted(by_repeat.items()) if values]
-    return out, "profile_name"
+    from . import bench_history
 
-
-def delegation_accuracy(runs: list[dict[str, Any]]) -> dict[str, Any]:
-    """Did the generalist hand each task to the specialist that owned it.
-
-    Counted over the runs supplied, per (task, expected specialist, actual).
-    A task with no expected specialist in the run file is not counted at
-    all -- an unlabelled task is not a wrong delegation, and counting it as
-    one would move the rate with the size of the task set instead of with the
-    routing.
-    """
-    hits = 0
-    total = 0
-    wrong: dict[str, dict[str, int]] = {}
-    per_run: list[float] = []
-    for run in runs:
-        labels = run.get("delegation_expected") or {}
-        if not labels:
-            continue
-        handed = run.get("delegation") or {}
-        run_hits = 0
-        run_total = 0
-        for task, expected in labels.items():
-            actual = handed.get(task)
-            run_total += 1
-            if actual == expected:
-                hits += 1
-                run_hits += 1
-            else:
-                key = str(actual or "(none)")
-                wrong.setdefault(str(expected), {})
-                wrong[str(expected)][key] = wrong[str(expected)].get(key, 0) + 1
-        total += run_total
-        per_run.append(run_hits / run_total if run_total else 0.0)
-    if total == 0:
-        return {"tasks": 0, "accuracy": None, "note":
-                "no run carried delegation_expected labels, so routing was "
-                "not measured -- this is not a zero"}
-    stats = spread([r for r in per_run])
+    try:
+        rounds = _rounds_for(bench_history.load(history_root), commit)
+    except Exception as exc:                                # noqa: BLE001
+        return {"rounds": 0, "error": f"{type(exc).__name__}: {exc}"}
+    measured = [r for r in rounds if not bench_history.not_measurable_reason(r)]
     return {
-        "tasks": total,
-        "hits": hits,
-        "accuracy": hits / total,
-        "per_run": stats,
-        "misroutes": wrong,
+        "source": "bench history (kept rounds)",
+        "rounds": len(measured),
+        "unmeasured_rounds": len(rounds) - len(measured),
+        "models": sorted({r.model for r in measured}),
+        "numbers": _tally(measured),
+        "per_agent": None,
+        "note": ("per-agent quality is not recorded by a benchmark round; "
+                 "the numbers are per capability tag and overall"),
     }
+
+
+def compare_quality(old_commit: str, new_commit: str,
+                    history_root: Optional[Path] = None) -> list[dict[str, Any]]:
+    """better / worse / within noise for overall and each capability.
+
+    The two commits' rounds must agree on every ``bench_history.comparable``
+    axis (seed mode, task-set version, model); otherwise the pair is
+    ``not comparable`` and no direction is claimed. The verdict is read off
+    ``bench_ab.newcombe_interval`` on the pooled pass counts: an interval
+    that contains zero is ``within noise``.
+    """
+    from . import bench_history
+    from .bench_ab import newcombe_interval
+
+    rounds = bench_history.load(history_root)
+    old_r = [r for r in _rounds_for(rounds, old_commit)
+             if not bench_history.not_measurable_reason(r)]
+    new_r = [r for r in _rounds_for(rounds, new_commit)
+             if not bench_history.not_measurable_reason(r)]
+    if not old_r or not new_r:
+        return [{"number": "quality.all", "verdict": "not measured",
+                 "reason": (f"kept rounds: {len(old_r)} for the old commit, "
+                            f"{len(new_r)} for the new one")}]
+    for r in old_r[1:] + new_r:
+        ok, why = bench_history.comparable(r, old_r[0])
+        if not ok:
+            return [{"number": "quality.all", "verdict": "not comparable",
+                     "reason": f"round {r.round_id}: {why}"}]
+    o_t, n_t = _tally(old_r), _tally(new_r)
+    out: list[dict[str, Any]] = []
+    for key in sorted(set(o_t) | set(n_t), key=lambda k: (k != "all", k)):
+        o, n = o_t.get(key), n_t.get(key)
+        entry: dict[str, Any] = {
+            "number": f"quality.{key}",
+            "old": None if not o else o["rate"],
+            "new": None if not n else n["rate"],
+            "old_rounds": 0 if not o else o["rounds"],
+            "new_rounds": 0 if not n else n["rounds"],
+        }
+        if not o or not n:
+            entry.update(verdict="not measured", reason="one side has no rounds")
+            out.append(entry)
+            continue
+        lo, hi = newcombe_interval(o["passed"], o["n"], n["passed"], n["n"])
+        entry["delta"] = n["rate"] - o["rate"]
+        entry["interval"] = [lo, hi]
+        entry["verdict"] = ("better" if lo > 0 else "worse" if hi < 0
+                            else "within noise")
+        entry["reason"] = (f"{o['passed']}/{o['n']} -> {n['passed']}/{n['n']}, "
+                           f"95% interval on the difference [{lo:+.2f}, {hi:+.2f}]")
+        out.append(entry)
+    return out
 
 
 # ---------------------------------------------------------------------------
 # Comparison: better / worse / within noise
 # ---------------------------------------------------------------------------
 
-def compare_number(name: str, old: Optional[dict], new: Optional[dict],
-                   *, higher_is_better: bool = True) -> dict[str, Any]:
-    """Classify one number between two commits, using its own spread.
-
-    The rule, and the reason the row needs repeats at all:
-
-    * either side with fewer than ``_MIN_REPEATS`` samples -> ``not a result``
-      and no direction is claimed, whatever the means say;
-    * ``|delta| > _NOISE_SIGMAS * sqrt(stderr_old**2 + stderr_new**2)`` ->
-      ``better`` or ``worse`` by the sign and the direction of merit;
-    * otherwise -> ``within noise``.
-
-    A one-run difference on each side can therefore never be called an
-    improvement, which is the whole point: on unchanged code this project's
-    own benchmark moved one task from 45 to 93.
-    """
-    out: dict[str, Any] = {
-        "number": name,
-        "old": None if not old else old.get("mean"),
-        "new": None if not new else new.get("mean"),
-        "old_n": 0 if not old else old.get("n", 0),
-        "new_n": 0 if not new else new.get("n", 0),
-    }
-    if not old or not new or old.get("mean") is None or new.get("mean") is None:
-        out.update(verdict="not measured", reason="one side has no value")
-        return out
-    delta = new["mean"] - old["mean"]
-    out["delta"] = delta
-    out["old_spread"] = [old.get("min"), old.get("max")]
-    out["new_spread"] = [new.get("min"), new.get("max")]
-    if out["old_n"] < _MIN_REPEATS or out["new_n"] < _MIN_REPEATS:
-        out.update(
-            verdict="not a result",
-            reason=(f"{out['old_n']} and {out['new_n']} repeats; "
-                    f"{_MIN_REPEATS} are needed before a difference can be "
-                    "told from the spread"))
-        return out
-    # A MISSING spread is not a zero spread. `spread()` reports a known
-    # dispersion as a `stderr` number -- 0.0 when every repeat agreed -- and
-    # reports the ABSENCE of one by leaving `stderr` None and omitting
-    # `stdev`. A row read back from the kept history, or written by a caller
-    # that supplied a mean and an n but no repeats, is the second case;
-    # reading its absent value as 0.0 would send it through the zero-spread
-    # branch below as if its repeats had agreed, which is the opposite of
-    # what an absent value means. Measured 2026-11-25: `stderr: None` and
-    # `stderr: 0.0` took the same path.
-    missing = [side for side, entry in (("old", old), ("new", new))
-               if entry.get("stderr") is None and "stdev" not in entry]
-    if missing:
-        out.update(
-            verdict="not a result",
-            reason=(f"{' and '.join(missing)} side carries no spread, so no "
-                    "difference can be told from noise; record the repeats "
-                    "rather than a mean"))
-        return out
-    se = math.sqrt((old.get("stderr") or 0.0) ** 2
-                   + (new.get("stderr") or 0.0) ** 2)
-    threshold = _NOISE_SIGMAS * se
-    out["threshold"] = threshold
-    if se == 0.0:
-        # Every repeat agreed on BOTH sides, so the spread measured here is
-        # zero. That is NOT the same as "no noise": a per-run score is a
-        # rate over a task set, and a binomial process gives identical
-        # repeats by chance -- measured on this project's own reference, one
-        # task scored 45, 93, 93 and an afternoon of re-running the same
-        # code would eventually produce three equal runs and a false
-        # direction. So a zero spread falls back to the range the repeats
-        # must have covered, which cannot be zero for a rate in [0, 1]: at
-        # least 1/n of it can move by chance.
-        floor = _zero_spread_floor(max(out["old_n"], out["new_n"]))
-        out["threshold"] = floor
-        out["reason_no_spread"] = (
-            "every repeat agreed on both sides, so the measured spread is 0; "
-            f"the 1/n floor for {max(out['old_n'], out['new_n'])} repeats "
-            "bounds it instead of treating three coincidences as certainty")
-        if abs(delta) <= floor:
-            out.update(verdict="within noise", reason=out["reason_no_spread"])
-            return out
-        out["verdict"] = ("better" if (delta > 0) == higher_is_better
-                          else "worse")
-        out["reason"] = out["reason_no_spread"]
-        return out
-    if abs(delta) <= threshold:
-        out.update(verdict="within noise",
-                   reason=(f"|{delta:+.4g}| <= {threshold:.4g} "
-                           f"({_NOISE_SIGMAS:g} standard errors)"))
-        return out
-    improved = (delta > 0) == higher_is_better
-    out.update(verdict="better" if improved else "worse",
-               reason=(f"|{delta:+.4g}| > {threshold:.4g} "
-                       f"({_NOISE_SIGMAS:g} standard errors)"))
-    return out
-
-
-def compare_rows(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
+def compare_rows(old: dict[str, Any], new: dict[str, Any], *,
+                 bench_history_root: Optional[Path] = None) -> dict[str, Any]:
     """Every number the two rows agree on, classified one by one.
 
-    Reachability is compared as a count that should not rise; quality per
-    agent; and the per-agent offered-tool count and prompt size, which are
-    only reported (a larger surface is not by itself better or worse).
+    Reachability is a count that should not rise; quality comes from the
+    kept benchmark rounds of the two commits; the per-agent offered-tool
+    count and prompt size are reported (a larger surface is not by itself
+    better or worse).
     """
     comparisons: list[dict[str, Any]] = []
 
     o_reach = (old.get("reachability") or {})
     n_reach = (new.get("reachability") or {})
-    if "unmounted" in o_reach and "unmounted" in n_reach:
+    if o_reach.get("unmounted") is not None and n_reach.get("unmounted") is not None:
         d = n_reach["unmounted"] - o_reach["unmounted"]
         comparisons.append({
             "number": "reachability.unmounted",
             "old": o_reach["unmounted"], "new": n_reach["unmounted"],
             "delta": d,
-            # Fewer unreached capabilities is the better direction, and this
-            # is a count of defects, not a sample: no spread applies.
             "verdict": ("better" if d < 0 else "worse" if d > 0
                         else "within noise"),
             "reason": ("counted, not sampled: every capability is enumerated, "
@@ -932,25 +757,9 @@ def compare_rows(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
             "never_worse": d <= 0,
         })
 
-    o_agents = ((old.get("quality") or {}).get("agents") or {})
-    n_agents = ((new.get("quality") or {}).get("agents") or {})
-    for agent in sorted(set(o_agents) & set(n_agents)):
-        comparisons.append(compare_number(
-            f"quality.{agent}", o_agents[agent], n_agents[agent]))
-    # An agent measured on ONE side only is compared too, and comes out
-    # `not measured` rather than vanishing. Measured 2026-11-25: the
-    # intersection-only loop dropped such an agent silently, so a specialist
-    # that disappeared between two commits produced no row at all -- the
-    # absence that this whole command exists to make visible.
-    for agent in sorted(set(o_agents) ^ set(n_agents)):
-        comparisons.append(compare_number(
-            f"quality.{agent}", o_agents.get(agent), n_agents.get(agent)))
-
-    o_del = ((old.get("quality") or {}).get("delegation") or {})
-    n_del = ((new.get("quality") or {}).get("delegation") or {})
-    if o_del.get("per_run") and n_del.get("per_run"):
-        comparisons.append(compare_number(
-            "quality.delegation_accuracy", o_del["per_run"], n_del["per_run"]))
+    comparisons.extend(compare_quality(old.get("commit", ""),
+                                       new.get("commit", ""),
+                                       bench_history_root))
 
     o_surf = (old.get("agents") or {})
     n_surf = (new.get("agents") or {})
@@ -1018,26 +827,23 @@ def git_commit(tree_root: Path) -> str:
     describes a commit while measuring uncommitted code is a row about
     neither.
     """
-    import subprocess
+    from . import safe_git
     try:
-        sha = subprocess.run(["git", "rev-parse", "--short=9", "HEAD"],
-                             cwd=str(tree_root), capture_output=True,
-                             text=True, timeout=15).stdout.strip()
-        dirty = subprocess.run(["git", "status", "--porcelain"],
-                               cwd=str(tree_root), capture_output=True,
-                               text=True, timeout=30).stdout.strip()
+        sha = safe_git.run(["rev-parse", "--short=9", "HEAD"], str(tree_root),
+                           timeout=15).stdout.strip()
+        dirty = safe_git.run(["status", "--porcelain"], str(tree_root),
+                             timeout=30).stdout.strip()
     except Exception:                                       # noqa: BLE001
         return "unknown"
     return f"{sha or 'unknown'}{'-dirty' if dirty else ''}"
 
 
-def build_row(tree_root: Path, *, runs: Optional[list[dict[str, Any]]] = None,
-              commit: str = "") -> dict[str, Any]:
-    """The whole row for one commit: reachability, agents, quality.
+def build_row(tree_root: Path, *, commit: str = "") -> dict[str, Any]:
+    """The kept row for one commit: reachability and what each agent is offered.
 
-    *runs* is optional because the reachability half needs no model call and
-    no key: a CI job with none still records the half it can measure, and the
-    quality section then says why it is empty instead of reporting a zero.
+    Needs no model call and no key. Quality is not copied into the row: it is
+    read from the kept benchmark rounds (``bench_history``) when a row is
+    shown or compared, so there is one store of benchmark results.
     """
     tree_root = Path(tree_root)
     row: dict[str, Any] = {
@@ -1049,17 +855,6 @@ def build_row(tree_root: Path, *, runs: Optional[list[dict[str, Any]]] = None,
         "mcp_surface": mcp_surface_row(tree_root),
         "packs": _packs_row(tree_root),
     }
-    if runs:
-        row["quality"] = quality_row(runs)
-    else:
-        row["quality"] = {
-            "repeats": 0, "min_repeats": _MIN_REPEATS, "agents": {},
-            "delegation": {"tasks": 0, "accuracy": None,
-                           "note": "no benchmark runs supplied; quality was "
-                                   "not measured for this commit"},
-            "note": "no benchmark runs supplied (--bench-runs)",
-        }
-    row["costs"] = {"model_calls": 0 if not runs else len(runs)}
     return row
 
 
@@ -1143,58 +938,6 @@ def latest_for(rows: list[dict[str, Any]], commit: str) -> Optional[dict]:
         if str(row.get("commit", "")).startswith(commit):
             return row
     return None
-
-
-def load_bench_runs(path: Path) -> list[dict[str, Any]]:
-    """Read a ``--bench-runs`` input: one path, or several separated by commas.
-
-    Each path is either a JSON list or JSONL. This is the seam that lets the
-    quality half be tested without a model: a file of measured per-run results
-    is a first-class input, and a fake one proves the noise rule exactly as
-    the real one would be measured by it.
-
-    SEVERAL paths, because one file is one repeat. ``delfin-agent bench run``
-    writes one file per invocation, and the noise rule needs three per side;
-    a single path cannot express that, which would have made ``is_result``
-    unreachable for every real benchmark. Each file's ``run_header`` line is
-    skipped -- it is provenance, not a result -- and unparseable lines are
-    named rather than dropped: a truncated run file that silently contributes
-    fewer rows is a measurement of the wrong population.
-    """
-    runs: list[dict[str, Any]] = []
-    repeat = 0
-    for one in str(path).split(","):
-        one = one.strip()
-        if not one:
-            continue
-        repeat += 1
-        file_path = Path(one)
-        text = file_path.read_text(encoding="utf-8")
-        stripped = text.strip()
-        if not stripped:
-            continue
-        if stripped.startswith("["):
-            data = json.loads(stripped)
-            runs.extend({**d, _REPEAT_KEY: repeat}
-                        for d in data if isinstance(d, dict))
-            continue
-        for number, line in enumerate(stripped.splitlines(), 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                parsed = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(
-                    f"{file_path}:{number}: not JSON ({exc.msg}) -- a truncated "
-                    "run file is a different population, not a shorter one"
-                ) from exc
-            if not isinstance(parsed, dict):
-                continue
-            if "run_header" in parsed and len(parsed) == 1:
-                continue
-            runs.append({**parsed, _REPEAT_KEY: repeat})
-    return runs
 
 
 def to_json(row: dict[str, Any]) -> str:

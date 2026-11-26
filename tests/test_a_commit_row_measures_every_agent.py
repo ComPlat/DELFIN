@@ -16,19 +16,14 @@ named in the test that makes it:
    taken from the catalogue alone -- which is exactly what the older function
    returns, so this asserts the two numbers differ rather than merely exist.
 
-3. **A difference is "within noise" unless it exceeds the spread, and a
-   single run is never a result.** On unchanged code this project's own
-   reference benchmark moved one task from 45 to 93 across three runs, so a
-   comparison of one run per side would report a regression or an improvement
-   at random. The failing inputs are named in each test: a 30-point gap with
-   no spread IS called better, and a real move with tight spread IS called
-   better, so the assertions can fail.
+3. **Quality is read from the kept benchmark rounds, per capability tag.**
+   The rounds are written through ``bench_history``'s own writers and read
+   back by ``metrics show``/``compare``; a difference is ``within noise``
+   unless ``bench_ab.newcombe_interval`` excludes zero, and rounds of
+   different models are not compared.
 
 Every check drives ``delfin.agent.cli.main(argv)`` -- parser, dispatch, exit
-code, stdout -- as the rule requires, except the two that are pure arithmetic
-on fake run files, which cannot be reached through a model this cage has no
-key for. Those are driven through the same ``record``/``compare`` commands
-with the fake file as the input, so the seam is the product's, not the test's.
+code, stdout.
 """
 
 from __future__ import annotations
@@ -148,194 +143,111 @@ def test_a_declared_tool_is_reachable_somewhere(recorded):
 
 
 # --------------------------------------------------------------------------
-# (3) repeats, spread, and the noise rule
+# (3) quality comes from the kept benchmark rounds, per capability tag
 # --------------------------------------------------------------------------
 
-def _write_runs(tmp_path, runs, name="runs.json"):
-    path = tmp_path / name
-    path.write_text(json.dumps(runs), encoding="utf-8")
-    return path
+def _keep_round(root, round_id, commit, outcomes, *, model="m", started=1.0):
+    """One round through ``bench_history``'s own writers.
 
-
-def _record_with(tmp_path, runs, history):
-    bench = _write_runs(tmp_path, runs)
-    rc = _main(["metrics", "record", "--tree", ".", "--bench-runs", str(bench),
-                "--history", str(history), "--json"])
-    assert rc == 0
-    rows = (history / "rows.jsonl").read_text(encoding="utf-8").splitlines()
-    return json.loads(rows[-1])
-
-
-def test_three_repeats_are_recorded_with_their_spread(tmp_path):
-    """The failing input: a row that keeps only the last run's score."""
-    history = tmp_path / "h"
-    row = _record_with(tmp_path, [
-        {"agent": {"generalist": 0.5}},
-        {"agent": {"generalist": 1.0}},
-        {"agent": {"generalist": 1.0}},
-    ], history)
-    stats = row["quality"]["agents"]["generalist"]
-    assert stats["n"] == 3
-    assert stats["is_result"] is True
-    assert stats["min"] == 0.5 and stats["max"] == 1.0, stats
-    assert stats["mean"] == pytest.approx(2.5 / 3), stats
-    # A spread that is not reported cannot bound a comparison.
-    assert stats["stderr"] is not None and stats["stderr"] > 0
-
-
-def test_one_run_is_not_a_result(tmp_path):
-    """The failing input: a row that calls a single run a result.
-
-    This is the whole reason `_MIN_REPEATS` exists: with n=1 there is no
-    spread, so no difference measured against it can be told from noise.
+    *outcomes* is ``[(capability, success), ...]``; the capability goes into
+    ``task_class``, the field the benchmark writer stamps.
     """
-    history = tmp_path / "h"
-    row = _record_with(tmp_path, [{"agent": {"generalist": 1.0}}], history)
-    stats = row["quality"]["agents"]["generalist"]
-    assert stats["n"] == 1
-    assert stats["is_result"] is False
-    assert stats["stderr"] is None
+    from delfin.agent import bench_history
+
+    bench_history.write_round(
+        {"round_id": round_id, "commit": commit, "model": model,
+         "seed_mode": "practice", "task_set_version": "v1",
+         "started_at": started},
+        history_root=root)
+    bench_history.write_instances(
+        round_id,
+        [{"task_id": f"t{i}", "task_class": cap, "ran": True,
+          "unmeasured": False, "success": ok}
+         for i, (cap, ok) in enumerate(outcomes)],
+        history_root=root, started_at=started)
 
 
-def test_a_real_move_with_tight_spread_is_called_better():
-    """The failing input that makes the noise test meaningful.
+def _two_rows(history, old="aaaaaaa", new="bbbbbbb"):
+    history.mkdir(parents=True, exist_ok=True)
+    with (history / "rows.jsonl").open("w", encoding="utf-8") as fh:
+        for commit, unmounted in ((old, 9), (new, 8)):
+            fh.write(json.dumps({"commit": commit, "reachability":
+                                 {"unmounted": unmounted}}) + "\n")
 
-    Three repeats at 0.90 vs three at 0.20, no overlap: this MUST come out
-    ``better``. If it came out ``within noise`` the rule would be unable to
-    report a genuine improvement, and the ``within noise`` cases below would
-    prove nothing.
+
+def test_compare_reads_kept_rounds_per_capability(tmp_path, capsys):
+    """The failing input: a clear drop in one capability, flat in another.
+
+    Three rounds per commit; ``chem`` goes from 10/10 to 0/10 per round and
+    ``code`` stays 5/10. The first must be ``worse``, the second
+    ``within noise``, and the reachability count 9 -> 8 ``better``.
     """
-    from delfin.agent.commit_metrics import compare_number, spread
-
-    old = spread([0.9, 0.9, 0.9])
-    new = spread([0.2, 0.2, 0.2])
-    result = compare_number("quality.generalist", new, old)
-    assert result["verdict"] == "better", result
-
-
-def test_a_difference_inside_the_spread_is_within_noise():
-    """The failing input: a rule that calls any non-zero delta better/worse.
-
-    These two arms differ by 0.1 in the mean while each side ranges over 0.8,
-    which is the shape of the project's own 45/93/93 reference noise. Any
-    rule that reports ``better`` or ``worse`` here fails this test.
-    """
-    from delfin.agent.commit_metrics import compare_number, spread
-
-    old = spread([0.2, 1.0, 0.9])
-    new = spread([1.0, 0.3, 0.9])
-    result = compare_number("quality.generalist", old, new)
-    assert result["verdict"] == "within noise", result
-    assert result["threshold"] > 0
-
-
-def test_a_comparison_between_one_run_each_claims_nothing():
-    """The failing input: two 1-run rows, one at 0.0 and one at 1.0.
-
-    A 100-point gap on one run per side is the most tempting false
-    improvement there is, and it must still be ``not a result``.
-    """
-    from delfin.agent.commit_metrics import compare_number, spread
-
-    old = spread([0.0])
-    new = spread([1.0])
-    result = compare_number("quality.generalist", old, new)
-    assert result["verdict"] == "not a result", result
-
-
-def test_delegation_accuracy_counts_only_labelled_tasks():
-    """The failing input: a rate computed over every task in the run file.
-
-    A task nobody labelled as belonging to a specialist is not a wrong
-    delegation; counting it as one moves the rate with the size of the task
-    set instead of with the routing.
-    """
-    from delfin.agent.commit_metrics import delegation_accuracy
-
-    runs = [
-        {"delegation": {"t1": "ts-finder", "t2": "explore"},
-         "delegation_expected": {"t1": "ts-finder", "t2": "ts-finder"}},
-        {"delegation": {"t1": "ts-finder", "t2": "ts-finder"},
-         "delegation_expected": {"t1": "ts-finder", "t2": "ts-finder"}},
-        # A run with no labels contributes nothing at all.
-        {"delegation": {"t3": "explore"}},
-    ]
-    result = delegation_accuracy(runs)
-    assert result["tasks"] == 4, result
-    assert result["hits"] == 3, result
-    assert result["accuracy"] == pytest.approx(0.75)
-    assert result["misroutes"] == {"ts-finder": {"explore": 1}}, result
-
-
-def test_an_unlabelled_run_says_it_measured_no_routing():
-    """The failing input: reporting accuracy 0.0 when nothing was labelled.
-
-    Zero reads as "every delegation was wrong", which is a different claim
-    and a false one.
-    """
-    from delfin.agent.commit_metrics import delegation_accuracy
-
-    result = delegation_accuracy([{"delegation": {"t1": "explore"}}])
-    assert result["accuracy"] is None
-    assert "not measured" in result["note"]
-
-
-# --------------------------------------------------------------------------
-# the comparison table, end to end through the two commands
-# --------------------------------------------------------------------------
-
-def test_compare_prints_the_before_after_table(tmp_path, capsys):
-    """The failing input: a `compare` that prints prose with no verdicts.
-
-    Two rows are recorded from the same tree with different fake quality, so
-    the reachability half is identical (within noise) and the quality half
-    differs by more than the spread -- 0.9 down to 0.2 over three repeats
-    each, which must be ``worse``. The table must carry that verdict, the
-    ``within noise`` rows, and the summary line.
-    """
-    history = tmp_path / "h"
-    _record_with(tmp_path, [{"agent": {"generalist": 0.9}}] * 3, history)
-    bench = _write_runs(tmp_path, [{"agent": {"generalist": 0.2}}] * 3,
-                        name="runs2.json")
-    rc = _main(["metrics", "record", "--tree", ".", "--bench-runs",
-                str(bench), "--history", str(history), "--commit", "after",
+    bench = tmp_path / "bench"
+    for k in range(3):
+        _keep_round(bench, f"o{k}", "aaaaaaa",
+                    [("chem", True)] * 10 + [("code", i < 5) for i in range(10)],
+                    started=float(k + 1))
+        _keep_round(bench, f"n{k}", "bbbbbbb",
+                    [("chem", False)] * 10 + [("code", i < 5) for i in range(10)],
+                    started=float(k + 10))
+    history = tmp_path / "rows"
+    _two_rows(history)
+    rc = _main(["metrics", "compare", "--old", "aaaaaaa", "--new", "bbbbbbb",
+                "--history", str(history), "--bench-history", str(bench),
                 "--json"])
     assert rc == 0
-    capsys.readouterr()
-
-    rc = _main(["metrics", "compare", "--history", str(history), "--new",
-                "after"])
-    out = capsys.readouterr().out
-    assert rc == 0
-    assert "quality.generalist" in out
-    # 0.9 -> 0.2 is a REAL drop with no spread on either side, so it must be
-    # called worse; the direction is the one the module got right and this
-    # test first got wrong, which is why both halves are asserted here.
-    assert "worse" in out, out
-    assert "within noise" in out, out
-    assert "reachability.unmounted" in out, out
-    assert "summary:" in out, out
+    result = json.loads(capsys.readouterr().out)
+    by = {c["number"]: c for c in result["comparisons"]}
+    assert by["reachability.unmounted"]["verdict"] == "better"
+    assert by["quality.capability:chem"]["verdict"] == "worse", by
+    assert by["quality.capability:code"]["verdict"] == "within noise", by
+    assert by["quality.all"]["old_rounds"] == 3
 
 
-def test_the_direction_of_merit_is_read_from_the_delta(tmp_path, capsys):
-    """The failing input: a comparison that labels any change "worse".
-
-    The mirror of the test above, in the other direction: 0.2 up to 0.9 must
-    come out ``better``. Without this pair, a rule that always said "worse"
-    would pass the table test.
-    """
-    history = tmp_path / "h"
-    _record_with(tmp_path, [{"agent": {"generalist": 0.2}}] * 3, history)
-    bench = _write_runs(tmp_path, [{"agent": {"generalist": 0.9}}] * 3,
-                        name="runs2.json")
-    rc = _main(["metrics", "record", "--tree", ".", "--bench-runs",
-                str(bench), "--history", str(history), "--commit", "after2",
+def test_one_task_per_side_claims_nothing(tmp_path, capsys):
+    """The failing input: 1/1 against 0/1 -- the means moved by 1.0."""
+    bench = tmp_path / "bench"
+    _keep_round(bench, "o", "aaaaaaa", [("chem", True)])
+    _keep_round(bench, "n", "bbbbbbb", [("chem", False)], started=2.0)
+    history = tmp_path / "rows"
+    _two_rows(history)
+    rc = _main(["metrics", "compare", "--old", "aaaaaaa", "--new", "bbbbbbb",
+                "--history", str(history), "--bench-history", str(bench),
                 "--json"])
     assert rc == 0
-    capsys.readouterr()
+    by = {c["number"]: c
+          for c in json.loads(capsys.readouterr().out)["comparisons"]}
+    assert by["quality.all"]["verdict"] == "within noise", by
 
-    rc = _main(["metrics", "compare", "--history", str(history), "--new",
-                "after2"])
-    out = capsys.readouterr().out
+
+def test_rounds_of_different_models_are_not_compared(tmp_path, capsys):
+    bench = tmp_path / "bench"
+    _keep_round(bench, "o", "aaaaaaa", [("chem", True)] * 10, model="m1")
+    _keep_round(bench, "n", "bbbbbbb", [("chem", False)] * 10, model="m2",
+                started=2.0)
+    history = tmp_path / "rows"
+    _two_rows(history)
+    rc = _main(["metrics", "compare", "--old", "aaaaaaa", "--new", "bbbbbbb",
+                "--history", str(history), "--bench-history", str(bench),
+                "--json"])
     assert rc == 0
-    assert "better" in out, out
+    by = {c["number"]: c
+          for c in json.loads(capsys.readouterr().out)["comparisons"]}
+    assert by["quality.all"]["verdict"] == "not comparable", by
+
+
+def test_show_carries_per_capability_quality_with_spread(tmp_path, capsys):
+    """``show`` reads the same rounds, and reports the per-round spread."""
+    bench = tmp_path / "bench"
+    _keep_round(bench, "a", "aaaaaaa", [("chem", True), ("chem", True)])
+    _keep_round(bench, "b", "aaaaaaa", [("chem", True), ("chem", False)],
+                started=2.0)
+    history = tmp_path / "rows"
+    _two_rows(history)
+    rc = _main(["metrics", "show", "--commit", "aaaaaaa", "--history",
+                str(history), "--bench-history", str(bench), "--json"])
+    assert rc == 0
+    quality = json.loads(capsys.readouterr().out)["quality"]
+    chem = quality["numbers"]["capability:chem"]
+    assert quality["rounds"] == 2
+    assert (chem["passed"], chem["n"], chem["min"], chem["max"]) == (3, 4, 0.5, 1.0)

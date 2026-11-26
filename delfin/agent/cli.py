@@ -5664,9 +5664,9 @@ def cmd_prompt_size(args: argparse.Namespace) -> int:
 def cmd_metrics(args: argparse.Namespace) -> int:
     """Record, show or compare one commit's row of numbers, per agent.
 
-    Input: the tree to measure (``--tree``, default the current directory), an
-    optional ``--bench-runs`` file of repeated benchmark results, and
-    ``--history`` for where rows are kept. Output: one line of the kept
+    Input: the tree to measure (``--tree``, default the current directory),
+    ``--history`` for where rows are kept, and ``--bench-history`` for the
+    kept benchmark rounds (default: the ``bench history`` store). Output: one line of the kept
     history, or the JSON row on stdout with ``--json``; exit 0.
 
     Why this command exists: the three numbers it writes -- unreached
@@ -5691,17 +5691,7 @@ def cmd_metrics(args: argparse.Namespace) -> int:
         return 0
 
     if action == "record":
-        runs = None
-        bench = getattr(args, "bench_runs", "") or ""
-        if bench:
-            try:
-                runs = _cm.load_bench_runs(Path(bench))
-            except Exception as exc:                        # noqa: BLE001
-                print(f"ERROR: cannot read --bench-runs {bench}: {exc}",
-                      file=sys.stderr)
-                return 2
-        row = _cm.build_row(tree, runs=runs,
-                            commit=getattr(args, "commit", "") or "")
+        row = _cm.build_row(tree, commit=getattr(args, "commit", "") or "")
         if getattr(args, "json", False):
             print(_cm.to_json(row))
         else:
@@ -5720,6 +5710,7 @@ def cmd_metrics(args: argparse.Namespace) -> int:
         return 0
 
     path = _cm.history_path(Path(history) if history else None)
+    bench_root = getattr(args, "bench_history", "") or None
 
     if action == "show":
         rows = _cm.read_rows(path)
@@ -5733,6 +5724,8 @@ def cmd_metrics(args: argparse.Namespace) -> int:
             print(f"no kept row for commit {commit!r} in {path}",
                   file=sys.stderr)
             return 1
+        row = dict(row, quality=_cm.quality_for(row.get("commit", ""),
+                                                bench_root))
         print(_cm.to_json(row) if getattr(args, "json", False)
               else _metrics_summary_line(row))
         return 0
@@ -5751,7 +5744,7 @@ def cmd_metrics(args: argparse.Namespace) -> int:
             print(f"no kept row for {', '.join(repr(m) for m in missing)}",
                   file=sys.stderr)
             return 1
-        result = _cm.compare_rows(old, new)
+        result = _cm.compare_rows(old, new, bench_history_root=bench_root)
         print(_cm.to_json(result) if getattr(args, "json", False)
               else _cm.format_comparison(result))
         return 0
@@ -5765,22 +5758,21 @@ def _print_metrics_usage() -> None:
     print(
         "delfin-agent metrics -- one row of numbers per commit, per agent\n"
         "\n"
-        "  metrics record   [--tree DIR] [--bench-runs FILE] [--history DIR]\n"
-        "                   [--commit LABEL] [--json]\n"
+        "  metrics record   [--tree DIR] [--history DIR] [--commit LABEL] [--json]\n"
         "      Measure a tree and append one row: how many capabilities the\n"
-        "      product does not reach, what the generalist and every agent is\n"
-        "      offered, and quality with its spread when --bench-runs is given.\n"
+        "      product does not reach, and what the generalist and every agent\n"
+        "      is offered. No model call, no key.\n"
         "\n"
         "  metrics show     [--commit PREFIX] [--history DIR] [--json]\n"
-        "      Print a kept row (default: the newest).\n"
+        "      Print a kept row (default: the newest), with quality from the\n"
+        "      kept `bench nightly` rounds of that commit, per capability tag.\n"
         "\n"
         "  metrics compare  [--old PREFIX] [--new PREFIX] [--history DIR]\n"
         "                   [--json]\n"
         "      Two commits side by side: better / worse / within noise per\n"
-        "      number, the noise taken from the spread of the repeats.\n"
-        "\n"
-        "A single run is not a result: below 3 repeats per side a quality row\n"
-        "reads `not a result`, whatever the means say.")
+        "      number; quality from the kept benchmark rounds of each commit,\n"
+        "      within noise when the interval on the difference contains 0.\n"
+        "      --bench-history DIR reads another round store (show/compare).")
 
 
 def _metrics_summary_line(row: dict) -> str:
@@ -5790,13 +5782,13 @@ def _metrics_summary_line(row: dict) -> str:
     agents = row.get("agents") or {}
     unreached = reach.get("unmounted")
     ceiling = reach.get("ceiling")
-    repeats = quality.get("repeats") or 0
+    repeats = quality.get("rounds") or 0
     return (
         f"commit {row.get('commit', '?')}: "
         f"{unreached} unreached capabilit"
         f"{'y' if unreached == 1 else 'ies'} (ceiling {ceiling}), "
         f"{len(agents)} agent surface{'s' if len(agents) != 1 else ''}, "
-        f"quality {'not measured' if not repeats else f'from {repeats} repeats'}"
+        f"quality {'not measured' if not repeats else f'from {repeats} kept rounds'}"
     )
 
 
@@ -7188,10 +7180,6 @@ def build_parser() -> argparse.ArgumentParser:
         "record", help="Measure this tree and append one row to the history")
     met_rec.add_argument("--tree", default="",
                          help="Tree to measure (default: the current directory)")
-    met_rec.add_argument("--bench-runs", default="",
-                         help="JSON list or JSONL of repeated benchmark "
-                              "results; without it the reachability half is "
-                              "recorded and quality is marked not measured")
     met_rec.add_argument("--history", default="",
                          help="History directory or .jsonl file (default: "
                               "~/.delfin/metrics_history)")
@@ -7207,11 +7195,14 @@ def build_parser() -> argparse.ArgumentParser:
     met_show.add_argument("--history", default="", help="History to read")
     met_show.add_argument("--json", action="store_true",
                           help="Print the row as JSON")
+    met_show.add_argument("--bench-history", default="",
+                         help="Kept benchmark rounds to read quality from "
+                              "(default: the `bench history` store)")
     met_show.set_defaults(func=cmd_metrics)
     met_cmp = met_sub.add_parser(
         "compare",
-        help="Two commits side by side: better / worse / within noise, the "
-             "noise taken from the spread of the repeats")
+        help="Two commits side by side: better / worse / within noise, "
+             "quality from the kept benchmark rounds")
     met_cmp.add_argument("--old", default="",
                          help="Older commit prefix (default: the oldest row)")
     met_cmp.add_argument("--new", default="",
@@ -7219,6 +7210,9 @@ def build_parser() -> argparse.ArgumentParser:
     met_cmp.add_argument("--history", default="", help="History to read")
     met_cmp.add_argument("--json", action="store_true",
                          help="Print the comparison as JSON")
+    met_cmp.add_argument("--bench-history", default="",
+                         help="Kept benchmark rounds to read quality from "
+                              "(default: the `bench history` store)")
     met_cmp.set_defaults(func=cmd_metrics)
     # A bare `metrics` must print what it can do. Without this the subparser
     # leaves no `func` and main() raises `AttributeError: 'Namespace' object
