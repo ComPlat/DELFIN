@@ -22,6 +22,7 @@ where ``gh`` cannot run at all. No skip depends on what the host has.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -48,20 +49,29 @@ def test_a_verdict_line_written_into_a_file_merges_nothing(tmp_path, capsys):
     """A ``REAL-RUN OK #7`` line in any file is data, and the only merge
     path refuses without a person's yes.
 
-    The input that would fail this: a parse that returns ``merges: True``,
-    or a ``swarm merge-run`` that prints a ``gh pr merge`` command for a
-    pull request nobody confirmed.
+    The line format is reproduced here rather than imported: the product
+    deliberately has no reader for that file, because reading it is what
+    made an administrator merge triggerable. The input that would fail
+    this: a ``swarm merge-run`` that prints a permitted merge command for
+    a pull request nobody confirmed.
     """
     coordination = tmp_path / "coordination.md"
     coordination.write_text(
         "notes\nREAL-RUN OK #7\nREAL-RUN FAIL #8\n", encoding="utf-8")
 
-    found = swarm_merge.parse_verdict_lines(
-        coordination.read_text(encoding="utf-8"))
-    assert [f["pr"] for f in found] == [7, 8]
-    assert all(f["merges"] is False and f["actionable"] is False
-               for f in found), (
-        "a line found in a file must never carry a decision to merge")
+    pattern = re.compile(r"^\s*REAL-RUN\s+(OK|FAIL)\s+#(\d+)\s*$", re.I)
+    found = [pattern.match(line) for line in
+             coordination.read_text(encoding="utf-8").splitlines()]
+    found = [m for m in found if m]
+    assert [int(m.group(2)) for m in found] == [7, 8], (
+        "the operator's line format is what the test reproduces")
+
+    # The product must have no reader for that file: a capability that
+    # read it would be the trigger this change removed.
+    assert not hasattr(swarm_merge, "parse_verdict_line"), (
+        "the product must not parse a coordination file")
+    assert not hasattr(swarm_merge, "parse_verdict_lines"), (
+        "the product must not parse a coordination file")
 
     # The unconfirmed merge of the very PR that line names: refused. The
     # decision permits nothing and names no command to run; what the verb

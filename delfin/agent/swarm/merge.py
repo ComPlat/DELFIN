@@ -55,41 +55,15 @@ def merge_plan(package: str, *, base: str = "main") -> dict[str, Any]:
 # <n> with administrator rights once checks were green. Whoever could
 # write that file could therefore cause an administrator merge: a member,
 # a webhook, a stray echo. The verdict vocabulary is useful; the trigger
-# is not. Here a verdict line is parsed as data (``merges`` is always
-# False), a recorded verdict goes into the run's own event log with the
-# person who recorded it, and a merge needs ``confirmed=True`` from a
-# person *and* the head commit that was actually checked.
-
-_VERDICT_LINE = re.compile(r"^\s*REAL-RUN\s+(OK|FAIL)\s+#(\d+)\s*$", re.I)
-
-
-def parse_verdict_line(line: str) -> dict[str, Any] | None:
-    """One ``REAL-RUN OK|FAIL #<n>`` line as a record, or None.
-
-    Reading is all this does. ``actionable`` and ``merges`` are False on
-    every record: nothing downstream may treat a line found in a file as
-    a decision to merge. The caller decides what to do with the data.
-    """
-    m = _VERDICT_LINE.match(str(line or ""))
-    if not m:
-        return None
-    return {
-        "verdict": "ok" if m.group(1).upper() == "OK" else "fail",
-        "pr": int(m.group(2)),
-        "actionable": False,
-        "merges": False,
-    }
-
-
-def parse_verdict_lines(text: str) -> list[dict[str, Any]]:
-    """Every verdict line in *text*, as data. Merges nothing by itself."""
-    out = []
-    for line in str(text or "").splitlines():
-        got = parse_verdict_line(line)
-        if got is not None:
-            out.append(got)
-    return out
-
+# is not.
+#
+# The product therefore does not read that file at all -- reading it is
+# the vulnerability -- and no function here parses one. A verdict is
+# recorded by a person through DELFIN (``swarm verdict RUN MEMBER ok|fail
+# --by WHO``), which appends it to the run's own event log with the name
+# of whoever recorded it. Recording never merges. A merge needs a second,
+# separate act: ``confirmed=True`` from a person *and* the head commit
+# whose checks were actually read.
 
 def record_verdict(run: str, tid: str, verdict: str, *, by: str,
                    detail: str = "") -> dict[str, Any]:
