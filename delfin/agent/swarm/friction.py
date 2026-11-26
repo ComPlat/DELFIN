@@ -18,11 +18,20 @@ shows. This reads the members' stream-json logs and their real runs:
 
 ``report`` groups them by kind and code, and per model as a rate per 100
 tool calls. Details pass the bug-report redactor and lose home paths.
+
+``report`` reads every log whole, which is fine for a person asking and not
+for a pass every minute. The tick therefore keeps a running ledger:
+``sweep`` reads each log from the byte the last sweep stopped at and appends
+what is new to ``<root>/.friction.jsonl``, and ``write_report`` groups that
+ledger into ``<root>/friction.json`` at most once an hour. Until 2026-11-25
+nothing ran any of this unattended, so the counts existed only when someone
+thought to ask.
 """
 from __future__ import annotations
 
 import collections
 import json
+import os
 import re
 from pathlib import Path
 
@@ -149,10 +158,9 @@ def collect(run_names: list[str] | None = None) -> list[dict]:
     return out
 
 
-def report(run_names: list[str] | None = None, top: int = 30) -> dict:
+def group(recs: list[dict], top: int = 30) -> dict:
     """The records grouped: by reason (count, members, an example) and per
     model (rates per 100 tool calls)."""
-    recs = collect(run_names)
     groups: dict = collections.defaultdict(list)
     for r in recs:
         if r["kind"] != "end":
@@ -178,3 +186,160 @@ def report(run_names: list[str] | None = None, top: int = 30) -> dict:
     ends = collections.Counter(r["code"] for r in recs if r["kind"] == "end")
     return {"records": len(recs), "by_reason": by_reason, "per_model": models,
             "ended": dict(ends.most_common())}
+
+
+def report(run_names: list[str] | None = None, top: int = 30) -> dict:
+    """The records of the runs grouped: by reason (count, members, an
+    example) and per model (rates per 100 tool calls).
+
+    Reads every member log whole, so it is a person's or a tool's command,
+    not something the tick runs every minute: the tick keeps the running
+    ledger below (:func:`sweep`) and groups it with :func:`group`."""
+    return group(collect(run_names), top)
+
+
+# -- the running ledger the tick keeps -------------------------------------------------
+
+#: How a ledger line's source is named. ``collect`` calls a member's own log
+#: ``member``; the ledger adds the member, because a line that only says
+#: "member" cannot be traced back to the log it came from.
+_SRC = "member:"
+
+
+def _ledger_path() -> Path:
+    return wave.root() / ".friction.jsonl"
+
+
+def _cursor_path() -> Path:
+    return wave.root() / ".friction.cursor.json"
+
+
+def _load_cursor() -> dict:
+    try:
+        cur = json.loads(_cursor_path().read_text())
+        return cur if isinstance(cur, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_cursor(cur: dict) -> None:
+    p = _cursor_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(cur))
+    os.replace(tmp, p)
+
+
+def _sources(run: str, tid: str, a: dict) -> list[tuple[Path, str]]:
+    """The member's own log, then its real-run logs."""
+    out = [(Path(a["log"]), f"{_SRC}{run}/{tid}")]
+    try:
+        wt = Path(a.get("worktree") or "")
+    except TypeError:
+        return out
+    if wt.is_dir():
+        out += [(p, "realrun:" + p.stem) for p in sorted((wt / "scratch" / "realrun")
+                                                         .glob("*.jsonl"))]
+    return out
+
+
+def sweep(run_names: list[str] | None = None) -> dict:
+    """Append what is new since the last sweep to ``<root>/.friction.jsonl``.
+
+    Each member log is read from the byte the last sweep stopped at, not
+    from the top: the tick calls this every pass, and re-reading every log
+    of every run each time is what made an unattended count impossible.
+    The cursor is written only after the lines reached the ledger, and a
+    record that cannot be written leaves the cursor where it was, so the
+    next sweep reads that stretch again rather than losing it.
+
+    The ledger is the host's (one file over every run under the root), not
+    per run: the per-model rates are across runs, and the root can hold a
+    dozen runs whose friction is one picture.
+
+    A stopped member's log is final; a running one's grows as it writes, and
+    a line only half written is left for the next pass (the cursor stops at
+    the last newline). A log that shrank -- a member resumed onto the same
+    path -- is read again from the top, so its second life is counted too.
+
+    Returns ``{"appended": n, "sources": n}``.
+    """
+    runs = run_names if run_names is not None else wave.runs()
+    if not runs:
+        return {"appended": 0, "sources": 0}
+    with wave._flock(wave.root() / ".friction.lock"):
+        cur = _load_cursor()
+        new: dict = {}
+        n_src = 0
+        for run in runs:
+            for tid, a in wave.load_state(run)["agents"].items():
+                for path, src in _sources(run, tid, a):
+                    key = str(path)
+                    n_src += 1
+                    try:
+                        size = path.stat().st_size
+                    except OSError:
+                        continue
+                    start = cur.get(key)
+                    start = int(start) if isinstance(start, (int, float)) else 0
+                    if start > size:                   # rewritten, not appended
+                        start = 0
+                    if start == size:
+                        continue
+                    try:
+                        with open(path, "rb") as fh:
+                            fh.seek(start)
+                            chunk = fh.read()
+                    except OSError:
+                        continue
+                    cut = chunk.rfind(b"\n")
+                    if cut < 0:                        # a part line: next read
+                        continue                       # takes it from byte 0
+                    done = chunk[:cut + 1]
+                    model = str((a.get("task") or {}).get("model") or "")
+                    new[key] = {"next": start + len(done),
+                                "recs": [{"run": run, "id": tid, "model": model, "src": src,
+                                          "kind": k, "code": _redact(str(c))[:60],
+                                          "detail": _redact(str(d))}
+                                         for k, c, d in records(done.decode("utf-8", "replace")
+                                                                .splitlines())]}
+        appended = 0
+        _ledger_path().parent.mkdir(parents=True, exist_ok=True)
+        with open(_ledger_path(), "a") as fh:
+            for key, e in new.items():
+                for r in e["recs"]:
+                    fh.write(json.dumps(r, default=str) + "\n")
+                fh.flush()                             # the cursor must not run
+                cur[key] = e["next"]                   # ahead of the ledger
+                appended += len(e["recs"])
+        _save_cursor(cur)
+        return {"appended": appended, "sources": n_src}
+
+
+def read_ledger() -> list[dict]:
+    """The ledger's records ([] when there is none)."""
+    try:
+        lines = _ledger_path().read_text(errors="replace").splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(r, dict) and r.get("kind"):
+            out.append(r)
+    return out
+
+
+def write_report(top: int = 30) -> dict:
+    """Rewrite ``<root>/friction.json`` from the ledger. The tick does this
+    at most once an hour; the counts stay readable while the members run."""
+    rep = group(read_ledger(), top)
+    p = wave.root() / "friction.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(rep, indent=1, default=str))
+    os.replace(tmp, p)
+    return {"path": str(p), "records": rep["records"]}
