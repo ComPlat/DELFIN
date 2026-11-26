@@ -2455,22 +2455,6 @@ def _own_job_pids(session_id: str) -> set:
     return pids
 
 
-def own_listening_ports(session_id: str) -> set:
-    """The ports this session's running background jobs listen on.
-
-    What the egress proxy lets a caged command reach on the loopback:
-    the agent checking the server it started (python -m http.server,
-    vite, flask, node) and nothing else on this machine. Measured
-    2026-10-19: `curl http://127.0.0.1:8324/` from the cage was refused
-    ("port 8324 is not allowed") -- the agent could not see its own game.
-    Read from /proc, so it holds whatever the server is; empty off Linux,
-    for a job of another session, and when nothing is read. Never raises."""
-    try:
-        return _listening_ports_of(_own_job_pids(session_id))
-    except Exception:
-        return set()
-
-
 def live_jobs() -> list[dict]:
     """Every background job of this user that is still running, anywhere.
 
