@@ -473,6 +473,38 @@ def test_the_older_run_gets_a_free_place_before_a_newer_one(waves, monkeypatch):
     wave.stop("r44")
 
 
+def test_members_of_a_provider_share_its_keys(waves, monkeypatch):
+    """Two keys in the pool: two members start on different keys, each with
+    the picked key's value under the provider's canonical name, and the
+    state records only the name."""
+    from delfin.agent import credentials
+    cfg = dict(wave.settings(), key_pool={"blablador": ["KEY_A", "KEY_B"]})
+    monkeypatch.setattr(wave, "settings", lambda: dict(cfg))
+    monkeypatch.setattr(credentials, "load_credential",
+                        lambda name, **k: {"KEY_A": "value-a", "KEY_B": "value-b"}.get(name, ""))
+    seen = []
+    real = subprocess.Popen
+    def spy(cmd, **kw):
+        env = kw.get("env") or {}
+        if "DELFIN_SWARM_RUN" in env:          # a member's launch, not a git call
+            seen.append(env.get("BLABLADOR_API_KEY"))
+        return real(cmd, **kw)
+    monkeypatch.setattr(wave.subprocess, "Popen", spy)
+    tasks = [_task(t, "sleep:20", provider="blablador") for t in ("a", "b")]
+    wave.start("r50", tasks, str(waves["repo"]), parallel=2, wait=False)
+    agents = wave.load_state("r50")["agents"]
+    assert sorted(a["key"] for a in agents.values()) == ["KEY_A", "KEY_B"]
+    assert sorted(seen) == ["value-a", "value-b"]
+    assert "value-a" not in json.dumps(agents) and "value-b" not in json.dumps(agents)
+    wave.stop("r50")
+
+
+def test_one_key_or_none_changes_nothing(waves):
+    assert wave.pick_key("blablador") == ""
+    cfg = dict(wave.settings(), key_pool={"blablador": ["ONLY"]})
+    assert wave.pick_key("blablador", cfg) == ""
+
+
 def test_a_second_tick_while_one_runs_does_nothing(waves):
     with wave._flock(wave.root() / ".tick.lock") as held:
         assert held
