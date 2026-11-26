@@ -1,5 +1,15 @@
 # A self-driving bench: a campaign, a closed loop, its ELN hand-over, and the loop's plan judged before anything moves
 
+**This branch is better than its base where a real run could show it, and the
+run showed it only partly.** The `plan-judged-first` probe found a real defect
+— a plan judged `ok: true` on an installation where every write is refused —
+and it is fixed here (`395edd472`), with the second finding it raised
+(`--approve-plan` advertised but never implemented) fixed in `874ed3e8c`. Both
+fixes are **untested by a real run of their own**. The other two probes cannot
+separate the two trees: their base already carries all five packages, and my
+pre-runs predictions were calibrated against `origin/main` instead of that
+base — corrected, with the measurement, in §5.
+
 **DRAFT: this branch does not land as it stands.** 11 tests are red at the
 branch HEAD, all of them for one mechanical reason — two product edits live in
 `delfin/agent/api_client.py`, which the agent layer refuses to let me write —
@@ -10,11 +20,15 @@ also red on `origin/main` (§7).
 Five lab packages from wave 44, merged into one bundle, then reviewed four
 ways and fixed here. Branch `wave/w44/zz-fix`, based on the lander's
 `wave/w44/zz-land`, itself branched from `origin/main` at
-`41fbf18e2` and brought up to date with main (`6ce2b6e79`). Every measurement
-below is of `bc56dc79b`, **the last commit that changes code**; the commits
-after it touch this file only (`git diff --name-only bc56dc79b HEAD` reports
-`scratch/PR.md` alone), so a sha or a commit count quoted here would be a
-figure this very commit invalidates.
+`41fbf18e2` and brought up to date with main (`6ce2b6e79`). The suite
+measurements in §7 are of `bc56dc79b`, which was the last commit that changed
+code when they were run; two code commits came after it in this session —
+`395edd472` (the judge) and `874ed3e8c` (the example) — so §7's totals predate
+those two and are not re-used to describe them. What *is* current at
+`874ed3e8c`: the bundle's own test files, 5 failed 117 passed (§4), the two
+files of §2's `lab_run` half, 6 failed 28 passed, the neighbouring lab suites
+93 passed, and `ruff` clean. A sha or a commit count quoted here would be a
+figure this very commit invalidates, so none is.
 
 Section 2 is what a person still has to run — three patch files, all
 documented with their red and green numbers. Section 3 is the review: every
@@ -180,10 +194,14 @@ done about it — the command or the caller is named in the "confirmed?" cell.
 | t9 | note | four tests in `test_the_tool_surface_is_exercised.py` cannot measure the search surface on this host | **yes**: three skip with `gaierror`, one fails on **both** trees | none required; recorded |
 | t10 | note | the parallel-campaign test asserts on wall-clock | confirmed genuine, with its own sequential control | left as is |
 | t11 | note | `tests/_lab_support.py` builds the executor with `__new__`, skipping `__init__` | **yes**: the `__new__` instance has none of the six attributes; the product builds `_DocToolExecutor()` | fixed `0c7c22271`; every file using the helper re-run (201 passed, the same 5 `lab_run` reds) |
+| rr1 | **found by a real run**, not a reviewer | the judge reports `ok: true` for a plan whose every write the kernel refuses, because `plan.validate` copies `write_check["steps"]` and drops `manifest_problem` | **yes**: probe says `ok: True, problems: []` while `write_check["ok"]` is `False`; `safety.py:712` returns the field, `plan.py` never read it | fixed `395edd472`, red-first (1 failed 4 passed → 5 passed); **no real run of its own** |
+| rr2 | **found by a real run**, not a reviewer | the shipped campaign example advertises `--approve-plan`; the `lab run` parser has no such flag | **yes**: `cli.py:97-113` declares workflow, `--dry-run`, `--run-id`, `--resume`, `--parallel`; nothing else in `delfin/lab/` mentions the flag | fixed `874ed3e8c`, red-first (1 failed → 6 passed); **no real run of its own** |
 
-**Totals:** 35 findings — **10 blocks, 15 should-fix, 10 notes** (behaviour
-3/3/0, claims 2/5/2, safety 2/3/4, tests 3/4/4). Confirmed by re-running the
-check: **34 of 35** (the exception is s5, which is the harness's own loopback
+**Totals:** 35 review findings — **10 blocks, 15 should-fix, 10 notes**
+(behaviour 3/3/0, claims 2/5/2, safety 2/3/4, tests 3/4/4) — plus **2 more
+found by the real runs** (rr1, rr2), which no reviewer saw because neither is
+visible in the diff: they need the product actually driven. Confirmed by
+re-running the check: **34 of 35** (the exception is s5, which is the harness's own loopback
 proxy token, not a credential). Several findings are the same defect seen by
 two reviewers and are fixed once: b3/b4/t1/t2/s4 are one commit
 (`48f386d0d`), and b1/s7 are one patch. In summary — the pin regression, the
@@ -207,82 +225,102 @@ Command shape: `PYTHONPATH=. pytest <files> -q -m "not slow" --timeout=300
 | every file using `tests/_lab_support.py` | **201 passed, 5 failed** (all five are the `lab_run` cases of §2) |
 | the three patch-dependent files | **11 failed, 35 passed** (§2, per file) |
 | `test_no_secrets_are_committed.py` + `test_eln_tools_are_wired.py`, after `bc56dc79b` | **52 passed** (before it: the guard was 1 failed 33 passed) |
+| **the bundle's own nine test files at `874ed3e8c`** | **5 failed, 117 passed** in 33.5 s — the five are `test_an_eln_read_is_reachable_and_its_writes_are_not.py`, i.e. §2's ELN allow-list patch, unapplied |
+| **`test_a_lab_experiment_runs_through_the_kernel.py` + `test_a_tool_reaches_the_function_behind_it.py`** | **6 failed, 28 passed** in 10.0 s — §2's `lab_run` dispatch patch, unapplied |
+| **the six neighbouring lab suites** (`edge_and_workflow`, `safety_kernel`, `parallel_campaign`, `loop`, `surface`, `tools_registered`) | **93 passed** in 47.7 s, including after both of this turn's code fixes |
+| `test_lab_run_is_one_verb_over_a_judged_campaign.py` | 4 passed before the judge fix, **1 failed 4 passed** with the new test against the unfixed judge, **5 passed** after; 6 passed once the example test joined it |
+| `test_lab_run_is_one_verb_over_a_judged_campaign.py::test_the_shipped_examples_only_name_flags_the_parser_accepts` | **1 failed** against the unfixed example (naming `--approve-plan`), **passed** after |
 | `ruff check delfin/ tests/ --select F821,F811,F601,F402,F823` | **clean** (`All checks passed!`; one pre-existing `# noqa` format warning in `tests/test_branch_dropdown_options.py:63`) |
 
-## 5. What I predicted for the real runs, and what they measured
+## 5. The real runs: what they measured
 
-Written before the runs; the probes are in `scratch/realrun.json`. Same
-three probes as the lander's, so the pair is comparable; each runs on the
-base and on this HEAD, same prompt and model, fresh HOME each.
+Three probes from `scratch/realrun.json`, each on the base (`wave/w44/zz-land`,
+`fd603b15f`) and on this branch HEAD, same prompt and model, fresh HOME and
+workspace each. Logs: `scratch/realrun/`, summary `scratch/realrun/summary.md`.
 
-**What actually happened** (`scratch/realrun/summary.md`): *this branch has
-not had its own real-run pair yet.* The lander's pair ran on
-`wave/w44/zz-land`; a branch's own pair is what the wave's rule asks for, so
-`scratch/realrun.json` asks for the same three probes again on this HEAD, and
-this section is the prediction, written before them. What follows is what the
-change should make visible; the measured answer replaces it when the runs
-return.
+| probe | side | stop | tool calls | total in tokens | seconds |
+|---|---|---|---|---|---|
+| `campaign-verb` | base | done | 31 | 1,137,990 | 112 |
+| `campaign-verb` | branch | done | 124 | 6,488,582 | 541 |
+| `plan-judged-first` | base | **incomplete** | 55 | 2,897,518 | 215 |
+| `plan-judged-first` | branch | done | 89 | 4,342,743 | 408 |
+| `batch-read-then-write` | base | done | 5 | 138,603 | 58 |
+| `batch-read-then-write` | branch | done | 3 | 136,949 | 44 |
 
-**The predictions, in one table first** (detail below; written before the runs):
+**First, a correction about the predictions.** The table and the three
+paragraphs I wrote before the runs were calibrated against `origin/main` — I
+said the base has no `run` verb, no `plan.py`, no `eln_cli.py`. That is true of
+main and false of this pair's base: `wave/w44/zz-land` already carries all five
+packages, so both sides of every probe have the verb, the judge and the ELN
+CLI. Measured this turn: `delfin/lab/cli.py` declares the same thirteen
+subparsers on `fd603b15f` and on HEAD, and `eln_cli.py`, `plan.py` and the
+`run` verb are all present on the base. So the predictions as written could
+not have distinguished the two sides, and two of them were simply wrong about
+what the base would say. That is my error, recorded here rather than quietly
+replaced; what the pair actually separates is the **fixer's** delta over the
+lander (`fd603b15f..HEAD`): `eln_tools.py`, `manifest.py`, `plan.py` and the
+shipped examples.
 
-| probe | base should answer | branch should answer | a failing answer looks like |
-|---|---|---|---|
-| `campaign-verb` | `lab` has no `run` verb — its subcommands are approve, clear, daemon, devices, estop, manifest, node, pending, read, smoke, status | the verb exists (`delfin/lab/cli.py:98`) with options workflow, `--dry-run`, `--run-id`, `--resume`, `--parallel`; run on the shipped campaign it reports the manifest refusal and exits 1 | base quoting a `run` usage line; branch claiming a completed 65-step campaign or a Chemotion import |
-| `plan-judged-first` | no `delfin/lab/plan.py` and no `lab run`, so nothing judges a document | `plan.py` exists (19,720 bytes) and `lab run` judges before running; most likely the manifest refusal comes first. Acceptable: that refusal correctly attributed, or the judged verdict. | either side quoting the two PRE-FIX strings `op hold is not one of set, wait, transfer, measure` / `sample S-001 is declared in 'storage', not synthesis` — that would be the judge answering and still wrong |
-| `batch-read-then-write` | no `eln` subcommand, no `chemotion-eln` specialist, so both asks have no answer | write (`eln_draft`) refused in default mode pending a person's approval; read **still refused** with `mcp_side_effect`, because the allow-list patch is unapplied (measured: `grep -c eln_find delfin/agent/api_client.py` = 0) | a branch answer in which the write succeeds, or in which the read succeeds — either contradicts this branch's state |
+**What the pair did show, probe by probe.**
 
-**The measured limit that governs all three.** A probe's HOME is fresh, so no
-lab manifest is pinned, and an agent session cannot pin one. Measured on this
-tree, not assumed: `lab run <campaign> --dry-run` answers
-`manifest refused: cannot read manifest.yaml: [Errno 2] No such file or
-directory: <home>/.delfin/lab/manifest.yaml` and exits 1. So no probe can
-complete a campaign, and the predictions below are written to that fact.
-What separates base from branch is that the verb and the judge **exist** and
-refuse honestly by name — not that a run finishes.
+`campaign-verb` — both sides name the verb and the `--parallel 4` invocation,
+and both stop at `manifest refused: cannot read manifest.yaml …`. The branch
+answer adds the corrected citation (the checkpoint is at
+`lab-scratch/runs/chemasap-campaign/checkpoint.json`, `"status": "refused"`)
+and reports `tests/test_lab_parallel_campaign.py` 14 passed. No side claims a
+completed campaign; the failure I named ("branch claiming a completed 65-step
+campaign") did not occur. **Verdict: neither side wrong, neither side
+decisive** — this probe cannot separate the two trees, because the verb is on
+both.
 
-**Probe 1 `campaign-verb`.**
-*Prediction — base:* `lab` has no `run` verb. Measured by building the
-base's parser in a control worktree: its subcommands are approve, clear,
-daemon, devices, estop, manifest, node, pending, read, smoke, status. A base
-answer that quotes a usage line containing `run`, or reports anything `run`
-printed, is fabricated.
-*Prediction — branch:* the verb exists. Measured here: `run`'s options are
-workflow, `--dry-run`, `--run-id`, `--resume`, `--parallel`. Run on the
-shipped campaign it prints the manifest refusal above and exits 1. The
-acceptable branch answers are that refusal correctly attributed, preceded by
-the real usage line. **What must not appear** is a fabricated 65-step
-completion or a Chemotion import.
+`plan-judged-first` — **the probe that carried a finding.** The branch answer
+reports that `ok: true` does not mean the run would start: the kernel's write
+half returns `manifest_problem` ("the manifest is not pinned …") and
+`plan.validate` drops that field, copying only `write_check["steps"]`, so a
+plan is judged ok on an installation where every write is refused. I checked
+it against the code and it is true: `delfin/lab/safety.py:672` computes
+`problem`, `:712` returns it as `manifest_problem`, and `delfin/lab/plan.py`
+read only `write_check.get("steps")`. Reproduced in one probe: `ok: True`,
+`problems: []`, `write_check["ok"]: False`. **Fixed** in `395edd472` with a
+red-first test; the fix has **no real run of its own**. The base side of this
+probe stopped `incomplete` (55 tool calls, no final answer to read), so its
+half is not evidence of anything; I am not treating a truncated run as a
+before.
 
-**Probe 2 `plan-judged-first`.**
-*Prediction — base:* no `delfin/lab/plan.py` (checked: absent in the control
-worktree) and no `lab run`, so nothing can judge a document; an honest agent
-says so. A base answer quoting a problem count has invented it.
-*Prediction — branch:* `plan.py` is there and `lab run` judges before it
-runs, but the judge is reached behind `Kernel.load()`, which refuses the
-missing pinned manifest first — so the acceptable answers are the manifest
-refusal correctly attributed, or the judged verdict if the agent reaches the
-judge another way. **What must not appear** is the pre-fix defect the
-bundle's two plan fixes removed: `op hold is not one of set, wait, transfer,
-measure` or `sample S-001 is declared in 'storage', not synthesis`. Those
-strings mean the judge is answering and still wrong.
+`batch-read-then-write` — both sides end at the same gate and neither reads the
+ELN, which is what this branch predicts: the allow-list patch that would admit
+`eln_find` is shipped unapplied (§2), so the read is refused with
+`mcp_side_effect`. The branch answer is the more useful one — it names the
+gate's classification as the obstacle and offers a plan instead of a
+dead end — and, importantly, **no side reports a successful write**, the
+failure this package exists to prevent. Base used 5 tool calls, branch 3.
 
-**Probe 3 `batch-read-then-write`.**
-*Prediction — base:* no `eln` subcommand (`delfin/lab/eln_cli.py` does not
-exist on the base; `delfin/agent/cli.py` has no `eln` parser there) and no
-`chemotion-eln` type, so both asks have no answer.
-*Prediction — branch:* the subcommand and the type exist, and the two
-outcomes differ **on purpose**. The write (`eln_draft`) is refused in
-default mode and needs one person's approval. The read is the known gap, and
-its state here is measured, not guessed: `eln_find`, `eln_read` and
-`eln_pending` are still absent from `_MCP_READONLY_TOOL_BASES` (a grep of
-`delfin/agent/api_client.py` finds no ELN name there), because the edit that
-adds them is `scratch/eln-reads-in-the-gate-allowlist.patch`, shipped
-**unapplied**. So the read is predicted to be **still refused**, with
-`reason_code: mcp_side_effect` and `needs_approval: true`. A branch answer
-that reads the ELN successfully would mean the patch went in, which would
-contradict this text; an answer that says the write succeeded is the failure
-that package exists to prevent.
+**So: is the branch better than the base where the task says it must be?**
+On the rule "a real run must show the change", the honest answer is **partly**.
+The pair found a real defect in the judge and it is fixed — that is the change
+the runs were for. But the three probes as written were aimed at the packages
+that the base already contains, so they cannot show the bundle's landing; what
+they show is the fixer's delta, and only `plan-judged-first` did that. The
+inherited prose above (predicted "base has no `run` verb") is superseded by
+these measurements, not by a re-reading of them.
 
+**The `campaign-verb` branch answer also reported a second defect** — that the
+shipped example advertises `--approve-plan`, which the parser does not have.
+Confirmed against `delfin/lab/cli.py:97-113` (workflow, `--dry-run`,
+`--run-id`, `--resume`, `--parallel` and nothing else) and fixed in `874ed3e8c`
+with a test that holds every shipped example's `--flag` to the parser's own
+list. **Also not covered by a real run.** A third observation, that the example
+claims the campaign runs in about the time of one lane, was correctly reported
+as unverified by the agent ("no run reached the scheduler"); it is not a defect
+in code and is left as the example states it.
+
+`plan-judged-first`'s base run additionally shows an environment artefact
+worth recording, because it is a false red a later reader would trip on: the
+auto-verify command on that host resolves `python`, which does not exist there,
+so zero tests are collected and the check reports failure for a reason that
+has nothing to do with the code. The agent named it and did not install a
+`python` alias to paper over it — the right call. Anything claiming "0 failed"
+from that harness on that host should be re-read as "0 collected".
 ## 6. What I did not do, and why
 
 - **Did not apply any of the three patches.** Both write routes are refused
@@ -327,6 +365,19 @@ that package exists to prevent.
 - **Did not fix pre-existing red.** §7 separates it from what this bundle
   caused, per node.
 - **Did not touch the arms' branches or the integrators' reports.**
+- **Did not make the real runs myself.** The cage strips the model keys from
+  this shell, so the three probes were run outside it; what came back is
+  `scratch/realrun/` and §5's table. Two limits I am stating rather than
+  smoothing over: (a) the probes were written against `origin/main` as the
+  base, but the pair's base is `wave/w44/zz-land`, which already carries every
+  package — so two of the three probes cannot separate the trees (§5), and
+  that is a mis-calibration in my prediction, not a null result; (b) the two
+  defects the runs did find (`395edd472`, `874ed3e8c`) have **no real run of
+  their own** — they are covered by red-first unit tests and by the 93
+  neighbouring lab tests, and nothing more.
+- **Did not re-run the 146-file pair after the two new code commits.** §7's
+  totals describe `bc56dc79b`, and §7 says so in its own paragraph rather
+  than letting the number stand for a HEAD it did not measure.
 
 ## 7. The suite, and the control
 
@@ -382,6 +433,18 @@ Two runs, serially, one pytest process at a time.
    exercised in the branch's file list during the paired run; they are part of
    main's 509. This host's dashboard, service, sandbox and cage suites are
    order- and load-sensitive, which is why the pair is compared as a set.
+
+   **The branch side of this pair is `bc56dc79b`.** Two code commits followed
+   it (`395edd472` the judge, `874ed3e8c` the example), so the pair does not
+   describe the current HEAD. Neither commit was run through the 146-file
+   list; what was run at `874ed3e8c` is §4's table — the bundle's nine files
+   (5 failed, 117 passed), the two `lab_run` files (6 failed, 28 passed), the
+   six neighbouring lab suites (93 passed, including after both fixes), and
+   ruff clean. Both new tests are red on the unfixed code and green on the
+   fixed one, so neither is a test written to fit its fix, but **neither has
+   been through the paired run** and the pair above is not evidence about
+   them. Re-running the 146 files would settle it; it is a 1 h 05 m job and is
+   not something this session can claim without doing it.
 
    **The branch's own contributing-file checks, all green:** the secret guard
    is clean (`scripts/secret_guard.py --staged`, run with `PYTHONPATH=.` so it
