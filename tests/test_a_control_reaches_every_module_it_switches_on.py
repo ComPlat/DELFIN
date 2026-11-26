@@ -21,6 +21,7 @@ not one that cannot fail.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -261,10 +262,20 @@ def test_switching_esd_on_changes_what_the_run_dispatches(tmp_path, monkeypatch)
         ws.mkdir(exist_ok=True)
         _write_control(ws, ESD_modul=switch, method="classic",
                        ESD_T1_opt="uks", calc_initial="no")
+        # cli.main sets the DELFIN_FFFREE_* construction flags itself
+        # (cli_manta._apply_construction_env) and reads them from os.environ
+        # at call time, so a leftover would change what the next test builds.
+        # monkeypatch.setenv cannot stop it; restoring can.
+        env_before = {k: v for k, v in os.environ.items() if k.startswith("DELFIN_")}
         try:
             cli.main([str(ws), "--no-cleanup"])
         except SystemExit:
             pass
+        finally:
+            for _k in [k for k in os.environ if k.startswith("DELFIN_")]:
+                if _k not in env_before:
+                    del os.environ[_k]
+            os.environ.update(env_before)
         assert seen == expected, (
             f"ESD_modul={switch} dispatched {seen}, expected {expected}; "
             "a switch that does not change the dispatch has no effect"
