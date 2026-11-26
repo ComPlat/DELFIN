@@ -61,7 +61,11 @@ xattr -p com.apple.quarantine "$pkg/DELFIN.app/Contents/Resources/DELFIN.sh" >/d
 echo '== answer y, then do not start'
 printf 'y\nn\n\n' | /bin/bash "$pkg/Install.command" > "$work/yes.log" 2>&1 || { cat "$work/yes.log"; fail 'install failed'; }
 cat "$work/yes.log"
-[ -z "$(find "$pkg" -xattrname com.apple.quarantine)" ] || fail 'mark still on some files'
+# The package folder itself may carry the mark (ditto passes the archive's
+# on): a folder runs nothing, and Install.command clears what is in it.
+left=$(find "$pkg" -mindepth 1 -xattrname com.apple.quarantine)
+[ -z "$left" ] || { printf '%s
+' "$left"; fail 'mark still on some files'; }
 app="$home/Applications/DELFIN.app"
 plutil -lint "$app/Contents/Info.plist"
 [ "$(plutil -extract CFBundleExecutable raw "$app/Contents/Info.plist")" = DELFIN ] || fail 'CFBundleExecutable'

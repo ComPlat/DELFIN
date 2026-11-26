@@ -128,7 +128,10 @@ Dashboard` does:
 1. One `ssh` connection runs the check of the server's copy of the two
    scripts and, when it is exact, the dashboard from it. When the copy is
    missing or different (exit 10, `DELFIN_SCRIPTS_MISSING`) `scp` copies them
-   and the connection opens once more.
+   and the connection opens once more. The Mac's `scp` (OpenSSH 9) copies
+   over SFTP, as Windows' OpenSSH does: the server needs its SFTP
+   subsystem, which every ordinary sshd has (`Subsystem sftp ...` in
+   `sshd_config`). A server without it refuses the copy.
 2. Password, OTP and host-key questions are `ssh`'s own, in the Terminal
    window. The app never reads or stores a password.
 3. The dashboard reaches the Mac through one forward,

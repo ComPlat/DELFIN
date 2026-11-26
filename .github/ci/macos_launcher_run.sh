@@ -94,6 +94,8 @@ PasswordAuthentication no
 KbdInteractiveAuthentication no
 UsePAM no
 StrictModes no
+# As on any ordinary server: scp in OpenSSH 9 copies over SFTP.
+Subsystem sftp /usr/libexec/sftp-server
 SetEnv PATH=$brew_bin:$sha_dir:/usr/bin:/bin:/usr/sbin:/sbin
 EOF
 /usr/sbin/sshd -f "$work/sshd/config" -E "$work/sshd/log" || { cat "$work/sshd/log"; fail 'sshd'; }
