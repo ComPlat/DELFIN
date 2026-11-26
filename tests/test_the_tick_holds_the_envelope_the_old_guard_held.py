@@ -800,3 +800,44 @@ def test_the_ledger_is_bounded_so_a_long_lived_root_cannot_grow_it(host):
     # Below the cap it is a no-op, so a normal root keeps everything.
     assert friction._prune_ledger(keep=keep) == 0
     assert len([l for l in led.read_text().splitlines() if l.strip()]) == keep
+
+
+def test_the_guard_prose_does_not_claim_a_start_gate_above_the_stop_line():
+    """The guard's own comment must describe the numbers the code ships.
+
+    A real run of the swarm tick read `guard.py`'s header and repeated it as
+    fact: that `wave._room` holds "its own max_load_per_core (default 1.0)"
+    so that the start gate sits above the stop line. That was true before
+    the start gate was brought down to the envelope's stop line; after it,
+    both constants are 0.885 and the comment was the only thing still
+    claiming otherwise. A comment that contradicts its own module is worse
+    than no comment: it is read as documentation.
+    """
+    import inspect
+    import re
+
+    from delfin.agent.swarm import guard, wave
+
+    header = inspect.getsource(guard)
+    start = wave._DEFAULTS["max_load_per_core"]
+    stop = guard._GUARD_DEFAULTS["guard_max_load_per_core"]
+
+    # The copied-verbatim falsehood: a literal 1.0 attributed to wave.
+    assert "default 1.0" not in header, (
+        "guard.py still says wave's start gate defaults to 1.0, but it is "
+        f"{start}"
+    )
+    # And whatever the prose says about the two numbers, the code agrees:
+    # the start gate is at the stop line, not above it.
+    assert start <= stop, f"start gate {start} is above the stop line {stop}"
+    assert start == stop, (
+        "the header argues the two knobs are deliberately different, but "
+        f"they are now identical ({start}): either restore the argument or "
+        "state the new relationship"
+    )
+    # The sentence that carried the falsehood named a stale value.
+    m = re.search(r"``max_load_per_core`` \(default ([0-9.]+)\)", header)
+    if m:
+        assert float(m.group(1)) == start, (
+            f"guard.py names wave's default as {m.group(1)}, but it is {start}"
+        )

@@ -83,12 +83,16 @@ PROMPT_MARKER = "[swarm-guard]"
 #: ``guard_min_memory_frac`` / ``guard_min_memory_floor_gb``), so a host
 #: that genuinely wants the looser 1.5 keeps it by name.
 #:
-#: The load stop is the envelope's only LOAD number, and it is not the
-#: number that decides how many members start. ``wave._room`` holds its own
-#: ``max_load_per_core`` (default 1.0) for that: starting members onto an
-#: already-loud host is a different question from stopping the whole slice,
-#: and one knob for both would mean either starting nothing on a busy host
-#: or running members past the stop line.
+#: The load stop is the envelope's only LOAD number, and ``wave._room``
+#: holds its own ``max_load_per_core`` for a different question: how many
+#: members may *start*. The two are deliberately equal (both 0.885), so a
+#: host the envelope is about to stop can never be one the tick keeps
+#: launching onto -- there is no band between them. They are duplicated
+#: rather than imported because the guard imports this module and the
+#: dependency cannot run the other way; they are pinned together by
+#: ``test_the_start_gate_stops_before_the_envelope_does``. A start gate
+#: left above the stop line would mean launching work onto a host the
+#: envelope condemns, which is what that test exists to prevent.
 _GUARD_DEFAULTS = {"guard_max_load_per_core": 0.885,
                    "guard_min_memory_frac": 0.10,
                    "guard_min_memory_floor_gb": 4.0,
