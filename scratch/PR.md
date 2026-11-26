@@ -1,7 +1,7 @@
 # A self-driving bench: a campaign, a closed loop, its ELN hand-over, and the loop's plan judged before anything moves
 
 **DRAFT: this branch does not land as it stands.** 11 tests are red at HEAD
-`bc56dc79b`, all of them for one mechanical reason — two product edits live in
+`3189e3867`, all of them for one mechanical reason — two product edits live in
 `delfin/agent/api_client.py`, which the agent layer refuses to let me write —
 and the §2 patches fix exactly those eleven. A person runs the two `git apply`
 lines in §2 and they go green; nothing else is red on the branch that is not
@@ -10,8 +10,8 @@ also red on `origin/main` (§7).
 Five lab packages from wave 44, merged into one bundle, then reviewed four
 ways and fixed here. Branch `wave/w44/zz-fix`, based on the lander's
 `wave/w44/zz-land`, itself branched from `origin/main` at
-`41fbf18e2` and brought up to date with main (`6ce2b6e79`). 47 commits;
-HEAD is `bc56dc79b`.
+`41fbf18e2` and brought up to date with main (`6ce2b6e79`). 49 commits;
+HEAD is `3189e3867`.
 
 Section 2 is what a person still has to run — three patch files, all
 documented with their red and green numbers. Section 3 is the review: every
@@ -294,7 +294,7 @@ that package exists to prevent.
     global and local git configs and `init.templateDir` carry nothing that
     adds these lines.
 
-  The other route — rewriting 47 commits' messages — is refused by the sandbox:
+  The other route — rewriting 49 commits' messages — is refused by the sandbox:
   both `filter-branch` and `filter-repo` are on its deny list, including when a
   helper script merely names them, and the git rules reserve a shared-history
   rewrite for the user in any case. Trying to reach it another way (a second
@@ -347,7 +347,8 @@ Two runs, serially, one pytest process at a time.
    | run | total |
    |---|---|
    | control, 146 files, `62fdab2d8` | 476 failed, 2087 passed, 23 skipped, 37 errors in 3931 s |
-   | branch, same 146 files, HEAD `bc56dc79b` | 476 failed, 2087 passed, 23 skipped, 37 errors in 3816 s |
+   | branch, same 146 files, HEAD `bc56dc79b` (the two commits after it only
+   edit this file, so the code measured is HEAD's) | 476 failed, 2087 passed, 23 skipped, 37 errors in 3816 s |
 
    | relation (unique nodeids) | count |
    |---|---|
