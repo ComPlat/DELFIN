@@ -92,6 +92,28 @@ def _safe(session: str) -> str:
     return s[:80] or "default"
 
 
+def _attribution_columns() -> dict:
+    """The attribution columns for the call being recorded.
+
+    Read from the attribution in force rather than passed in, so every call
+    site that already exists — the engine's turn, a replay, the classifier
+    request inside the client — is attributed without any of them changing.
+    An argument would have to be threaded through the client's request loop to
+    reach that last one, and the loop never heard of attribution.
+
+    Six keys, always all six, null when unknown. Never raises: it sits inside
+    the recorder's own ``try``, and a metrics write must not break the turn it
+    describes.
+    """
+    try:
+        from . import attribution as _at
+        return _at.columns()
+    except Exception:
+        return {k: None for k in ("molecule_id", "workflow_id", "task_id",
+                                  "agent_role", "subagent_name",
+                                  "parent_session")}
+
+
 def metrics_path(session: str) -> Path:
     return _DIR / f"{_safe(session)}.jsonl"
 
@@ -161,6 +183,14 @@ def record(
             "input_tokens": int(input_tokens or 0),
             "output_tokens": int(output_tokens or 0),
             "cached_tokens": int(cached_tokens or 0),
+            # What the turn served (molecule/workflow/task/who). Read from the
+            # attribution in force, never passed in, so the call sites that
+            # already exist (engine, replay) get it without being touched.
+            # Written as null when nothing is known rather than omitted: an
+            # absent key means "this recorder had no such field", which is a
+            # different statement from "nothing was known" -- see the
+            # first_event_ms note above. See delfin.agent.attribution.
+            **_attribution_columns(),
         }
         # Created 0600 by ``open_append``: a chmod after the first write
         # leaves the file group-readable for the length of that write.
@@ -564,6 +594,10 @@ def record_request(
             "output_tokens": int(output_tokens or 0),
             "tool_calls": int(tool_calls),
             "finish_reason": str(finish_reason or ""),
+            # ...and what it served. Read here rather than passed, because the
+            # request loop that calls this never heard of attribution and
+            # cannot be edited to pass it. See delfin.agent.attribution.
+            **_attribution_columns(),
         }
         if system_hash:
             entry["system_hash"] = str(system_hash)
