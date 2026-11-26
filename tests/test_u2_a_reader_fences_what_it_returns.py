@@ -450,7 +450,9 @@ def test_a_parsed_number_carries_no_injection_at_all(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_the_note_never_quotes_the_matched_phrase():
-    out = untrusted.wrap_flagged("read_section", INJECT)
+    # wrap(), not a flag-specific wrapper: the fence ITSELF is where the note
+    # is made, which is what keeps this one place rather than one per tool.
+    out = untrusted.wrap("read_section", INJECT)
     note = _NOTE.search(out)
     assert note, out[:300]
     line = note.group(0)
@@ -459,15 +461,15 @@ def test_the_note_never_quotes_the_matched_phrase():
 
 
 def test_plain_text_is_fenced_without_a_note():
-    out = untrusted.wrap_flagged("read_section", "Basis sets: def2-SVP\n")
+    out = untrusted.wrap("read_section", "Basis sets: def2-SVP\n")
     assert out.startswith("[UNTRUSTED EXTERNAL CONTENT")
-    assert "DELFIN: instruction-shaped" not in out
+    assert "instruction-shaped" not in out
     assert untrusted.unwrap(out) == "Basis sets: def2-SVP\n"
 
 
 def test_the_note_keeps_the_payload_and_the_closer_where_callers_read_them():
     """The three contracts the note's position must not break."""
-    out = untrusted.wrap_flagged("read_section", INJECT)
+    out = untrusted.wrap("read_section", INJECT)
     # 1. is_fenced anchors at the start, so a result is not fenced twice.
     assert untrusted.is_fenced(out)
     # 2. unwrap recovers the file's own bytes, so an MCP answer still parses.

@@ -102,19 +102,23 @@ def _fence(instruction: str, source: str, text: str,
 
 
 def wrap(source: str, text: str, *, nonce: str | None = None,
-         note: str = "") -> str:
+         note: str | None = None) -> str:
     """Fence ``text`` in a labelled, nonce'd block that names ``source``.
 
     ``source`` may be any one-line label (a tool name, "session_message",
     "web_fetch", "compaction"). It is escaped so it cannot inject a quote,
     an angle bracket, a ``]``, a marker line, a newline or an em-dash fence.
     ``nonce`` is random per call (a fresh ``secrets.token_hex(8)``) unless one
-    is given for deterministic tests; opener and closer share it. ``note`` is
-    an optional harness line about the shape check, placed on the opener line
-    (see :func:`_fence` for why that is the only position that keeps the
-    closer last, ``unwrap`` byte-exact and ``is_fenced`` true).
+    is given for deterministic tests; opener and closer share it.
+
+    ``note`` defaults to :func:`shape_note`'s phrase, so EVERY fence says what
+    the shape check found without any caller changing a line -- the one place
+    the note is made is the fence itself, which is what keeps this from
+    becoming a per-tool check. ``""`` suppresses it; plain text produces none
+    anyway, so an ordinary result costs nothing.
     """
-    return _fence(_INSTRUCTION, source, text, nonce, note)
+    return _fence(_INSTRUCTION, source, text, nonce,
+                  shape_note(text) if note is None else note)
 
 
 #: The header of a fence around repository REFERENCE text (AGENTS.md,
@@ -136,8 +140,10 @@ _REFERENCE_INSTRUCTION = (
 def wrap_reference(source: str, text: str, *, nonce: str | None = None) -> str:
     """Fence repository reference text: :func:`wrap` with the reference
     header. ``source`` is escaped and ``nonce`` defaults to a random one,
-    exactly as in :func:`wrap`."""
-    return _fence(_REFERENCE_INSTRUCTION, source, text, nonce)
+    exactly as in :func:`wrap`. Like every fence in the family it carries
+    :func:`shape_note`'s finding when the text has an instruction shape."""
+    return _fence(_REFERENCE_INSTRUCTION, source, text, nonce,
+                  shape_note(text))
 
 
 #: The header sentences of the other fences, by what the text is. Same
@@ -171,15 +177,18 @@ _KIND_INSTRUCTIONS: dict[str, str] = {
 
 
 def wrap_as(kind: str, source: str, text: str, *,
-            nonce: str | None = None, note: str = "") -> str:
+            nonce: str | None = None, note: str | None = None) -> str:
     """Fence ``text`` with the header sentence of ``kind`` (a key of
     ``_KIND_INSTRUCTIONS``; an unknown kind gets :func:`wrap`'s header).
     ``source`` is escaped and ``nonce`` defaults to a random one, exactly
     as in :func:`wrap`. A caller whose fence sits in a cached prompt
     passes a content-keyed nonce (``project_memory._fence_nonce``).
-    ``note`` is :func:`_fence`'s opener-line harness line."""
+
+    ``note`` defaults to :func:`shape_note`'s phrase, exactly as in
+    :func:`wrap` -- the fence is where the shape check's finding is said,
+    once, for every fence in the marker family."""
     return _fence(_KIND_INSTRUCTIONS.get(kind, _INSTRUCTION), source, text,
-                  nonce, note)
+                  nonce, shape_note(text) if note is None else note)
 
 
 def is_fenced(text: str) -> bool:
@@ -549,23 +558,3 @@ def shape_note(text: str) -> str:
         return ""
     return ", ".join(sorted(kinds))
 
-
-def wrap_flagged(source: str, text: str, *, kind: str | None = None,
-                 nonce: str | None = None) -> str:
-    """:func:`wrap` (or :func:`wrap_as`, when ``kind`` names a fence) plus a
-    :func:`shape_note` when the text carries an instruction channel.
-
-    The one place the note is attached, so a caller changes one call rather
-    than gaining a check of its own: ``api_client._wrap_untrusted`` (the wrap
-    behind the ONE MCP dispatch, so every ``delfin-ops`` / ``delfin-tools``
-    read tool) and ``api_client._fence_output_tool_result`` (the loop's fence
-    for file, shell, doc-index and calc-index results) between them cover both
-    routes a file's text takes to the model.
-
-    The note rides on the OPENER line, not after the closer and not before the
-    opener; :func:`_fence` gives the three contracts that fix that position.
-    Plain text is returned unchanged, so an ordinary ``.out`` costs nothing.
-    """
-    note = shape_note(text)
-    return (wrap(source, text, nonce=nonce, note=note) if kind is None
-            else wrap_as(kind, source, text, nonce=nonce, note=note))
