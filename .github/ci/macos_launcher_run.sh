@@ -44,14 +44,17 @@ mkdir -p "$work/DELFIN"
 (sleep 900 | DELFIN_LOCAL_WORKDIR="$work/DELFIN" BROWSER=true script -q "$work/local.log" \
     /bin/bash "$pkg/DELFIN.app/Contents/Resources/DELFIN.sh" local) &
 local_pid=$!
-record() { "$env/bin/python" -I -c 'from delfin.agent import where; r = where.dashboard(); print(r.get("port", ""), r.get("token", "")) if r.get("running") else None'; }
+# The detached server keeps its port and token in its own record
+# (delfin.dashboard.server_record, 0600), not in the where-note.
+record() { "$env/bin/python" -I -c 'from delfin.dashboard import server_record as r; x = r.running(); print(x["port"], x["token"]) if x and x.get("token") and r.port_answers(x) else None'; }
+has_record() { [ -n "$(record)" ]; }
 diagnose() {
     echo '--- local.log'; cat "$work/local.log" || true
     echo '--- record'; "$env/bin/python" -I -c 'from delfin.agent import where; r = where.dashboard(); r.pop("token", None); print(r)' || true
     echo '--- listeners'; lsof -nP -iTCP -sTCP:LISTEN | grep -i python || true
     echo '--- logs'; find ~/.delfin -name '*.log' -mmin -30 -exec tail -n 30 {} \; 2>/dev/null | tail -n 80 || true
 }
-wait_for 300 test -n "$(record)" || { diagnose; fail 'the dashboard did not come up'; }
+wait_for 300 has_record || { diagnose; fail 'the dashboard did not come up'; }
 read -r port dashboard_key <<EOF2
 $(record)
 EOF2

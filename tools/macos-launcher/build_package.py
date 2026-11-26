@@ -111,7 +111,11 @@ def install_line(digest: str) -> str:
 
 
 def readme_block(digest: str) -> str:
-    return (f'{LINE_START}\n```bash\n{install_line(digest)}\n```\n{LINE_END}')
+    # The manual's recipe check (tests/test_the_manual_every_recipe_runs.py)
+    # parses DELFIN commands; this line is a download for a Mac's Terminal.
+    return (f'{LINE_START}\n'
+            '<!-- recipe: not-runnable — installs the macOS app; run it in Terminal on a Mac -->\n'
+            f'```bash\n{install_line(digest)}\n```\n{LINE_END}')
 
 
 def main() -> None:

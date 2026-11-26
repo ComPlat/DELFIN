@@ -32,9 +32,6 @@ WINDOWS_APP = (ROOT / "tools" / "windows-launcher" / "DELFIN.ps1").read_text(enc
 RESOURCES = "DELFIN.app/Contents/Resources"
 _KEY_HEADER = "-----BEGIN OPENSSH " + "PRIVATE KEY-----"
 
-pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
-
-
 def _build():
     spec = importlib.util.spec_from_file_location("mac_build_package", MAC / "build_package.py")
     module = importlib.util.module_from_spec(spec)

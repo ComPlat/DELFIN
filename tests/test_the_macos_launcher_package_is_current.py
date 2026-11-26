@@ -16,7 +16,6 @@ import os
 import shutil
 import stat
 import subprocess
-import sys
 import zipfile
 from pathlib import Path
 
@@ -26,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MAC = ROOT / "tools" / "macos-launcher"
 ZIP = ROOT / "tools" / "delfin-macos-launcher.zip"
 PEOPLE = ROOT / "scripts" / "pi" / "delfin_people.sh"
+_KEY_HEADER = "-----BEGIN OPENSSH " + "PRIVATE KEY-----"
 
 
 def _build():
@@ -93,9 +93,35 @@ def test_the_one_line_install_is_pinned_and_checked():
     assert not re.search(r"\|\s*(sudo\s+)?(sh|bash|zsh)(\s|$)", line), "nothing is piped into a shell"
 
 
-@pytest.mark.skipif(shutil.which("ssh-keygen") is None or shutil.which("bash") is None
-                    or sys.platform == "darwin",
-                    reason="delfin-people runs on the Linux server (GNU date); needs ssh-keygen and bash")
+#: A fixed server host key: the test needs a key line, not a key pair.
+_HOST_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGJ1aWx0LWZvci10aGlzLXRlc3QtMDEyMzQ1Njc4OQ"
+
+
+def _stand_ins(folder: Path) -> Path:
+    """ssh-keygen and date for delfin-people, the same on every machine:
+    the invitation's key pair is written as fixed text, and the expiry is a
+    fixed time (delfin-people asks GNU date for it; a Mac has BSD date)."""
+    folder.mkdir()
+    keygen = folder / "ssh-keygen"
+    keygen.write_text(
+        "#!/bin/bash
+"
+        'while [ $# -gt 0 ]; do case $1 in -f) out=$2; shift 2 ;; -C) comment=$2; shift 2 ;; *) shift ;; esac; done
+'
+        f"printf '%s\nc3RhbmQtaW4=\n-----END OPENSSH PRIVATE KEY-----\n' '{_KEY_HEADER}' > "$out"
+"
+        'printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHN0YW5kLWluLWZvci10aGUtaW52aXRhdGlvbjAw %s\n' "$comment" > "$out.pub"
+',
+        encoding="ascii")
+    date = folder / "date"
+    date.write_text("#!/bin/bash
+echo 202612010000Z
+", encoding="ascii")
+    for tool in (keygen, date):
+        tool.chmod(0o755)
+    return folder
+
+
 def test_an_invitation_carries_the_mac_package_too(tmp_path):
     home = tmp_path / "home"
     (home / ".ssh").mkdir(parents=True)
@@ -107,10 +133,11 @@ def test_an_invitation_carries_the_mac_package_too(tmp_path):
     shutil.copy(ZIP, packages / "delfin-macos-launcher.zip")
     host_keys = tmp_path / "etc-ssh"
     host_keys.mkdir()
-    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(host_keys / "ssh_host_ed25519_key")],
-                   check=True)
+    (host_keys / "ssh_host_ed25519_key.pub").write_text(_HOST_KEY + " root@server\n", encoding="ascii")
+    stand_ins = _stand_ins(tmp_path / "stand-ins")
     env = dict(os.environ, HOME=str(home), DELFIN_LAUNCHER_ZIP=str(windows),
-               DELFIN_HOST_KEYS=str(host_keys / "ssh_host_*_key.pub"))
+               DELFIN_HOST_KEYS=str(host_keys / "ssh_host_*_key.pub"),
+               PATH=f"{stand_ins}{os.pathsep}{os.environ['PATH']}")
     result = subprocess.run(["bash", str(PEOPLE), "--invite", "anna", "--host", "192.0.2.10"], env=env,
                             capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
@@ -138,8 +165,7 @@ def test_an_invitation_carries_the_mac_package_too(tmp_path):
     assert install.returncode == 0, install.stderr + install.stdout
     user = subprocess.run(["id", "-un"], capture_output=True, text=True).stdout.strip()
     assert f"Your connection to {user}@192.0.2.10 is set up" in install.stdout
-    host_key = " ".join((host_keys / "ssh_host_ed25519_key.pub").read_text().split()[:2])
-    assert (mac_home / ".ssh" / "known_hosts").read_text() == f"192.0.2.10 {host_key}\n"
+    assert (mac_home / ".ssh" / "known_hosts").read_text() == f"192.0.2.10 {_HOST_KEY}\n"
     assert len(list((mac_home / "store").glob("invite-*.key"))) == 1
 
 
