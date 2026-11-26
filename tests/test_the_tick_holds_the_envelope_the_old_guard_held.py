@@ -712,3 +712,28 @@ def test_a_stall_that_clears_is_forgotten_so_it_can_be_raised_again(host):
         "the second stall of the same member must be reported, not "
         "deduplicated against the first")
     assert "s10/a:silent" in guard._load()["stalls"]
+
+
+def test_the_start_gate_stops_before_the_envelope_does(host):
+    """A host must stop launching members before it stops everything.
+
+    The envelope stops the whole slice (``emergency_stop``: every member of
+    every run, including a foreign tool's) once it is outside for two ticks.
+    ``wave._room`` decides how many members start, and it has its own load
+    number on purpose -- a different question, as the guard's constants say.
+    But if the start gate stays open past the stop line, there is a band of
+    host load in which the tick keeps launching members onto a host the
+    envelope has already condemned, and then stops them all. On base the
+    order was the other way (stop 1.5 x cores, start 1.0 x cores); the 0.885
+    stop line inverted it, and nothing pinned the relation.
+
+    Not pinned here: any particular pair of numbers. Only the order that
+    makes the two knobs safe together.
+    """
+    stop = guard._GUARD_DEFAULTS["guard_max_load_per_core"]
+    start = wave._DEFAULTS["max_load_per_core"]
+    assert start <= stop, (
+        f"wave starts members up to load {start} x cores while the envelope "
+        f"stops everything above {stop} x cores: between the two the tick "
+        f"launches onto a host it is about to stop. Keep the start gate at or "
+        f"below the stop line.")

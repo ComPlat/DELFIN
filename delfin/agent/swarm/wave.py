@@ -69,7 +69,14 @@ _DEFAULTS = {
     "member_tasks": 1024,
     "slice": "delfin-swarm.slice",
     "min_available_gb": 8,
-    "max_load_per_core": 1.0,
+    # At the envelope's stop line, not above it: the guard stops the whole
+    # slice when the load passes 0.885 x cores, and a start gate left at 1.0
+    # made a band (339.8..384 on a 384-core host) where the tick kept
+    # launching members onto a host it was about to stop. This number is
+    # duplicated rather than imported -- the guard imports this module, so
+    # the dependency cannot run the other way -- and the two are pinned
+    # together by test_the_start_gate_stops_before_the_envelope_does.
+    "max_load_per_core": 0.885,
     "seconds": 5400,
     "turns": 60,
     # A checkout of its own the members run DELFIN from (PYTHONPATH), so a
