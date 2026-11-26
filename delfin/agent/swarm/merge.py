@@ -131,7 +131,19 @@ def record_verdict(run: str, tid: str, verdict: str, *, by: str,
     if got == "fail":
         # The failure text is the member's next input, as the script did.
         note = text or "the real run failed (no detail was given)"
-        out.update(wave.resume(run, tid, note=note))
+        # The verdict is already recorded at this point, and this is a verb a
+        # person runs: resume's default spin (60 s poll, no output) made a
+        # busy host look like a hung command. So the room is asked once and
+        # the answer is reported -- the stage's own loop is the place that
+        # waits for room, and it expects to.
+        ok, why = wave._room(wave.settings())
+        if not ok:
+            resumed = {"run": run, "id": tid, "resumed": False,
+                       "why": f"no room on this host ({why}); the stage "
+                              f"resumes it when there is"}
+        else:
+            resumed = wave.resume(run, tid, note=note, wait_for_room=False)
+        out.update(resumed)
         # wave.resume answers the run and the id; keep our own verdict facts.
         out.update({"run": run, "id": tid, "verdict": got, "by": who,
                     "recorded": True, "merges": False})

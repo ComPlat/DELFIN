@@ -439,6 +439,35 @@ def test_the_failure_text_is_fenced_when_it_reaches_the_member(
         f"data: {brief}")
 
 
+def test_a_fail_verdict_does_not_block_the_verb_when_the_host_is_full(
+        tmp_path, monkeypatch):
+    """Recording a verdict returns; it does not wait inside the CLI.
+
+    ``record_verdict`` resumed the member with ``wave.resume``'s defaults, and
+    ``wait_for_room`` is one of them: ``resume`` spins on
+    ``while wait_for_room and not _room(cfg)[0]: time.sleep(poll_s)`` with a
+    60 s poll, so a person typing ``swarm verdict R M fail`` on a busy host
+    saw the command hang with no output and no way to tell it from a crash.
+    The verdict is already recorded at that point, so the honest answer is
+    "recorded, the member was not resumed: no room".
+    """
+    _seed_run(tmp_path, monkeypatch, {"a": _member(tmp_path, "a")})
+    monkeypatch.setattr(wave, "alive", lambda pid: False)
+    monkeypatch.setattr(wave, "settings", lambda: dict(wave._DEFAULTS))
+    monkeypatch.setattr(wave, "_room", lambda cfg: (False, "load 500 on 8 cores"))
+
+    def no_sleep(_s):
+        raise AssertionError("the verb must not sleep waiting for room")
+
+    monkeypatch.setattr(wave.time, "sleep", no_sleep)
+    got = swarm_merge.record_verdict("r1", "a", "fail", by="the maintainer",
+                                     detail="boom")
+    assert got["recorded"] is True
+    assert got["merges"] is False
+    assert got["resumed"] is False, "no room: the member must not be reported resumed"
+    assert "room" in str(got.get("why", "")), got
+
+
 # -- control case: passes on the base tree and on this branch -------------------
 
 def test_the_existing_merge_plan_still_prints_its_commands(capsys, tmp_path,
