@@ -413,17 +413,32 @@ def test_lazy_import_error_names_the_extra():
 # --------------------------------------------------------------------------- #
 # through the kernel
 # --------------------------------------------------------------------------- #
+def _approved_set(k, device, channel, value):
+    """A write to real hardware, after the person's single-use grant.
+
+    A device whose driver is not the simulator always needs a person's
+    approval (``tests/test_a_real_device_always_needs_a_person.py``); the
+    grant is obtained first so these tests keep measuring the driver.
+    """
+    from delfin.lab import approvals
+    first = k.set(_actor(), device, channel, value)
+    assert first.get("code") == "approval_required", first
+    approvals.grant(first["approval_request"], now=k.clock())
+    return k.set(_actor(), device, channel, value,
+                 approval=first["approval_request"])
+
+
 def test_kernel_transport_error_puts_device_safe_and_latched(gpio_world):
     m, fake = gpio_world
     from delfin.lab.safety import Kernel
     from _lab_support import FakeClock
     k = Kernel(m, clock=FakeClock(100.0))
     # a benign write opens the request and succeeds
-    out = k.set(_actor(), "heater", "power", "off")
+    out = _approved_set(k, "heater", "power", "off")
     assert out["ok"] is True
     # make the fake fail on the next write: the kernel must fail closed
     fake.world.fail = True
-    out = k.set(_actor(), "heater", "power", "on")
+    out = _approved_set(k, "heater", "power", "on")
     assert out["ok"] is False
     assert out["code"] == "driver_error"
     # the device is latched: the next write is refused
@@ -439,11 +454,11 @@ def test_kernel_readback_mismatch_latches(gpio_world):
     from _lab_support import FakeClock
     k = Kernel(m, clock=FakeClock(100.0))
     # the first write opens the request and succeeds (echoes "on")
-    out = k.set(_actor(), "heater", "power", "on")
+    out = _approved_set(k, "heater", "power", "on")
     assert out["ok"] is True and out["readback"] == "on"
     # the line is stuck high: with active-low that reads "off"
     fake.world.stuck = 1
-    out2 = k.set(_actor(), "heater", "power", "on")
+    out2 = _approved_set(k, "heater", "power", "on")
     assert out2["code"] == "readback_mismatch"
     snap = _snapshot()
     assert "heater" in snap["latched"]

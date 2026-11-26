@@ -1,6 +1,6 @@
 """A capability nothing measures cannot be shown to improve.
 
-The benchmark pack holds 270 tasks and three registries hold 128
+The benchmark pack holds 270 tasks and three registries hold 131
 capabilities, and until this file existed nothing connected them: no
 count could say whether ``tool:read_document`` was measured, and the
 honest answer for most of them was "nobody knows". An untested capability
@@ -40,7 +40,7 @@ things and forget them: covering a capability forces its removal, so the
 number in the file is a real count of what is unmeasured, not a count of
 what was unmeasured once.
 
-WHY THE BASELINE IS BIG AND STARTS AT 119. The obvious shortcut --
+WHY THE BASELINE IS BIG AND STARTS AT 122. The obvious shortcut --
 inferring a tag from a capability's name appearing in the task prompt --
 was tried and rejected on evidence: it covered 7 of 128 capabilities, and
 its tags were accidents of phrasing (an OCCUPIER task scored only

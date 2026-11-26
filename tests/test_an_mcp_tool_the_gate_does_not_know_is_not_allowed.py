@@ -334,6 +334,7 @@ _EXPECTED_READ_ONLY = {
     "list_calc_options", "list_literature_files",
     "check_orca_manual_indexed", "read_pdf", "search_pdf_local",
     "extract_pdf_section",
+    "eln_find", "eln_read", "eln_pending",
 }
 
 
