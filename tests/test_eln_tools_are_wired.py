@@ -188,6 +188,45 @@ def test_the_attachment_tool_is_not_host_gated_either():
     assert "_host_gated(tool_eln_attach)" not in server
 
 
+def test_an_attachment_refuses_a_secret_shaped_path_unread(home, tmp_path):
+    """A path the agent's own file tools deny is not read just to hash it.
+
+    ``eln_attach`` takes a path off the tool call and reads it before anyone
+    approves anything. That made it a reader the agent's file tools are not:
+    ``read_file``/``write_file`` refuse a deny-listed path (``*.key``,
+    ``.ssh/**``, ``credentials*``), while this tool hashed the bytes and
+    filed an approval whose record shows only a name, a size and a digest --
+    so a key could be pulled into an upload and approved on that much. The
+    refusal has to happen BEFORE the read, and it has to name the reason, or
+    the caller learns nothing from it.
+    """
+    from delfin.lab import eln_tools
+
+    fake = FakeELN()
+    secret = tmp_path / "id_ed25519_probe.key"
+    secret.write_bytes(b"-----BEGIN PRIVATE KEY-----\nprobe\n")
+    out = json.loads(eln_tools.execute(
+        "eln_attach",
+        {"path": str(secret), "element_type": "Sample", "element_id": 3,
+         "filename": secret.name, "_transport": fake.send}, None))
+    assert out.get("code") == "refused_path", out
+    assert "key" in (out.get("error") or "").lower()
+    # Nothing was read into a draft, and nothing was sent.
+    assert out.get("draft") is None
+    assert fake.uploaded == [] and fake.attached == []
+
+    # Control: an ordinary file in the same directory is still attached (filed
+    # for approval), so the refusal is about the path and not about attaching.
+    plain = tmp_path / "run-export.json"
+    plain.write_text('{"samples": []}', encoding="utf-8")
+    ok = json.loads(eln_tools.execute(
+        "eln_attach",
+        {"path": str(plain), "element_type": "Sample", "element_id": 3,
+         "filename": plain.name, "_transport": fake.send}, None))
+    assert ok.get("code") == "needs_approval", ok
+    assert (ok.get("draft") or {})["filename"] == "run-export.json"
+
+
 def test_an_attachment_needs_an_approval_and_sends_nothing_without_one(home):
     """The package's write rule, driven through the tool a model calls.
 

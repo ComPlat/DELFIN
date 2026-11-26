@@ -37,6 +37,7 @@ refusal is quoted back).
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 from typing import Optional
@@ -100,6 +101,48 @@ def _client(transport=None) -> eln_api.Client:
 
 def _dump(obj) -> str:
     return json.dumps(obj, default=str, indent=1, sort_keys=True)
+
+
+def _refuse_secret_path(path: str) -> Optional[dict]:
+    """The agent's own deny list, applied before this tool reads anything.
+
+    ``eln_attach`` reads a path off the tool call. The agent's file tools
+    already refuse a deny-listed path (``*.key``, ``.ssh/**``,
+    ``credentials*``, ``.netrc``, ``.env*`` ...), and that gate is the whole
+    reason a key cannot be pulled into a conversation. A second reader without
+    it is that gate missing, so this asks the same list rather than growing a
+    second one: the globs come from ``api_client``, and the check is done on
+    the path AS GIVEN and on its resolved form, because ``~/.ssh/id_rsa`` and
+    its target are the same file under a different spelling.
+
+    Returns the refusal dict, or None when the path is not deny-listed. A path
+    that cannot be resolved is refused too: "I could not tell" is not a pass.
+    """
+    from pathlib import Path as _Path
+
+    from delfin.agent.api_client import _DEFAULT_PATH_DENY_GLOBS as globs
+
+    raw = str(path)
+    try:
+        resolved = _Path(raw).expanduser().resolve()
+    except Exception:                                   # noqa: BLE001
+        return {"error": f"cannot resolve {raw!r}, so it is not read",
+                "code": "refused_path"}
+    for candidate in (raw, str(resolved), resolved.name):
+        rel = candidate.replace("\\", "/")
+        low = rel.lower()
+        for g in globs:
+            if fnmatch.fnmatch(rel, g) or fnmatch.fnmatchcase(low, g.lower()):
+                return {
+                    "error": (f"{raw!r} matches the deny list entry {g!r}; "
+                              "this tool does not read it. Nothing was read "
+                              "and nothing was filed. Attach a file the lab "
+                              "actually produced (a run export, a spectrum) "
+                              "rather than a credential or a key."),
+                    "code": "refused_path",
+                    "matched": g,
+                }
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -327,6 +370,14 @@ def _attach(args: dict, transport=None) -> dict:
     path = str(args.get("path") or "").strip()
     content = args.get("content")
     if path:
+        # BEFORE the read: this tool is a reader of the machine's files, and
+        # the agent's file tools refuse a deny-listed path -- keys, ssh
+        # material, credential stores, .env. Hashing the bytes first and filing
+        # an approval that shows only a name, a size and a digest would make
+        # this route around that gate, not carry it.
+        refused = _refuse_secret_path(path)
+        if refused is not None:
+            return refused
         from pathlib import Path
         try:
             content = Path(path).read_bytes()
