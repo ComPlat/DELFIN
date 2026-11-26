@@ -763,3 +763,10 @@ def test_the_tick_drives_only_runs_started_through_the_interface(waves):
     wave.add_tasks("other", [_task("b", "prmd")])
     assert guard.tick()["runs"]["other"].get("started") is None
     assert "b" not in wave.load_state("other")["agents"]
+
+
+def test_a_task_may_name_folders_its_member_only_reads():
+    argv = wave.member_argv("r70", {"id": "a", "brief": "x", "read_dirs": ["~/envs/chem"]})
+    i = argv.index("--read-dir")
+    assert argv[i + 1] == str(Path("~/envs/chem").expanduser())
+    assert "--add-dir" not in argv
