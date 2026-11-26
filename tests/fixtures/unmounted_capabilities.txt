@@ -238,7 +238,15 @@ test-only	is_safe	delfin/agent/readonly_pipeline.py:391
 # scopes. No product path is equivalent to an explicit clear; the office
 # tool runs are the consumers and keep needing it between turns.
 test-only	reset_figure_ledger	delfin/agent/office.py:6123
-test-only	role_tool_surface_report	delfin/agent/api_client.py:12667
+# role_tool_surface_report CONNECTED 2026-11-26 (wave 54 u1): it was the
+# product's own answer to "what does role scoping save", computed on every
+# request and printed by nothing a person could run. It is now reached by
+# CALL from the documented module entry point:
+#   `python -m delfin.agent.report_tools --roles`
+# -> report_tools.main -> collect_roles() -> role_tool_surface_report(...)
+# (delfin/agent/report_tools.py). Not an import: collect_roles calls it. The
+# row left this list because a product command prints it; the listing in the
+# REPL's /tools answers "what am I offered", this answers what that costs.
 # w36-r2 (2026-11-22): no product path compares a workflow OBJECT's name.
 # grade_run (w20_common.py) calls only charge_spin_consistent and
 # all_steps_terminated; workflow_grader.grade checks name PRESENCE only
