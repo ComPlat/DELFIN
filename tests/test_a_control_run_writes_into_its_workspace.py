@@ -106,15 +106,33 @@ def no_orca(monkeypatch):
 
 
 def _run(workspace: Path, caller_dir: Path, monkeypatch) -> tuple[int, Path]:
-    """Run ``delfin <workspace>`` from *caller_dir*; return (rc, cwd after)."""
+    """Run ``delfin <workspace>`` from *caller_dir*; return (rc, cwd after).
+
+    ``DELFIN_*`` flags set during the run are restored on the way out.  The
+    production path forces them itself -- ``cli_manta._apply_construction_env``
+    writes the whole ``DELFIN_FFFREE_*`` champion set with ``os.environ.update``
+    -- so a test cannot keep them out with ``monkeypatch.setenv``; it can only
+    put the environment back.  ``tests/conftest.py`` restores them anyway and
+    names this file as an offender, and the build flags are read from
+    ``os.environ`` at call time, so a leftover changes the geometry the next
+    test builds.
+    """
     import delfin.cli as cli
 
+    delfin_env_before = {
+        k: v for k, v in os.environ.items() if k.startswith("DELFIN_")
+    }
     monkeypatch.chdir(caller_dir)
     cli._load_full_cli_dependencies()
     try:
         rc = cli.main([str(workspace), "--no-cleanup"])
     except SystemExit as exc:  # cli.main returns, but a SystemExit must not crash the test
         rc = int(exc.code) if exc.code is not None else 0
+    finally:
+        for _k in [k for k in os.environ if k.startswith("DELFIN_")]:
+            if _k not in delfin_env_before:
+                del os.environ[_k]
+        os.environ.update(delfin_env_before)
     return rc, Path.cwd()
 
 
