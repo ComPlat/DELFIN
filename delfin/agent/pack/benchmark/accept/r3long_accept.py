@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -427,7 +428,13 @@ def check(workspace, task_id=None, final_message=None, rubric=None,
 
 def main() -> None:
     ws = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
-    tid = sys.argv[2] if len(sys.argv) > 2 else None
+    # The task being scored arrives in the environment, not as a second
+    # argument: the contract for these scripts is exactly one argument (the
+    # workspace), and ``lh_metrics_accept.py`` enforces it. The ten r3 long
+    # tasks share this script, so without the id every run of any of them
+    # would be graded against all ten fixtures at once.
+    tid = (sys.argv[2] if len(sys.argv) > 2
+           else os.environ.get("DELFIN_BENCH_TASK_ID") or None)
     fm = sys.argv[3] if len(sys.argv) > 3 else None
     ok, msg = check(ws, tid, final_message=fm)
     print(msg)
