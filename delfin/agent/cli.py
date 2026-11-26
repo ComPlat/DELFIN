@@ -30,11 +30,13 @@ installed console script.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import json
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -427,6 +429,49 @@ def _answer_no_model_ran(engine, text: str, tool_calls, input_tokens: int,
             f"another model; `delfin-agent doctor --live` checks it.")
 
 
+def _process_attribution() -> None:
+    """Adopt the attribution this PROCESS was started with, if any.
+
+    A member of a swarm is a separate process and a fresh context. Only the
+    environment says which run it serves, so that is read here and made the
+    base context every later turn in this process merges onto: a turn then
+    records the run and the member, and a delegate of that member inherits both
+    (``subagents.run_subagent`` keeps the ids and changes only the role).
+
+    Does nothing when neither variable is set — an ordinary interactive session
+    writes six nulls, which is the honest row. Never raises: attribution is not
+    a reason for a process not to start.
+    """
+    try:
+        from . import attribution as _attr
+        got = _attr.from_env()
+        if got.is_empty():
+            return
+        # ``adopt_process``, not ``set_attribution``: the value has to survive
+        # the thread hop. repl.py runs every turn on a fresh ``threading.Thread``
+        # (repl.py:1690), where this thread's ContextVar does not exist — a
+        # member process measured ``workflow_id=None`` when this used the
+        # context alone.
+        _attr.adopt_process(
+            workflow_id=got.workflow_id, subagent_name=got.subagent_name)
+    except Exception:
+        pass
+
+
+def _attribution_for(engine):
+    """The turn's attribution scope, or a no-op when it cannot be had.
+
+    Kept a one-liner so ``_run_once`` reads as it did: what a turn served is
+    decided by :mod:`delfin.agent.attribution`, and a turn that cannot be
+    attributed must still run.
+    """
+    try:
+        from . import attribution as _attr
+        return _attr.turn_scope(engine)
+    except Exception:
+        return contextlib.nullcontext()
+
+
 def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
                  memory_context: str = "",
                  emit: Any = None,
@@ -662,11 +707,20 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
     if on_permission_denied is not None or _takes_denied:
         kwargs["on_permission_denied"] = _on_backend_denied
     with observer:
-        try:
-            full_text = engine.stream_response(**kwargs) or ""
-        except Exception as exc:
-            error = str(exc)
-            full_text = ""
+        # WHO this turn serves, opened around the model call so the turn row
+        # (turn_metrics.record, written by the engine at the end of the turn),
+        # every per-request row, and every delegate this turn starts carry it.
+        # The engine knows its role and session; the molecule / workflow / task
+        # come from whoever wrapped the turn and stay null when nobody did.
+        # The binding is on the CLIENT as well, because a background delegate
+        # runs on a new thread, where the context variable does not exist.
+        # See delfin.agent.attribution.
+        with _attribution_for(engine):
+            try:
+                full_text = engine.stream_response(**kwargs) or ""
+            except Exception as exc:
+                error = str(exc)
+                full_text = ""
 
     in_after = int((getattr(engine, "token_usage", {}) or {}).get("input", 0))
     out_after = int((getattr(engine, "token_usage", {}) or {}).get("output", 0))
@@ -2942,6 +2996,52 @@ def _run_prcheck_subcommand(args: argparse.Namespace) -> int:
     return prcheck_main(argv)
 
 
+def _run_usage_subcommand(args: argparse.Namespace) -> int:
+    """The `usage` subcommand: a read-only report grouped by attribution.
+
+    Registration and argument parsing live in build_parser(); the report
+    itself lives in report_costs so it can be tested without a parser.
+    Read-only by construction: it opens the two JSONL stores and prints.
+    """
+    from . import report_costs
+    since_s = report_costs.RECENT_WINDOW_S
+    raw = getattr(args, "since", "") or ""
+    if raw:
+        parsed = _parse_since(raw)
+        if parsed is None:
+            print(f"usage: --since {raw!r} is not a date "
+                  f"(expected YYYY-MM-DD or YYYY-MM-DDTHH:MM)",
+                  file=sys.stderr)
+            return 2
+        since_s = parsed
+    return report_costs.usage_main(
+        by=getattr(args, "by", "agent") or "agent",
+        since_s=since_s,
+        as_json=bool(getattr(args, "usage_json", False)),
+        min_rows=int(getattr(args, "min_rows", report_costs.MIN_GROUP_ROWS)),
+    )
+
+
+def _parse_since(raw: str) -> float | None:
+    """Seconds-since-epoch window for a ``--since`` value, or None.
+
+    A bare date means midnight local time; a stamp with a time is taken as
+    given. None is "not a date", never "0 seconds" -- a typo must not
+    silently report the last instant of history as if it were the window.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M",
+                "%Y-%m-%d"):
+        try:
+            when = datetime.datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+        return max(0.0, time.time() - when.timestamp())
+    return None
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     from .project_init import init_project
     target = Path(args.path or os.getcwd()).expanduser().resolve()
@@ -2968,6 +3068,9 @@ def cmd_bench(args: argparse.Namespace) -> int:
     from . import benchmark as _bm
     from . import benchmark_runner as _br
     action = getattr(args, "bench_action", "") or "run"
+
+    if action == "ab":
+        return _cmd_bench_ab(args)
 
     if action == "list":
         tasks = _bm.load_tasks()
@@ -3035,6 +3138,16 @@ def cmd_bench(args: argparse.Namespace) -> int:
 
     if action == "nightly":
         return _cmd_bench_nightly(args)
+
+    if action in ("history", "trend", "diff", "schedule"):
+        # The kept-round read side and the opt-in installer. Delegated
+        # whole to bench_history so the parser here and the module that
+        # answers cannot drift apart (the `swarm`/cli_swarm pattern).
+        from . import bench_history as _bh
+        return {"history": _bh.cli_history,
+                "trend": _bh.cli_trend,
+                "diff": _bh.cli_diff,
+                "schedule": _bh.cli_schedule}[action](args)
 
     if action == "compare" and (getattr(args, "model", "") or "").strip():
         # History mode: classify one run against the rolling per-task
@@ -3443,6 +3556,49 @@ def _bench_schedule_hint(model: str, provider: str = "",
         provider=f" --provider {provider}" if provider else "",
         backend=f" --backend {backend}" if backend and backend != "api" else "",
     )
+
+
+def _cmd_bench_ab(args: argparse.Namespace) -> int:
+    """`bench ab` — the same tasks N times on each side of a change.
+
+    Thin on purpose: the arithmetic, the refusals and the budget gate live in
+    ``bench_ab`` so they can be tested without a model. What is here is the
+    exit code contract — 0 when the comparison ran (whatever it found), 2 when
+    the two sides were refused as a pair, 1 when the measurement could not be
+    taken. A refusal is never a 0: a script that reports "no difference" for a
+    comparison that never happened is the defect this verb exists to prevent.
+    """
+    from . import bench_ab as _ab
+
+    opts = _ab._cmd_options_from_args(args)
+    try:
+        report = _ab.run(**opts)
+    except _ab.AbRefused as exc:
+        # The reason, not a traceback: `bench run` taught this lesson already
+        # (an A/B trio died on a twenty-line traceback whose one useful
+        # sentence was at the bottom).
+        print(f"\nbench ab refused: {exc}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        print("\nbench ab interrupted; no difference was measured.",
+              file=sys.stderr)
+        return 1
+    print(_ab.format_report(report))
+    if getattr(args, "json", False):
+        print()
+        print(json.dumps(report.as_dict(), indent=2, default=str))
+    # Exit 1 when NOTHING was measured: this docstring promises it ("1 when the
+    # measurement could not be taken"), and without it a comparison in which
+    # every attempt died at the endpoint exited 0 -- the same defect one layer
+    # up from the worker's, since a caller reading only the exit code would take
+    # an outage for a result. A partial measurement stays 0: it is a result,
+    # printed with its unmeasured count beside it.
+    if report.tasks and report.n_unmeasured == len(report.tasks):
+        print("\nbench ab: nothing was measured on any task. The exit code is 1 "
+              "because no comparison took place, not because the change made "
+              "no difference.", file=sys.stderr)
+        return 1
+    return 0
 
 
 def _cmd_bench_nightly(args: argparse.Namespace) -> int:
@@ -6201,6 +6357,154 @@ def build_parser() -> argparse.ArgumentParser:
                                     "(default: ~/.delfin/benchmark_runs)")
     bench_nightly.set_defaults(bench_action="nightly")
 
+    # bench history | trend | diff | schedule — the read side of the kept
+    # benchmark rounds and the opt-in installer. Registered here, handled
+    # entirely in bench_history.py (the same pattern as `swarm`, whose
+    # body lives in cli_swarm.py): the verbs are one argparse hunk in this
+    # file so the parser and the module that answers them cannot drift.
+    bench_hist = bench_sub.add_parser(
+        "history",
+        help="The kept benchmark rounds: pass rate per round and per task, "
+             "with the commit each round measured (only rounds that are "
+             "comparable are shown; the rest are listed with the reason)")
+    bench_hist.add_argument(
+        "--capability", default="",
+        help="Only this task family (the stored task_class, e.g. "
+             "science_analysis)")
+    bench_hist.set_defaults(bench_action="history")
+
+    bench_trend = bench_sub.add_parser(
+        "trend",
+        help="One task family's pass rate, round by round, and which rounds "
+             "were left out of the comparison for want of a shared seed "
+             "mode, task-set version or model")
+    bench_trend.add_argument("--capability", required=True,
+                             help="The task family to trend (the stored "
+                                  "task_class, e.g. science_analysis)")
+    bench_trend.set_defaults(bench_action="trend")
+
+    bench_diff = bench_sub.add_parser(
+        "diff",
+        help="What changed between two named rounds, task by task (refused "
+             "when the two are not comparable)")
+    bench_diff.add_argument("round_a", help="The earlier round id")
+    bench_diff.add_argument("round_b", help="The later round id")
+    bench_diff.add_argument("--capability", default="",
+                            help="Only this task family")
+    bench_diff.set_defaults(bench_action="diff")
+
+    bench_sched = bench_sub.add_parser(
+        "schedule",
+        help="The nightly round as a systemd user timer — OFF by default: "
+             "nothing is registered until --enable. Shows the exact command "
+             "a fired round runs (its --budget gate included)",
+        description=(
+            "Install (or show, or remove) the scheduled benchmark round.\n\n"
+            "Strictly opt-in: neither running a round nor this command "
+            "without --enable registers anything, because a round costs "
+            "real core-hours and model spend.\n\n"
+            "  delfin-agent bench schedule --enable --model <model> "
+            "[--budget H] [--instances N]\n"
+            "  delfin-agent bench schedule --disable\n\n"
+            "The budget gate is part of the command the timer fires, so a "
+            "scheduled round refuses instances over the daily core-hour "
+            "limit exactly like a hand-run one."),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    bench_sched.add_argument("--enable", action="store_true",
+                             help="Install and start the user timer")
+    bench_sched.add_argument("--disable", action="store_true",
+                             help="Stop, disable and remove it")
+    bench_sched.add_argument("--model", default="",
+                             help="The model the round measures "
+                                  "(required with --enable)")
+    bench_sched.add_argument("--provider", default="")
+    bench_sched.add_argument("--instances", type=int, default=10)
+    bench_sched.add_argument("--budget", type=float, default=50.0,
+                             help="Daily core-hour gate kept in the fired "
+                                  "command (default 50)")
+    bench_sched.add_argument("--practice", action="store_true",
+                             help="Run on the public seed, never the "
+                                  "holdout")
+    bench_sched.add_argument("--seed-path", default="", dest="seed_path",
+                             help="Path of the holdout seed file (a "
+                                  "setting; the value is never stored)")
+    bench_sched.add_argument("--on-calendar", default="", dest="on_calendar",
+                             help="systemd OnCalendar (default daily 03:00)")
+    bench_sched.set_defaults(bench_action="schedule")
+
+    bench_ab = bench_sub.add_parser(
+        "ab",
+        help=("A before/after measurement with its own error bar: run the same "
+              "tasks N times on each of two refs, each side in its own "
+              "worktree and a fresh HOME, and report the pass-rate difference "
+              "with an interval — saying 'no measurable difference' when the "
+              "interval contains zero"),
+        description=(
+            "Paired comparison. The same task set is run --repeat times on "
+            "--base and on --head; the sides differ in the code and in nothing "
+            "else. For each task the report gives the pass rate per side, the "
+            "difference, and a Newcombe (method 10) interval on that "
+            "difference built from the two Wilson intervals, with the reason "
+            "it was chosen. A task is called improved or regressed only when "
+            "the interval EXCLUDES zero; otherwise it says 'no measurable "
+            "difference'.\n\n"
+            "Refused (exit 2, nothing measured) when the sides did not use "
+            "the same model, when a task's text differs between the refs, or "
+            "when a side's attempt could not be attributed to that side's "
+            "tree. Budget-gated by the nightly round's own daily core-hour "
+            "limit."),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    bench_ab.add_argument("--base", default="origin/main",
+                          help="The ref the change is measured against "
+                               "(default: origin/main)")
+    bench_ab.add_argument("--head", default="HEAD",
+                          help="The ref carrying the change (default: HEAD)")
+    bench_ab.add_argument("--model", required=True,
+                          help=("The model BOTH sides run (required: two "
+                                "models measured against each other is not an "
+                                "A/B of the code)"))
+    bench_ab.add_argument("--provider", default="",
+                          help="claude / openai / kit / blablador")
+    bench_ab.add_argument("--backend", default="", choices=["", "api", "cli"])
+    bench_ab.add_argument(
+        "--repeat", type=int, default=3,
+        help=("Samples per task PER SIDE (default: 3). The interval is built "
+              "from these, so this is the noise knob: 1 cannot separate an "
+              "improvement from noise at all"))
+    bench_ab.add_argument(
+        "--task", default=[], action="append", dest="ab_task",
+        help=("Task ids or globs. Comma-separated and repeatable, like "
+              "`bench run --task`"))
+    bench_ab.add_argument(
+        "--tags", default=[], action="append",
+        help=("Select by capability word: a task's `behavior` tag (verify, "
+              "plan, scout, ask, act) or its `task_class` (chemistry, office, "
+              "generalist, ...). Comma-separated, repeatable"))
+    bench_ab.add_argument(
+        "--changes", default="",
+        help=("Select by the files a ref changed against --base: each file is "
+              "mapped to the capabilities whose tools/specialists/skills it "
+              "implements, and the report names the rule that selected each "
+              "task. e.g. --changes HEAD~3"))
+    bench_ab.add_argument(
+        "--budget", type=float, default=None,
+        help=("Daily core-hour limit (default: the nightly round's own "
+              "DEFAULT_DAILY_BUDGET_CORE_HOURS). An attempt that would push "
+              "the day past it is refused and named"))
+    bench_ab.add_argument(
+        "--seed", default="",
+        help=("Sampling seed asked of BOTH sides (default: the session's "
+              "configured seed, else the provider's default — the report says "
+              "which)"))
+    bench_ab.add_argument(
+        "--temperature", default="",
+        help="Sampling temperature asked of BOTH sides")
+    bench_ab.add_argument("--json", action="store_true",
+                          help="Also emit the raw measurement as JSON")
+    bench_ab.set_defaults(bench_action="ab")
+
     bench.set_defaults(func=cmd_bench, bench_action="run")
 
     # credentials — secure key management
@@ -6364,6 +6668,34 @@ def build_parser() -> argparse.ArgumentParser:
                     "collections (delfin-agent eln --help)", add_help=False)
     eln_p.add_argument("eln_args", nargs=argparse.REMAINDER)
     eln_p.set_defaults(func=cmd_eln)
+
+    # usage — a read-only report by attribution (molecule / workflow / task
+    # / agent). Light: it reads two local JSONL stores and prints a table,
+    # so it stays on whatever node it was typed on (see hpc_guard).
+    # Imported here, not at module scope: cli.py defers what only one
+    # subcommand needs.
+    from . import report_costs as _report_costs
+    usage_p = sub.add_parser(
+        "usage",
+        help="Read-only token/cost/tool report grouped by attribution "
+             "(delfin-agent usage --by molecule|workflow|task|agent)")
+    usage_p.add_argument(
+        "--by", default="agent",
+        choices=list(_report_costs.USAGE_BY_CHOICES),
+        help="Attribution to group by (default: agent)")
+    usage_p.add_argument(
+        "--since", default="", metavar="DATE",
+        help="Only turns since DATE (YYYY-MM-DD or YYYY-MM-DDTHH:MM). "
+             "Default: the last 7 days.")
+    usage_p.add_argument(
+        "--json", action="store_true", dest="usage_json",
+        help="Print the report as JSON instead of a table")
+    usage_p.add_argument(
+        "--min-rows", type=int, default=_report_costs.MIN_GROUP_ROWS,
+        metavar="N",
+        help=f"Mark groups below N rows (default: "
+             f"{_report_costs.MIN_GROUP_ROWS})")
+    usage_p.set_defaults(func=_run_usage_subcommand)
 
     # approvals — the other side of a supervised headless session
     appr = sub.add_parser(
@@ -7342,6 +7674,13 @@ def main(argv: list[str] | None = None) -> int:
     # reads none of theirs. Applied before anything imports a sink.
     from . import state_paths as _state_paths
     _state_paths.scratch_state_from_environment()
+    # WHO THIS PROCESS works for, when DELFIN started it rather than a person:
+    # a swarm member gets ``DELFIN_SWARM_RUN``/``DELFIN_AGENT_LABEL`` from
+    # ``swarm/wave.py:_launch`` and nothing else, and its model calls are its
+    # own process's. Read once here, before any parser work, so every turn this
+    # process ever runs inherits the run it belongs to. An interactive session
+    # sets neither variable and nothing changes for it (delfin.agent.attribution).
+    _process_attribution()
     parser = build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(_route_argv(argv, _subcommand_names(parser)))

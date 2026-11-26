@@ -24,7 +24,11 @@ or not, with the reason. A group is offered when
   files (``.xlsx``, ``.docx``, ``.pdf`` ...), or
 * the user enabled it (``/tools enable <group>``), or
 * the session already called one of its tools (a resumed history
-  included).
+  included), or
+* the person's request NAMES the group (``request_groups``: "make me a
+  docx", "the LUMO of this molecule"). Read once, from the first turn's
+  own words, so a later turn cannot move a head the prefix cache has
+  already served.
 
 Semantics, chosen for the prefix cache: the workspace facts are read
 ONCE, at the first query (the first turn, after any benchmark setup has
@@ -39,11 +43,20 @@ a hidden tool is exactly as allowed as before, so a call that reaches it
 runs, and enables its group from the next turn on.
 
 Rejected alternatives: re-detecting per turn (the head would change
-whenever the agent writes an ``.xyz``); a text classifier on the task
-(``energy``, ``scan`` and ``charge`` fire on ordinary code tasks);
-not spawning the hidden servers (the tool index of the ops server is
+whenever the agent writes an ``.xyz``); a GENERAL text classifier on the
+task -- one that reads the whole request for topical hints -- because
+``energy``, ``scan`` and ``charge`` fire on ordinary code tasks; not
+spawning the hidden servers (the tool index of the ops server is
 still what ``list_tools`` reads once the group is enabled, and the spawn
 cost is paid at startup either way).
+
+Not in that rejected list, and added deliberately: a vocabulary of terms
+that NAME a group, matched at a word start (``request_groups``). It is
+narrower than a classifier by construction -- every term names a document
+format, a document kind or a chemistry method, and the tests pin both
+directions (every term has a request that needs it; a request that needs
+neither group stays without one). It decides only the first turn, from the
+person's own words, so the head cannot move under the prefix cache.
 """
 
 from __future__ import annotations
@@ -188,6 +201,107 @@ def scan_workspace(workspace: Optional[Path]) -> dict[str, str]:
     return found
 
 
+#: What a person's own words ask for, per group.
+#:
+#: The workspace scan above answers "does this FOLDER hold document or
+#: chemistry files". It cannot answer "what did the person just ask for",
+#: and the measured consequence was that the plain request "make me a
+#: two-page docx summary of this text" in a folder holding no document
+#: got no document tool at all -- 65 tools offered, none of them able to
+#: write a .docx, and a system prompt saying
+#: ``Not loaded here: office tools (...). If the task needs them, ask the
+#: user for /tools enable office``. The model's best move on an ordinary
+#: request was to ask for a switch instead of doing the work. Measured
+#: over 11 (role x workspace x request) rows in scratch/offer_matrix.md.
+#:
+#: This vocabulary is deliberately TIGHTER than the prompt-module
+#: triggers in ``prompt_loader._MODULE_TRIGGERS``, which match the same
+#: subject matter. Those only decide which prose survives stripping; this
+#: decides whether 12 (office) or 43 (chemistry) tool schemas ride on
+#: every request of the session, so it carries the false positives this
+#: module's own docstring already refuses: ``energy``, ``scan``,
+#: ``charge`` fire on ordinary code tasks, and so does ``calc/`` -- CSS
+#: ``calc(100% - 20px)`` is one of the commonest strings in a frontend
+#: repository. ``excel`` is out because ``excellent`` contains it;
+#: ``complex``/``komplex`` because they are programming words;
+#: ``homo`` because ``homogeneous`` contains it (``lumo`` has no such
+#: trap); ``rechnung`` and ``formular`` because German uses them for
+#: "calculation" and "HTML form". What is left names a document format,
+#: a document kind, or a calculation method -- words that mean the group.
+#: Tests pin both directions: every term has a request that needs it, and
+#: every request that does not need a group stays without one.
+_REQUEST_TERMS: dict[str, tuple[str, ...]] = {
+    CHEMISTRY: (
+        # Programs and methods, spelled as only a chemistry task spells them
+        "orca", "xtb", "turbomole", "gaussian", "dft", "ccsd", "casscf",
+        "nevpt2", "b3lyp", "pbe0", "def2", "molden", ".xyz", ".hess",
+        "hessian",
+        # Results a chemist asks for
+        "lumo", "orbital", "mulliken", "loewdin", "thermochem",
+        "vibrational", "gibbs", "enthalp", "hartree", "conformer",
+        # What they ask the program to do
+        "geometry optimi", "transition state", "basis set", "solvent",
+        "quantum chem", "molecule",
+        # German
+        "geometrie", "schwingung", "frequenz", "übergangszustand",
+        "basissatz", "lösungsmittel", "quantenchem", "molekül",
+        "frequenzrechnung", "einzelpunkt",
+    ),
+    OFFICE: (
+        "docx", "doc-datei", "xlsx", "xlsm", "ods", "odt", "pdf",
+        "spreadsheet", "tabellenkalkulation", "arbeitsmappe",
+        "word doc", "text document", "pdf-datei",
+        "invoice", "letterhead", "cover letter", "mail merge",
+        "serienbrief", "anschreiben",
+    ),
+}
+
+
+def _term_in(term: str, s: str) -> bool:
+    """Whether *term* occurs in *s* as a word, not inside another one.
+
+    A bare substring match is right for most of the vocabulary and wrong for
+    a short format token: ``"ods"`` is inside ``"methods"`` and ``"periods"``,
+    so the plainest code request ("refactor these methods") was offered the
+    office group for the whole session -- exactly the trap this module's
+    vocabulary refuses elsewhere (``excel`` for ``excellent``, ``homo`` for
+    ``homogeneous``).
+
+    Only the LEADING edge is bounded. Half the vocabulary is a deliberate
+    prefix of what a person types -- ``enthalp`` for enthalpy/enthalpie,
+    ``geometry optimi`` for optimise/optimisation, ``thermochem`` for
+    thermochemistry -- and requiring a word end would stop every one of them
+    from firing. What a leading boundary forbids is a term that begins
+    *inside* a longer word, which is the only way a 3-letter format can
+    appear by accident. ``.xyz``/``.hess`` need no boundary: the dot
+    already supplies one.
+    """
+    if term[:1] == ".":
+        return term in s
+    return re.search(rf"(?<![0-9a-z]){re.escape(term)}", s) is not None
+
+
+def request_groups(text: Any) -> dict[str, str]:
+    """``{group: the term that decided it}`` for what *text* asks for.
+
+    Input: the person's own words (the turn's request, or that plus the
+    recent user turns). Output: at most one entry per group, with the term
+    that fired, so the reason can be shown by ``/tools groups``. Empty for
+    empty or non-text input, and for a request that names neither group --
+    a code task pays nothing.
+    """
+    s = str(text or "").lower()
+    if not s.strip():
+        return {}
+    out: dict[str, str] = {}
+    for group, terms in _REQUEST_TERMS.items():
+        for term in terms:
+            if _term_in(term, s):
+                out[group] = term
+                break
+    return out
+
+
 def tool_names_in_messages(messages: Iterable[Any]) -> set[str]:
     """Names of every tool call recorded in a chat history.
 
@@ -240,6 +354,7 @@ class WorkspaceToolsets:
         self._lock = threading.Lock()
         self._decided: Optional[dict[str, str]] = None   # group -> reason
         self._enabled_later: dict[str, str] = {}
+        self._from_request: dict[str, str] = {}
         self._stacks: Optional[tuple[str, ...]] = None
 
     # -- decision ---------------------------------------------------------
@@ -281,11 +396,17 @@ class WorkspaceToolsets:
         return offered
 
     def decided(self) -> dict[str, str]:
-        """``{group: reason}`` for every offered group (decides once)."""
+        """``{group: reason}`` for every offered group (workspace decides once).
+
+        Workspace facts are decided once per session; groups enabled since
+        (by a tool the history already used, by the request's own words, or
+        by ``/tools enable``) are merged on top, never withdrawn.
+        """
         with self._lock:
             if self._decided is None:
                 self._decided = self._decide()
-            return {**self._decided, **self._enabled_later}
+            return {**self._decided, **self._from_request,
+                    **self._enabled_later}
 
     def offered(self, group: str, *, role: str = "") -> bool:
         if group == OFFICE and role == "office_agent":
@@ -320,6 +441,56 @@ class WorkspaceToolsets:
                 with self._lock:
                     self._enabled_later[group] = f"tool {name} already used"
                 added.append(group)
+        return added
+
+    def note_request(self, text: Any) -> list[str]:
+        """Offer every group the person's own words ask for. New groups.
+
+        Input: the turn's request text (with the recent user turns, as the
+        prompt assembly holds them). Output: the groups this added, which
+        were not offered before.
+
+        TAKEN AT THE FIRST TURN, like every other fact the offering is built
+        from, and for the same measured reason. The offering decides stable
+        prompt rows -- the lazy module that survives stripping and the
+        "not loaded here" line -- so a request on a LATER turn that named a
+        new group would rewrite those rows mid-session. That is exactly the
+        cold prefix the module's "Semantics" section refuses: an earlier
+        reading of this method folded the request in at every turn, and
+        tests/test_the_head_does_not_move_with_the_workspace.py caught it
+        (role_prompt row 6 moved; the prefix cache cannot reach it).
+
+        The cost is bounded and stated: a session whose FIRST request names
+        neither group keeps the `/tools enable <group>` route, which is the
+        turn-boundary switch this module already has. What the package asked
+        for -- an office request in an empty folder being answered with the
+        document tools instead of a request for a switch -- is a first-turn
+        case, and is offered.
+
+        The one thing that outranks a request is the person's own switch:
+        ``agent.toolsets.<group>: off`` is honoured and the request is
+        ignored, because that setting is somebody having already weighed
+        exactly this cost. A group already offered for the workspace
+        changes nothing here, so the usual case costs one substring scan.
+        """
+        with self._lock:
+            if self._decided is not None:
+                # The session's head is composed; a group added now would
+                # move rows a provider prefix cache has already served.
+                return []
+        wanted = request_groups(text)
+        if not wanted:
+            return []
+        added: list[str] = []
+        current = self.decided()
+        for group, term in wanted.items():
+            if group in current or group in self._from_request:
+                continue
+            if self._setting(group) == "off":
+                continue
+            with self._lock:
+                self._from_request[group] = f"the request says {term!r}"
+            added.append(group)
         return added
 
     # -- stacks (prompt advice) --------------------------------------------

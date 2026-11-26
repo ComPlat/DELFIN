@@ -258,6 +258,24 @@ class TurnMetrics:
     #: free: a session of 16 turns showed "$0.00" with nothing behind it
     #: (2026-09-17). "" only in a record written before this existed.
     price_state: str = ""
+    # What the turn SERVED, as identifiers only. These are read from the
+    # attribution in force by ``record_turn`` rather than required here, so
+    # every caller that builds a TurnMetrics today (the dashboard footer, the
+    # chat path) gets the columns without changing, and a caller that knows
+    # more can still pass them explicitly.
+    #
+    # ``None`` means nothing was known, and is written as ``None``: the header
+    # of this module states the schema is forward-compatible with new
+    # null-defaulted columns, and a reader must be able to tell "not
+    # attributed" from "attributed to something" without guessing. No molecule
+    # name, SMILES, path or user name ever lands here -- the store is kept for
+    # months. See delfin.agent.attribution.
+    molecule_id: str | None = None
+    workflow_id: str | None = None
+    task_id: str | None = None
+    agent_role: str | None = None
+    subagent_name: str | None = None
+    parent_session: str | None = None
     extras: dict = field(default_factory=dict)  # for future fields
 
     @property
@@ -278,6 +296,21 @@ def record_turn(metrics: "TurnMetrics", *, path: Path | None = None) -> None:
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         rec = asdict(metrics)
+        # Fill any attribution the caller did not set from the attribution in
+        # force. Both existing callers (the dashboard footer, the chat path)
+        # build the record from what the turn measured and know nothing about
+        # the molecule or run it belongs to; whoever wrapped the turn does, and
+        # saying it once there covers both. An explicit value always wins --
+        # what the caller states about its own turn beats what is ambient.
+        if (rec.get("molecule_id") is None and rec.get("workflow_id") is None
+                and rec.get("task_id") is None
+                and rec.get("subagent_name") is None):
+            try:
+                from . import attribution as _at
+                rec.update({k: v for k, v in _at.columns().items()
+                            if rec.get(k) is None})
+            except Exception:
+                pass
         if rec.get("ts", 0.0) == 0.0:
             rec["ts"] = time.time()
         with p.open("a", encoding="utf-8") as f:
