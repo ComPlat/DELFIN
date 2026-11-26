@@ -5,12 +5,12 @@
  "command": "python3 experiments/parity/w72-p3-a4/scenarios.py",
  "tree": {
   "module_file": "delfin/agent/swarm/land.py",
-  "land_sha": "81f83e81f04fb091644c74242ceebd7d9b24363a",
-  "head": "34129d33fd6b36c3b1afe957766ce4a411c39a7f",
+  "land_sha": "44d4c00d42f722921baba6ec17a5ab6bd18f6c4a",
+  "head": "947bc2f60955b9d849c1f77594f15fd9d8bde54e",
   "dirty_at_runtime": "",
   "python": "3.13.5"
  },
- "generated": "2026-11-26T20:35:34+0000",
+ "generated": "2026-11-26T21:13:07+0000",
  "definitions": {
   "REACHED": "a reviewer pair was reached and asked; the verdict is a reviewer verdict",
   "USED": "every reported finding carried a location that could be checked against the branch's own files (oracle: the seed)",
