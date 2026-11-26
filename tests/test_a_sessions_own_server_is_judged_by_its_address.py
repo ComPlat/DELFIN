@@ -17,6 +17,10 @@ port number in one network namespace is possible (``::1:P`` and
 ``127.0.0.1:P`` are different endpoints), and
 ``socket_guard.loopback_listeners`` is address-aware while the port set was
 not -- so the guard refused the wrong address and the proxy admitted it.
+That instrument is deliberately NOT in this branch (the bundle keeps its
+measuring tools out of the tree it measures); it is carried by commit
+``e8e9c0760`` on the branch this package was built on, from where the
+number can be re-derived.
 
 After: the rule is ``socket_guard.owns_loopback`` at the address the proxy
 actually connects to, for the inodes the session's jobs hold. The rule the
@@ -192,3 +196,49 @@ def test_another_session_does_not_inherit_the_listener(proc, monkeypatch):
     # Another session names no job of its own: nothing is its own.
     monkeypatch.setattr(BJ, "_own_job_pids", lambda sid: set())
     assert EP._own_server(_Perms(), "127.0.0.1", SHARED_PORT) is False
+
+
+# -- a loopback alias: 127/8 is not one address ------------------------------
+
+ALIAS = "127.0.0.2"
+
+
+def test_a_job_on_a_loopback_alias_is_the_sessions_own_there(proc, monkeypatch):
+    """A job bound to ``127.0.0.2:P`` is the session's own server at
+    ``127.0.0.2:P``.
+
+    ``127/8`` is a subnet: a program that runs two servers on one port
+    number puts them on two of its addresses, and the kernel keeps them
+    apart. Judging every ``127.*`` address as ``127.0.0.1`` loses the
+    listener, so the session's own server is refused at the address it
+    actually bound -- and the refusal's own sentence ("whatever answers
+    there was not started by this session") is then untrue.
+
+    The rule stays exact where it matters: ``127.0.0.2:P`` is still not
+    ``127.0.0.1:P``, so the address-awareness the package exists for is
+    untouched.
+    """
+    proc.process(600, socket_inodes=[OWN_INODE])
+    proc.listener(ALIAS, SHARED_PORT, OWN_INODE)
+    monkeypatch.setattr(BJ, "_own_job_pids", _own_job_pids(600))
+
+    # At the address it bound, the listener is the session's ...
+    assert SG.loopback_listeners(
+        ipaddress.ip_address(ALIAS), SHARED_PORT) == {OWN_INODE}
+    assert EP._own_server(_Perms(), ALIAS, SHARED_PORT) is True
+    # ... and the same port number on the plain loopback is not.
+    assert EP._own_server(_Perms(), "127.0.0.1", SHARED_PORT) is False
+
+
+def test_a_post_to_the_alias_reaches_the_sessions_server(proc, monkeypatch):
+    """The write side: the agent's POST to the server its own job started on
+    a loopback alias is not an upload and needs no setting."""
+    proc.process(600, socket_inodes=[OWN_INODE])
+    proc.listener(ALIAS, SHARED_PORT, OWN_INODE)
+    monkeypatch.setattr(BJ, "_own_job_pids", _own_job_pids(600))
+    p = _proxy()
+    try:
+        assert p.settle(ALIAS, SHARED_PORT, method="POST", body_bytes=10,
+                        perms=_Perms()) is None
+    finally:
+        p.close()

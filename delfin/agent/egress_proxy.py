@@ -26,11 +26,11 @@ as an upload (default 1 MiB), ``upload_domains`` the hosts (same forms as
 Decisions per request (``EgressProxy.decide``), for the session whose
 token the request carries (``token_for``):
 
-0. a server of the session's own on the loopback (``_own_server``: a port
-   its background jobs listen on, or one only processes of the command
-   that sent the request listen on, told apart by the sending helper's
-   pid) passes in every mode, writes included, and is connected to the
-   loopback directly;
+0. a server of the session's own on the loopback (``_own_server``: a
+   LISTENER its background jobs hold at the address the request goes to,
+   or one only processes of the command that sent the request hold, told
+   apart by the sending helper's pid) passes in every mode, writes
+   included, and is connected to the loopback directly;
 1. a port outside ``allowed_ports`` is refused;
 2. a ``web_fetch(domain:...)`` permission rule (``permission_rules``,
    when that module is present) denies, asks or allows first;
@@ -149,8 +149,26 @@ def _own_inodes(perms) -> set:
 
 
 def _loopback_addr(host: str) -> str:
-    """The address the proxy connects to for a loopback ``host``."""
-    return "::1" if str(host).strip("[]") == "::1" else "127.0.0.1"
+    """The address the proxy connects to for a loopback ``host``.
+
+    A literal loopback ADDRESS is kept as written: ``127/8`` is a subnet,
+    and a program that runs two servers on one port number puts them on two
+    of its addresses (``127.0.0.2:8080`` next to ``127.0.0.1:8080``). The
+    rule that decides whether a listener is the session's own asks the
+    kernel about one address, so collapsing every ``127.*`` to
+    ``127.0.0.1`` would lose the session's own listener at the address it
+    bound -- and, at the connect site, reach a different server than the
+    one that was judged. Only a NAME (``localhost``) and a bracketed or
+    unbracketed IPv6 loopback have no address of their own here, and they
+    resolve to the loopback the session's jobs are told about.
+    """
+    text = str(host or "").strip().strip("[]")
+    try:
+        if ipaddress.ip_address(text).is_loopback:
+            return text
+    except ValueError:
+        pass
+    return "127.0.0.1"
 
 
 def _peer_pid(conn) -> int:
@@ -813,21 +831,25 @@ class EgressProxy:
         """The sentence on a refused LOOPBACK port: the route that exists,
         so the command stops retrying the same connect.
 
-        Measured 2026-11-26 in the product's own cage: the agent's own
-        servers on the loopback are already reachable with no setting at
-        all (a listener of the command itself: raw connect CONNECTED, GET
-        and POST through the proxy 200; a listener of the session's
-        background jobs, used from a later command: 200), while the host's
-        services on the same loopback are refused (11434, 5432, 8088, 631,
-        3000: EACCES) because on this host the cage shares the host's
-        network namespace. So a refused loopback port is never "a port you
-        have to unlock to talk to your own server": the own server is open
-        already, and an agent retrying it is reaching for something of the
-        machine. A command carries no provider key either
-        (``_scrubbed_bash_env`` removes them, ``_SECRET_ENV_MARKERS``), so
-        posting to a model endpoint from a script cannot work at ANY port;
-        saying only "add it to allowed_ports" sent agents to ask the user
-        for exactly that.
+        Measured 2026-11-26 on ONE host, in this project's own development
+        cage: the agent's own servers on the loopback were already
+        reachable with no setting at all (a listener of the command
+        itself: raw connect CONNECTED, GET and POST through the proxy 200;
+        a listener of the session's background jobs, used from a later
+        command: 200), while host services on the same loopback were
+        refused with EACCES on the ports 11434, 5432, 631 and 8088 --
+        because on that host the cage shares the host's network namespace.
+        That is one configuration on one day, not a law: on a host whose
+        cage has its own network namespace, or that runs no services on
+        the loopback, the same requests behave differently.
+
+        What the sentence below may state as general is the part the
+        product itself guarantees, not the measurement: a loopback port is
+        not opened by naming it in ``allowed_ports`` alone, and a command
+        carries no provider key (``_scrubbed_bash_env`` removes them,
+        ``_SECRET_ENV_MARKERS``), so posting to a model endpoint from a
+        script cannot work at ANY port. Saying only "add it to
+        allowed_ports" sent agents to ask the user for exactly that.
 
         Only the sentence changes; no verdict here depends on it. Empty for
         a non-loopback host, where this note would be wrong.

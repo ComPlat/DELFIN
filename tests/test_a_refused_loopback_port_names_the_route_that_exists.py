@@ -1,13 +1,16 @@
 """A refused loopback port says what route exists; the agent stops retrying.
 
-Measured 2026-11-26 in the product's own cage (the agent's bash isolation
-path, on the host the swarm runs on): a command's own server on the
+Measured 2026-11-26 on ONE host (the machine the swarm runs on), in the
+agent's bash isolation path: a command's own server on the
 loopback is ALREADY reachable with no setting at all -- a raw connect
 CONNECTED, a GET and a POST through the proxy env answered 200, and a
 server started by the session's background job was reachable from a later
-command -- while the host's services on the same loopback (11434, 5432,
-8088) answered EACCES, because on that host the cage shares the host's
-network namespace and the socket guard judges every connect. The refusals
+command -- while host services on the same loopback (11434, 5432, 8088)
+answered EACCES, because on that host the cage shares the host's
+network namespace and the socket guard judges every connect. That is one
+configuration on one day, not a property of every host: where a cage has
+its own network namespace the same requests behave differently. The
+refusals
 were right. What was missing was the sentence saying so: the port refusal
 named only ``agent.sandbox_network.allowed_ports``, so an agent that
 wanted its own server (already open) or a model endpoint (unreachable at
@@ -102,10 +105,13 @@ def test_a_refused_port_on_another_host_gets_no_loopback_lecture():
 
 
 def test_a_session_that_listens_on_the_port_is_still_allowed(monkeypatch):
-    """Control passing before and after: the ownership rule is what opens
-    the loopback, and the text change must not disturb it. A listener one of
-    the session's background jobs holds -- on the address under test -- is
-    allowed, with a POST included.
+    """Passes AFTER the seam change; RED on ``origin/main``, where the rule
+    read a port set and this test patches inodes, so base's ``settle``
+    returns a port refusal.
+
+    The ownership rule is what opens the loopback, and the text change must
+    not disturb it. A listener one of the session's background jobs holds --
+    on the address under test -- is allowed, with a POST included.
 
     Patched at the seam the rule reads: the session's inodes and the kernel
     table naming them (``socket_guard.loopback_listeners``), because the
