@@ -21,7 +21,7 @@
 
 I predicted the consuming suites would pass (the arms' own reports said 255 passed on a1's check set, and a4's gate tests were green on its branch) and that the whole-tree run would show the same 7 uncollectable cluster imports both arms recorded. I predicted the fetch-page failure would appear unchanged, because both a2 and a1 called it pre-existing on main — and I predicted the personal-data and licence scanners would pass, because the arms' scratch looked clean.
 
-**Gap between prediction and data:** one. The personal-data scanner FAILED on the branch and passed on main — the first real defect the integration found. itself: a1's `after.json` recorded `/home/qmchem_max/...` and the username inside it hashed to a colleague's name (found via the scanner's own `_findings`, matching `qmchem` → `bd0cf1ee…`). Fixed in fad08e7eb; scanner now 18/18 passed. Everything else matched prediction.
+**Gap between prediction and data:** one. The personal-data scanner FAILED on the branch and passed on main — the first real defect the integration found: a1's `after.json` recorded the arm's worktree as an absolute path under a home directory, and the username inside that path hashed to a colleague's name (the scanner's own `_findings` named both offenders). Fixed in fad08e7eb by naming the tree by commit instead; scanner now 18/18 passed. Everything else matched prediction.
 
 ## Control run on untouched origin/main (step 1)
 
