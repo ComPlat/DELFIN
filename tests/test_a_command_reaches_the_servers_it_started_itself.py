@@ -177,9 +177,17 @@ class _Perms:
 
 def test_a_post_to_a_background_jobs_server_is_not_an_upload(monkeypatch):
     """Before, ``decide`` let the session's own port through and ``settle``
-    then refused every write to it with nobody to ask."""
-    monkeypatch.setattr(BJ, "own_listening_ports",
-                        lambda sid: {8393} if sid == "sess-own" else set())
+    then refused every write to it with nobody to ask.
+
+    Patched at the seam the rule reads: the session's listener INODES
+    (``bash_jobs.own_listening_sockets``) and the kernel table naming them --
+    the rule judges the address, not a port number, because the same port
+    number exists on ::1 and 127.0.0.1 at once (measured 2026-11-25)."""
+    from delfin.agent import socket_guard as SG
+    monkeypatch.setattr(BJ, "own_listening_sockets",
+                        lambda sid: {"8393"} if sid == "sess-own" else set())
+    monkeypatch.setattr(SG, "loopback_listeners",
+                        lambda ip, port: {"8393"} if port == 8393 else set())
     p = EP.EgressProxy(allowed_domains=(), allowed_ports=(80, 443))
     try:
         assert p.settle("127.0.0.1", 8393, method="POST", body_bytes=10,
@@ -193,7 +201,9 @@ def test_a_post_to_a_background_jobs_server_is_not_an_upload(monkeypatch):
 
 
 def test_the_proxy_asks_the_pid_that_forwarded_the_request(proc, monkeypatch):
-    monkeypatch.setattr(BJ, "own_listening_ports", lambda sid: set())
+    # No background job of this session holds a listener, so the only route
+    # left is the peer pid: the sandbox helper that forwarded the request.
+    monkeypatch.setattr(BJ, "own_listening_sockets", lambda sid: set())
     proc.process(100, socket_inodes=["11"]).listener("127.0.0.1", 9300, "11")
     # The helper forwards for the command below it; its own sockets, such
     # as the forwarder, do not make a port the command's.

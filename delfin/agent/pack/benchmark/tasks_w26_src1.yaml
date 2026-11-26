@@ -14,6 +14,10 @@
 tasks:
 
   - id: src1_verify_real_doi
+    # Measures the verify_source tool: the task's whole answer is what
+    # that tool returned for a real DOI, and src1_verify.py grades the
+    # returned record rather than the prose around it.
+    capability: [tool:verify_source]
     task_class: science
     mode: solo
     prompt: >-
@@ -29,6 +33,10 @@ tasks:
     max_tool_calls: 25
 
   - id: src1_trap_invented_doi
+    # Same tool, opposite verdict: a well-formed DOI that does not exist
+    # must come back not_found. This is the pair member that would fail
+    # if verify_source ever started answering "found" for anything.
+    capability: [tool:verify_source]
     task_class: science
     mode: solo
     prompt: >-
@@ -45,6 +53,7 @@ tasks:
     max_tool_calls: 25
 
   - id: src1_pubchem_property
+    capability: [tool:verify_source]
     task_class: science
     mode: solo
     prompt: >-
