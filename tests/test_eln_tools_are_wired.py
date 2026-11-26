@@ -204,7 +204,12 @@ def test_an_attachment_refuses_a_secret_shaped_path_unread(home, tmp_path):
 
     fake = FakeELN()
     secret = tmp_path / "id_ed25519_probe.key"
-    secret.write_bytes(b"-----BEGIN PRIVATE KEY-----\nprobe\n")
+    # Neutral bytes on purpose: `eln_attach` refuses this path on its NAME
+    # (`*.key`, `delfin/agent/api_client.py`'s deny list) before it opens the
+    # file, so the content cannot matter here. A real key header in a tracked
+    # file is what `scripts/secret_guard.py` refuses -- measured: it did, at
+    # this line, and `tests/test_no_secrets_are_committed.py` went red.
+    secret.write_bytes(b"probe\n")
     out = json.loads(eln_tools.execute(
         "eln_attach",
         {"path": str(secret), "element_type": "Sample", "element_id": 3,
