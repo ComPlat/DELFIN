@@ -594,8 +594,14 @@ def _parse_override_step_list(raw_steps) -> list[int]:
 
 
 def _invalidate_stage_files(base_name: str, workspace_root: Path) -> None:
-    """Remove .out, .inp, and .fprint files for a stage so recalc reruns it."""
-    for suffix in (".out", ".inp", ".inp.fprint"):
+    """Remove .inp and .fprint files for a stage so recalc reruns it.
+
+    The ``.out`` is deliberately kept: the stage is rerun because it is in the
+    force set, not because its output is missing, and deleting a finished
+    ``.out`` is what left junk in its place whenever the rerun failed. The
+    recalc wrapper moves it aside and restores it unless the rerun is complete.
+    """
+    for suffix in (".inp", ".inp.fprint"):
         path = workspace_root / f"{base_name}{suffix}"
         if path.exists():
             try:
@@ -804,8 +810,14 @@ def _apply_occupier_overrides(
         # Instead, let `read_xyz_and_create_input3` (engine/occupier.py)
         # regenerate the full OPT+FREQ input from the refreshed
         # `input_{folder}.xyz`/`.gbw` (copied above via skip_file_copy=False).
+        #
+        # The `.out` is NOT in this list. The rerun is forced by the force set
+        # (added below), so removing the output is not what makes it happen --
+        # and it was what lost a finished result: a rerun that failed or wrote
+        # junk left that junk where the good output had been. The recalc
+        # wrapper keeps it aside and restores it unless the rerun is complete.
         base_name = folder_name.replace("_OCCUPIER", "") if folder_name.endswith("_OCCUPIER") else folder_name
-        for ext in ("inp", "inp.fprint", "out", "xyz", "gbw", "hess", "engrad", "opt", "property.txt", "densities", "densitiesinfo", "bibtex"):
+        for ext in ("inp", "inp.fprint", "xyz", "gbw", "hess", "engrad", "opt", "property.txt", "densities", "densitiesinfo", "bibtex"):
             p = workspace_root / f"{base_name}.{ext}"
             if p.exists():
                 try:
