@@ -131,6 +131,16 @@ def host(tmp_path, monkeypatch):
     # whole process group and wave.alive(0) answers True.
     alive: set = set()
     monkeypatch.setattr(wave, "alive", lambda pid: int(pid) in alive)
+    # The two host seams _tick reaches through _children/pids, faked beside the
+    # others. Without them a case that uses a LIVE pid (os.getpid()) makes the
+    # tick read this machine: listeners_beyond_loopback() shells out to the real
+    # `ss`, and on a host where this process listens beyond the loopback the
+    # tick emergency-stops instead of doing what the case asserts (measured:
+    # a fake `ss` line for os.getpid() turns the silent-member case into
+    # "a member's process listens beyond the loopback"). A pid no process holds
+    # answers the same way on every host.
+    monkeypatch.setattr(guard, "_children", lambda pid: {int(pid)})
+    monkeypatch.setattr(guard, "listeners_beyond_loopback", lambda pids: [])
     # When a member ended == when its log last changed, as in the real code.
     monkeypatch.setattr(wave, "_ended_at", lambda ref: Path(
         wave.load_state(ref.partition("/")[0])["agents"][ref.partition("/")[2]]["log"]
@@ -515,8 +525,8 @@ def test_a_live_member_with_a_silent_log_is_raised(host):
     log.write_text("{}\n")
     old = time.time() - 90 * 60
     st = wave.load_state(run)
-    host["alive"].add(os.getpid())                                  # alive
-    st["agents"] = {"a": {"pid": os.getpid(),
+    host["alive"].add(4242)                                     # alive
+    st["agents"] = {"a": {"pid": 4242,
                           "branch": f"wave/{run}/a",
                           "worktree": str(wave.run_dir(run) / "a"),
                           "log": str(log), "started": old,
