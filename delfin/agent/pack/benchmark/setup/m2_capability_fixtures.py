@@ -85,7 +85,7 @@ _GREP = {
     "src/core.py": (
         "# Not implemented, never executed: a CAD placeholder.\n"
         "def _settle(grid, dt):\n"
-        "\"\"\"Propagate one time step of dt over grid.\"\"\"\n"
+        '    """Propagate one time step of dt over grid."""\n'
         "    return grid\n"
         "\n"
         "\n"

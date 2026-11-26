@@ -33,6 +33,7 @@ package.
 
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 
@@ -229,3 +230,34 @@ def test_the_docx_fixture_is_a_real_document(tmp_path, tasks_by_id):
     assert b"120 C" not in raw, (
         "the .docx stores its text uncompressed, so a plain read could "
         "recover it and the task would not measure read_document")
+
+
+def test_every_python_file_the_setup_writes_is_valid_python(tmp_path, tasks_by_id):
+    """The tree an agent searches must be a tree that could run.
+
+    A real benchmark run found the ``g1`` fixture's ``src/core.py`` would
+    not parse: its docstring sat at column 0 instead of under the ``def``,
+    so ``ast.parse`` raised IndentationError and the ``from core import
+    step, _settle`` in ``run.py`` would fail at runtime.  Nothing caught
+    it because every verifier grades the answer TEXT.
+
+    The task survives that -- it asks where a name is written, and a grep
+    does not compile.  But a fixture that cannot be imported makes the
+    wrong answers unrepresentative: an agent that tried to USE the tree
+    rather than read it would get a different failure from the one the
+    task is about.  The files are built by the setup script, so the
+    property is checkable here rather than by eye.
+    """
+    ws = _workspace(tmp_path, tasks_by_id["m2_a1_grep_file_where_is_it_defined"])
+    python_files = sorted(p for p in ws.rglob("*.py") if "m2_capability" not in p.name)
+    assert python_files, "the setup wrote no Python file to check"
+    broken = []
+    for path in python_files:
+        try:
+            ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except SyntaxError as exc:
+            broken.append(f"{path.relative_to(ws)}: {exc.msg} (line {exc.lineno})")
+    assert not broken, (
+        "the fixture tree an agent must search is not valid Python, so its "
+        "wrong answers are not the ones a real failure produces:\n  "
+        + "\n  ".join(broken))
