@@ -213,22 +213,41 @@ def _terminate_process_groups(processes: Sequence[ProcessInfo], *, dry_run: bool
     return terminated
 
 
+def _is_kept_stage_dir(path: Path) -> bool:
+    """True for an ``*_OCCUPIER`` stage directory, which cleanup must keep.
+
+    Those folders are resume state, not scratch. A resumed OCCUPIER stage sets
+    itself up from them: ``_occupier_results_fresh``
+    (delfin/workflows/pipeline.py:139) reuses a stage only while its
+    ``OCCUPIER.txt`` and ``.control_fingerprint`` are there, and fails closed
+    to a full rerun otherwise; ``read_occ``
+    (delfin/workflows/engine/occupier.py:646) raises without ``OCCUPIER.txt``
+    and its caller at :738 silently falls back to ``read_occ_from_control``, a
+    different electron configuration than the stage chose; the per-stage
+    ``CONTROL.txt`` and the ``.gbw``/``.xyz`` a stage restarts from live there
+    too. Only the temporary files inside them are scratch, and ``cleanup``
+    deletes files only, so it may still remove those.
+    """
+    return path.is_dir() and path.name.endswith("_OCCUPIER")
+
+
 def _remove_occuper_directories(workspace: Path, *, dry_run: bool = False) -> list[str]:
-    removed: list[str] = []
-    for pattern in OCCUPIER_DIR_PATTERNS:
-        for entry in sorted(workspace.glob(pattern)):
-            if not entry.is_dir():
-                continue
-            if dry_run:
-                removed.append(str(entry))
-                continue
-            try:
-                shutil.rmtree(entry)
-                removed.append(str(entry))
-                logger.info("Removed OCCUPIER directory %s", entry)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Failed to remove %s: %s", entry, exc)
-    return removed
+    """Return the stage directories cleanup refuses to delete; never removes them.
+
+    Kept as a named no-op so the report shape and its two printers
+    (delfin/cli.py ``cleanup --orca`` and ``stop --cleanup``) keep their
+    meaning. The deletion this function used to perform is the data loss the
+    stage directories' docstrings describe.
+    """
+    kept = [
+        str(entry)
+        for pattern in OCCUPIER_DIR_PATTERNS
+        for entry in sorted(workspace.glob(pattern))
+        if _is_kept_stage_dir(entry)
+    ]
+    if kept and dry_run:
+        logger.info("Keeping %d OCCUPIER stage directory/ies (resume state)", len(kept))
+    return kept
 
 
 def _remove_orca_scratch_dirs(scratch_root: Path, *, dry_run: bool = False) -> list[str]:
@@ -256,7 +275,13 @@ def cleanup_orca(workspace: str | Path = ".",
                  *,
                  scratch_root: Optional[str | Path] = None,
                  dry_run: bool = False) -> dict:
-    """Terminate ORCA jobs and purge OCCUPIER scratch folders."""
+    """Terminate ORCA jobs and purge ORCA scratch, keeping OCCUPIER resume state.
+
+    The ``*_OCCUPIER`` stage directories are kept (see
+    ``_remove_occuper_directories``); what is purged is ``.orca_scratch`` and
+    the ``DEFAULT_PATTERNS`` temporary files, including the copies inside a
+    kept stage directory, which ``cleanup`` unlinks file by file.
+    """
     workspace_path = Path(workspace).expanduser().resolve()
     scratch_path = Path(scratch_root).expanduser().resolve() if scratch_root else workspace_path
 
@@ -267,7 +292,8 @@ def cleanup_orca(workspace: str | Path = ".",
     processes = _collect_orca_processes(target_roots)
     termination_report = _terminate_process_groups(processes, dry_run=dry_run) if processes else []
 
-    removed_occuper = _remove_occuper_directories(workspace_path, dry_run=dry_run)
+    # Resume state, not scratch: reported so a caller can say what was spared.
+    kept_occuper = _remove_occuper_directories(workspace_path, dry_run=dry_run)
     removed_scratch = _remove_orca_scratch_dirs(scratch_path, dry_run=dry_run)
 
     cleaned_files = 0
@@ -282,7 +308,12 @@ def cleanup_orca(workspace: str | Path = ".",
     return {
         "processes_found": len(processes),
         "terminated_groups": termination_report,
-        "occuper_dirs_removed": removed_occuper,
+        "occuper_dirs_kept": kept_occuper,
+        # The name this key carried while the function deleted these folders.
+        # It still reports the same paths so a caller that reads it keeps
+        # working, but the paths in it were kept, never removed; new code
+        # should read ``occuper_dirs_kept``.
+        "occuper_dirs_removed": [],
         "scratch_dirs_removed": removed_scratch,
         "files_removed": cleaned_files,
         "dry_run": dry_run,
