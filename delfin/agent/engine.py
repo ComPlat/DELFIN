@@ -2975,6 +2975,12 @@ class AgentEngine:
             try:
                 if (msg or {}).get("role") != "user":
                     continue
+                # A row the harness wrote (injected context, a wake-up, a
+                # summary) is not the person's words: since the tool-group
+                # route scans this text, such a row could widen the offered
+                # tools in the person's name (safety review of wave 45).
+                if is_harness_row(msg):
+                    continue
                 content = msg.get("content")
                 if isinstance(content, list):      # image + text blocks
                     content = " ".join(
