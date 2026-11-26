@@ -206,10 +206,28 @@ def collect_roles(
     ``defer=False`` is passed explicitly because the question here is what
     each role can CALL, not what ships on a request; see that function's
     docstring for the measured reason the default had to stay put.
-    """
-    from .api_client import role_tool_surface_report
 
+    THE ROLE LIST IS BROADER THAN THE REPORT'S DEFAULT ONE. With ``roles``
+    left as ``None`` the report enumerates only ``_ROLE_EXEC_ALLOWLIST`` and
+    ``_ROLE_EXEC_DENYLIST`` -- 7 roles. But ``_role_allowlist``, which is
+    what actually refuses a tool at the execution call site, also answers
+    for every subagent preset carrying a ``tools:`` line: 17 more, so 19
+    restricted roles in all. A table built from the report's default
+    therefore showed 8 of them and left a reader to conclude the other 11
+    were unrestricted. Naming them here rather than widening the report's
+    default keeps ``test_the_office_role_appears_in_the_surface_report``
+    and every other existing caller measuring what they measured before.
+    """
+    from .api_client import (_ROLE_EXEC_ALLOWLIST, _ROLE_EXEC_DENYLIST,
+                             _role_allowlist, role_tool_surface_report)
+    from .subagents import SUBAGENT_PRESETS
+
+    if roles is None:
+        roles = ["", *sorted(
+            set(_ROLE_EXEC_ALLOWLIST) | set(_ROLE_EXEC_DENYLIST)
+            | {r for r in SUBAGENT_PRESETS if _role_allowlist(r) is not None})]
     return role_tool_surface_report(roles, defer=False)
+
 
 
 def main(argv: list[str] | None = None) -> int:

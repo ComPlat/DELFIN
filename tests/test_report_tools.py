@@ -203,3 +203,64 @@ def test_real_store_never_raises():
     data = report_tools.collect()
     assert isinstance(data["tools"], dict)
     assert data["n_advertised"] >= 50
+
+
+def test_a_preset_backed_role_is_not_missing_from_the_roles_table():
+    """Every role the product actually restricts must have a row.
+
+    ``_role_allowlist`` (``api_client.py:7624``) is what refuses a tool at
+    the execution call site, and it answers for the two roles in
+    ``_ROLE_EXEC_ALLOWLIST`` AND for every subagent preset that carries a
+    ``tools:`` line. ``role_tool_surface_report`` enumerates only the two
+    dicts, so a preset-backed role was restricted with no row in the table
+    this command prints -- a reader asking "what does role scoping save"
+    saw 8 of the 19 restricted roles and concluded the other 11 were
+    unrestricted.
+
+    Failing input: any preset whose ``tools:`` line restricts it. Removing
+    the preset enumeration from ``collect_roles`` makes this fail with
+    ``explore`` absent from the report.
+    """
+    from delfin.agent.api_client import _role_allowlist
+    from delfin.agent.subagents import SUBAGENT_PRESETS
+
+    restricted = sorted(
+        role for role in SUBAGENT_PRESETS if _role_allowlist(role) is not None)
+    assert restricted, "no preset role is restricted, so this test measures nothing"
+
+    report = report_tools.collect_roles()
+    missing = [role for role in restricted if role not in report]
+    assert not missing, (
+        "these roles are restricted by _role_allowlist but have no row in "
+        f"the --roles table: {missing}")
+
+    # A row is not enough on its own: it must be the SCOPED surface. A report
+    # that listed the role but ignored its allow-list passes the membership
+    # check above and is still wrong, so pin the subset relation for one
+    # preset-backed role.
+    base = report[""]
+    for role in restricted:
+        assert report[role]["count"] <= base["count"], role
+    scoped = [r for r in restricted if report[r]["count"] < base["count"]]
+    assert scoped, (
+        "no preset-backed role has a surface narrower than the baseline, so "
+        "the rows added by this report are not scoped at all")
+
+
+def test_the_roles_table_names_the_cheapest_scoped_role():
+    """The printed table answers "which role offers least" for ALL roles.
+
+    A control that passes before and after: the ordering question is what
+    the table is for, and the answer must be a restricted role, not the
+    baseline row which sorting could otherwise place first.
+    """
+    report = report_tools.collect_roles()
+    text = report_tools.format_roles(report)
+    rows = [ln for ln in text.splitlines() if ln and not ln.startswith(("-", "Tool", "role"))]
+    assert rows[0].startswith("(unrestricted)"), rows[0]
+    # The cheapest scoped row is the one with the fewest tokens after the
+    # baseline; it must be narrower than the baseline, never equal to it.
+    scoped = [(v["total_tokens"], r) for r, v in report.items() if r]
+    cheapest_tokens, cheapest_role = min(scoped)
+    assert cheapest_tokens < report[""]["total_tokens"]
+    assert cheapest_role in text
