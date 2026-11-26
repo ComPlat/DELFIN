@@ -505,6 +505,47 @@ def test_one_key_or_none_changes_nothing(waves):
     assert wave.pick_key("blablador", cfg) == ""
 
 
+def _commit_file(repo, rel, text="x\n"):
+    f = Path(repo) / rel
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(text)
+    subprocess.run(["git", "add", rel], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", f"add {rel}"], cwd=repo, check=True)
+
+
+def test_a_repo_that_tracks_a_denied_file_is_refused(waves):
+    """A tracked lockbox list would sit in every member's worktree, and the
+    shared git objects expose it even when left out of the checkout: the
+    wave refuses to start, names the file, and launches nothing."""
+    _commit_file(waves["repo"], "sets/loop_lockbox.ids")
+    with pytest.raises(wave.WaveError, match="loop_lockbox.ids"):
+        wave.start("r60", [_task("a", "write x")], str(waves["repo"]), wait=False)
+    assert wave.load_state("r60")["agents"] == {}
+
+
+def test_the_repository_adds_its_own_patterns(waves):
+    _commit_file(waves["repo"], ".swarm-hide", "# private\nsecret_*.csv\n")
+    _commit_file(waves["repo"], "data/secret_ligands.csv")
+    with pytest.raises(wave.WaveError, match="secret_ligands.csv"):
+        wave.start("r61", [_task("a", "write x")], str(waves["repo"]), wait=False)
+
+
+def test_an_untracked_denied_folder_is_hidden_from_the_member(waves, monkeypatch):
+    local = Path(waves["repo"]) / "CCDC_all"
+    local.mkdir()
+    (local / "entry.cif").write_text("data\n")
+    seen = []
+    real = subprocess.Popen
+    def spy(cmd, **kw):
+        env = kw.get("env") or {}
+        if "DELFIN_SWARM_RUN" in env:
+            seen.append(env.get("DELFIN_CAGE_HIDE", ""))
+        return real(cmd, **kw)
+    monkeypatch.setattr(wave.subprocess, "Popen", spy)
+    wave.start("r62", [_task("a", "write x")], str(waves["repo"]), wait=False)
+    assert seen and str(local) in seen[0].split(os.pathsep), seen
+
+
 def test_a_second_tick_while_one_runs_does_nothing(waves):
     with wave._flock(wave.root() / ".tick.lock") as held:
         assert held

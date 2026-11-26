@@ -41,6 +41,7 @@ copied in (``collect``), because their scratch/ is in their worktree.
 from __future__ import annotations
 
 import contextlib
+import fnmatch
 import json
 import os
 import re
@@ -67,6 +68,14 @@ _DEFAULTS = {
     # members use, so a provider's rate limit is shared over its keys. The
     # values stay in the credential store; the state records the name only.
     "key_pool": {},
+    # Files no member may ever see (matched case-insensitively against each
+    # tracked path and its file name). A repository that TRACKS one is not
+    # handed to members at all: a worktree carries it, and even a file left
+    # out of the checkout is readable through the shared git objects
+    # (`git show HEAD:<path>`), so hiding cannot protect it. A
+    # `.swarm-hide` file at the repository's root adds patterns, one a line.
+    "deny_patterns": ["*lockbox*", "*_ccdc_*", "*ccdc_all*", "*csd_fetched*",
+                      "*paper_data_private*"],
     "member_cpu": "200%",
     "member_memory": "12G",
     # 256 was too few: the egress proxy's threads in a busy member failed
@@ -366,6 +375,68 @@ def _git(repo: Path, *args: str, cwd: Path | None = None) -> str:
     return safe_git.check_output(list(args), str(cwd or repo)).strip()
 
 
+def deny_patterns(repo: Path, cfg: dict | None = None) -> list[str]:
+    """The run's deny patterns: the setting's, plus the repository's own
+    ``.swarm-hide`` (blank lines and ``#`` comments skipped)."""
+    cfg = cfg or settings()
+    pats = [str(p).lower() for p in (cfg.get("deny_patterns") or []) if str(p).strip()]
+    try:
+        for line in (Path(repo) / ".swarm-hide").read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                pats.append(line.lower())
+    except OSError:
+        pass
+    return list(dict.fromkeys(pats))
+
+
+def denied_tracked_files(repo: Path, refs: Iterable[str], cfg: dict | None = None) -> list[str]:
+    """Tracked paths at any of ``refs`` that match a deny pattern."""
+    pats = deny_patterns(repo, cfg)
+    if not pats:
+        return []
+    hits: set[str] = set()
+    for ref in dict.fromkeys(refs):
+        # A later stage's base (an integrator's branch) does not exist yet at
+        # the start; it grows out of a base checked here.
+        try:
+            _git(repo, "rev-parse", "--verify", "-q", f"{ref}^{{commit}}")
+        except subprocess.CalledProcessError:
+            continue
+        listing = _git(repo, "ls-tree", "-r", "--name-only", ref)
+        for path in listing.splitlines():
+            low = path.lower()
+            if any(fnmatch.fnmatch(low, p) or fnmatch.fnmatch(low.rsplit("/", 1)[-1], p)
+                   for p in pats):
+                hits.add(path)
+    return sorted(hits)
+
+
+def denied_local_paths(repo: Path, cfg: dict | None = None, *, depth: int = 4,
+                       limit: int = 200) -> list[str]:
+    """Untracked files or folders under the repository that match a deny
+    pattern (to depth ``depth``): a member could read them at their
+    original path, so the cage hides them."""
+    pats = deny_patterns(repo, cfg)
+    out: list[str] = []
+    root = Path(repo)
+    base = len(root.parts)
+    for cur, dirs, files in os.walk(root):
+        if ".git" in dirs:
+            dirs.remove(".git")
+        level = len(Path(cur).parts) - base
+        for name in list(dirs) + files:
+            if any(fnmatch.fnmatch(name.lower(), p) for p in pats):
+                out.append(str(Path(cur) / name))
+                if name in dirs:
+                    dirs.remove(name)
+        if level >= depth:
+            dirs[:] = []
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _hidden(task: dict) -> list[str]:
     hide = [str(Path(p).expanduser()) for p in task.get("hide") or [] if p]
     hide.append(str(Path.home() / ".delfin"))
@@ -440,7 +511,8 @@ def _launch(run: str, task: dict, repo: Path, session: str = "") -> dict:
     log = d / f"{tid}.log"
     env = dict(os.environ, DELFIN_SWARM_RUN=run, DELFIN_NO_BROWSER="1",
                DELFIN_AGENT_LABEL=f"{run}/{tid}",
-               DELFIN_CAGE_HIDE=os.pathsep.join(_hidden(task)))
+               DELFIN_CAGE_HIDE=os.pathsep.join(
+                   list(dict.fromkeys(_hidden(task) + denied_local_paths(repo, cfg)))))
     if cfg.get("harness"):
         env["PYTHONPATH"] = str(Path(str(cfg["harness"])).expanduser())
     for name in list(env):
@@ -534,6 +606,15 @@ def start(run: str, tasks: list[dict], repo: str | Path, *, parallel: int | None
     repo = Path(repo).resolve()
     _git(repo, "rev-parse", "--git-dir")
     cfg = settings()
+    denied = denied_tracked_files(repo, [str(t.get("base") or "origin/main") for t in tasks], cfg)
+    if denied:
+        shown = ", ".join(denied[:8]) + (f" and {len(denied) - 8} more" if len(denied) > 8 else "")
+        raise WaveError(
+            f"refused: {repo} tracks files no member may see ({shown}). A member's worktree "
+            "would carry them, and the shared git objects would expose them even if left out "
+            "of the checkout. Give the swarm a repository that does not track them (a copy "
+            "with them removed from its history), or stop tracking them first. Patterns: "
+            "agent.swarm.deny_patterns and the repository's .swarm-hide.")
     caps = {str(k): int(v) for k, v in (cfg["provider_caps"] or {}).items()}
     d = run_dir(run)
     d.mkdir(parents=True, exist_ok=True)
