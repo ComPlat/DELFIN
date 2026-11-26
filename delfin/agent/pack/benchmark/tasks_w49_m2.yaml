@@ -120,11 +120,11 @@ tasks:
     task_class: chemistry
     mode: solo
     prompt: >-
-      sv1/calc/ holds finished calculations. Within each level of theory,
-      which calculation is lowest in energy? And by how much does the best
-      PBE0/def2-SVP calculation lie below the best B3LYP/def2-SVP one --
-      give it in Eh and in kcal/mol. Write sv1/answer.md and state
-      explicitly how the comparison is scoped.
+      calc_archive/calc/ holds finished calculations. Within each level of
+      theory, which calculation is lowest in energy? And by how much does the
+      best PBE0/def2-SVP calculation lie below the best B3LYP/def2-SVP one --
+      give it in Eh and in kcal/mol. Write sv1/answer.md and state explicitly
+      how the comparison is scoped.
     verify: m2_a6_search_calcs_verify.py
     setup: m2_capability_fixtures.py
     max_duration_s: 600

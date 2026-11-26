@@ -213,7 +213,7 @@ def test_the_setup_builds_what_the_tasks_ask_about(tmp_path, tasks_by_id):
     assert sorted(built) == ["A1", "A2", "A3", "A4", "A5", "A6"]
     for rel in ("g1/src/core.py", "b2/run_a/cycle_times.csv",
                 "a3/specs/pump_a.txt", "d4/method_note.docx",
-                "sv1/calc/ethanol_pbe0/ethanol_pbe0.out"):
+                "calc_archive/calc/ethanol_pbe0/ethanol_pbe0.out"):
         assert (ws / rel).is_file(), f"setup did not write {rel}"
 
 

@@ -216,7 +216,27 @@ _SV_ENERGIES = {
 
 
 def _build_sv1(root: Path) -> None:
-    base = root / "sv1" / "calc"
+    """The corpus the calc tools must be scoped to, plus an answer folder.
+
+    ``calc_archive/calc`` is not a style choice: ``benchmark_runner
+    ._fixture_calc_dirs`` redirects ``search_calcs`` and ``calc_summary`` at a
+    fixture ONLY when that path exists, so that a benchmark never reads the
+    operator's own corpus -- hundreds of runs "whose contents nobody chose".
+    Built as ``sv1/calc`` the fixture was invisible to that gate, the task ran
+    against the real tree, and the verifier demanded energies that tree does
+    not hold. The two existing calc fixtures use ``calc_archive`` for the same
+    reason (``setup/a_small_calc_archive.py``,
+    ``setup/two_conformers_one_dispersion_apart.py``).
+
+    ``sv1/`` is kept as the ANSWER folder: a file written inside the indexed
+    tree would change the corpus the task is scored against.
+    """
+    base = root / "calc_archive" / "calc"
+    # An empty archive beside it: the tools read both roots, and the gate sets
+    # the pair together.
+    (root / "calc_archive" / "archive").mkdir(parents=True, exist_ok=True)
+    # The answer folder the prompt names, outside the indexed tree.
+    (root / "sv1").mkdir(parents=True, exist_ok=True)
     for name, (func, basis, energy) in _SV_ENERGIES.items():
         d = base / name
         d.mkdir(parents=True, exist_ok=True)

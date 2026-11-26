@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """A6 of the capability census, through ``search_calcs``.
 
-Question: ``sv1/calc/`` holds finished calculations. Within each method,
-which calculation is the lowest in energy, and by how much does the best
-PBE0/def2-SVP calculation lie below the best B3LYP/def2-SVP one?
+Question: ``calc_archive/calc/`` holds finished calculations. Within each
+method, which calculation is the lowest in energy, and by how much does the
+best PBE0/def2-SVP calculation lie below the best B3LYP/def2-SVP one?
+
+The corpus lives at ``calc_archive/calc/`` because that is the path
+``benchmark_runner._fixture_calc_dirs`` redirects the calc tools at; built
+anywhere else the fixture is invisible to the gate and the tools answer from
+the operator's own tree. The answer is read from ``sv1/answer.md``, outside
+the indexed corpus.
 
 Why the answer differs when the capability works: there are three
 ethanol calculations at two different levels of theory, plus a METHANOL
