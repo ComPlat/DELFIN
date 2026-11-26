@@ -48,15 +48,27 @@ from delfin.agent import api_client
 # for lab_run's own schema. This file's figures count the CATALOGUE; the
 # number that ships is ratcheted in
 # tests/test_tool_schema_budget.py::_SHIPPED_BUDGET, which did not move.
+#
+# RE-TAKEN AGAIN 2026-11-26 on the MERGED tree, one cause: the
+# `chemotion-eln` preset. The preset's NAME is what the derived `subagent`
+# description grows by, and it measures +8 tokens here -- estimate
+# 12,162 -> 12,170, report total 12,072 -> 12,080, and both digests with
+# them. The sibling ratchet tests/test_tool_schema_budget.py had already
+# been re-measured on the merged tree (_TOKEN_BUDGET = 12_080); this file
+# still carried the figure the ELN branch measured alone, so the two pins
+# asserted two different totals for one catalogue. A merge resolves a
+# numeric ceiling by measuring the result, not by keeping one branch's
+# number. COUNT (98) and name order did not move, and their pins are
+# untouched, because moving a name is a different act from adding a preset.
 PINNED_COUNT = 98
 PINNED_NAMES_SHA256 = (
     "7903960c5ec64ec468cbd81d93b4d3b4be10d1823ab2a4d7a18547fd5dfc449f")
 PINNED_BLOB_SHA256 = (
-    "7c4f3e00e8c72e04d0a70207c1abf1eb0149d70956d70e8632bf5924b3096c8f")
-PINNED_ESTIMATE = 12162
+    "9b7fbf43c785364728bb253e87d43a7b57361bc9c4531fdbc6711b16058e7b37")
+PINNED_ESTIMATE = 12170
 PINNED_REPORT_SHA256 = (
-    "c08b5eed8657869a7fc2b554a55b2a0e4836858886d94a7bb180f7a69bf53bb8")
-PINNED_REPORT_TOTAL_TOKENS = 12072
+    "e5e8f66480d5a05356267a60880ab1413f2401da7ea71cfdfc0f5591a667d67c")
+PINNED_REPORT_TOTAL_TOKENS = 12080
 
 
 def _names_sha256() -> str:
@@ -123,7 +135,6 @@ def test_tool_catalog_imports_nothing_from_api_client():
     pytest.importorskip("delfin.agent.tool_catalog")
     import ast
     import pathlib
-    import sys
 
     import delfin.agent.tool_catalog as tc
 
@@ -138,4 +149,10 @@ def test_tool_catalog_imports_nothing_from_api_client():
             else:
                 mod = node.module or ""
             assert not mod.startswith("delfin.agent.api_client"), mod
-    assert "delfin.agent.api_client" not in sys.modules or True
+    # No bare `assert ... or True` here: this file's own module-level import of
+    # api_client (line 34, for the catalogue constants) puts it in
+    # `sys.modules` before this test runs, so the condition was always false
+    # and the line could never fail. The loop above is the real check -- it
+    # asserts the dependency DIRECTION from the source, per import node. A
+    # fresh-interpreter check would assert something this test cannot: that
+    # importing the catalogue pulls nothing in.

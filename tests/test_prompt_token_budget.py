@@ -294,7 +294,14 @@ def test_a_foreign_workspace_receives_less_than_the_delfin_tree(stack):
         # `lab-specialist`. Measured 21 tokens and not payable for the
         # same reason -- the cue is what makes the role get chosen. The
         # row is one line of a table every specialist must have.
-        ("solo_agent", "solo", ["solo_agent"], 11757),
+        # 11757 -> 11776 (2026-11-26): the same again, for `chemotion-eln`,
+        # re-measured on the MERGED tree. The lab row was raised by its own
+        # branch's 21 and the ELN commit never re-measured the sum, so the
+        # merged head measured 11776 against a 11757 ceiling -- 11736 + 21
+        # + 19, not 11736 + 21. Not payable for the reason above (the cue
+        # is what gets the role chosen), and a merge resolves a ceiling by
+        # measuring the result: 11736 + 21 + 19 = 11776.
+        ("solo_agent", "solo", ["solo_agent"], 11776),
         ("dashboard_agent", "dashboard", ["dashboard_agent"], 10400),
     ],
 )
