@@ -2969,6 +2969,9 @@ def cmd_bench(args: argparse.Namespace) -> int:
     from . import benchmark_runner as _br
     action = getattr(args, "bench_action", "") or "run"
 
+    if action == "ab":
+        return _cmd_bench_ab(args)
+
     if action == "list":
         tasks = _bm.load_tasks()
         if not tasks:
@@ -3443,6 +3446,38 @@ def _bench_schedule_hint(model: str, provider: str = "",
         provider=f" --provider {provider}" if provider else "",
         backend=f" --backend {backend}" if backend and backend != "api" else "",
     )
+
+
+def _cmd_bench_ab(args: argparse.Namespace) -> int:
+    """`bench ab` — the same tasks N times on each side of a change.
+
+    Thin on purpose: the arithmetic, the refusals and the budget gate live in
+    ``bench_ab`` so they can be tested without a model. What is here is the
+    exit code contract — 0 when the comparison ran (whatever it found), 2 when
+    the two sides were refused as a pair, 1 when the measurement could not be
+    taken. A refusal is never a 0: a script that reports "no difference" for a
+    comparison that never happened is the defect this verb exists to prevent.
+    """
+    from . import bench_ab as _ab
+
+    opts = _ab._cmd_options_from_args(args)
+    try:
+        report = _ab.run(**opts)
+    except _ab.AbRefused as exc:
+        # The reason, not a traceback: `bench run` taught this lesson already
+        # (an A/B trio died on a twenty-line traceback whose one useful
+        # sentence was at the bottom).
+        print(f"\nbench ab refused: {exc}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        print("\nbench ab interrupted; no difference was measured.",
+              file=sys.stderr)
+        return 1
+    print(_ab.format_report(report))
+    if getattr(args, "json", False):
+        print()
+        print(json.dumps(report.as_dict(), indent=2, default=str))
+    return 0
 
 
 def _cmd_bench_nightly(args: argparse.Namespace) -> int:
@@ -6199,6 +6234,78 @@ def build_parser() -> argparse.ArgumentParser:
                                help="Override the runs directory "
                                     "(default: ~/.delfin/benchmark_runs)")
     bench_nightly.set_defaults(bench_action="nightly")
+
+    bench_ab = bench_sub.add_parser(
+        "ab",
+        help=("A before/after measurement with its own error bar: run the same "
+              "tasks N times on each of two refs, each side in its own "
+              "worktree and a fresh HOME, and report the pass-rate difference "
+              "with an interval — saying 'no measurable difference' when the "
+              "interval contains zero"),
+        description=(
+            "Paired comparison. The same task set is run --repeat times on "
+            "--base and on --head; the sides differ in the code and in nothing "
+            "else. For each task the report gives the pass rate per side, the "
+            "difference, and a Newcombe (method 10) interval on that "
+            "difference built from the two Wilson intervals, with the reason "
+            "it was chosen. A task is called improved or regressed only when "
+            "the interval EXCLUDES zero; otherwise it says 'no measurable "
+            "difference'.\n\n"
+            "Refused (exit 2, nothing measured) when the sides did not use "
+            "the same model, when a task's text differs between the refs, or "
+            "when a side's attempt could not be attributed to that side's "
+            "tree. Budget-gated by the nightly round's own daily core-hour "
+            "limit."),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    bench_ab.add_argument("--base", default="origin/main",
+                          help="The ref the change is measured against "
+                               "(default: origin/main)")
+    bench_ab.add_argument("--head", default="HEAD",
+                          help="The ref carrying the change (default: HEAD)")
+    bench_ab.add_argument("--model", required=True,
+                          help=("The model BOTH sides run (required: two "
+                                "models measured against each other is not an "
+                                "A/B of the code)"))
+    bench_ab.add_argument("--provider", default="",
+                          help="claude / openai / kit / blablador")
+    bench_ab.add_argument("--backend", default="", choices=["", "api", "cli"])
+    bench_ab.add_argument(
+        "--repeat", type=int, default=3,
+        help=("Samples per task PER SIDE (default: 3). The interval is built "
+              "from these, so this is the noise knob: 1 cannot separate an "
+              "improvement from noise at all"))
+    bench_ab.add_argument(
+        "--task", default=[], action="append", dest="ab_task",
+        help=("Task ids or globs. Comma-separated and repeatable, like "
+              "`bench run --task`"))
+    bench_ab.add_argument(
+        "--tags", default=[], action="append",
+        help=("Select by capability word: a task's `behavior` tag (verify, "
+              "plan, scout, ask, act) or its `task_class` (chemistry, office, "
+              "generalist, ...). Comma-separated, repeatable"))
+    bench_ab.add_argument(
+        "--changes", default="",
+        help=("Select by the files a ref changed against --base: each file is "
+              "mapped to the capabilities whose tools/specialists/skills it "
+              "implements, and the report names the rule that selected each "
+              "task. e.g. --changes HEAD~3"))
+    bench_ab.add_argument(
+        "--budget", type=float, default=None,
+        help=("Daily core-hour limit (default: the nightly round's own "
+              "DEFAULT_DAILY_BUDGET_CORE_HOURS). An attempt that would push "
+              "the day past it is refused and named"))
+    bench_ab.add_argument(
+        "--seed", default="",
+        help=("Sampling seed asked of BOTH sides (default: the session's "
+              "configured seed, else the provider's default — the report says "
+              "which)"))
+    bench_ab.add_argument(
+        "--temperature", default="",
+        help="Sampling temperature asked of BOTH sides")
+    bench_ab.add_argument("--json", action="store_true",
+                          help="Also emit the raw measurement as JSON")
+    bench_ab.set_defaults(bench_action="ab")
 
     bench.set_defaults(func=cmd_bench, bench_action="run")
 
