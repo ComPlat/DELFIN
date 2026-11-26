@@ -1,0 +1,148 @@
+diff --git a/delfin/agent/approval_guard.py b/delfin/agent/approval_guard.py
+--- a/delfin/agent/approval_guard.py
++++ b/delfin/agent/approval_guard.py
+@@ -67,11 +67,21 @@
+ #: The subcommands that answer. ``ls``, ``show`` and ``watch`` read.
+ _ANSWER_VERBS = ("approve", "deny", "answer")
+ 
+-# After quotes and backslashes are removed: ``approvals`` followed by an
+-# answering verb, flags allowed between. ``del'fin'-agent "approvals"
+-# appro\ve`` reads as the shell will run it.
++# After quotes and backslashes are removed: one of the two answering rooms
++# followed by an answering verb, flags allowed between. ``del'fin'-agent
++# "approvals" appro\ve`` reads as the shell will run it.
++#
++# Two rooms answer, not one. ``approvals approve`` answers the agent's
++# pending approvals; ``eln approve`` answers a filed Chemotion ELN write,
++# and it is the same person's act reached one verb over -- so a command
++# that can reach the one is refused as text for the other too. It was
++# measured reaching it: ``answer_command("delfin-agent eln approve X")``
++# was None, while ``grant`` refused on nothing but the process marker, so a
++# process that dropped DELFIN_AGENT_SESSION minted a grant.
++_ANSWER_ROOMS = ("approvals", "eln")
+ _ANSWER_COMMAND_RE = re.compile(
+-    r"(?<![\w.-])approvals\s+(?:-{1,2}[\w-]+(?:=\S+)?\s+)*"
++    r"(?<![\w.-])(" + "|".join(_ANSWER_ROOMS) + r")\s+"
++    r"(?:-{1,2}[\w-]+(?:=\S+)?\s+)*"
+     r"(" + "|".join(_ANSWER_VERBS) + r")(?![\w-])", re.IGNORECASE)
+ 
+ # ``service stop|restart|end`` under any program name, after the same
+@@ -94,6 +104,14 @@
+ _ANSWER_CALL_RE = re.compile(r"\banswer\s*\(|\bimport\b[^\n;]*\banswer\b")
+ _IMPORT_RE = re.compile(r"\bimport\b|__import__|importlib")
+ 
++# The Python route to a grant, one import away from the CLI:
++# ``from delfin.lab import eln_write; eln_write.grant("eln-…")`` -- and the
++# same for a lab action's approval. Named only together with its module and
++# an import, the same rule the answer functions above follow, so a command
++# that merely reads one of those files is not refused.
++_GRANT_MODULE_RE = re.compile(r"\b(?:eln_write|lab\.approvals)\b")
++_GRANT_CALL_RE = re.compile(r"\bgrant\s*\(")
++
+ # The agent service's socket and run files, where a window answers a
+ # session's approvals: ``/…/delfin-<uid>/agent.sock`` and
+ # ``.delfin/agent_service/run``, joined the same three ways. A literal
+@@ -223,14 +241,21 @@
+     """What in *cmd* answers an approval, or None.
+ 
+     Input: a shell command, commit-message prose already blanked by the
+-    caller. Output: a short description of the match. Four shapes:
+-    the ``approvals approve|deny|answer`` subcommand under any program
+-    name, ``service stop|restart|end`` (the agent service holds the
+-    sessions whose approvals a window answers), the Python functions that
+-    write an answer, and any naming of an answer file or answer location.
++    caller. Output: a short description of the match. Five shapes:
++    the ``approvals`` (or ``eln``) ``approve|deny|answer`` subcommand
++    under any program name, ``service stop|restart|end`` (the agent
++    service holds the sessions whose approvals a window answers), the
++    Python functions that write an answer, a Python ``grant(`` on the
++    module that files those requests, and any naming of an answer file or
++    answer location.
+     """
+     if _ANSWER_COMMAND_RE.search(_unquoted(cmd)):
+         return "the command answers a pending approval"
++    _grant_text = _dequoted(cmd)
++    if (_GRANT_MODULE_RE.search(_grant_text)
++            and _GRANT_CALL_RE.search(_grant_text)
++            and _IMPORT_RE.search(_grant_text)):
++        return "the command mints an approval grant"
+     stop = _SERVICE_STOP_RE.search(_unquoted(cmd))
+     if stop and stop.group(1).lower() == "end":
+         return ("the command ends sessions of the agent service, which are "
+
+diff --git a/tests/test_eln_approve_is_refused_as_command_text.py b/tests/test_eln_approve_is_refused_as_command_text.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_eln_approve_is_refused_as_command_text.py
++"""The person's `eln approve` is refused as command text, like `approvals approve`.
++
++Input: the spellings of the same act, built as strings and handed to
++``approval_guard.answer_command`` -- and, for the shell route, to the real
++permission gate as a ``bash`` command.
++Output: each one is refused as an approval-answer before the process marker
++is ever consulted, so a shell that drops ``DELFIN_AGENT_SESSION`` still
++cannot mint a grant.
++Controls: the read verbs (``pending``, ``show``, ``collections``) stay free,
++``delfin-agent approvals approve`` keeps answering as it did, and merely
++importing or reading the module is not refused.
++
++Why it exists. The docstring of ``delfin/lab/eln_cli.py`` claimed this layer
++and the code did not have it: measured on this tree before the fix,
++``answer_command("delfin-agent eln approve X")`` was ``None``, so the only
++gate was the environment variable. A gate the act reaches by dropping one
++variable is not a gate.
++"""
++
++from __future__ import annotations
++
++import pytest
++
++from delfin.agent import approval_guard
++
++SUB = "delfin-agent"
++
++
++def _cmd(*words: str) -> str:
++    """A command line, joined here -- never typed into a shell."""
++    return " ".join((SUB,) + words)
++
++
++ANSWERS = {
++    "eln approve": _cmd("eln", "approve", "eln-abc123"),
++    "eln approve with a flag": _cmd("eln", "approve",
++                                    "--request-id=eln-abc123"),
++    "eln approve behind env -u": (
++        "env -u DELFIN_AGENT_SESSION " + _cmd("eln", "approve", "eln-abc123")),
++    "eln approve in a nested shell": (
++        "bash -c '" + _cmd("eln", "approve", "eln-abc123") + "'"),
++    "eln deny": _cmd("eln", "deny", "eln-abc123"),
++    "the python route": (
++        "from delfin.lab import eln_write; eln_write.grant('eln-abc123')"),
++}
++
++FREE = {
++    "eln pending reads": _cmd("eln", "pending"),
++    "eln show reads": _cmd("eln", "show", "eln-abc123"),
++    "eln collections reads": _cmd("eln", "collections"),
++    "reading the module is not answering": (
++        "grep -n 'def grant' delfin/lab/eln_write.py"),
++}
++
++
++@pytest.mark.parametrize("label,cmd", sorted(ANSWERS.items()))
++def test_answering_an_eln_write_is_refused_as_command_text(label, cmd):
++    assert approval_guard.answer_command(cmd) is not None, (
++        f"{label}: {cmd!r} mints or drops an ELN grant and the command gate "
++        "does not see it -- the process marker would be the only layer")
++
++
++@pytest.mark.parametrize("label,cmd", sorted(FREE.items()))
++def test_the_reads_and_a_plain_import_stay_free(label, cmd):
++    assert approval_guard.answer_command(cmd) is None, (
++        f"{label}: {cmd!r} was refused as an answer, and it only reads")
++
++
++def test_the_approvals_room_still_answers():
++    """The control: the spelling the regex already knew is unchanged."""
++    assert approval_guard.answer_command(
++        _cmd("approvals", "approve", "7")) is not None
