@@ -55,6 +55,16 @@ class Co2CoordinatorOpiAdapter(StepAdapter):
             description=("Which classic CO2 input to write: the orientation "
                          "single points (sp) or the relaxed distance scan"
                          " (scan)")),
+        # Declared so the alternative the adapter names actually works from
+        # the CLI: a caller that names both indices cannot also pass an
+        # ase.Atoms through argv, and without this the only route left was a
+        # keyword no `--describe` mentioned.
+        ParamSpec(
+            "start_distance", "float", required=False, default=None,
+            unit="A",
+            description=("Where the relaxed scan starts (metal-C, Angstrom). "
+                         "Measured from the atoms object when omitted, which "
+                         "needs an ase.Atoms rather than a symbol")),
     )
 
     def execute(
@@ -170,6 +180,20 @@ class Co2CoordinatorOpiAdapter(StepAdapter):
                 co2_c_index = _co2_carbon_index(atoms, co2_indices)
             start_distance = kwargs.get("start_distance")
             if start_distance is None:
+                # The scan's start is the metal-C distance of the structure,
+                # which only an atoms object can give.  A caller naming both
+                # indices has been told it "never needs" one (:159-163) --
+                # true only when it also names start_distance, which the
+                # message below says.  Without this check the same caller got
+                # `AttributeError: 'str' object has no attribute 'position'`
+                # out of _distance, the one failure shape a caller cannot act
+                # on and the only one that does not name its missing input.
+                if not hasattr(atoms, "positions"):
+                    raise ValueError(
+                        "a scan needs a start distance: name start_distance, "
+                        "or pass an ase.Atoms through run_step (the step "
+                        f"registry) so it can be measured -- 'atoms' was "
+                        f"{type(atoms).__name__}")
                 start_distance = _distance(atoms, metal_index, co2_c_index)
         except ValueError as exc:
             return self._refuse_scan(work_dir, start, str(exc))

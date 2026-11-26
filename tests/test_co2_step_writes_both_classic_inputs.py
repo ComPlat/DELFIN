@@ -185,3 +185,33 @@ def test_an_ambiguous_co2_group_is_refused_not_guessed(tmp_path, spy):
     assert scan.calls == [], "nothing may be written from an ambiguous axis"
     assert "co2_c_index" in (result.error or ""), (
         f"the refusal must name the way out; got {result.error!r}")
+
+
+def test_both_indices_without_a_start_distance_are_refused_not_crashed(
+        tmp_path, spy):
+    """The documented way in is the way that works, or it is named.
+
+    ``_execute_scan`` says a caller naming both indices "never needs" an
+    atoms object (``:158-163``), and ``_require_atoms_object``'s own message
+    offers naming both indices plus ``start_distance`` as the alternative to
+    passing one (``:226-229``).  But ``start_distance`` is not in ``params``
+    (``:46-57`` declares ``job`` only), so a ``delfin-step`` caller cannot
+    supply it: both indices plus ``--atoms=<symbol>`` reaches ``_distance``
+    with a string and raises ``AttributeError``.  Every other bad input gets
+    the adapter's own refusal, which runs through ``run_step`` and becomes a
+    diagnosable FAILED step; a raw AttributeError is the one shape a caller
+    cannot act on, and it names an attribute instead of the missing argument.
+    """
+    _sp, scan = spy
+
+    import delfin.tools.adapters.co2_coordinator_opi as adapter_mod
+
+    result = adapter_mod.Co2CoordinatorOpiAdapter().execute(
+        Path(tmp_path), geometry=None, atoms="Ir",
+        job="scan", metal_index=0, co2_c_index=2, cores=1)
+
+    assert not result.ok, "a scan with no distance to start from must not run"
+    assert scan.calls == [], "nothing may be written without a start distance"
+    assert "start_distance" in (result.error or ""), (
+        "the refusal must name the argument that is missing; got "
+        f"{result.error!r}")
