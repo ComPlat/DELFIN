@@ -83,7 +83,7 @@ tasks:
     # 37 mentions.
     capability: [tool:read_file]
     task_class: office
-    mode: solo
+    mode: office
     prompt: >-
       a3/specs/ holds specification sheets. The two circulation pumps in
       service are A and B. Which of them has the higher maximum head, and
