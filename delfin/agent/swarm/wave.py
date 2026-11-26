@@ -62,6 +62,11 @@ _DEFAULTS = {
     # run's: three runs started side by side ran 21 members (2026-11-24).
     "max_live": 0,
     "provider_caps": {},
+    # Credential NAMES per provider, e.g. {"blablador": ["BLABLADOR_API_KEY",
+    # "BLABLADOR_API_KEY_2"]}: each member is started on the one fewest live
+    # members use, so a provider's rate limit is shared over its keys. The
+    # values stay in the credential store; the state records the name only.
+    "key_pool": {},
     "member_cpu": "200%",
     "member_memory": "12G",
     # 256 was too few: the egress proxy's threads in a busy member failed
@@ -326,6 +331,21 @@ def _room(cfg: dict) -> tuple[bool, str]:
     return True, ""
 
 
+def pick_key(provider: str, cfg: dict | None = None) -> str:
+    """The credential name a new member of ``provider`` starts on: of the
+    names in ``agent.swarm.key_pool``, the one the fewest live members use
+    (the first on a tie). "" when the provider has no pool of two or more."""
+    cfg = cfg or settings()
+    pool = [str(n) for n in ((cfg.get("key_pool") or {}).get(provider) or []) if str(n)]
+    if len(pool) < 2:
+        return ""
+    use = {n: 0 for n in pool}
+    for m in live_members():
+        if m["provider"] == provider and m.get("key") in use:
+            use[m["key"]] += 1
+    return min(pool, key=lambda n: (use[n], pool.index(n)))
+
+
 def live_members(run_names: Iterable[str] | None = None) -> list[dict]:
     """Live members of the given runs (default: every run)."""
     out = []
@@ -333,7 +353,8 @@ def live_members(run_names: Iterable[str] | None = None) -> list[dict]:
         for tid, a in load_state(run)["agents"].items():
             if alive(a["pid"]):
                 out.append({"run": run, "id": tid, "pid": a["pid"],
-                            "provider": str((a.get("task") or {}).get("provider") or "")})
+                            "provider": str((a.get("task") or {}).get("provider") or ""),
+                            "key": str(a.get("key") or "")})
     return out
 
 
@@ -426,6 +447,18 @@ def _launch(run: str, task: dict, repo: Path, session: str = "") -> dict:
         if name.startswith("VSCODE_") or name in ("BROWSER", "TERM_PROGRAM", "LD_PRELOAD",
                                                   "OPENAI_API_KEY"):
             env.pop(name, None)
+    key = pick_key(str(task.get("provider") or ""), cfg)
+    if key:
+        from delfin.agent.credentials import load_credential
+        from .realrun import PROVIDER_KEYS
+        value = load_credential(key) or ""
+        canonical = PROVIDER_KEYS.get(str(task.get("provider") or ""), "")
+        if value and canonical:
+            # The member's client reads the canonical name; the environment
+            # wins over the store, so this member uses the picked key.
+            env[canonical] = value
+        else:
+            key = ""
     with open(log, "ab") as fh:
         # cwd is the run root, not the worktree: ``python -m`` puts the cwd
         # first on sys.path, and a member must run the installed DELFIN,
@@ -433,7 +466,7 @@ def _launch(run: str, task: dict, repo: Path, session: str = "") -> dict:
         proc = subprocess.Popen(_scoped(member_argv(run, task, session=session, cfg=cfg), cfg),
                                 cwd=str(root()), env=env, stdin=subprocess.DEVNULL,
                                 stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
-    return {"pid": proc.pid, "branch": branch, "worktree": str(wt), "log": str(log),
+    return {"pid": proc.pid, "branch": branch, "worktree": str(wt), "log": str(log), "key": key,
             "started": time.time(), "task": task}
 
 
