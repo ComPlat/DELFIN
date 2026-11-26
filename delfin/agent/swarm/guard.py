@@ -360,8 +360,13 @@ def _tick(start_tasks: bool) -> dict:
                            json.dumps({k: v for k, v in e.items() if k not in ("t", "run")}))
         did["runs"][run] = rd
     found = find_stalls(lim)
-    if found:
-        did["stalls"] = raise_stalls(found, st.setdefault("stalls", {}))
+    # Called every tick, not only when something is stalled: the call is what
+    # forgets the stalls that have cleared, and the tick where the last one
+    # clears is the only tick that can forget it. Under `if found:` that tick
+    # was skipped, so a member that stalled, recovered and stalled again was
+    # never reported the second time -- its key stayed in the state and
+    # deduplicated it forever.
+    did["stalls"] = raise_stalls(found, st.setdefault("stalls", {}))
     did["friction"] = _ledger(lim)
     _save(st)
     return did

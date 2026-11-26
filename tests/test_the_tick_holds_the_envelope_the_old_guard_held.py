@@ -657,3 +657,48 @@ def test_a_member_silent_past_the_old_session_is_still_raised(host):
     host["alive"].add(4242)
     assert guard.tick()["stalls"] == 1
     assert "stalled (silent)" in host["seen"][0][1]
+
+
+def test_a_stall_that_clears_is_forgotten_so_it_can_be_raised_again(host):
+    """``raise_stalls`` documents that it "forgets the ones no longer seen so
+    they can be raised again".
+
+    The forget loop only ran when ``found`` was non-empty (``if found:``
+    around the call in ``tick``), so on the very tick where the last stall
+    clears -- ``found == []``, the only tick that can forget the last one --
+    it never ran. A member that stalled, recovered and stalled again was
+    therefore never reported the second time: the key stayed in the state
+    and deduplicated it forever.
+    """
+    run = "s10"
+    wave.run_dir(run).mkdir(parents=True)
+    (wave.run_dir(run) / "tasks.json").write_text(json.dumps([_task("a")]))
+    log = wave.run_dir(run) / "a.log"
+    log.write_text("{}\n")
+    old = time.time() - 90 * 60
+    os.utime(log, (old, old))
+    _agent_entry(run, "a", log, started=old)
+    host["alive"].add(4242)
+
+    # 1. it is silent past the 60-minute line: raised, and remembered.
+    assert guard.tick()["stalls"] == 1
+    assert "s10/a:silent" in guard._load()["stalls"]
+
+    # 2. it writes to its log again and the guard's clock moves on: the stall
+    #    is gone, so the tick forgets it.
+    stamp = time.time()
+    os.utime(log, (stamp, stamp))
+    state = wave.load_state(run)
+    state["agents"]["a"]["started"] = stamp
+    wave._save_state(run, state)
+    host["advance"](5 * 60)
+    assert guard.tick().get("stalls") in (None, 0)
+    assert "s10/a:silent" not in guard._load()["stalls"], (
+        "a cleared stall must be forgotten, or it can never be raised again")
+
+    # 3. it goes quiet again: the same stall is raised a second time.
+    host["advance"](90 * 60)
+    assert guard.tick()["stalls"] == 1, (
+        "the second stall of the same member must be reported, not "
+        "deduplicated against the first")
+    assert "s10/a:silent" in guard._load()["stalls"]
