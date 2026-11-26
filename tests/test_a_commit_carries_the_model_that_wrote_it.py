@@ -54,8 +54,17 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.fixture(autouse=True)
 def _no_label(monkeypatch):
     """The label is an environment variable; the suite must not read the
-    operator's own."""
+    operator's own.
+
+    ``DELFIN_SWARM_RUN`` is cleared for the same reason, and it matters more
+    than it looks: a wave member's pytest inherits that marker
+    (``swarm/wave._launch`` sets it for the member and everything it starts),
+    so without this the file measured the ordinary-session splice on an
+    operator's host and the member path on a member's -- a latent red for
+    whoever wires the executor half.
+    """
     monkeypatch.delenv("DELFIN_AGENT_LABEL", raising=False)
+    monkeypatch.delenv("DELFIN_SWARM_RUN", raising=False)
     yield
     A.set_commit_trailer_model("")
 

@@ -22,6 +22,8 @@ attribution even though its permissions carry a swarm run id.
 """
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from delfin.agent import commit_attribution as ca
@@ -83,7 +85,15 @@ def test_the_run_marker_is_the_one_the_swarm_writes():
     assert ca.ENV_RUN == swarm_memory.ENV_RUN == "DELFIN_SWARM_RUN"
     src = __import__("pathlib").Path(wave.__file__).read_text()
     assert f"{ca.ENV_RUN}=" in src, "wave._launch must still write the marker"
-    assert ca.ENV_RUN in __import__("pathlib").Path(job.__file__).read_text()
+    # ``job.py`` declares the marker as its own constant (``RUN_ENV``), so a
+    # bare name grep would pass on the declaration alone and measure nothing.
+    # Pin the write: the value goes INTO the member's environment dict.
+    jsrc = __import__("pathlib").Path(job.__file__).read_text()
+    assert re.search(rf"tenv\[RUN_ENV\]\s*=\s*{re.escape('run_id')}", jsrc), (
+        "job.run_in_job must still write the marker into the member's env; "
+        "the declaration of RUN_ENV alone does not make a member")
+    assert job.RUN_ENV == ca.ENV_RUN, (
+        "the constant job.py writes must be the name commit_attribution reads")
 
 
 def test_a_delegated_subagent_of_a_plain_session_is_not_a_member(
