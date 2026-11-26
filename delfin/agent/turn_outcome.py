@@ -76,6 +76,13 @@ EXIT_CODES: dict[str, int] = {
     # reading the headless result can tell "looped on a failing test" apart
     # from a generic failure.
     "degenerate_test_loop": 10,
+    # A plan was submitted and is on the person's screen (or in the approvals
+    # directory) waiting for their decision. Not "done" and not
+    # "needs_approval": nothing was refused and no call is held up -- the
+    # whole turn's work was the plan, and only a person can carry it on.
+    # Exit 11 so a script driving ``chat -p`` can tell "waiting for you"
+    # apart from "finished" (it used to read done/exit 0 for both).
+    "awaiting_approval": 11,
 }
 STOP_REASONS: tuple[str, ...] = tuple(EXIT_CODES)
 
@@ -168,6 +175,11 @@ _ENGINE_STOP: dict[str, str] = {
     "promised_no_tool_call": "incomplete",
     # A quota wait longer than the run's remaining budget is a ceiling.
     "quota_wait_exceeds_budget": "budget",
+    # The turn submitted a plan that is still waiting for the person. The
+    # tool returns "awaiting_approval" and keeps the mode at plan; what was
+    # missing is that the OUTCOME said "done", so a supervisor resuming the
+    # run saw success and nothing was ever executed.
+    "plan_awaiting_approval": "awaiting_approval",
 }
 
 
@@ -235,6 +247,49 @@ def file_changed(path: str) -> None:
             obs._on_file_changed(str(path or ""))
         except Exception:
             pass
+
+
+def pending_plan_reason(*, mode: str, awaiting: str, has_channel: bool,
+                        tool_calls: Iterable[Any]) -> str:
+    """The engine stop reason when this turn ended with a plan unsettled.
+
+    Input: the permission mode now, the text of a plan still pending the
+    person, whether an approval channel is bound, and the turn's tool calls.
+    Output: ``"plan_awaiting_approval"`` (which :func:`classify` maps to the
+    ``awaiting_approval`` stop reason) or ``""`` when the turn settled.
+
+    Two states mean the person still has the plan on their screen:
+
+    * ``awaiting`` is set -- the tool remembered it, which is what happens
+      when someone was asked and did not answer in time.
+    * Nobody could be asked at all (no channel bound) and the turn still
+      submitted a plan with a body in it. There is then no state to read,
+      because the tool answers "no approval channel" without recording one,
+      and nothing later in the turn can have executed the plan: the mode is
+      still ``plan``, since approving is exactly what leaves it. A call with
+      an empty plan is not a submission (the tool refused it), which is why
+      the body is checked rather than the call alone.
+
+    Deliberately NOT the case when a channel is bound and nothing is
+    pending: the person was asked and answered, and a "no" is a settled
+    state -- the refusal they gave stands.
+
+    The names a delegate's call carries are namespaced
+    (``mcp__server__tool``), so the bare name decides, as elsewhere.
+    """
+    if str(mode or "") != "plan":
+        return ""
+    if str(awaiting or "").strip():
+        return "plan_awaiting_approval"
+    if has_channel:
+        return ""
+    for call in tool_calls or ():
+        name = str((call or {}).get("name") or "")
+        if name.rsplit("__", 1)[-1] != "exit_plan_mode":
+            continue
+        if str(((call or {}).get("input") or {}).get("plan") or "").strip():
+            return "plan_awaiting_approval"
+    return ""
 
 
 def classify(*, error: str, engine_stop_reason: str,
