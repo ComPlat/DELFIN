@@ -244,6 +244,30 @@ _REQUEST_TERMS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _term_in(term: str, s: str) -> bool:
+    """Whether *term* occurs in *s* as a word, not inside another one.
+
+    A bare substring match is right for most of the vocabulary and wrong for
+    a short format token: ``"ods"`` is inside ``"methods"`` and ``"periods"``,
+    so the plainest code request ("refactor these methods") was offered the
+    office group for the whole session -- exactly the trap this module's
+    vocabulary refuses elsewhere (``excel`` for ``excellent``, ``homo`` for
+    ``homogeneous``).
+
+    Only the LEADING edge is bounded. Half the vocabulary is a deliberate
+    prefix of what a person types -- ``enthalp`` for enthalpy/enthalpie,
+    ``geometry optimi`` for optimise/optimisation, ``thermochem`` for
+    thermochemistry -- and requiring a word end would stop every one of them
+    from firing. What a leading boundary forbids is a term that begins
+    *inside* a longer word, which is the only way a 3-letter format can
+    appear by accident. ``.xyz``/``.hess`` need no boundary: the dot
+    already supplies one.
+    """
+    if term[:1] == ".":
+        return term in s
+    return re.search(rf"(?<![0-9a-z]){re.escape(term)}", s) is not None
+
+
 def request_groups(text: Any) -> dict[str, str]:
     """``{group: the term that decided it}`` for what *text* asks for.
 
@@ -259,7 +283,7 @@ def request_groups(text: Any) -> dict[str, str]:
     out: dict[str, str] = {}
     for group, terms in _REQUEST_TERMS.items():
         for term in terms:
-            if term in s:
+            if _term_in(term, s):
                 out[group] = term
                 break
     return out

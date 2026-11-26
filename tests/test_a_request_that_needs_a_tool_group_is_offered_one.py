@@ -41,7 +41,12 @@ from delfin.agent import engine as E
 from delfin.agent import mcp_client as MCP
 from delfin.agent import model_capabilities as MC
 from delfin.agent.api_client import _OFFICE_TOOL_NAMES
-from delfin.agent.toolsets import CHEMISTRY, OFFICE, WorkspaceToolsets
+from delfin.agent.toolsets import (
+    CHEMISTRY,
+    OFFICE,
+    WorkspaceToolsets,
+    request_groups,
+)
 
 _CHEM_MCP = "mcp__delfin-ops__parse_orca_output"
 
@@ -377,3 +382,23 @@ def test_a_later_turn_cannot_move_the_head_a_prefix_cache_has_served():
     assert fresh.note_request(
         "the energy of the molecule looks wrong; also check the column in "
         "the spreadsheet") == [CHEMISTRY, OFFICE]
+
+
+def test_ods_is_a_format_and_not_a_substring_of_an_ordinary_word():
+    """A false positive here costs a group for the whole session.
+
+    ``request_groups`` matches bare substrings, and "ods" is inside
+    "methods" and "periods", so the plainest code request was offered the
+    office group -- the trap the vocabulary's own comment names by refusing
+    "excel" for "excellent" and "homo" for "homogeneous".
+    """
+    ts = WorkspaceToolsets(None, settings={"chemistry": "auto",
+                                           "office": "auto"})
+    for text in ("please refactor these methods, they are duplicated",
+                 "show me the periods of that table"):
+        assert ts.note_request(text) == [], (
+            f"{text!r} was read as asking for a document format")
+        assert ts.decided() == {}, ts.decided()
+    # The format is still a term when it IS the word.
+    for text in ("convert it to ods", "save as .ods please", "ods file"):
+        assert request_groups(text) == {OFFICE: "ods"}, text
