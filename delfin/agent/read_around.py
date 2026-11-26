@@ -80,7 +80,16 @@ def _compile(pattern: str) -> "re.Pattern[str]":
             "whose body is itself quantified) -- the classic "
             "catastrophic-backtracking shape. Flatten the pattern.")
     try:
-        return re.compile(pattern)
+        # ``re.MULTILINE`` because the question ``around=`` asks is always
+        # "where is this in the file", never "is the whole file this".
+        # Without it ``^`` anchors at the start of the FILE, so a pattern
+        # every `grep` user writes -- ``^def check`` -- matched nothing and
+        # the tool answered "pattern not found", which reads as "there is
+        # no such definition". Measured in a real run: the model then went
+        # round the tool and read the region by line offset instead.
+        # A pattern without ``^``/``$`` compiles to exactly the same
+        # scanner under MULTILINE, so nothing else changes.
+        return re.compile(pattern, re.MULTILINE)
     except re.error as exc:
         raise PatternRejected(f"invalid regex: {exc}") from exc
 
