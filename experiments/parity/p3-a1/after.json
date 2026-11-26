@@ -1,0 +1,121 @@
+{
+  "package": "p3-a1",
+  "contract_module_present": false,
+  "commit": "f29261cff-dirty",
+  "measured_tree": "/home/qmchem_max/delfin-swarm/w72/p3-a1",
+  "command": "python experiments/parity/p3-a1/measure.py --out experiments/parity/p3-a1/after.json",
+  "variants": 12,
+  "reached": 12,
+  "used": 12,
+  "correct": 12,
+  "rows": [
+    {
+      "variant": "v01_verified_only",
+      "reachable": true,
+      "used": true,
+      "correct": true,
+      "detail": "ok",
+      "kept": 1,
+      "dropped": 0
+    },
+    {
+      "variant": "v02_missing_file",
+      "reachable": true,
+      "used": true,
+      "correct": true,
+      "detail": "ok",
+      "kept": 1,
+      "dropped": 1
+    },
+    {
+      "variant": "v03_line_past_eof",
+      "reachable": true,
+      "used": true,
+      "correct": true,
+      "detail": "ok",
+      "kept": 1,
+      "dropped": 1
+    },
+    {
+      "variant": "v04_no_scenario",
+      "reachable": true,
+      "used": true,
+      "correct": true,
+      "detail": "ok",
+      "kept": 1,
+      "dropped": 1
+    },
+    {
+      "variant": "v05_unverified",
+      "reachable": true,
+      "used": true,
+      "correct": true,
+      "detail": "ok",
+      "kept": 1,
+      "dropped": 1
+    },
+    {
+      "variant": "v06_ranking",
+      "reachable": true,
+      "used": true,
+      "correct": true,
+      "detail": "ok",
+      "kept": 2,
+      "dropped": 0
+    },
+    {
+      "variant": "v07_all_unverifiable",
+      "reachable": true,
+      "used": true,
+      "correct": true,
+      "detail": "ok",
+      "kept": 0,
+      "dropped": 2
+    },
+    {
+      "variant": "v08_three_good_one_bad",
+      "reachable": true,
+      "used": true,
+      "correct": true,
+      "detail": "ok",
+      "kept": 3,
+      "dropped": 1
+    },
+    {
+      "variant": "v09_path_outside_workspace",
+      "reachable": true,
+      "used": true,
+      "correct": true,
+      "detail": "ok",
+      "kept": 1,
+      "dropped": 1
+    },
+    {
+      "variant": "v10_empty_findings",
+      "reachable": true,
+      "used": true,
+      "correct": true,
+      "detail": "ok",
+      "kept": 0,
+      "dropped": 0
+    },
+    {
+      "variant": "v11_line_zero",
+      "reachable": true,
+      "used": true,
+      "correct": true,
+      "detail": "ok",
+      "kept": 1,
+      "dropped": 1
+    },
+    {
+      "variant": "v12_severity_unknown",
+      "reachable": true,
+      "used": true,
+      "correct": true,
+      "detail": "ok",
+      "kept": 2,
+      "dropped": 0
+    }
+  ]
+}

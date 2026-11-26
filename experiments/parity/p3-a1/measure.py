@@ -269,20 +269,33 @@ _VARIANTS: tuple[dict, ...] = (
 # ---------------------------------------------------------------------------
 
 class _TraceHit:
-    """Records a call into the contract module, however deeply it is reached."""
+    """Records a call into the findings contract, however deeply reached.
+
+    Matched on the FUNCTION, not on the file. ``subagents.py`` is entered on
+    any delegation at all and exists on the untouched tree, so a file match
+    would report the capability as reached on a run that has no findings
+    contract whatsoever -- a set membership standing in for the call.
+    """
+
+    NAMES = frozenset({"verify_review_findings", "attach_review_findings"})
 
     def __init__(self) -> None:
         self.hit = False
+        self.seen: set[str] = set()
 
     def __call__(self, frame, event, arg):
         if event == "call":
-            name = frame.f_code.co_filename
-            if name.endswith(f"{CONTRACT_MODULE}.py"):
+            code = frame.f_code
+            if code.co_name in self.NAMES and \
+                    code.co_filename.endswith("subagents.py"):
                 self.hit = True
-            # Return None: no line tracing for this frame (cheap), but the
-            # call hook still sees every function the turn enters.
-            return None
-        return None
+                self.seen.add(code.co_name)
+        # The tracer must return ITSELF, not None. A local trace function
+        # returning None switches tracing off for that frame, so the call is
+        # recorded and every function that frame then calls is never seen --
+        # which is how the first version of this hook reported REACHED=False
+        # on a run whose contract code demonstrably ran (USED was 12/12).
+        return self
 
 
 # ---------------------------------------------------------------------------
