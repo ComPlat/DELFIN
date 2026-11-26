@@ -503,7 +503,11 @@ class Kernel:
                     approval_request=rec["id"])
             else:
                 doc_out = None
-                if level == "hazardous":
+                # The grant is checked and consumed wherever one was
+                # required -- a hazardous level OR real hardware. Checking
+                # only the hazardous level let any non-empty `approval`
+                # string through to a real device's benign write.
+                if level == "hazardous" or d.driver != "simulator":
                     why = _approvals.consume(doc, approval, digest_=dig,
                                              person=actor.person, now=now)
                     if why:
@@ -526,7 +530,7 @@ class Kernel:
             elif doc_out["code"] == "approval":
                 _audit.alert("lab_approval_refused", doc_out["reason"])
             return self._refused(actor, d.id, doc_out)
-        if level == "hazardous":
+        if level == "hazardous" or d.driver != "simulator":
             _audit.record("approval_consumed", id=approval, device=d.id,
                           **actor.as_dict())
         drv = self.driver(d)

@@ -40,3 +40,30 @@ def test_the_simulator_keeps_its_own_levels(lab):
     out = call(lab, "lab_set", {"device": "stirrer", "channel": "power", "value": "on"})
     assert out.get("ok"), out
     assert sim("stirrer")["power"] == "on"
+
+
+@pytest.mark.parametrize("mode", ["bypassPermissions", "default"])
+def test_a_made_up_approval_does_not_open_real_hardware(lab, mode):
+    """The grant is checked, not merely present: a string no person granted
+    is refused before any driver is reached."""
+    _make_real("stirrer")
+    args = {"device": "stirrer", "channel": "power", "value": "on"}
+    first = call(lab, "lab_set", args, mode=mode)
+    assert first.get("code") == "approval_required", first
+    for forged in ("yes", "lab-00000000", first["approval_request"]):
+        out = call(lab, "lab_set", {**args, "approval": forged}, mode=mode)
+        assert out.get("code") == "approval", (forged, out)
+
+
+def test_a_real_hardware_grant_is_single_use(lab):
+    """A granted write is consumed by the one call it was granted for; the
+    same id a second time is a replay and is refused."""
+    from delfin.lab import approvals
+    _make_real("stirrer")
+    args = {"device": "stirrer", "channel": "power", "value": "on"}
+    first = call(lab, "lab_set", args)
+    rid = first["approval_request"]
+    approvals.grant(rid)
+    call(lab, "lab_set", {**args, "approval": rid})   # consumes the grant
+    from delfin.lab import store
+    assert store.snapshot()["approvals"][rid]["status"] == "consumed"
