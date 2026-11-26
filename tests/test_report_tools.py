@@ -145,6 +145,59 @@ def test_main_prints_and_returns_zero(tmp_path, capsys):
     assert "never called" in out
 
 
+def test_the_role_surface_cost_is_printable_from_the_product(capsys):
+    """``--roles`` reaches the per-role surface the client already computes.
+
+    Red before this change for the reason it names: argparse knows no
+    ``--roles``, so the entry point exits 2 on "unrecognized arguments" and
+    no product command could answer what role scoping saves.
+
+    No model is asked and no exact count is asserted: the catalogue grows,
+    so the relation to the baseline is the claim, not a number.
+    """
+    rc = report_tools.main(["--roles"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "(unrestricted)" in out
+    assert "office_agent" in out
+    assert "saves" in out
+
+
+def test_a_scoped_role_costs_less_than_the_unrestricted_surface():
+    """The saving the report exists to show, measured rather than asserted.
+
+    ``office_agent`` carries an execution allow-list
+    (``_ROLE_EXEC_ALLOWLIST``), so its surface must be a strict subset of
+    the unrestricted baseline in both tools and schema tokens. Failing
+    input: a role whose allow-list grew past the baseline, or a report that
+    stopped filtering by role at all.
+    """
+    report = report_tools.collect_roles()
+    assert "" in report, "the unrestricted baseline row is missing"
+    base = report[""]
+    office = report["office_agent"]
+    assert office["count"] < base["count"]
+    assert office["total_tokens"] < base["total_tokens"]
+    # The names must be the scoped ones, not the baseline's: a report that
+    # ignored the role would show equal counts and this would still pass on
+    # the token line alone, so pin the subset relation too.
+    assert set(office["names"]) < set(base["names"])
+
+
+def test_the_default_report_is_unchanged_by_the_roles_flag(tmp_path, capsys):
+    """A control case: it passes before and after the change.
+
+    Without ``--roles`` the usage report is the same one as before, so the
+    new flag cannot have altered what every existing caller sees.
+    """
+    _write_trace(tmp_path, "s1", [_entry("bash")])
+    rc = report_tools.main(["--trace-root", str(tmp_path)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Tool usage across 1 traced session(s)" in out
+    assert "(unrestricted)" not in out
+
+
 def test_real_store_never_raises():
     # The default store: whatever is on this machine, collect must not raise.
     data = report_tools.collect()
