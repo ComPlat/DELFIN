@@ -4820,6 +4820,72 @@ def _squash(text: str) -> str:
     return re.sub(r"\s+", "", str(text or ""))
 
 
+# ---------------------------------------------------------------------------
+# The block language both writers read
+# ---------------------------------------------------------------------------
+
+#: The kinds of content a block can carry. A block is ONE of them; the two
+#: writers below (create_pdf, create_docx) are documented as taking the same
+#: shape, so this decision is made once and not once per writer.
+_BLOCK_KINDS = ("heading", "paragraph", "table", "page_break")
+
+
+def _block_kind(block: dict, index: int) -> str:
+    """The single kind of content *block* carries, or a refusal naming both.
+
+    Measured on 2026-11-23 through the tool dispatch: a block written as
+    ``{"heading": "Ergebnis", "paragraph": "87 Prozent."}`` -- the shape a
+    model produces from the schema's ``{heading, level} | {paragraph}`` --
+    was written as whichever kind the ``if`` chain tested first and came
+    back ``status: ok``. The sentence was gone and nothing said so, which
+    is the failure this module exists to avoid: a document that looks
+    right and is missing content.
+
+    Refusing is the safe half. Guessing ("the heading, because it comes
+    first") is what the chain already did, silently.
+    """
+    present = [k for k in _BLOCK_KINDS
+               if k in block and (k != "page_break" or block.get("page_break"))]
+    if not present:
+        raise OfficeError(
+            f"block {index}: expected one of heading / paragraph / "
+            f"table / page_break, got keys {sorted(block)}")
+    if len(present) > 1:
+        raise OfficeError(
+            f"block {index} carries {len(present)} kinds at once "
+            f"({', '.join(present)}). A block is ONE of heading / paragraph "
+            f"/ table / page_break -- the others would have been dropped "
+            f"without a word. Split it into one block per kind.")
+    return present[0]
+
+
+def _block_level(block: dict, index: int, *, highest: int) -> int:
+    """The heading level of *block*, clamped to ``0..highest``.
+
+    A level that is not a number used to reach ``int()`` and come back to
+    the model as "could not write the document: invalid literal for int()
+    with base 10: 'zwei'" -- which names neither the block nor the key, so
+    the one thing the model had to change was the one thing not in the
+    message.
+
+    The arithmetic is the one both writers already agreed on and is kept
+    verbatim, ``int(level or 1)`` clamped: a level that was left out, or
+    given as ``null``/``""``/0, is the first heading level, and a NEGATIVE
+    level clamps to 0, which both writers draw as the document title.
+    Changing what any of those means here would have changed the outline
+    depth of every document already built with them.
+    """
+    raw = block.get("level", 1) or 1
+    try:
+        level = int(raw)
+    except (TypeError, ValueError):
+        raise OfficeError(
+            f"block {index}: level {raw!r} is not a number -- a heading "
+            f"level is a whole number, 1 (the highest) to {highest}"
+        ) from None
+    return max(0, min(level, highest))
+
+
 def create_pdf(path: Any, blocks: list[dict]) -> dict:
     """Write a new PDF from the content blocks :func:`create_docx` takes.
 
@@ -4873,15 +4939,16 @@ def create_pdf(path: Any, blocks: list[dict]) -> dict:
     for index, block in enumerate(blocks, start=1):
         if not isinstance(block, dict):
             raise OfficeError(f"block {index} is not an object: {block!r}")
-        if "heading" in block:
-            level = max(0, min(int(block.get("level", 1) or 1), 6))
+        kind = _block_kind(block, index)
+        if kind == "heading":
+            level = _block_level(block, index, highest=6)
             style = (styles["Title"] if level == 0
                      else styles[f"Heading{level}"])
             text = str(block["heading"])
             story.append(Paragraph(_pdf_markup(text), style))
             counts["headings"] += 1
             probe = probe or _text_probe(text)
-        elif "paragraph" in block:
+        elif kind == "paragraph":
             runs = _runs(block["paragraph"])
             if isinstance(block["paragraph"], (str, int, float)):
                 for run in runs:
@@ -4894,7 +4961,7 @@ def create_pdf(path: Any, blocks: list[dict]) -> dict:
             counts["paragraphs"] += 1
             probe = probe or _text_probe(
                 "".join(r["text"] for r in runs))
-        elif "table" in block:
+        elif kind == "table":
             rows = block["table"]
             if not isinstance(rows, list) or not rows or not all(
                     isinstance(r, (list, tuple)) for r in rows):
@@ -4938,12 +5005,8 @@ def create_pdf(path: Any, blocks: list[dict]) -> dict:
                 probe = probe or _text_probe(" ".join(_fmt(v) for v in row))
                 if probe:
                     break
-        elif block.get("page_break"):
+        elif kind == "page_break":
             story.append(PageBreak())
-        else:
-            raise OfficeError(
-                f"block {index}: expected one of heading / paragraph / "
-                f"table / page_break, got keys {sorted(block)}")
 
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -5304,12 +5367,13 @@ def create_docx(
     for index, block in enumerate(blocks, start=1):
         if not isinstance(block, dict):
             raise OfficeError(f"block {index} is not an object: {block!r}")
-        if "heading" in block:
-            level = max(0, min(int(block.get("level", 1) or 1), 9))
+        kind = _block_kind(block, index)
+        if kind == "heading":
+            level = _block_level(block, index, highest=9)
             doc.add_heading(str(block["heading"]), level=level)
             counts["headings"] += 1
             probe = probe or _text_probe(str(block["heading"]))
-        elif "paragraph" in block:
+        elif kind == "paragraph":
             para = doc.add_paragraph()
             runs = _runs(block["paragraph"])
             # Block-level bold/colour apply to a plain string; a list of
@@ -5325,7 +5389,7 @@ def create_docx(
             counts["paragraphs"] += 1
             probe = probe or _text_probe(
                 "".join(str(r.get("text", "")) for r in runs))
-        elif "table" in block:
+        elif kind == "table":
             rows = block["table"]
             if not isinstance(rows, list) or not rows or not all(
                     isinstance(r, (list, tuple)) for r in rows):
@@ -5355,12 +5419,8 @@ def create_docx(
                     _apply_runs(target, cell_runs)
                     probe = probe or _text_probe(_fmt(value))
             counts["tables"] += 1
-        elif block.get("page_break"):
+        elif kind == "page_break":
             doc.add_page_break()
-        else:
-            raise OfficeError(
-                f"block {index}: expected one of heading / paragraph / "
-                f"table / page_break, got keys {sorted(block)}")
 
     try:
         p.parent.mkdir(parents=True, exist_ok=True)

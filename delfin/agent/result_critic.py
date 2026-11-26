@@ -195,7 +195,17 @@ def _check_spin(out_path: Path) -> list[Critique]:
 def _check_energy(out_path: Path) -> list[Critique]:
     try:
         from delfin.energies import find_electronic_energy
-        e = find_electronic_energy(str(out_path))
+        from delfin import orca_read
+        reading = None
+        try:
+            reading = orca_read.read(str(out_path.parent), out_path.stem,
+                                     orca_read.Quantity.FINAL_SINGLE_POINT_ENERGY)
+        except Exception:
+            reading = None
+        if reading is not None and reading.value is not None:
+            e = reading.value
+        else:
+            e = find_electronic_energy(str(out_path))
     except Exception:
         return []
     if e is None:

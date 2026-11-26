@@ -8,6 +8,12 @@ installation. You need: Windows 10 or 11, network access to the server
 README.md beside this file is the full reference. This is the short path
 from here to a working agent. Read it top to bottom once.
 
+GOT A PERSONAL FILE "DELFIN-<your name>.zip" FROM WHOEVER RUNS THE SERVER?
+Then it is three steps and nothing else: extract it, double-click
+Install.cmd (answer y if it asks to unblock), and in DELFIN press
+"Start / Reconnect". No password, no server address to type, no
+fingerprint to compare. The file works once: keep it to yourself.
+
 
 -------------------------------------------------------------------
 0. YOU DOWNLOADED THIS FROM THE WEB - READ THIS FIRST

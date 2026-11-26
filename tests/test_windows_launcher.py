@@ -170,6 +170,9 @@ def test_bootstrap_discovers_environment_without_fixed_installation_path(tmp_pat
         (path / '__init__.py').write_text('')
     for module in ['delfin/cli_voila.py', 'delfin/agent/where.py', 'delfin/dashboard/session.py']:
         (repo / module).write_text('')
+    # voila serves the dashboard; the bootstrap refuses an environment without it.
+    (repo / 'voila').mkdir()
+    (repo / 'voila/__init__.py').write_text('')
     option = '--strict-port' if compatible else '--port'
     (repo / 'delfin/cli_voila.py').write_text(f'def main(argv):\n    print({option!r})\n')
     root = repo / 'env' if source in {'repo-env', 'explicit-repo'} else tmp_path / 'custom environment'
@@ -313,6 +316,9 @@ def _installed_like_an_editable_finder(tmp_path):
     (source / 'delfin/cli_voila.py').write_text(
         'from delfin import __version__\n'
         'def main(argv):\n    print("--strict-port")\n')
+    # voila serves the dashboard; the bootstrap refuses an environment without it.
+    (source / 'voila').mkdir()
+    (source / 'voila/__init__.py').write_text('')
     hook = tmp_path / 'finder hook'
     hook.mkdir()
     # The child must see ONLY this fake: on a machine with DELFIN installed
@@ -331,7 +337,7 @@ def _installed_like_an_editable_finder(tmp_path):
         'class _Finder:\n'
         '    @classmethod\n'
         '    def find_spec(cls, name, path=None, target=None):\n'
-        '        if name == "delfin":\n'
+        '        if name in ("delfin", "voila"):\n'
         f'            return PathFinder.find_spec(name, [{str(source)!r}])\n'
         '        return None\n'
         'sys.meta_path.append(_Finder)\n')
@@ -659,9 +665,12 @@ def test_the_check_reports_a_missing_or_changed_copy_and_accepts_an_exact_one(tm
     hb, hl = _digest(_ROOT / 'remote_bootstrap.sh'), _digest(_ROOT / 'remote_launcher.py')
     folder = '.cache/delfin-launcher/' + hb[:16] + hl[:16]
     def check():
-        return subprocess.run(['bash', '-c', _check_script(), 'delfin', folder, hb, hl],
-                              env={'PATH': '/usr/bin:/bin', 'HOME': str(home)},
-                              capture_output=True, text=True, timeout=15).returncode
+        result = subprocess.run(['bash', '-c', _check_script(), 'delfin', folder, hb, hl],
+                                env={'PATH': '/usr/bin:/bin', 'HOME': str(home)},
+                                capture_output=True, text=True, timeout=15)
+        # The app reads the marker on the dashboard connection's output.
+        assert ('DELFIN_SCRIPTS_MISSING' in result.stdout) == (result.returncode == 10)
+        return result.returncode
     assert check() == 10
     copy = home / folder
     assert copy.is_dir() and stat.S_IMODE(copy.stat().st_mode) == 0o700
@@ -717,13 +726,15 @@ def test_the_app_builds_the_remote_command_from_plain_file_paths():
     assert "(Shell-Quote $launcher)" in body
     for word in ('base64', 'Base64', 'gzip', 'GZip', 'eval', 'exec', 'ReadAllBytes'):
         assert word not in body, word
-    # The two scripts reach the server as files (scp) after a short check.
-    sync = re.search(r'^function Sync-ServerScripts\b.*?^\}', app, re.M | re.S).group(0)
-    assert "'System32\\OpenSSH\\scp.exe'" in sync
-    assert "@('remote_bootstrap.sh','remote_launcher.py',($target + ':' + $version.Folder + '/'))" in sync
-    assert 'Get-ScriptCheckCommand $version' in sync
-    # Both connections carry the same OpenSSH protections and the login key.
-    assert "(Get-SSHOptions 'Check') + $identity" in sync and "(Get-SSHOptions 'Copy') + $identity" in sync
+    # The check rides on the start connection; only a missing copy is sent,
+    # as two plain files (scp).
+    assert '$check = Get-ScriptCheckCommand $version' in body
+    assert "return $check + ' && ' + 'bash -ilc '" in body
+    copy = re.search(r'^function Copy-ServerScripts\b.*?^\}', app, re.M | re.S).group(0)
+    assert "'System32\\OpenSSH\\scp.exe'" in copy
+    assert "@('remote_bootstrap.sh','remote_launcher.py',($target + ':' + $version.Folder + '/'))" in copy
+    # The copy carries the same OpenSSH protections and the login key.
+    assert "(Get-SSHOptions 'Copy') + $identity" in copy
     server = (_ROOT / 'remote_bootstrap.sh').read_text()
     assert 'exec "$python" "$launcher_script"' in server
     assert 'base64' not in server and 'eval ' not in server
@@ -786,17 +797,24 @@ def test_every_shipped_text_file_is_plain_text():
 def test_install_creates_standard_shortcuts_to_windows_powershell():
     install = (_ROOT / 'Install.ps1').read_text(encoding='utf-8')
     assert '$shell = New-Object -ComObject WScript.Shell' in install
-    assert "$shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) 'DELFIN.lnk'))" in install
+    assert "[string]$Desktop = [Environment]::GetFolderPath('Desktop')," in install
+    assert "$shell.CreateShortcut((Join-Path $Desktop 'DELFIN.lnk'))" in install
     assert '$shortcut.TargetPath = "$env:SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"' in install
     assert ("$shortcut.Arguments = '-NoProfile -ExecutionPolicy RemoteSigned "
             "-WindowStyle Hidden -File \"' + $app + '\"'") in install
     assert '$shortcut.WindowStyle = 7' in install
     assert "$shortcut.IconLocation = (Join-Path $destination 'DELFIN.ico') + ',0'" in install
     assert '$shortcut.Save()' in install
-    assert "Join-Path $programs 'DELFIN.lnk'" in install
+    assert "[string]$Programs = [Environment]::GetFolderPath('Programs')," in install
+    assert "Join-Path $Programs 'DELFIN.lnk'" in install
     copied = install.split('# Files of earlier versions')[0]
     assert 'Build-Starter' not in copied and 'Starter.cs' not in copied and 'Taskbar.cs' not in copied
-    assert '& (Join-Path' not in install and 'DELFIN.exe' not in install.replace("@('DELFIN.exe',", '')
+    # DELFIN.exe of an earlier version is only removed, or recognised as a
+    # running app before an update (Get-RunningApp); never built or started.
+    import re as _re
+    body = _re.sub(r'(?ms)^function Get-RunningApp\b.*?^\}', '', install)
+    body = '\n'.join(l for l in body.splitlines() if not l.lstrip().startswith('#'))
+    assert '& (Join-Path' not in install and 'DELFIN.exe' not in body.replace("@('DELFIN.exe',", '')
     # An update removes the starter program an earlier version compiled.
     assert "foreach ($old in @('DELFIN.exe','Starter.cs','Build-Starter.ps1','Taskbar.cs'))" in install
     # The app starts its dashboard console as a plain Windows PowerShell.

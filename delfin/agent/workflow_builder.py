@@ -112,6 +112,23 @@ def _steps_reasons(spec: Dict[str, Any]) -> List[Dict[str, str]]:
     return out
 
 
+def _spin_state_proposal(request: str) -> Optional[Dict[str, Any]]:
+    """Spin-state proposal for a request that names a metal centre.
+
+    ADDITIVE and beside the spec, never inside it: returns ``None`` for
+    every request that does not state BOTH a metal and its oxidation
+    state, so a closed-shell organic -- or a request that names a metal
+    without a charge -- keeps exactly the spec and sequence it got before
+    this function existed. The parity rule in :mod:`delfin.occupier_auto`
+    remains the fallback, and a caller's own sequence is never overridden:
+    this key informs the CONTROL the agent proposes, it does not rewrite
+    steps.
+    """
+    from delfin.occupier_auto import propose_sequence_for_request
+
+    return propose_sequence_for_request(request)
+
+
 # ---------------------------------------------------------------------
 # The mandatory check chain.
 # ---------------------------------------------------------------------
@@ -254,6 +271,7 @@ def build_workflow(request: str, *, base_template: Optional[str] = None,
         "steps_reasons": _steps_reasons(spec),
         "checks": checks,
         "cost": checks["cost"],
+        "spin_states": _spin_state_proposal(request),
         "submitted": False,
     }
 
