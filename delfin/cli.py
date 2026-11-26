@@ -1131,9 +1131,13 @@ def _run_co2_subcommand(argv: list[str]) -> int:
 
     # Normal run mode - execute CO2 coordinator workflow
     try:
-        # Set recalc mode environment variable if needed
+        # Recalc is the same mode as everywhere else in DELFIN: without the
+        # shared setup the coordinator gets DELFIN_CO2_RECALC but no
+        # DELFIN_RECALC, and its skip test (smart_recalc.should_skip) answers
+        # False for every finished angle.
         if args.recalc:
             os.environ["DELFIN_CO2_RECALC"] = "1"
+            _enter_recalc_mode()
         co2_main()
         return 0
     except Exception as exc:
@@ -1544,6 +1548,40 @@ def _note_control_change(config: dict, workspace_root: Path, control_text, geome
         logger.info("[recalc] The edit reaches no OCCUPIER input; OCCUPIER keeps its finished jobs.")
 
 
+def _enter_recalc_mode(force_outputs: Optional[set[Path]] = None) -> None:
+    """Put this process into recalc mode: one entry point for every path.
+
+    Recalc is not a flag a single module can honour. What a finished job is
+    skipped on lives in three places: ``DELFIN_RECALC`` (``smart_recalc.
+    recalc_enabled()``), the wrappers that install that skip in front of
+    every ORCA/xTB call site, and the modules that captured their own
+    reference to such a function at import time. A dispatch path that reaches
+    its own subcommand parser before ``main()`` has run this setup gets none
+    of it: it can pass a flag down, but nothing downstream consults it, and
+    finished jobs are computed again while the caller believes otherwise.
+    """
+    # IMPORTANT: override the global bindings so all call sites use the wrappers
+    global run_orca, XTB, XTB_GOAT, run_crest_workflow, XTB_SOLVATOR
+
+    # The globals below are populated by the lazy loader; calling it here means
+    # a subcommand path cannot reach this helper with them still unbound.
+    _load_full_cli_dependencies()
+
+    os.environ["DELFIN_RECALC"] = "1"
+
+    wrappers, _reals = setup_recalc_mode(force_outputs=force_outputs)
+
+    # Swap in wrappers in THIS module
+    run_orca = wrappers["run_orca"]
+    XTB = wrappers["XTB"]
+    XTB_GOAT = wrappers["XTB_GOAT"]
+    run_crest_workflow = wrappers["run_crest_workflow"]
+    XTB_SOLVATOR = wrappers["XTB_SOLVATOR"]
+
+    # Patch other modules that captured their own references
+    patch_modules_for_recalc(wrappers)
+
+
 def _run_co2_recalc_if_enabled(config: dict, workspace_root: Path) -> bool:
     """Run CO2 coordinator in recalc mode when enabled via CONTROL."""
     if not _is_enabled_flag(config.get("co2_coordination", "off")):
@@ -1685,20 +1723,7 @@ def main(argv: list[str] | None = None) -> int:
     os.environ["DELFIN_RECALC"] = "1" if RECALC_MODE else "0"
 
     if RECALC_MODE:
-        # IMPORTANT: override the global bindings so all call sites use the wrappers
-        global run_orca, XTB, XTB_GOAT, run_crest_workflow, XTB_SOLVATOR
-
-        wrappers, reals = setup_recalc_mode(force_outputs=force_rerun_outputs)
-
-        # Swap in wrappers in THIS module
-        run_orca = wrappers['run_orca']
-        XTB = wrappers['XTB']
-        XTB_GOAT = wrappers['XTB_GOAT']
-        run_crest_workflow = wrappers['run_crest_workflow']
-        XTB_SOLVATOR = wrappers['XTB_SOLVATOR']
-
-        # Patch other modules that captured their own references
-        patch_modules_for_recalc(wrappers)
+        _enter_recalc_mode(force_rerun_outputs)
 
 
     # Only define template and exit

@@ -930,11 +930,18 @@ def _append_orca_keyword(keywords, keyword):
     return " ".join(tokens).strip()
 
 
-def write_orca_sp_input_and_run(atoms, xyz_path, outdir, orca_keywords="GFN2-XTB SP ALPB(DMF)", broken_sym="",
-                                charge=-2, multiplicity=1, PAL=8, maxcore=2000, tag="calc",
-                                metal_symbol=None, metal_basis=None, control_args=None,
-                                qmmm_range: Optional[Tuple[int, int]] = None,
-                                co2_indices: Optional[Sequence[int]] = None):
+def write_orca_sp_input(atoms, xyz_path, outdir, orca_keywords="GFN2-XTB SP ALPB(DMF)", broken_sym="",
+                        charge=-2, multiplicity=1, PAL=8, maxcore=2000, tag="calc",
+                        metal_symbol=None, metal_basis=None, control_args=None,
+                        qmmm_range: Optional[Tuple[int, int]] = None,
+                        co2_indices: Optional[Sequence[int]] = None):
+    """Write the SP input (and its xyz) for this geometry; return (inp, out).
+
+    Separate from running it so a caller can ask whether the job still needs
+    to run — a recalc compares the input against the one that produced the
+    output, and that comparison is only meaningful once the input for THIS
+    geometry is the one on disk.
+    """
     os.makedirs(outdir, exist_ok=True)
     inp = os.path.join(outdir, f"{tag}.inp")
     out = os.path.join(outdir, f"{tag}.out")
@@ -970,7 +977,12 @@ def write_orca_sp_input_and_run(atoms, xyz_path, outdir, orca_keywords="GFN2-XTB
     # Only copy if source and target differ
     if os.path.abspath(xyz_path) != os.path.abspath(xyz_target):
         shutil.copy(xyz_path, xyz_target)
+    return inp, out
 
+
+def run_orca_job(inp: str, outdir: str) -> str:
+    """Run ORCA on *inp* inside *outdir*; return the output path."""
+    out = os.path.join(outdir, os.path.splitext(os.path.basename(inp))[0] + ".out")
     orca_path = shutil.which("orca")
     if orca_path is None:
         raise RuntimeError("ORCA wurde nicht gefunden! Ist es im $PATH?")
@@ -979,6 +991,20 @@ def write_orca_sp_input_and_run(atoms, xyz_path, outdir, orca_keywords="GFN2-XTB
         subprocess.run(guarded([orca_path, os.path.basename(inp)]), cwd=outdir,
                        stdout=f, stderr=subprocess.STDOUT, check=False)
     return out
+
+
+def write_orca_sp_input_and_run(atoms, xyz_path, outdir, orca_keywords="GFN2-XTB SP ALPB(DMF)", broken_sym="",
+                                charge=-2, multiplicity=1, PAL=8, maxcore=2000, tag="calc",
+                                metal_symbol=None, metal_basis=None, control_args=None,
+                                qmmm_range: Optional[Tuple[int, int]] = None,
+                                co2_indices: Optional[Sequence[int]] = None):
+    inp, out = write_orca_sp_input(
+        atoms, xyz_path, outdir, orca_keywords=orca_keywords, broken_sym=broken_sym,
+        charge=charge, multiplicity=multiplicity, PAL=PAL, maxcore=maxcore, tag=tag,
+        metal_symbol=metal_symbol, metal_basis=metal_basis, control_args=control_args,
+        qmmm_range=qmmm_range, co2_indices=co2_indices,
+    )
+    return run_orca_job(inp, outdir)
 
 
 def write_orca_input_and_run(atoms, xyz_path, metal_index, co2_c_index, start_distance, end_distance=1.7, steps=5,
@@ -1174,17 +1200,12 @@ def _calculate_single_angle(ang, base_atoms, co2_indices, charge, multiplicity, 
     out_path = os.path.join(ang_dir, "calc.out")
     inp_path = os.path.join(ang_dir, "calc.inp")
 
-    # Smart recalc: skip only when inp+deps are unchanged and output is complete.
-    if recalc_mode and smart_recalc.should_skip(inp_path, out_path):
-        print(f"[recalc] Skipping angle {ang}° - already complete")
-        try:
-            E = parse_orca_energy(out_path)
-            return (ang, E, xyz_path)
-        except Exception as e:
-            print(f"[WARN] Angle {ang}°: existing calc found but energy parse failed: {e}")
-            # Fall through to re-run calculation
-
-    out_path = write_orca_sp_input_and_run(
+    # The input for THIS angle's geometry goes to disk before the recalc
+    # decision, not after it: should_skip() compares the input beside the
+    # output against the one that produced it, and asking that question about
+    # the previous run's input lets a rotated geometry be skipped under the
+    # old geometry's energy.
+    write_orca_sp_input(
         atoms,
         xyz_path,
         ang_dir,
@@ -1196,8 +1217,26 @@ def _calculate_single_angle(ang, base_atoms, co2_indices, charge, multiplicity, 
         control_args=control_args, qmmm_range=qmmm_range,
         co2_indices=co2_indices,
     )
+
+    # Smart recalc: skip only when inp+deps are unchanged and output is complete.
+    if recalc_mode and smart_recalc.should_skip(inp_path, out_path):
+        print(f"[recalc] Skipping angle {ang}° - already complete")
+        try:
+            E = parse_orca_energy(out_path)
+            return (ang, E, xyz_path)
+        except Exception as e:
+            print(f"[WARN] Angle {ang}°: existing calc found but energy parse failed: {e}")
+            # Fall through to re-run calculation
+
+    out_path = run_orca_job(inp_path, ang_dir)
     try:
         E = parse_orca_energy(out_path)  # Hartree
+        # Record which input produced this output, as every ORCA job in DELFIN
+        # does (delfin/orca.py) -- on a normal run too, not only under
+        # --recalc: the run that writes an output is the one that knows which
+        # input produced it, and a recalc that finds no sidecar has to assume
+        # the output is stale and computes the angle again.
+        smart_recalc.store_fingerprint(inp_path)
         print(f"[INFO] angle {ang:3d}° → E = {E:.10f} Eh")
         return (ang, E, xyz_path)
     except Exception as e:
