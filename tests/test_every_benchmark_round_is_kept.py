@@ -739,3 +739,45 @@ def test_the_no_systemd_message_names_a_command_that_works(fake_glue,
     assert cli.main(["bench", "schedule"]) == 0
     out = capsys.readouterr().out
     assert "benchmark round schedule" in out
+
+
+def test_the_history_header_names_no_round_it_does_not_have(fake_glue,
+                                                            history_dir,
+                                                            tmp_path, capsys):
+    """A header that prints `round ?` is a header with nothing to say.
+
+    RED before the fix: two rounds whose every instance is UNMEASURED are
+    both excluded, `trend()["reference"]` is None, and the header read
+    `benchmark history — comparable with round ?`. The `?` is not a round
+    id: no round is called that, so the line named a comparison that did
+    not exist. A reader cannot tell `?` from a round id they have not
+    learned to recognise yet.
+
+    The assertion is on the SET of round ids the store actually holds, so
+    it fails for any placeholder, and it also fails if the header stops
+    naming a round when there IS one comparable.
+    """
+    from delfin.agent import bench_history as bh
+    from delfin.agent import cli
+
+    # Every instance unmeasured -> both rounds excluded -> no reference.
+    for _ in range(2):
+        assert _round(fake_glue, tmp_path, practice=True,
+                      unmeasured=("task0", "task1")) == 3
+    capsys.readouterr()
+
+    assert cli.main(["bench", "history"]) == 0
+    out = capsys.readouterr().out
+    header = out.splitlines()[0]
+    stored_ids = {r["round_id"] for r in _lines(history_dir / bh.ROUNDS_FILE)}
+    assert stored_ids, "the fixture wrote no round at all"
+    assert "?" not in header, header
+
+    # CONTROL: with a comparable round present the header still names it.
+    assert _round(fake_glue, tmp_path, practice=True) == 0
+    capsys.readouterr()
+    assert cli.main(["bench", "history"]) == 0
+    header = capsys.readouterr().out.splitlines()[0]
+    stored_ids = {r["round_id"] for r in _lines(history_dir / bh.ROUNDS_FILE)}
+    named = [rid for rid in stored_ids if rid in header]
+    assert len(named) == 1, (header, sorted(stored_ids))

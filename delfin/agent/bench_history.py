@@ -978,8 +978,17 @@ def format_history(rounds: list[Round], capability: str = "") -> str:
     tr = trend(rounds, capability)
     lines = []
     cap = f" (capability {capability})" if capability else ""
-    lines.append(f"benchmark history{cap} — comparable with "
-                 f"round {tr['reference'] or '?'}")
+    if tr["reference"] and tr["included"]:
+        lines.append(f"benchmark history{cap} — comparable with "
+                     f"round {tr['reference']}")
+    elif tr["reference"]:
+        # A reference exists but nothing compares against it (every other
+        # round was excluded): naming it would suggest a comparison that
+        # is not there.
+        lines.append(f"benchmark history{cap} — reference round "
+                     f"{tr['reference']}, nothing comparable with it")
+    else:
+        lines.append(f"benchmark history{cap}")
     if not tr["included"]:
         lines.append("  no round is comparable; all of them are left out.")
     for row in tr["included"]:
