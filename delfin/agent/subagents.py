@@ -4082,7 +4082,21 @@ def run_subagent(
                 _cands = list_finished(5, session=_owner) if _owner else []
             except Exception:
                 _cands = []
-            if _cands:
+            if not _owner:
+                # Nothing to look WITH, so nothing may be asserted. The
+                # unchanged wording, because "no subagent this session
+                # started is resting" is false when the session is unnamed
+                # (the solo/CLI route carries no task_session_id, so every
+                # tab-less caller lands here) -- and a caller told there is
+                # nothing to resume stops looking at a store that may hold
+                # its own runs. Measured, not assumed: the branch's own
+                # real run took this limb and answered NAMED_A_REAL_ID=no
+                # with that claim, on a route where no id was ever set.
+                _hint = (
+                    "no stored subagent session found. Use a sa_id returned "
+                    "by a previous subagent call."
+                )
+            elif _cands:
                 _hint = (
                     "no stored subagent session found. Resting subagents "
                     "this session can resume: "
