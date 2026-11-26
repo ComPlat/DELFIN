@@ -158,8 +158,9 @@ def configure_parser(
     p_merge_run.add_argument("--checks-ok", action="store_true",
                              help="The checks on --head passed")
     p_merge_run.add_argument("--admin-override", action="store_true",
-                             help="Use administrator rights (recorded) when "
-                                  "the checks are red")
+                             help="Use administrator rights when the checks "
+                                  "are red: the printed command carries "
+                                  "--admin")
 
     p_wave = sub.add_parser(
         "wave", help="Waves: a task list of agents, run, watched and steered",
