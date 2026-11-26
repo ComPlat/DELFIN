@@ -34,6 +34,8 @@ each is named in the test that now holds it:
 
 from __future__ import annotations
 
+import pytest
+
 import builtins
 
 
@@ -177,6 +179,9 @@ def _block_ops_import(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", _import)
 
 
+# Scans the whole repository (30-100 s): in the slow suite, so a fast
+# CI shard stays within its 30-minute limit (2026-11-26).
+@pytest.mark.slow
 def test_an_unreadable_ops_surface_is_named_not_counted_as_zero(tmp_path):
     """The failing input: a tree with no ops server at all.
 
@@ -215,6 +220,9 @@ def test_a_readable_ops_surface_reports_no_error():
     assert names, "the shipped ops server exposes no tools"
 
 
+# Scans the whole repository (30-100 s): in the slow suite, so a fast
+# CI shard stays within its 30-minute limit (2026-11-26).
+@pytest.mark.slow
 def test_the_agent_count_says_when_a_role_source_was_unreadable(monkeypatch):
     """The failing input: a role source whose import fails.
 

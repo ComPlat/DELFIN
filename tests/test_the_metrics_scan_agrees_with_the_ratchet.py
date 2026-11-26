@@ -28,6 +28,8 @@ moment the pin should be silent rather than in the way.
 
 from __future__ import annotations
 
+import pytest
+
 import importlib.util
 from pathlib import Path
 
@@ -49,6 +51,9 @@ def _ratchet():
     return module
 
 
+# Scans the whole repository (30-100 s): in the slow suite, so a fast
+# CI shard stays within its 30-minute limit (2026-11-26).
+@pytest.mark.slow
 def test_both_scans_find_the_same_definitions():
     """The failing input: a scan that skips a directory the other reads."""
     from delfin.agent import commit_metrics as cm
@@ -59,6 +64,9 @@ def test_both_scans_find_the_same_definitions():
     assert set(mine) == set(theirs), sorted(set(mine) ^ set(theirs))[:20]
 
 
+# Scans the whole repository (30-100 s): in the slow suite, so a fast
+# CI shard stays within its 30-minute limit (2026-11-26).
+@pytest.mark.slow
 def test_both_scans_agree_on_every_unmounted_name():
     """The failing input: one name swapped for another, count unchanged."""
     from delfin.agent import commit_metrics as cm
@@ -79,6 +87,9 @@ def test_both_scans_agree_on_every_unmounted_name():
     assert row["unmounted"] == len(mine)
 
 
+# Scans the whole repository (30-100 s): in the slow suite, so a fast
+# CI shard stays within its 30-minute limit (2026-11-26).
+@pytest.mark.slow
 def test_both_scans_agree_on_the_tier_of_each_name():
     """The failing input: a copy that calls a test-only name dead code."""
     from delfin.agent import commit_metrics as cm

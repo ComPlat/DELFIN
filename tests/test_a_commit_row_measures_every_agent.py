@@ -59,6 +59,9 @@ def recorded(tmp_path_factory):
 # (1) every agent, separately
 # --------------------------------------------------------------------------
 
+# Scans the whole repository (30-100 s): in the slow suite, so a fast
+# CI shard stays within its 30-minute limit (2026-11-26).
+@pytest.mark.slow
 def test_the_row_carries_one_surface_per_agent(recorded):
     """The failing input: a row whose `agents` holds only the generalist."""
     row, _ = recorded
