@@ -280,7 +280,7 @@ def _kernel_manifest() -> dict:
 
 def test_transport_error_on_a_write_makes_the_kernel_go_safe(lab, monkeypatch):
     from delfin.lab import safety, store
-    from _lab_support import call
+    from _lab_support import approve_and_set
 
     fake = FakeBroker(lambda: time.time())
     monkeypatch.setattr(mqtt, "broker_factory",
@@ -291,13 +291,15 @@ def test_transport_error_on_a_write_makes_the_kernel_go_safe(lab, monkeypatch):
     path.write_text(yaml.safe_dump(_kernel_manifest()), encoding="utf-8")
     safety.pin(manifest.load(path), by="alice")
 
-    out = call(lab, "lab_set", {"device": "relay1", "channel": "power",
+    # relay1 is real hardware (driver mqtt): every write needs a person's
+    # single-use grant, so each write here is approved first.
+    out = approve_and_set(lab, {"device": "relay1", "channel": "power",
                                 "value": "on"})
     assert out.get("ok"), out
 
     # the device stops answering: the write fails and the kernel goes safe
     fake.publish_error = DriverError("relay gone")
-    out2 = call(lab, "lab_set", {"device": "relay1", "channel": "power",
+    out2 = approve_and_set(lab, {"device": "relay1", "channel": "power",
                                  "value": "off"})
     assert out2.get("code") == "driver_error", out2
     assert "safe state" in out2.get("reason", "")

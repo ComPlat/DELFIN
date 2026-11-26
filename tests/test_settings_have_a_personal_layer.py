@@ -348,3 +348,12 @@ def test_the_apply_blocks_leave_a_personal_override_alone(tmp_path, monkeypatch)
     assert _run_apply(agent_program, [str(agent_conf)], account_home).returncode == 0
     assert us.load_settings(bert)["agent"]["model"] == "kit.next"
     assert us.load_settings(anna)["agent"]["model"] == "kit.mine"
+
+
+def test_a_new_pi_starts_its_agent_asking_before_acting_outside_the_repo():
+    """The shipped Pi default is repo_free: free inside the work folder, a
+    person is asked before anything outside it. Bypass stays a choice each
+    person makes in the agent tab."""
+    text = (ROOT / "scripts" / "pi" / "pi_install.sh").read_text()
+    assert '"permission_profile=repo_free"' in text
+    assert '"permission_profile=all_free"' not in text

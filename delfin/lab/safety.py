@@ -208,6 +208,17 @@ class Kernel:
                                     f"takes one of {', '.join(channel.states)}"
                                     f", not {value!r}")
             return v, None
+        if channel.text:
+            # A container slot: the value is a name, compared for equality
+            # against what the position reports. It is bounded by the check
+            # that it is a non-empty string -- a slot set to "" would read
+            # back as "empty rack" and let a sample be filed under whatever
+            # the instrument last saw, so an empty name is refused, not stored.
+            v = _manifest.state_str(value)
+            if not v.strip():
+                return None, refuse("bad_value", f"{device.id}.{channel.name} "
+                                    f"takes a container name, not {value!r}")
+            return v, None
         if isinstance(value, bool):
             return None, refuse("bad_value", "a number is required")
         try:
@@ -289,7 +300,7 @@ class Kernel:
         if channel.name not in device.safe_state:
             return False
         sv = device.safe_state[channel.name]
-        if channel.is_state:
+        if channel.is_state or channel.text:
             return str(value) == str(sv)
         return abs(float(value) - float(sv)) <= 1e-9
 
@@ -306,7 +317,7 @@ class Kernel:
             if v is _expr.UNKNOWN or v is None:
                 return False
             v = v[0]
-            if spec.is_state:
+            if spec.is_state or spec.text:
                 if str(v) != str(sv):
                     return False
             elif abs(float(v) - float(sv)) > max(spec.tolerance, 1e-9):
@@ -447,7 +458,7 @@ class Kernel:
             return self._refused(actor, d.id, refuse(
                 "rate", f"{key}: at most one write per {ch.min_interval_s:g} s"))
         fresh = self._fresh(d)
-        if ch.max_step is not None and not ch.is_state:
+        if ch.max_step is not None and not ch.is_state and not ch.text:
             cur = fresh.get(ch.readback or ch.name, _expr.UNKNOWN)
             if cur is _expr.UNKNOWN or "__error__" in fresh:
                 return self._refused(actor, d.id, refuse(
@@ -473,7 +484,12 @@ class Kernel:
                                  f"{holder.get('person')} a moment ago")
             elif self.estopped(d, doc):
                 doc_out = refuse("estop", "e-stop arrived during the check")
-            elif level == "hazardous" and not approval:
+            elif (level == "hazardous" or d.driver != "simulator") and not approval:
+                # A device that is not the simulator is real hardware: every
+                # write to it needs a person's single-use grant, whatever its
+                # level and whatever the permission mode (the maintainer,
+                # 2026-11-26: open slowly; a harmless step on a real stirrer
+                # is still an act in the lab).
                 rec = _approvals.file_request(
                     doc, digest_=dig, person=actor.person,
                     session=actor.session, device=d.id, channel=ch.name,
@@ -481,13 +497,17 @@ class Kernel:
                 doc_out = refuse(
                     "approval_required",
                     f"{key} = {num if ch.is_state else format(num, 'g')}{' ' + ch.unit if ch.unit else ''} is "
-                    f"hazardous: a person approves exactly this action with "
+                    f"{'hazardous' if level == 'hazardous' else 'on real hardware'}: a person approves exactly this action with "
                     f"`delfin-agent lab approve {rec['id']}`, then repeat the "
                     f"call with approval={rec['id']}",
                     approval_request=rec["id"])
             else:
                 doc_out = None
-                if level == "hazardous":
+                # The grant is checked and consumed wherever one was
+                # required -- a hazardous level OR real hardware. Checking
+                # only the hazardous level let any non-empty `approval`
+                # string through to a real device's benign write.
+                if level == "hazardous" or d.driver != "simulator":
                     why = _approvals.consume(doc, approval, digest_=dig,
                                              person=actor.person, now=now)
                     if why:
@@ -510,7 +530,7 @@ class Kernel:
             elif doc_out["code"] == "approval":
                 _audit.alert("lab_approval_refused", doc_out["reason"])
             return self._refused(actor, d.id, doc_out)
-        if level == "hazardous":
+        if level == "hazardous" or d.driver != "simulator":
             _audit.record("approval_consumed", id=approval, device=d.id,
                           **actor.as_dict())
         drv = self.driver(d)
@@ -545,7 +565,7 @@ class Kernel:
         after = self._fresh(d)
         rb = after.get(ch.readback or ch.name, _expr.UNKNOWN)
         good = rb is not _expr.UNKNOWN and "__error__" not in after and (
-            str(rb[0]) == str(num) if ch.is_state
+            str(rb[0]) == str(num) if (ch.is_state or ch.text)
             else abs(float(rb[0]) - num) <= ch.tolerance + 1e-9)
         _audit.record("readback", device=d.id, channel=ch.name,
                       expected=num, got=None if rb is _expr.UNKNOWN else rb[0],
