@@ -92,6 +92,9 @@ def test_the_lander_strips_the_agent_trailers_from_public_commits():
     assert "Co-Authored-By" in brief, "the co-author trailer is public text"
     assert "Agent:" in brief, "the `Agent: ... via ...` trailer is public text"
     assert "assistant product" in brief.lower()
+    # The agent account's one co-author line is kept, never stripped.
+    assert "exactly ONE `Co-Authored-By:` line, for DELFIN's agent" in brief
+    assert "No model, provider" in brief
 
 
 def test_the_lander_checks_a_branch_actually_has_commits():

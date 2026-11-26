@@ -169,12 +169,12 @@ report. A patch nobody applied is code that never reached the base.""",
 reaches -- nothing in delfin/ calls it -- does not land as a capability; an \
 import is not a caller. Land it as dead code only if the report says so in \
 those words.""",
-    "E": """A COMMIT MESSAGE IS PUBLIC TEXT. No assistant product names, no \
-institution or host names, no `Co-Authored-By:` and no `Agent: ... via ...` \
-trailer in any commit you make or rewrite: both are written mechanically by \
-the product, and a deployment that wants them is the operator's choice, not \
-yours. Strip them from what you bundle. No home paths, account names or \
-person names either.""",
+    "E": """A COMMIT MESSAGE IS PUBLIC TEXT. The person is the author; an \
+agent's commit carries exactly ONE `Co-Authored-By:` line, for DELFIN's agent \
+account, and no other trailer -- no second co-author line and no \
+`Agent: ... via ...` line. No model, provider, assistant product, institution \
+or host names anywhere in a commit message, trailer included: strip them from \
+what you bundle. No home paths, account names or person names either.""",
     "F": """AN INTEGRATOR BRANCH 0 COMMITS AHEAD OF THE BASE CARRIES NOTHING. \
 `git log --oneline {base}..<branch> | wc -l` is 0 for a branch whose report \
 describes work: it has no commits, so there is nothing to merge. Find the \
