@@ -26,27 +26,8 @@ TRAILER = ("Co-Authored-By: DELFIN-Agent (kit.glm-5.3-flash) "
 
 @pytest.fixture
 def repo(tmp_path, monkeypatch):
-    """A git repository and executor permissions pointing at it.
-
-    Both session markers are pinned, because the value the executor splices in
-    depends on them and this file documents ONE kind of session: an ordinary
-    one, whose trailer is exactly ``TRAILER``.
-
-    - ``DELFIN_AGENT_LABEL``: ``_commit_trailer_value()`` appends a second
-      ``Agent: <label>`` line whenever it is set, so run from inside a wave the
-      expected line and the real one differ by that line and
-      ``test_a_commit_that_already_carries_it_stays_single`` counted two
-      ``Co-Authored-By:`` on a member's host while passing anywhere else — the
-      same machine binding its sibling file already pins against (see
-      test_a_commit_carries_the_model_that_wrote_it.py).
-    - ``DELFIN_SWARM_RUN``: a member of a wave attributes nothing at all
-      (delfin/agent/commit_attribution.py), so without this the rewrite is
-      simply off and every case here would assert against a commit nobody
-      touched.
-    """
+    """A git repository and executor permissions pointing at it."""
     monkeypatch.setattr(A, "_record_security_event", lambda *a, **k: None)
-    monkeypatch.delenv("DELFIN_AGENT_LABEL", raising=False)
-    monkeypatch.delenv("DELFIN_SWARM_RUN", raising=False)
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", "/dev/null")
     repo = tmp_path / "repo"

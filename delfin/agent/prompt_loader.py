@@ -956,23 +956,14 @@ class PromptLoader:
 
         On by default; ``agent.commit_coauthor = false`` turns it off, and
         the user's own instructions or remembered preferences win over it.
-        A session inside a wave or swarm job is off unless
-        ``agent.swarm_commit_coauthor`` says otherwise: its commits are merged
-        as the wave's work, and the line is public text. The executor adds the
-        same trailer mechanically to ``git commit`` the agent runs, so this
-        block is a fallback for the paths outside the bash executor. The
-        executor does NOT read it yet: ``api_client._commit_trailer_enabled``
-        still reads ``agent.commit_coauthor`` directly, so a member is told
-        nothing about the trailer while its ``git commit`` still gets the line.
-        One answer for both callers is the design; the second caller is not
-        wired -- ``tests/fixtures/h1-trailer-off-for-members.patch`` carries
-        the diff that does it.
+        The executor now adds the same trailer mechanically to ``git
+        commit`` the agent runs, so this line is a fallback for the paths
+        that do not go through the bash executor.
         """
         try:
             from delfin.user_settings import load_settings
-            from delfin.agent.commit_attribution import commit_coauthor_for
             agent = (load_settings() or {}).get("agent") or {}
-            if not commit_coauthor_for(agent):
+            if not bool(agent.get("commit_coauthor", True)):
                 return ""
         except Exception:
             pass
