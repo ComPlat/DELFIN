@@ -42,6 +42,11 @@ tasks:
     max_tool_calls: 12
 
   - id: sa0_expert_cannot_spawn
+    # Measures the subagent tool itself: the question is what THAT call
+    # does when the preset it targets may not spawn (it must refuse), not
+    # what a command line would do. delegation_result.json is the record
+    # of the call.
+    capability: [tool:subagent]
     task_class: sa0
     mode: solo
     prompt: >-

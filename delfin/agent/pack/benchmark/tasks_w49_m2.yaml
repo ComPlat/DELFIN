@@ -1,0 +1,132 @@
+version: 1
+package: W49_M2
+# Wave 49, package m2 -- measurement for the five capabilities that matter
+# most and had no benchmark task at all.
+#
+# HOW THE FIVE WERE RANKED. "Matters most" is not a matter of taste here,
+# so the ranking is a count: how often the product's own TEACHING
+# surfaces name the capability -- the skill playbooks and the sub-agent
+# presets, which are what the product offers a model at decision time.
+# The benchmark pack is excluded from the count so that the ranking is not
+# measured on the tasks it is about to justify.
+#
+# Measured that way, on the untouched tree, the five highest unmeasured
+# capabilities were:
+#
+#     tool:search_docs     48 mentions      (needs a doc index -- see below)
+#     tool:bash            41 mentions
+#     tool:read_file       37 mentions
+#     tool:skill           29 mentions      (needs a skill fixture -- below)
+#     tool:grep_file       27 mentions
+#     tool:read_document   19 mentions
+#     tool:search_calcs    18 mentions
+#
+# search_docs and skill are ranked above several of the tasks here, and
+# are NOT among them, for one reason each, stated rather than hidden:
+#
+#   * search_docs answers from the indexed document store. An index is
+#     per-installation state under ~/.delfin, and a task whose fixture
+#     lives outside the workspace cannot be built by a setup script (the
+#     setup receives the workspace path only, and the sandbox hides that
+#     home directory by design). A task here would either fail for every
+#     model or measure a stub, so it stays listed as unmeasured with that
+#     reason instead of shipping a task that proves nothing.
+#   * skill loads a playbook and then the model must FOLLOW it. The
+#     observable difference is a procedure, and this pack has no fixture
+#     that makes a followed procedure reproduce a different number
+#     without also depending on the model's judgment. Not measured rather
+#     than measured badly.
+#
+# So the five below are the highest-ranked capabilities whose difference is
+# a NUMBER the verifier can check, which is the only kind this package can
+# honestly call measured.
+#
+# Each task's capability: tag is a claim that the task measures that
+# capability. Each verifier fails on the wrong answer a broken capability
+# would produce, and each was checked against exactly such an answer.
+tasks:
+  - id: m2_a1_grep_file_where_is_it_defined
+    # 27 mentions -- the third-highest unmeasured capability with a
+    # workspace-local fixture.
+    capability: [tool:grep_file]
+    task_class: coding
+    mode: solo
+    prompt: >-
+      In g1/ there is a small Python tree. Where is `_settle` defined, and
+      where is it actually called? Several files contain the name and they
+      do not all mean the same thing. Write g1/answer.md naming the
+      definition site, the real call site(s), and anything that merely
+      looks like one.
+    verify: m2_a1_grep_file_verify.py
+    setup: m2_capability_fixtures.py
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 20
+
+  - id: m2_a2_bash_mean_cycle_time
+    # 41 mentions -- the second-highest unmeasured capability overall.
+    capability: [tool:bash]
+    task_class: coding
+    mode: solo
+    prompt: >-
+      b2/ holds three instrument runs as CSV, and the runs do not have the
+      same number of rows. Compute the mean cycle time of each run and say
+      which run is fastest. Write b2/answer.md with the three means (in
+      seconds) and the name of the fastest run.
+    verify: m2_a2_bash_verify.py
+    setup: m2_capability_fixtures.py
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 20
+
+  - id: m2_a3_read_file_two_spec_sheets
+    # 37 mentions.
+    capability: [tool:read_file]
+    task_class: office
+    mode: office
+    prompt: >-
+      a3/specs/ holds specification sheets. The two circulation pumps in
+      service are A and B. Which of them has the higher maximum head, and
+      what are both pumps' maximum flow rates? Write a3/answer.md. Note
+      that not every sheet in the folder describes a pump in service.
+    verify: m2_a3_read_file_verify.py
+    setup: m2_capability_fixtures.py
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 20
+
+  - id: m2_a5_read_document_the_current_note
+    # 19 mentions; ranked below bash/read_file/grep_file but it is the
+    # one whose failure mode is a HARD failure (a binary format that a
+    # plain read cannot open), so a wrong answer is unmistakable.
+    capability: [tool:read_document]
+    task_class: science
+    mode: solo
+    prompt: >-
+      d4/ holds the current method note for the trace-metal digestion.
+      What is the temperature the digestion must not exceed, and in what
+      unit must results be reported? Write d4/answer.md. There is an old
+      text file in the same folder; check which note is current before
+      answering.
+    verify: m2_a5_read_document_verify.py
+    setup: m2_capability_fixtures.py
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 20
+
+  - id: m2_a6_search_calcs_within_method
+    # 18 mentions.
+    capability: [tool:search_calcs]
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      sv1/calc/ holds finished calculations. Within each level of theory,
+      which calculation is lowest in energy? And by how much does the best
+      PBE0/def2-SVP calculation lie below the best B3LYP/def2-SVP one --
+      give it in Eh and in kcal/mol. Write sv1/answer.md and state
+      explicitly how the comparison is scoped.
+    verify: m2_a6_search_calcs_verify.py
+    setup: m2_capability_fixtures.py
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 25
