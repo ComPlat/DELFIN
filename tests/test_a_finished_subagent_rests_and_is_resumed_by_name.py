@@ -295,3 +295,46 @@ def test_an_unknown_resume_id_with_nothing_resting_says_so(stores):
     payload = json.loads(out)
     assert "error" in payload, payload
     assert "nothing to resume" in payload["error"], payload["error"]
+
+
+def test_answering_a_dead_resume_id_costs_no_model_call(stores):
+    """The hint must be a file read, not a request.
+
+    The whole point of resting a sub-agent is that the state stays on disk and
+    costs nothing to hold. A hint built by asking a model would make every
+    mistyped id a paid round trip -- worse than the dead-end it replaces.
+
+    The client below raises if it is ever streamed from, so this fails for the
+    reason it names: any model call on the hint path.
+    """
+    _run(stores, sid="sess-A", text="the config sets retries=3")
+
+    def _no_model(**kw):
+        raise AssertionError(
+            "the dead-id hint sent a request to a model")
+
+    perms = _perms(stores, "sess-A")
+
+    def _runner(*, subagent_type, description, prompt, isolation="", **kw):
+        client = MagicMock()
+        client.stream_message = MagicMock(side_effect=_no_model)
+        client._permissions = None
+        client.set_permissions = MagicMock()
+        return SA.run_subagent(
+            subagent_type=subagent_type, description=description,
+            prompt=prompt, parent_client=client, parent_perms=perms,
+            isolation=isolation, **kw).to_payload()
+
+    perms.subagent_runner = _runner
+    out = _DocToolExecutor().execute(
+        "subagent",
+        {"resume_id": "deadbeef", "subagent_type": "explore",
+         "description": "follow-up",
+         "prompt": "and which component reads that count?"},
+        permissions=perms,
+    )
+    payload = json.loads(out)
+    assert "error" in payload, payload
+    resting = [c for c in SA.list_finished(5, session="sess-A")]
+    assert resting, "the fixture stored nothing to find"
+    assert resting[0]["sa_id"] in payload["error"]
