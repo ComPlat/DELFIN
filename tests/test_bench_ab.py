@@ -100,7 +100,7 @@ class _FakeWorktree:
         self.base_ref = ""
 
 
-def _factory(tmp: Path | None = None):
+def _factory():
     """A worktree factory that makes a real directory per side, nothing else.
 
     Real directories matter: ``run`` builds paths from ``side.path``, and a
@@ -116,14 +116,20 @@ def _factory(tmp: Path | None = None):
     recovered from the harness's undo store, which is luck, not a design.
 
     So: the root is ALWAYS a fresh ``mkdtemp`` -- no caller can aim it at
-    anything -- and ``cleanup`` removes only a path whose own name and parent
-    it checked first. A fake for measuring an orchestrator has no business
+    anything -- and ``cleanup`` removes exactly that one path and nothing a
+    caller hands it. A fake for measuring an orchestrator has no business
     deleting a tree.
+
+    WHY CLEANUP TAKES A ``target`` IT MAY ONLY REFUSE. It is called with the
+    root it made (or with nothing); anything else is there so a test can
+    demonstrate the refusal. The old guard also required the root's PARENT to
+    be named ``tmp*``, which the suite's own ``tempfile.tempdir`` fixture makes
+    false -- so it could never delete, and nothing called it either, and every
+    ``_run()`` left its directories behind.
     """
     import tempfile
 
     root = Path(tempfile.mkdtemp(prefix="ab-fake-wt-"))
-    created = root.resolve()
     made: list[_FakeWorktree] = []
 
     def make(repo, commit, *, parent=None, prefix="ab"):
@@ -134,11 +140,11 @@ def _factory(tmp: Path | None = None):
         made.append(info)
         return info
 
-    def cleanup() -> None:
-        """Remove only the directory this helper made. Refuses anything else."""
-        if created.name.startswith("ab-fake-wt-") and created.is_dir() \
-                and created.parent.name.startswith("tmp"):
-            shutil.rmtree(created, ignore_errors=True)
+    def cleanup(target: Path | None = None) -> None:
+        """Remove THIS helper's root, and refuse every other path."""
+        if target is not None and Path(target).resolve() != root.resolve():
+            return
+        shutil.rmtree(root, ignore_errors=True)
 
     make.made = made
     make.root = root
@@ -180,7 +186,7 @@ def _run(tmp_path: Path | None = None, outcomes=None, *, tasks=None, **kw):
     """
     tasks = list(tasks) if tasks is not None else [_task()]
     runner = kw.pop("runner", None) or _runner(outcomes or {})
-    factory = kw.pop("worktree_factory", None) or _factory(tmp_path)
+    factory = kw.pop("worktree_factory", None) or _factory()
     # Both refs default to the real checkout's HEAD, which is a commit in
     # *this* repository -- resolve_commit needs no fixture for that, and the
     # worktrees are fakes, so nothing is written into the tree.
@@ -251,7 +257,7 @@ def test_an_empty_side_yields_the_whole_range_and_so_covers_zero():
 
 
 def test_a_clear_improvement_is_called_improved():
-    rep = _run(Path("/tmp") if False else Path(__file__).parent,
+    rep = _run(Path(__file__).parent,
                {"t-alpha": ([False] * 3, [True] * 3)})
     row = rep.tasks[0].as_dict()
     assert (row["pass_base"], row["pass_head"]) == (0, 3)

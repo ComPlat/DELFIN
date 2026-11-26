@@ -1,6 +1,6 @@
 """A capability nothing measures cannot be shown to improve.
 
-The benchmark pack holds 265 tasks and three registries hold 128
+The benchmark pack holds 270 tasks and three registries hold 128
 capabilities, and until this file existed nothing connected them: no
 count could say whether ``tool:read_document`` was measured, and the
 honest answer for most of them was "nobody knows". An untested capability
@@ -40,15 +40,16 @@ things and forget them: covering a capability forces its removal, so the
 number in the file is a real count of what is unmeasured, not a count of
 what was unmeasured once.
 
-WHY THE BASELINE IS BIG AND STARTS AT 121. Measured on the untouched
-tree before this test existed. The obvious shortcut -- inferring a tag
-from a capability's name appearing in the task prompt -- was tried and
-rejected on evidence: it covered 7 of 128 capabilities, left 248 tasks
-untagged, and its tags were accidents of phrasing (an OCCUPIER task
-scored only ``workflow:OCCUPIER`` although it plainly reads and writes
-files). Inferring a tag is not the same as proving a task measures the
-capability, so a tag is now an author's claim, checked for existence and
-accounted for, never inferred.
+WHY THE BASELINE IS BIG AND STARTS AT 119. The obvious shortcut --
+inferring a tag from a capability's name appearing in the task prompt --
+was tried and rejected on evidence: it covered 7 of 128 capabilities, and
+its tags were accidents of phrasing (an OCCUPIER task scored only
+``workflow:OCCUPIER`` although it plainly reads and writes files). The
+counts a reader can check today say the same thing without that
+measurement: of the pack's 270 tasks, 11 carry a tag and 259 do not, and
+those 11 name 9 of the 128 capabilities. Inferring a tag is not the same
+as proving a task measures the capability, so a tag is now an author's
+claim, checked for existence and accounted for, never inferred.
 """
 
 from __future__ import annotations
@@ -150,7 +151,8 @@ def test_no_capability_is_unmeasured_without_a_reason(measured):
 
     Fails on a capability that has no task and no entry. This is the
     assertion that is red on the base commit, by construction: the base
-    covers 7 of 128 and the baseline did not exist.
+    tags no capability at all -- it has no ``capability`` field, so it
+    covers 0 of 128 -- and the baseline did not exist there.
     """
     caps, _tasks, covered = measured
     known = _baseline()
@@ -197,3 +199,37 @@ def test_every_baseline_entry_carries_a_reason(measured):
         "the baseline names capabilities no registry offers any more; the "
         "list is measuring something that does not exist:\n  "
         + "\n  ".join(unknown))
+
+
+def test_the_numbers_in_the_header_are_the_numbers_measured(measured):
+    """The file's own prose is a claim, and a stale claim re-teaches the
+    wrong thing.
+
+    The counts above were once written as 265 tasks, a baseline starting at
+    121 and "the base covers 7 of 128". Measured on the tree that ships them:
+    270 tasks, 119 entries, and a base that tags no capability at all. The
+    assertions here derive from the live registries, so they cannot go stale
+    the way the prose did -- which is why the prose names them instead of the
+    memory of a measurement nobody can repeat.
+    """
+    caps, tasks, covered = measured
+    known = _baseline()
+    source = Path(__file__).read_text(encoding="utf-8")
+    tagged = sum(1 for t in tasks if getattr(t, "capability", ()))
+    # Prose wraps, so line breaks are not information: compare on collapsed
+    # whitespace. (the phrase the header uses, the number beside it) -- one
+    # entry per count the header claims, either order.
+    flat = " ".join(source.split())
+    claimed = [
+        ("tasks", len(tasks)), ("capabilities", len(caps)),
+        ("STARTS AT", len(known)), ("carry a tag", tagged),
+        ("do not", len(tasks) - tagged), ("name", len(covered)),
+    ]
+    absent = [f"{phrase} {value}" for phrase, value in claimed
+              if f"{phrase} {value}" not in flat
+              and f"{value} {phrase}" not in flat]
+    assert not absent, (
+        "the header states numbers that the live registries do not produce, "
+        "or states them in prose that no longer says what it measured: "
+        f"missing {absent}")
+
