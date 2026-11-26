@@ -13,8 +13,10 @@ One half reads the decision computed here today: the prompt block. The executor
 does NOT yet -- ``api_client._commit_trailer_enabled`` still reads
 ``agent.commit_coauthor`` directly, so a wave member is told nothing about the
 trailer while its ``git commit`` still gets the line spliced in. The wiring is
-``scratch/h1-trailer-off-for-members.patch`` (both files sit behind the
-self-modification guard) and the contract for it is
+``tests/fixtures/h1-trailer-off-for-members.patch`` (a unified diff against
+``api_client.py`` and ``user_settings.py``, which sit behind the
+self-modification guard and so cannot be edited in the session that writes the
+patch) and the contract for it is
 ``tests/test_the_executor_asks_the_same_attribution_question.py``, whose case is
 ``xfail(strict=True)`` until that patch is applied. Read this paragraph before
 trusting the module's name: two callers, one answer is the design, and the

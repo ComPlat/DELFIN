@@ -12,8 +12,9 @@ defect landing rule E names.
 
 This case is the contract for that second half. It is red today because the
 executor is still wired to the bare key; the wiring lives in
-``scratch/h1-trailer-off-for-members.patch`` (``api_client.py`` and
-``user_settings.py`` both sit behind the self-modification guard, wave rule 13).
+``tests/fixtures/h1-trailer-off-for-members.patch`` (``api_client.py`` and
+``user_settings.py`` both sit behind the self-modification guard, wave rule 13,
+so the diff is carried in the tree for a session that may apply it).
 
 It is written as ``xfail(strict=True)`` on purpose: the moment the patch is
 applied the executor answers "no" and this case XPASSes, which fails the suite
@@ -91,8 +92,8 @@ def _agent_commit(repo, monkeypatch, model="kit.glm-5.3-flash",
     strict=True,
     reason="The executor still reads agent.commit_coauthor directly instead of "
            "commit_attribution.commit_coauthor_for; the wiring is "
-           "scratch/h1-trailer-off-for-members.patch. Delete this marker with "
-           "that patch (wave rule 13).")
+           "tests/fixtures/h1-trailer-off-for-members.patch. Delete this "
+           "marker with that patch (wave rule 13).")
 def test_the_executor_obeys_the_attribution_decision(repo, monkeypatch):
     """Both sides of the switch, through the splice a member's commit goes through.
 

@@ -15,7 +15,7 @@ session inside a wave (``agent.swarm_commit_coauthor``, default false),
 unchanged for every other session (``agent.commit_coauthor``, default true).
 
 The executor splice and the prompt block are wired to it through
-scratch/h1-trailer-off-for-members.patch (both files sit behind the
+tests/fixtures/h1-trailer-off-for-members.patch (both files sit behind the
 self-modification guard; wave rule 13). These tests pin the decision itself,
 including the case that must NOT change: a plain session's sub-agent keeps its
 attribution even though its permissions carry a swarm run id.
