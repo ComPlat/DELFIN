@@ -81,7 +81,7 @@ report_access() {
         echo "  People-mode homes with the persons' data, still in the agent account:"
         printf '    %s\n' $homes
         echo "  Copy what a person keeps into their new account, then remove the old one:"
-        echo "    sudo cp -a $home/people/OLD/. /home/NAME/ && sudo chown -R NAME:NAME /home/NAME"
+        echo "    sudo cp -a $home/people/OLD/. ~NAME/ && sudo chown -R NAME:NAME ~NAME"
         echo "  Until then the agent account can read and change those files, and their"
         echo "  dashboards keep running on the old installation until stopped."
     fi
