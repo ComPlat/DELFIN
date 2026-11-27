@@ -2073,11 +2073,19 @@ class PromptLoader:
             # One definition, every role that must obey it. Read through
             # the same cache the role prompts use, so two roles asking
             # for the block cost one file read.
+            #
+            # EMPTY means UNOWNED here, not "render nothing": a shared
+            # file that is missing or misspelt must leave the block alone
+            # like any other name nobody owns, or one typo silently
+            # deletes a rule out of every role that states it. Measured
+            # while writing this: a nonexistent name returned "" and the
+            # block was replaced with nothing.
             rel = name.split(":", 1)[1]
             try:
-                return self._cached_read(self.agent_dir / "shared" / f"{rel}.md")
+                text = self._cached_read(self.agent_dir / "shared" / f"{rel}.md")
             except Exception:
                 return None
+            return text or None
         if name == "subagent_table":
             from . import subagents as _sa
             return _sa.decision_table()
