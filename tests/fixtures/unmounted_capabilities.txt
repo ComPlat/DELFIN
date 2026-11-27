@@ -34,7 +34,7 @@
 # leaves_the_workspace fails if _leaves_workspace ever stops asking for one
 # of them. Deleting it would remove the only explicit statement of the
 # class; mounting it would add a call that cannot change an answer.
-test-only	_bypass_failure_asks	delfin/agent/api_client.py:14915
+test-only	_bypass_failure_asks	delfin/agent/api_client.py:15009
 # _disabled_keyring_factory stays test-only, measured 2026-11-22: the
 # conftest autouse fixture swaps it in (tests/conftest.py:1599) so no test
 # touches the real keyring, and _keyring_factory is only ever bound to

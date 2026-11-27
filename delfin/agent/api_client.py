@@ -12486,6 +12486,11 @@ class ToolSurfaceContext:
     # True so that what the budget measures is the LARGER of the two
     # surfaces; the live request passes the real answer.
     chemistry_workspace: bool = True
+    # The prompt modules the CURRENT request triggers (see
+    # task_prompt_modules). Decides which schemas are hot on this request,
+    # like chemistry_workspace. Default empty: a request that triggers
+    # nothing ships exactly the base hot set.
+    task_modules: frozenset[str] = frozenset()
 
 
 #: The tools that act on DELFIN's HPC clusters (cluster_tools.py).
@@ -12639,7 +12644,61 @@ def _role_defers(role: str) -> bool:
     return _role_allowlist(role or "") is None
 
 
-def _hot_tool_names(chemistry: bool) -> frozenset[str]:
+#: The tools a triggered prompt module describes. The module's prompt
+#: text teaches these tools; with their schemas deferred the model reads
+#: the guidance and then has to fetch each schema first. Measured on a
+#: field install (solo mode, an .xlsx request in German): the generalist
+#: listed the workspace, fetched read_document and edit_sheet through
+#: describe_native_tool and ended three turns empty; 243 of 330 failed
+#: turns on that install were empty turns. Chemistry is not here: its
+#: tools are hot through the workspace and stripped outside one.
+_MODULE_TOOL_NAMES: dict[str, frozenset[str]] = {
+    "documents": _OFFICE_TOOL_NAMES,
+    "notebook": frozenset({"notebook_read", "notebook_edit"}),
+}
+
+
+def _message_user_text(messages: Optional[list]) -> str:
+    """The text the user wrote across *messages*. Tool results are left
+    out: a listing that names an .xlsx is not a request about one."""
+    parts: list[str] = []
+    for m in messages or ():
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        c = m.get("content")
+        if isinstance(c, str):
+            parts.append(c)
+        elif isinstance(c, list):
+            parts.extend(str(b.get("text") or "") for b in c
+                         if isinstance(b, dict) and b.get("type") == "text")
+    return "\n".join(parts)
+
+
+def task_prompt_modules(messages: Optional[list]) -> frozenset[str]:
+    """The tool-carrying prompt modules the user's messages trigger.
+
+    Read off the SAME trigger table that decides which prompt sections
+    ship (``PromptLoader._MODULE_TRIGGERS``), so there is one keyword
+    list. Matched over the whole history, so within a session the set
+    only grows and the tool prefix stays stable from the turn it first
+    triggers on.
+    """
+    text = _message_user_text(messages).lower()
+    if not text:
+        return frozenset()
+    try:
+        from .prompt_loader import PromptLoader
+        table = PromptLoader._MODULE_TRIGGERS
+    except Exception:
+        return frozenset()
+    return frozenset(name for name, triggers in table.items()
+                     if name in _MODULE_TOOL_NAMES
+                     and any(t in text for t in triggers))
+
+
+def _hot_tool_names(chemistry: bool,
+                    modules: frozenset[str] = frozenset()
+                    ) -> frozenset[str]:
     """The tools whose schema is sent on every request: ONE answer.
 
     ``_HOT_TOOL_NAMES`` was derived from 81,949 real calls, and a second
@@ -12647,15 +12706,20 @@ def _hot_tool_names(chemistry: bool) -> frozenset[str]:
     any chemistry tool. So it is a coding agent's hot set. In a DELFIN
     workspace the repository's own chemistry classification,
     ``_DELFIN_ONLY_TOOL_NAMES``, is hot as well -- outside one those tools
-    are stripped before deferral and this adds nothing.
+    are stripped before deferral and this adds nothing. The hot set also
+    follows the TASK: each prompt module the request triggers (*modules*,
+    see ``task_prompt_modules``) adds the tools it describes.
 
     Both the request path and ``advertisable_tools`` ask this, so the
     budget measures what ships. They used to read the frozen set each on
     their own, and this change would have made them disagree.
     """
+    hot = _HOT_TOOL_NAMES
     if chemistry:
-        return _HOT_TOOL_NAMES | _DELFIN_ONLY_TOOL_NAMES
-    return _HOT_TOOL_NAMES
+        hot = hot | _DELFIN_ONLY_TOOL_NAMES
+    for module in modules:
+        hot = hot | _MODULE_TOOL_NAMES.get(module, frozenset())
+    return hot
 
 
 #: Below this many measured calls a tool's schema is deferred. The
@@ -12685,7 +12749,8 @@ def deferred_tool_names(
     out = []
     for entry in tools:
         name = _tool_name_of(entry)
-        if not name or name in _hot_tool_names(ctx.chemistry_workspace):
+        if not name or name in _hot_tool_names(ctx.chemistry_workspace,
+                                               ctx.task_modules):
             continue
         if name == "describe_native_tool":
             continue
@@ -12752,7 +12817,7 @@ def advertisable_tools(
     ]
     if not defer or not _role_defers(ctx.role):
         return out
-    hot = _hot_tool_names(ctx.chemistry_workspace)
+    hot = _hot_tool_names(ctx.chemistry_workspace, ctx.task_modules)
     return [t for t in out
             if _tool_name_of(t) in hot
             or _tool_name_of(t) == "describe_native_tool"]
@@ -13772,7 +13837,36 @@ _CONTINUE_TEXT = {
     "announced": ("[Continue] Your answer announces a step you did not "
                   "take. Take it now, or say in your answer that it is "
                   "not done."),
+    # After the model inspected a tool (or was told a tool cannot do it)
+    # and then ended with no text. Measured on a field install: 243 of 330
+    # failed turns were empty turns, the measured one right after
+    # describe_native_tool, with bash and python available all along.
+    "inspected_empty": ("[Continue] You ended with no answer after "
+                        "inspecting a tool. If no tool does the step, write "
+                        "a short script (Python preferred), run it with "
+                        "bash and check its result. If the work truly "
+                        "cannot be done, or a gate refused it, say why in "
+                        "one sentence; a script is not a way around a "
+                        "refusal."),
 }
+
+# What a tool result says when the tool cannot do the step: the cue, next
+# to describe_native_tool, that the model looked for a tool and found none.
+_CANNOT_DO_RE = re.compile(
+    r"\b(?:cannot|can't|can not|not supported|unsupported|not available|"
+    r"unknown tool|no such tool)\b", re.IGNORECASE)
+
+
+def _inspected_then_stopped(turn_tool_names, api_messages) -> bool:
+    """Whether the turn looked for a tool and then stopped: it called
+    describe_native_tool, or its last tool result says a tool cannot do
+    the step."""
+    if "describe_native_tool" in (turn_tool_names or ()):
+        return True
+    for m in reversed(api_messages or ()):
+        if isinstance(m, dict) and m.get("role") == "tool":
+            return bool(_CANNOT_DO_RE.search(str(m.get("content") or "")[:2000]))
+    return False
 
 
 def _tv_has_code_edit(acc) -> bool:
@@ -34590,7 +34684,8 @@ class OpenAIClient(_BaseClient):
         # skill listing above reaches the model: the cue sits on the tool
         # that acts on it, so nothing has to be paid out of the prompt head.
         try:
-            _hot = _hot_tool_names(_is_delfin)
+            _hot = _hot_tool_names(_is_delfin,
+                                   task_prompt_modules(messages))
             _deferred = [] if not _role_defers(_surface_ctx.role) else [
                 _t for _t in advertised_tools
                 if _tool_name_of(_t) not in _hot
@@ -37229,6 +37324,13 @@ class OpenAIClient(_BaseClient):
                     _cont_reason = "cut_call"
                 elif finish_reason == "length":
                     _cont_reason = "cut"
+                elif (not _ans_c.strip() and not _tool_calls
+                        and _inspected_then_stopped(_turn_tool_names,
+                                                    api_messages)):
+                    # An empty end after a tool lookup: name the move
+                    # that is always there (a script through bash)
+                    # instead of letting the turn end empty.
+                    _cont_reason = "inspected_empty"
                 elif (_ans_c.rstrip().rstrip("*_`").rstrip().endswith(":")
                         and not _announces_an_action(_ans_c)
                         and self._turn_verification is not None
