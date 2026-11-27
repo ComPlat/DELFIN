@@ -10135,6 +10135,15 @@ def _shell_visible(cmd: str) -> str:
 _MODE_PIN: "_contextvars.ContextVar[Optional[list]]" = (
     _contextvars.ContextVar("delfin_perm_mode_pin", default=None))
 
+#: Set only by ``_merge_orchestration_worktrees`` around its own
+#: ``execute("worktree_merge", ...)``: the worktree it merges was created
+#: and reported by ``run_subagent``, not named by a model, so the merge may
+#: skip the check that the SOURCE lies in the workspace roots. A context
+#: variable rather than an argument, because a model can send any argument
+#: and none of them may lift that check.
+_FRAMEWORK_WORKTREE_MERGE: "_contextvars.ContextVar[bool]" = (
+    _contextvars.ContextVar("delfin_framework_worktree_merge", default=False))
+
 
 #: Per-stream output cap for a command a PERSON typed after `!`. The
 #: model's cap (``max_output_chars``, 12k) exists to protect a context
@@ -18454,7 +18463,9 @@ class _DocToolExecutor:
             _wt_path = str(arguments.get("path", "") or "")
             _out = (self._execute_exit_worktree(arguments, permissions)
                     if name == "exit_worktree"
-                    else self._execute_worktree_merge(arguments, permissions))
+                    else self._execute_worktree_merge(
+                        arguments, permissions,
+                        framework_worktree=_FRAMEWORK_WORKTREE_MERGE.get()))
             if permissions is not None and _wt_path:
                 try:
                     permissions.drop_extra_dir(_wt_path)
@@ -28290,11 +28301,18 @@ class _DocToolExecutor:
                     wt, dict) else ""
                 if not path:
                     continue
+                # Through execute(), so the role check, the permission
+                # rules, the session's tool lists and the PreToolUse hooks
+                # decide this merge like any other; the context variable
+                # carries only the fact that the framework made the tree.
+                _fw = _FRAMEWORK_WORKTREE_MERGE.set(True)
                 try:
                     res = json.loads(self.execute(
                         "worktree_merge", {"path": path}, perms))
                 except Exception as exc:
                     res = {"error": f"merge raised: {exc}"}
+                finally:
+                    _FRAMEWORK_WORKTREE_MERGE.reset(_fw)
                 entry = {
                     "stage": stage_name,
                     "description": str(payload.get("description") or ""),
