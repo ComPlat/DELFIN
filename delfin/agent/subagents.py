@@ -5243,7 +5243,17 @@ def run_subagent(
     # outputs the subagent actually saw) as one context block, then the
     # new request. The system prompt is rebuilt fresh so workspace paths
     # stay current.
-    messages = [{"role": "system", "content": system_prompt}]
+    #
+    # The prompt travels as the ``system=`` argument of stream_message below
+    # and NOT inside this list. An OpenAI-compatible client puts ``system=``
+    # at index 0 and then copies every entry here verbatim, so a system row in
+    # both places ships two of them and the endpoint refuses the entire
+    # request with 400 "System message must be at the beginning" -- which
+    # killed every sub-agent run on KIT, blablador, openai and ollama, while
+    # the Anthropic path (where ``system`` is its own parameter) and the CLI
+    # backend stayed healthy. Pinned by
+    # tests/test_a_subagent_child_request_carries_one_system_row.py.
+    messages: list[dict] = []
     if prior:
         recap = _render_resume_recap(prior)
         if recap.strip():
