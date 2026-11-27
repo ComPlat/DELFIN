@@ -105,8 +105,12 @@ def h_watch(runs: list, timeout_s: float = 600, cursors: dict | None = None) -> 
                    cursors=cursors or {})
 
 
-def h_resume(run: str, member: str, note: str = "", fresh: bool = False) -> str:
-    return _answer(wave.resume, run, member, note, fresh=fresh, wait_for_room=False)
+def h_resume(run: str, member: str, note: str = "", fresh: bool = False,
+             after_stop: bool = False) -> str:
+    """Continue an ended member. ``after_stop`` is the person lifting their
+    own stop: without it a stopped member is not restarted."""
+    return _answer(wave.resume, run, member, note, fresh=fresh, wait_for_room=False,
+                   after_stop=after_stop)
 
 
 def h_stop(run: str, member: str = "") -> str:
