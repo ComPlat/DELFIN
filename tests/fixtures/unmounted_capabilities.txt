@@ -237,7 +237,7 @@ test-only	is_safe	delfin/agent/readonly_pipeline.py:391
 # existing scope on demand, and eviction (office.py:6051) only trims stale
 # scopes. No product path is equivalent to an explicit clear; the office
 # tool runs are the consumers and keep needing it between turns.
-test-only	reset_figure_ledger	delfin/agent/office.py:6123
+test-only	reset_figure_ledger	delfin/agent/office.py:6168
 # role_tool_surface_report CONNECTED 2026-11-26 (wave 54 u1): it was the
 # product's own answer to "what does role scoping save", computed on every
 # request and printed by nothing a person could run. It is now reached by
