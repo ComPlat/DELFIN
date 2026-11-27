@@ -160,6 +160,14 @@ def _repair(value: Any, schema: dict, path: str, repairs: list[str]) -> Any:
     return value
 
 
+#: Fields a tool reads although its schema does not advertise them, kept out
+#: of the catalogue because every request pays for an advertised knob
+#: (notebook_read's output cap, see tool_catalog.py). Such a field is a real
+#: argument, never a stray standing in for another property, so the
+#: stand-in refusal below must not fire on it.
+_ACCEPTED_UNADVERTISED: frozenset[str] = frozenset({"max_output_chars"})
+
+
 def _check_object(obj: dict, schema: dict, path: str,
                   repairs: list[str], unknown: str = "refuse") -> Optional[str]:
     props = schema.get("properties") or {}
@@ -176,7 +184,37 @@ def _check_object(obj: dict, schema: dict, path: str,
             stray = (f"unknown field '{key}'"
                      + (f" -- did you mean '{hint}'?" if hint else ""))
             if unknown == "hint":
-                # Extra fields pass; they only explain a missing one.
+                # A stray field BESIDE a complete call is noise and
+                # passes; a stray field STANDING IN for a property the
+                # call does not carry is not noise -- it is the whole
+                # request, and passing it over runs the tool on its
+                # defaults. Measured 2026-11-26 over the 97-tool
+                # surface: `list_files(glob="*.py")` (a stray whose
+                # suggestion is `pattern`, absent here) listed the
+                # WHOLE workspace; `grep_file(pattern=..., pth="calc")`
+                # searched everything. Both answered with real data
+                # about a subject nobody asked about -- the failure
+                # _missing_required_argument's docstring calls the
+                # worst thing a scientific tool can hand back.
+                #
+                # Only the RECOGNIZED case can be refused, because only
+                # there is there a field name to offer instead: a stray
+                # that suggests nothing (`chunks`, `note`, `extra`)
+                # keeps passing, which is the tolerance this mode
+                # exists for. And it is NOT auto-repaired into the
+                # named field: measured, similarity does not separate a
+                # typo from a synonym -- `limit_results`->`max_results`
+                # scores 0.750, the same as the true typo
+                # `paht`->`path` -- so repairing on it would silently
+                # answer a different question, which is the defect
+                # itself, moved. Naming it is the safe half.
+                if (hint and hint in props and hint not in obj
+                        and key not in _ACCEPTED_UNADVERTISED):
+                    return (f"unknown field '{key}' -- did you mean "
+                            f"'{hint}'? The call was not run: it named "
+                            f"no '{hint}', so it would have run as if "
+                            f"'{hint}' were left out. Re-send it with "
+                            f"'{hint}' set.")
                 strays.append(stray)
                 continue
             return stray + "; known fields: " + ", ".join(sorted(props))

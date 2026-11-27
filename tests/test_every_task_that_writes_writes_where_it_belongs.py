@@ -432,9 +432,18 @@ def test_the_counts_still_match_what_was_measured():
     # science 62 -> 63 (read_document), chemistry 32 -> 33 (search_calcs),
     # other 96 -> 98 (the two coding tasks: grep_file, bash). Setup
     # m2_capability_fixtures.py; accept/m2_a{1,2,3,5,6}_*_verify.py.
+    # ten tasks on 2026-11-26 (R3, wave 60, wave/w60/r3-int): the
+    # tasks_r3_longrun.yaml long-horizon tasks (3 code, 3 chemistry,
+    # 4 data; every one task_class long_horizon, so the bucket is
+    # "other" as it was for tasks_w28_lh.yaml) -- other 98 -> 108.
+    # Setup r3long_setup.py; accept/r3long_accept.py. Counted through
+    # benchmark.load_tasks(), the same loader this test reads: the
+    # ten ids are r3long-code-{median,cache,parse},
+    # r3long-chem-{control-fill,solvent-check}, r3long-absent-binary,
+    # r3long-data-{mean,join,exclude,rank}.
     assert counts == {"office": 14, "behavior": 18, "generic_project": 24,
                       "science": 63, "chemistry": 33, "generalist": 26,
-                      "other": 98}, counts
+                      "other": 108}, counts
 
 
 # ---------------------------------------------------------------------------

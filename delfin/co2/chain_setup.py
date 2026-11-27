@@ -160,10 +160,28 @@ _CO2_DEFAULTS = {
 # setup_co2_from_delfin AFTER spin detection.
 #
 # The base list is every CO2 default key PLUS the level-of-theory
-# fields the main CONTROL.txt already owns. Charge / multiplicity /
+# fields the main CONTROL.txt already owns, PLUS the coordinator options
+# that have no default of their own. Charge / multiplicity /
 # broken_sym stay out because they are set dynamically per species.
 _TRANSFER_KEYS = sorted({
     *_CO2_DEFAULTS.keys(),
+    # Options the coordinator READS but the block above lists no default
+    # for, so they were not transferable and a user could set them on the
+    # main CONTROL.txt and see nothing happen. They are OPTIONAL: no line
+    # is emitted unless the user wrote one, so a complete CONTROL that
+    # never mentions them keeps reading exactly as it did.
+    #
+    # ``perform_orientation_scan`` is the case that matters most: the
+    # coordinator treats an ABSENT key as "run the scan"
+    # (CO2_Coordinator6.py:1427-1428), so failing to pass it on does not
+    # fall back to a safe default — it runs the expensive orientation
+    # sweep the user turned off.
+    "perform_orientation_scan",
+    # The two documented keyword overrides (CO2_Coordinator6.py:1367-1377).
+    # They are read from the CO2 CONTROL only, so without this the sole
+    # way to reach them was hand-editing a file the hand-over rewrites.
+    "orca_keywords",
+    "rot_orca_keywords",
     "functional",
     "disp_corr",
     "ri_jkx",
@@ -185,6 +203,36 @@ _TRANSFER_KEYS = sorted({
     "broken_sym",
 })
 
+#: Keys the CO2 CONTROL may hold but must not gain a line it did not have.
+#: Every file generated before these were transferable lacked them, and the
+#: coordinator's own defaults are what those files relied on, so an unset
+#: optional key is written as NOTHING rather than as an empty ``key=`` line.
+_OPTIONAL_KEYS = frozenset({
+    "perform_orientation_scan",
+    "orca_keywords",
+    "rot_orca_keywords",
+})
+
+#: Keys reachable ONLY as ``co2_<key>``, never as a bare line.
+#:
+#: The generic resolver falls back to the plain key, which is what keeps every
+#: CONTROL written before these options existed reading as it always did. For
+#: these three that fallback would itself change an existing file's meaning:
+#: a bare ``orca_keywords`` or ``perform_orientation_scan`` line used to be
+#: dropped by the hand-over, so adding them to ``_TRANSFER_KEYS`` would make
+#: such a line suddenly reach the coordinator and change the ORCA keyword line
+#: (or skip the orientation scan) without the user editing the CO2 CONTROL.
+#: ``orca_keywords`` is additionally a metadata field of the calc doc-server
+#: (``delfin/doc_server/calc_indexer.py:508``) that has nothing to do with
+#: this option, so a bare collision is a real hazard rather than a theory.
+#: The explicit prefix keeps the new meaning unambiguous and leaves the old
+#: meaning of the bare names exactly as it was.
+_PREFIX_ONLY_KEYS = frozenset({
+    "perform_orientation_scan",
+    "orca_keywords",
+    "rot_orca_keywords",
+})
+
 
 def _co2_override_value(delfin_ctrl: Dict[str, str], key: str) -> str:
     """Resolve a CO2 coordinator field from the main CONTROL.txt.
@@ -192,10 +240,13 @@ def _co2_override_value(delfin_ctrl: Dict[str, str], key: str) -> str:
     Lookup priority (first non-empty wins):
       1. ``co2_<key>``  — explicit, unambiguous override
       2. ``<key>``      — plain key (backward-compatible, shared with pipeline)
+    except for :data:`_PREFIX_ONLY_KEYS`, which resolve only through 1.
     """
     prefixed = delfin_ctrl.get(f"co2_{key}", "").strip()
     if prefixed:
         return prefixed
+    if key in _PREFIX_ONLY_KEYS:
+        return ""
     return delfin_ctrl.get(key, "").strip()
 
 _CO2_XYZ = """\
@@ -244,6 +295,10 @@ def _build_co2_control(
             "second_coordination_sphere_metal_basisset", "second_coordination_sphere_scale",
             "orientation_job", "scan_job",
         ]),
+        # The escape hatches from the per-keyword builder. Written only when
+        # the main CONTROL.txt sets them (see _TRANSFER_KEYS), so a run that
+        # does not gets exactly the previous file.
+        ("# Keyword overrides (optional)", ["rot_orca_keywords", "orca_keywords"]),
         ("# Relaxed Distance Scan", ["scan_end", "scan_steps"]),
         ("# Alignment (0-based indices)", ["metal", "metal_index", "align_bond_index", "neighbors"]),
         ("# CO2 placement", [
@@ -252,13 +307,25 @@ def _build_co2_control(
         ]),
         ("# Resources", ["PAL", "maxcore"]),
         ("# Parallelization (orientation scan only)", ["parallel_orientation_scan", "max_workers"]),
+        # Emitted only when the user turned it off/on explicitly; absent means
+        # the coordinator's own default, which is what every older file got.
+        ("# Orientation scan switch (optional)", ["perform_orientation_scan"]),
     ]
 
     parts: list[str] = []
     for header, keys in sections:
+        # A section whose every key is OPTIONAL and unset writes nothing at
+        # all — not even its header. Otherwise adding an optional key would
+        # append an empty line to every generated CONTROL, changing files
+        # for users who never asked for the option.
+        skipped = [k for k in keys if k in _OPTIONAL_KEYS and not merged.get(k)]
+        if skipped and len(skipped) == len(keys):
+            continue
         parts.append(header)
         parts.append("------------------------------------")
         for k in keys:
+            if k in _OPTIONAL_KEYS and not merged.get(k):
+                continue
             parts.append(f"{k}={merged.get(k, '')}")
         parts.append("")
 

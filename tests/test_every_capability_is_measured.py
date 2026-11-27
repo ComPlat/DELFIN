@@ -1,6 +1,6 @@
 """A capability nothing measures cannot be shown to improve.
 
-The benchmark pack holds 270 tasks and three registries hold 131
+The benchmark pack holds 280 tasks and three registries hold 131
 capabilities, and until this file existed nothing connected them: no
 count could say whether ``tool:read_document`` was measured, and the
 honest answer for most of them was "nobody knows". An untested capability
@@ -46,7 +46,7 @@ was tried and rejected on evidence: it covered 7 of 128 capabilities, and
 its tags were accidents of phrasing (an OCCUPIER task scored only
 ``workflow:OCCUPIER`` although it plainly reads and writes files). The
 counts a reader can check today say the same thing without that
-measurement: of the pack's 270 tasks, 11 carry a tag and 259 do not, and
+measurement: of the pack's 280 tasks, 11 carry a tag and 269 do not, and
 those 11 name 9 of the 128 capabilities. Inferring a tag is not the same
 as proving a task measures the capability, so a tag is now an author's
 claim, checked for existence and accounted for, never inferred.

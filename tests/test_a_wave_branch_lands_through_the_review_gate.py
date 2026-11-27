@@ -216,7 +216,7 @@ def monkeypatch_check(swarm):
     real ``check`` comes back after the test (``_restore_check``): assigned
     for good, the stub answered every later test's ``check`` with a pass.
     """
-    pr_bot.check = lambda wt, base="origin/main": (True, "1 passed (stubbed)")
+    pr_bot.check = lambda wt, base="origin/main", **_: (True, "1 passed (stubbed)")
 
 
 _REAL_CHECK = pr_bot.check
