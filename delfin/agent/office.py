@@ -6327,6 +6327,41 @@ def record_tool_figures(tool: str, result: Any,
         return []
 
 
+#: How many numbers one command's output may add to the ledger. A script
+#: that prints a summary prints a handful; a dump of a table would
+#: otherwise fill the ledger with every cell and ground anything.
+MAX_COMMAND_FIGURES = 60
+
+
+def record_command_figures(stdout: str, token: str = "") -> list["ToolFigure"]:
+    """Record the numbers a command that SUCCEEDED printed. Never raises.
+
+    A table job no office tool covers is done by a script, and the script
+    is what counted: measured on a 737-row workbook split by a column, the
+    answer's "192 sheets" and "49 rows without a value" were printed by the
+    agent's own openpyxl script, and the figure check flagged them as
+    numbers no call produced. Only a summary-sized output counts: beyond
+    MAX_COMMAND_FIGURES numbers it is a dump, not a result, and adds
+    nothing.
+    """
+    try:
+        nums = _numbers_in(str(stdout or ""))
+        if not nums or len(nums) > MAX_COMMAND_FIGURES:
+            return []
+        found = [ToolFigure(value=v, kind="count" if float(v).is_integer()
+                            else "cell", label="printed by a command",
+                            tool="bash") for v in nums]
+        scope = _scope(token)
+        with _LEDGER_LOCK:
+            entry = _bucket(scope, create=True)
+            room = MAX_LEDGER_FIGURES - len(entry.figures)
+            if room > 0:
+                entry.figures.extend(found[:room])
+        return found
+    except Exception:
+        return []
+
+
 # --- reading the figures an answer states ----------------------------------
 #
 # The MATCHERS below are German because the files, the questions and the

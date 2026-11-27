@@ -18414,12 +18414,12 @@ class _DocToolExecutor:
                 return self._execute_multi_edit(arguments, permissions)
             if name == "bash":
                 if _caged:
-                    return self._execute_bash(arguments, permissions,
-                                              caged_unasked=True)
+                    return _command_figures_noted(self._execute_bash(
+                        arguments, permissions, caged_unasked=True))
                 return _with_calculation_note(
-                    self._execute_bash(arguments, permissions,
-                                       **({"approved": True} if _approved
-                                          else {})),
+                    _command_figures_noted(self._execute_bash(
+                        arguments, permissions,
+                        **({"approved": True} if _approved else {}))),
                     _calc_notes)
             if name == "bash_background":
                 if _caged:
@@ -31089,6 +31089,23 @@ _SECRET_ENV_NAMES = frozenset({
     "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "GH_TOKEN", "GITHUB_TOKEN",
     "HF_TOKEN", "NETRC", "PGPASSWORD",
 })
+
+
+def _command_figures_noted(result: str) -> str:
+    """*result* unchanged, after recording what a successful command printed.
+
+    The office figure check grounds an answer's numbers in what this turn's
+    calls produced; a script the agent ran is one of those calls
+    (office.record_command_figures). A failed command grounds nothing.
+    """
+    try:
+        data = json.loads(result) if isinstance(result, str) else None
+        if isinstance(data, dict) and data.get("exit_code") == 0:
+            from . import office as _office
+            _office.record_command_figures(str(data.get("stdout") or ""))
+    except Exception:
+        pass
+    return result
 
 
 def _scrubbed_bash_env() -> dict:
