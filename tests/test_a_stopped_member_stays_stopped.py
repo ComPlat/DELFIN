@@ -144,7 +144,47 @@ def _stopped_member(waves, run, tid="arm", brief="work", **kw):
     return before, said
 
 
+def _assert_stop_recorded(waves, run, tid, said):
+    """The record itself, checked once and apart from what it is for.
+
+    Kept separate on purpose: on the base the stop answers ``stopped: []``
+    for an ended member, and a case that asserted this first would fail
+    there for the stop and never reach the rule it exists to prove. The
+    rule cases below therefore assert only what they are about."""
+    assert said["stopped"] == [tid], said
+    assert wave.stopped_by_a_person(run, tid), \
+        "the stop left no record, so nothing can tell it from a crash"
+
+
+def _stopped_run(waves, run, tid="arm", brief="work", **kw):
+    """The same, with the record asserted: for the cases whose subject is
+    the record's effect and whose fixture must be sound."""
+    before, said = _stopped_member(waves, run, tid, brief, **kw)
+    _assert_stop_recorded(waves, run, tid, said)
+    return before
+
+
 # -- 1. the stage does not resume a stopped member ------------------------------------
+
+def test_the_stop_records_the_decision_in_the_runs_state(waves):
+    """The record the rest of the package reads: a person's stop survives the
+    pid, because the pid is what a stop destroys.
+
+    Red on the base for exactly this: ``wave.stop`` answered
+    ``{"stopped": []}`` for a member that had ended, left nothing in
+    ``state.json``, and so the next tick met a dead pid with no way to tell a
+    stop from a crash. This is also evidence #2 from the record, where
+    ``swarm wave stop w59 zz-land`` answered ``stopped: []`` for a live member
+    that then had to be killed by pid.
+    """
+    _before, said = _stopped_member(waves, "s0", "arm")
+    assert said["stopped"] == ["arm"], f"the stop did not see the member: {said}"
+    a = wave.load_state("s0")["agents"]["arm"]
+    assert a.get("stopped"), "the stop left no record in the run's state"
+    assert a["stopped"]["by"] == "a person"
+    assert "at" in a["stopped"] and "pid" in a["stopped"]
+    assert wave.stopped_by_a_person("s0", "arm")
+
 
 def test_a_stopped_member_is_not_resumed_by_the_tick(waves):
     """The record's first half: three ticks over a stopped member resume it
@@ -156,8 +196,7 @@ def test_a_stopped_member_is_not_resumed_by_the_tick(waves):
     to ``MAX_ERROR_RESUMES``. The control below is the same run without the
     stop, where the resume is what the stage is for.
     """
-    before, said = _stopped_member(waves, "s1", "arm")
-    assert said["stopped"] == ["arm"], said
+    before, _said = _stopped_member(waves, "s1", "arm")
     d = wave.run_dir("s1")
     for _ in range(3):
         guard.tick()
@@ -193,8 +232,7 @@ def test_a_stopped_reviewer_is_not_marked_final(waves):
     Red on the base: ``stages.advance`` marked every stopped ``no_realrun``
     member final on the first tick.
     """
-    _before, said = _stopped_member(waves, "s3", "rev", no_realrun=True)
-    assert said["stopped"] == ["rev"], said
+    _stopped_run(waves, "s3", "rev", no_realrun=True)
     d = wave.run_dir("s3")
     for _ in range(2):
         guard.tick()
@@ -250,8 +288,7 @@ def test_status_marks_a_stopped_member_as_stopped(waves):
     the two are the same pid state and opposite meanings, and the record's
     defect was that nothing told them apart.
     """
-    _before, said = _stopped_member(waves, "s6", "arm")
-    assert said["stopped"] == ["arm"], said
+    _stopped_run(waves, "s6", "arm")
     row = {m["id"]: m for m in wave.status("s6")["members"]}["arm"]
     assert row["state"] == "stopped", row
     # The marks a person needs beside it: the stop is why it is not running.
@@ -277,7 +314,7 @@ def test_resume_by_hand_does_not_restart_a_stopped_member(waves):
     another person's command. Red on the base: the CLI resumed the stopped
     member under a new pid.
     """
-    before, _said = _stopped_member(waves, "s8", "arm")
+    before = _stopped_run(waves, "s8", "arm")
     out = _cli("resume", "s8", "arm", "--note", "carry on")
     assert out.get("resumed") is False, out
     assert out.get("why") == "stopped by a person", out
@@ -307,7 +344,7 @@ def test_a_person_lifts_a_stop_with_after_stop_and_then_the_stage_goes_on(waves)
     ends, as ended. Without this the rule above would be a member nothing in
     DELFIN could ever start again.
     """
-    before, _said = _stopped_member(waves, "s10", "arm")
+    before = _stopped_run(waves, "s10", "arm")
     out = _cli("resume", "s10", "arm", "--note", "carry on", "--after-stop")
     assert out.get("resumed") is True, out
     a = wave.load_state("s10")["agents"]["arm"]
@@ -323,8 +360,7 @@ def test_a_failed_real_run_verdict_does_not_resume_a_stopped_member(waves):
     reason rather than a silent no-op.
     """
     from delfin.agent.swarm import merge
-    before, said = _stopped_member(waves, "s11", "arm")
-    assert said["stopped"] == ["arm"], said
+    before = _stopped_run(waves, "s11", "arm")
     out = merge.record_verdict("s11", "arm", "fail", by="integrator",
                                detail="the probe measured nothing")
     assert out.get("resumed") is False, out
