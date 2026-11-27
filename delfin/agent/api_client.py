@@ -13254,6 +13254,78 @@ def _truncate_table_result(text: str, cap: int) -> str:
             return ""
 
 
+_GRID_ROW_RE = re.compile(r"^\s*(\d+) \| ")
+_GRID_HEAD_RE = re.compile(r" — (\d+) rows x (\d+) columns")
+
+
+def _truncate_grid_result(text: str, cap: int, args: Optional[dict] = None) -> str:
+    """Cut a read_document sheet grid at a row boundary, and name the next call.
+
+    The grid is plain text, so it used to fall through to the head-and-tail
+    rule. Measured on a 737 x 21 sheet read with max_cols=7, max_rows=200:
+    the tool returned ~36-62k chars, the model saw ~5k of them -- the first
+    three rows, the last nine, a "... chars from the middle omitted" marker
+    and, below it, the reader's own "NOTE: showing rows 120-319" that was no
+    longer true. Nothing said which rows were missing or how to get them, and
+    the model re-issued the identical read until the repeat guard ended the
+    turn. Here whole rows are dropped from the end until the text fits; the
+    stale "showing rows" note is replaced by one that states the rows shown,
+    the rows not shown, the exact follow-up call, and that a job over the
+    whole table is scripted rather than read into the conversation.
+
+    Returns the cut text, or "" when the text is not such a grid or cannot
+    be made to fit by dropping rows (the caller then keeps head-and-tail).
+    """
+    if not text or len(text) <= cap:
+        return ""
+    lines = text.split("\n")
+    head = _GRID_HEAD_RE.search(lines[0])
+    if not head:
+        return ""
+    idx = [i for i, ln in enumerate(lines) if _GRID_ROW_RE.match(ln)]
+    if len(idx) < 2 or idx[-1] - idx[0] + 1 != len(idx):
+        return ""
+    first, last = idx[0], idx[-1]
+    prefix = lines[:first]
+    rows = lines[first:last + 1]
+    suffix = [ln for ln in lines[last + 1:]
+              if not ln.startswith("NOTE: showing rows")]
+    total = int(head.group(1))
+    last_no = int(_GRID_ROW_RE.match(rows[-1]).group(1))
+    first_no = int(_GRID_ROW_RE.match(rows[0]).group(1))
+    a = dict(args or {})
+
+    def _call(start: int, n: int) -> str:
+        parts = [f"path={json.dumps(str(a.get('path', '')), ensure_ascii=False)}"]
+        if a.get("sheet"):
+            parts.append(f"sheet={json.dumps(str(a['sheet']), ensure_ascii=False)}")
+        parts += [f"start_row={start}", f"max_rows={n}"]
+        for key in ("max_cols", "start_col"):
+            if a.get(key) not in (None, ""):
+                parts.append(f"{key}={a[key]}")
+        return "read_document(" + ", ".join(parts) + ")"
+
+    def _build(k: int) -> str:
+        shown_last = int(_GRID_ROW_RE.match(rows[k - 1]).group(1))
+        note = (
+            f"NOTE: cut to fit the tool-result window: rows {first_no}-"
+            f"{shown_last} are shown, rows {shown_last + 1}-{last_no} of this "
+            f"read are NOT shown (the sheet has {total} rows). Next page: "
+            f"{_call(shown_last + 1, k)}. Do not repeat the same call -- it "
+            "returns the same cut. A job over the whole table (split it into "
+            "sheets, regroup it, copy every row) is not done by reading it "
+            "here: write a Python script with openpyxl and run it with bash.")
+        return "\n".join(prefix + rows[:k] + suffix + ["", note])
+
+    k = len(rows) - 1
+    while k > 0:
+        out = _build(k)
+        if len(out) <= cap:
+            return out
+        k -= 1
+    return ""
+
+
 def _smart_truncate(text: str, cap: int, label: str) -> str:
     """Cap a long output by keeping HEAD and TAIL.
 
@@ -36368,7 +36440,13 @@ class OpenAIClient(_BaseClient):
                                    and _output_needs_fence(fn_name, _redacted))
                     if _fence_this:
                         _cap_here = max(1000, _cap_here - _OUTPUT_FENCE_CHARS)
+                    # A read_document sheet grid is cut at a row boundary
+                    # and names the next call (_truncate_grid_result).
                     context_result = (_truncate_table_result(_redacted, _cap_here)
+                                      or (_truncate_grid_result(
+                                          _redacted, _cap_here, fn_args)
+                                          if fn_name.rsplit("__", 1)[-1]
+                                          == "read_document" else "")
                                       or _smart_truncate(
                                           _redacted, cap=_cap_here, label="tool_result"))
                     # The cut is judged on the result itself, before the
@@ -36894,19 +36972,51 @@ class OpenAIClient(_BaseClient):
                 else:
                     _identical_round_count = 1
                     _last_round_signature = _round_sig
+                # The repeated tools, by name, for the steer and the stop.
+                _rep_names = sorted({
+                    str(tc.get("function", {}).get("name", "")).rsplit("__", 1)[-1]
+                    for tc in tc_list} - {""})
+                _rep_label = ", ".join(_rep_names) or "the same tool"
+                # A repeated document read is the measured case (nine
+                # read_document calls on one 737-row sheet, five of them
+                # byte-identical, then a stop with no answer): the job
+                # was over the whole table, which a script does.
+                _rep_script = (
+                    " If the job needs the whole table (split it into "
+                    "sheets, regroup it, copy every row), write a Python "
+                    "script with openpyxl and run it with bash instead of "
+                    "reading the table here."
+                    if "read_document" in _rep_names else "")
                 if _identical_round_count == 3:
                     api_messages.append(_harness_row((
                         "[system] You have issued the IDENTICAL tool call(s) "
                         "3 rounds in a row. Repeating them again returns the "
                         "same data. Use what you already have: change "
                         "approach, call a different tool, or finish with "
-                        "your answer now."
+                        "your answer now." + _rep_script
                     )))
                 elif _identical_round_count >= 5:
                     yield StreamEvent(type="notice", text=(
                         "\n\n⚠ Aborting tool loop: the identical tool "
-                        "call(s) were repeated 5 rounds in a row without "
-                        "new information. Send 'continue' to resume.\n"))
+                        f"call(s) ({_rep_label}) were repeated 5 rounds in "
+                        "a row and returned the same data each time. Send "
+                        "'continue' to resume.\n"))
+                    # The notice is not the answer (engine: notices never
+                    # reach the answer text), so a stop here used to end
+                    # the turn with no answer at all -- measured: 536 s,
+                    # ~492k input tokens, empty reply. The closing
+                    # sentence is the answer text and names the next
+                    # move the person can ask for.
+                    yield StreamEvent(type="text_delta", text=(
+                        "\n\nStopped: the same call to "
+                        f"{_rep_label} ran five rounds in a row and returned "
+                        "the same data each time, so repeating it cannot "
+                        "get further. To go on, ask for a different step "
+                        "-- other arguments, or a script that does the "
+                        "whole job in one run" + (
+                            " (for a table: a Python script with openpyxl, "
+                            "run with bash)" if _rep_script else "")
+                        + " -- or send 'continue' to resume.\n"))
                     cost = self._estimate_cost(_total_in, _total_out)
                     yield StreamEvent(
                         type="message_delta",
