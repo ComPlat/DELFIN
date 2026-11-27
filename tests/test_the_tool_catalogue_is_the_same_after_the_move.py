@@ -25,6 +25,19 @@ moved 11,678 -> 11,718 (+40, measured) and the token estimate 11,766 ->
 11,806, which the budget test accounts for. The tool COUNT and the name
 order did not move, and those two pins still carry their original
 baseline.
+
+Re-taken again on 2026-11-26 (wave 58, package n1). THE DELIBERATE CAUSE:
+the ``subagent`` tool's description gained the sentence "resume_id resumes
+a finished run.", and the ``resume_id`` property text was shortened to pay
+for it ("sa_id of a FINISHED subagent to continue with its context
+replayed." -> "Finished run's sa_id."). Measured, not estimated: the
+catalogue total went 11,865 -> 11,862 and the estimate 11,954 -> 11,951,
+i.e. it is 3 tokens CHEAPER, and the count and the name order are unmoved.
+The reason the sentence belongs in the description at all: ``subagent`` is
+in ``_HOT_TOOL_NAMES``, so the description is the field every request
+carries, while a property description is only read by a model that already
+decided to look for it -- the arm measured that a capability living only
+in the property is a capability the model does not use.
 """
 import hashlib
 import json
@@ -60,15 +73,19 @@ from delfin.agent import api_client
 # numeric ceiling by measuring the result, not by keeping one branch's
 # number. COUNT (98) and name order did not move, and their pins are
 # untouched, because moving a name is a different act from adding a preset.
+#
+# RE-TAKEN 2026-11-27 on the merged tree, one cause: the subagent tool's
+# resume_id sentence was reworded (wave 58). Measured: estimate
+# 12,170 -> 12,167, report total 12,080 -> 12,077; COUNT and names unmoved.
 PINNED_COUNT = 98
 PINNED_NAMES_SHA256 = (
     "7903960c5ec64ec468cbd81d93b4d3b4be10d1823ab2a4d7a18547fd5dfc449f")
 PINNED_BLOB_SHA256 = (
-    "9b7fbf43c785364728bb253e87d43a7b57361bc9c4531fdbc6711b16058e7b37")
-PINNED_ESTIMATE = 12170
+    "c1437b7a83210e47b4a639e2d776dcd92942735d5fd32ed96cd1a3ab9340c519")
+PINNED_ESTIMATE = 12167
 PINNED_REPORT_SHA256 = (
-    "e5e8f66480d5a05356267a60880ab1413f2401da7ea71cfdfc0f5591a667d67c")
-PINNED_REPORT_TOTAL_TOKENS = 12080
+    "ade091e769307f1562e5a0315d1006e11631e4f7f2691fe4386b6be6eebd0356")
+PINNED_REPORT_TOTAL_TOKENS = 12077
 
 
 def _names_sha256() -> str:

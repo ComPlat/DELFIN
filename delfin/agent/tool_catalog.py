@@ -49,8 +49,9 @@ def _subagent_description() -> str:
     else:
         what = "Every type is read-only."
     return ("Delegate a self-contained task to an isolated sub-agent; "
-            "returns one summary. " + what + " Caps: "
-            + _subagent_caps_phrase() + ".")
+            "returns one summary. " + what
+            + " resume_id resumes a finished run."
+            + " Caps: " + _subagent_caps_phrase() + ".")
 
 
 def refresh_subagent_tool() -> None:
@@ -2151,8 +2152,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "resume_id": {
                         "type": "string",
                         "description": (
-                            "sa_id of a FINISHED subagent to continue with "
-                            "its context replayed."
+                            "Finished run's sa_id."
                         ),
                     },
                     "output_schema": {
