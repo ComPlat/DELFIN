@@ -54,7 +54,7 @@ def call(ws: Path, tool: str, args: dict, *, mode: str = "bypassPermissions",
     perms.mode = mode
     perms.confirm_callback = lambda *a, **k: True
     perms.task_session_id = session
-    executor = A._DocToolExecutor.__new__(A._DocToolExecutor)
+    executor = A._DocToolExecutor()
     raw = executor.execute(tool, args, perms)
     try:
         out = json.loads(raw)

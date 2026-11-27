@@ -1,8 +1,9 @@
 """The run record, and its export for Chemotion ELN.
 
 Input: a finished run's checkpoint and the manifest. Output:
-``runs/<run_id>/record.json`` (schema ``delfin.lab.run/1``) and
-``runs/<run_id>/chemotion_export.json``.
+``runs/<run_id>/record.json`` (schema ``delfin.lab.run/1``),
+``runs/<run_id>/chemotion_import.json`` and
+``runs/<run_id>/chemotion_import.zip``.
 
 The record is what a later reader -- a person, an ELN, the ``ml_train``
 package closing the self-driving-lab loop -- needs without asking anyone:
@@ -13,13 +14,14 @@ FAIR fields (Wilkinson et al. 2016): a persistent run identifier, the
 creator, a licence slot, provenance (software and version, manifest
 checksum) and timestamps in UTC ISO-8601.
 
-Chemotion export. The payload follows the Chemotion data model as far as
-it was verified (docs/design/lab-control.md section 8): a research-plan
-style element with the run as body and the record attached as a JSON
-file, and one entry per sample with its analyses. What is NOT verified
-(the nesting of analyses/containers/datasets, the zip layout of a
-collection import) is named in the payload's ``unverified`` list, and
-nothing is uploaded: an upload needs the API token of a person.
+Chemotion import. ``chemotion.build_import()`` maps the record to the ELN and
+``chemotion.write_import()`` writes it as one zip a person uploads: the
+research plan, the reaction with its conditions, one sample per run sample
+whose analyses carry their data files, the record and its provenance, and the
+FAIR metadata. The shapes follow what was read in the ELN's own source and in
+the official client (``chemotion.SOURCES``); what could NOT be verified stays
+in the payload's ``unverified`` list. Nothing is uploaded: an upload needs the
+API token of a person, and ``chemotion.upload()`` is the only code that sends.
 """
 
 from __future__ import annotations
@@ -85,42 +87,42 @@ def build(cp: dict, manifest) -> dict:
 
 
 def to_chemotion(rec: dict) -> dict:
-    samples = []
-    for sid, s in (rec.get("samples") or {}).items():
-        samples.append({
-            "name": sid,
-            "external_label": s.get("container"),
-            "location": f"{s.get('module')}:{s.get('position')}",
-            "analyses": [{"kind": m.get("quantity"), "device": m.get("device"),
-                          "value": m.get("value"), "unit": m.get("unit"),
-                          "measured_at": _iso(m.get("ts"))}
-                         for m in rec.get("measurements") or []
-                         if m.get("sample") == sid],
-        })
-    return {
-        "format": "delfin.lab.chemotion-export/0",
-        "element": {"type": "research_plan",
-                    "name": f"Automated run {rec['run_id']}",
-                    "body": {"status": rec.get("status"),
-                             "plan_digest": rec.get("plan_digest"),
-                             "deviations": rec.get("deviations")}},
-        "samples": samples,
-        "attachments": [{"filename": "record.json",
-                         "content_type": "application/json"}],
-        "unverified": [
-            "nesting of analyses -> containers -> datasets",
-            "zip layout of a collection import",
-            "LabIMotion generic-element field names for a run",
-        ],
-    }
+    """The run as the ELN import model (``delfin.lab.chemotion-import/1``).
+
+    Delegates to :func:`delfin.lab.chemotion.build_import`, so the export the
+    run writes and the model the request sequence uploads are ONE shape. A
+    second, thinner mapping here (format ``chemotion-export/0``) is what let a
+    finished run leave a file that named one attachment and carried none.
+    """
+    from .chemotion import build_import
+    return build_import(rec)
 
 
 def write(cp: dict, manifest) -> dict:
+    """Write the run's record and the file a person imports into the ELN.
+
+    Three files: ``record.json`` (the record), ``chemotion_import.json`` (its
+    readable twin) and ``chemotion_import.zip`` (the artefact). The import is
+    derived and written on every call, so it can always be rebuilt from a
+    record that already exists. A failure to write it is logged and does not
+    lose the record: the record is the primary artefact and a missing import
+    is reproducible from it, while an unwritten record is not.
+    """
     rec = build(cp, manifest)
     d = run_dir(cp["run_id"])
     (d / "record.json").write_text(json.dumps(rec, indent=1, sort_keys=True),
                                    encoding="utf-8")
-    (d / "chemotion_export.json").write_text(
-        json.dumps(to_chemotion(rec), indent=1, sort_keys=True),
-        encoding="utf-8")
+    _write_import(rec, d)
     return rec
+
+
+def _write_import(rec: dict, d) -> None:
+    from . import chemotion
+    try:
+        chemotion.write_import(chemotion.build_import(rec),
+                               d / "chemotion_import.zip")
+    except Exception as exc:                      # noqa: BLE001 - see docstring
+        import logging
+        logging.getLogger(__name__).error(
+            "run %s: record written, Chemotion import not written: %s",
+            rec.get("run_id"), exc)

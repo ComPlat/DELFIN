@@ -1376,12 +1376,29 @@ def _as_basis_set_required(value: Any) -> str:
 
 
 def _as_list(value: Any) -> list[Any]:
+    """Coerce a list-valued CONTROL key into a list.
+
+    A single value means the one-element list. The parser splits a value on a
+    comma and nothing else, so `oxidation_steps=1` arrives here as the bare
+    int 1 rather than `['1']` -- while the guide (docs/USER_MANUAL.md) and four
+    of the shipped paper calculations write exactly that, and every consumer
+    downstream (_parse_step_list, _parse_override_step_list, _parse_step_set,
+    _normalize_tokens) already reads a scalar. Rejecting the int made a valid
+    CONTROL die at validation or, where the caller swallows the error, plan no
+    redox stage at all. That is the same meaning the string form already has:
+    `_parse_step_list('1')` and `_parse_step_list('1')`-from-`[1]` both give
+    `[1]`. The str branch is unchanged, so "1" -> ["1"] and "1,2" -> ["1","2"].
+    bool is excluded, so `oxidation_steps=true` keeps raising instead of
+    becoming [True]; a float is kept as given, as _as_int does.
+    """
     if value is None:
         return []
     if isinstance(value, list):
         return value
     if isinstance(value, str):
         return [item.strip() for item in value.split(',') if item.strip()]
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return [value]
     raise ValueError("must be a list or comma-separated string")
 
 def _as_parallel_strategy(value: Any) -> str:

@@ -1,6 +1,6 @@
 ---
 name: verifier
-description: Refutes a claim by running the same check at the base and now. Claims it gates: fixed, tested, works, breaks nothing. Use to gate work before it is proposed or reported.
+description: Refutes a claim by running the same check at the base and now. Claims it gates: fixed, tested, works, breaks nothing. Use when a claim needs refuting rather than confirming at base.
 mode: default
 tools: [read_file, read_section, list_sections, list_files, list_docs, grep_file, find_definition, find_references, search_docs, read_document, project_introspect, view_image, exit_plan_mode, ask_user_question, report_verdict, subagent_result, subagent_message, bash, run_tests, check_environment, list_changes_made]
 output_schema: {"type": "object", "properties": {"verdict": {"type": "string"}, "evidence": {"type": "array", "items": {"type": "string"}}, "files_written": {"type": "array", "items": {"type": "string"}}, "open_questions": {"type": "array", "items": {"type": "string"}}, "live_run": {"type": "object", "properties": {"ran": {"type": "boolean"}, "where_ran": {"type": "string"}, "head_sha": {"type": "string"}, "test_counts": {"type": "object", "properties": {"passed": {"type": "integer"}, "failed": {"type": "integer"}, "skipped": {"type": "integer"}}, "required": ["passed", "failed", "skipped"]}}, "required": ["ran", "where_ran", "head_sha", "test_counts"]}}, "required": ["verdict", "evidence", "live_run"]}

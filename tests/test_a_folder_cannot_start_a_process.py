@@ -86,7 +86,10 @@ def test_every_registry_call_site_is_guarded():
     # for both forms, and the dispatcher must offer NO workspace override:
     # an optional one was there once, unused, and was a way round this.
     guarded = (code.count("_hook_workspace(self._permissions)")
-               + code.count("ws = _hook_workspace(permissions)"))
+               + code.count("ws = _hook_workspace(permissions)")
+               # the resource/prompt meta-tools, dispatched by the same
+               # function, build their registry from the guard inline
+               + code.count("get_registry(_hook_workspace(permissions))"))
     assert guarded >= 3, guarded
     import inspect
     params = inspect.signature(A.execute_mcp_call).parameters

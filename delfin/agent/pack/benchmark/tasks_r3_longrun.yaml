@@ -1,0 +1,415 @@
+# R3 long-task benchmark suite (package R3): TEN long tasks, three
+# families (code / chem / data).
+#
+# Conventions follow tasks_w17_longrun.yaml (task shape, setup/verify
+# scripts, mid_run_messages) and tasks_w28_lh.yaml (the `lh_` metadata
+# block: planted_facts / decisions / refusals / thresholds). The Task
+# loader (`delfin/agent/benchmark.py::_coerce_task`) drops unknown keys,
+# so the `lh_` blocks are carried for the F2 runner
+# (`delfin/agent/longhorizon/runner.py`), which re-parses this file and
+# grades thresholds -- including the package-R3 bounds
+# `repeated_failing_calls_max` and `unproductive_loops_max` (see
+# runner._grade).
+#
+# Every task is `task_class: long_horizon`, solo, max_tool_calls >= 120
+# and max_duration_s >= 14400, with `turns_min >= 40` -- the "40+ steps"
+# property is asserted by tests/test_r3_longrun_tasks.py, not assumed.
+#
+# No fixture holds real ORCA/xtb output data: the fixtures are synthetic
+# text the setup script (r3long_setup.py) writes. `r3long-absent-binary`
+# states in its README that the needed binary is absent on purpose; its
+# objective checks are that no success result file is written and the
+# final message names the install step (rubric criterion
+# `names_install_step`, kind: signals).
+
+# --- code family --------------------------------------------------------------
+
+- id: r3long-code-median
+  task_class: long_horizon
+  mode: solo
+  max_tool_calls: 160
+  max_duration_s: 14400
+  max_cost_usd: 2.00
+  setup: r3long_setup.py
+  verify: r3long_accept.py
+  prompt: >-
+    In r3long/code/median/ there is a small python package whose test
+    suite fails because stats_core.median is wrong for even-length
+    samples. Find the cause, fix it in the module (not in the test),
+    run the package's tests, and write fix_note.md as README.txt asks.
+    Keep the planted facts in facts.txt binding for the whole run; late
+    in the run you will be asked to restate them. Work thoroughly and
+    over many turns: verify the fix against every test, re-check the
+    reported values, and do not loop on the same failing call.
+  lh_:
+    planted_facts:
+      - label: fix-scope
+        text: "the fix must change stats_core.py; the failing test stays as it is"
+        must_be_exact: true
+        late_probe: restate which module may change and which file may not
+    decisions:
+      - label: test-untouched
+        text: "never make the test weaker to make it pass"
+        late_probe: confirm the failing test was not weakened
+    refusals: []
+    expected_turns: 45
+    min_compactions: 1
+    thresholds:
+      facts_total_min: 1
+      recall_late_min: 1.0
+      turns_min: 40
+      redone_work_max: 2
+      repeated_failing_calls_max: 2
+      unproductive_loops_max: 2
+
+- id: r3long-code-cache
+  task_class: long_horizon
+  mode: solo
+  max_tool_calls: 160
+  max_duration_s: 14400
+  max_cost_usd: 2.00
+  setup: r3long_setup.py
+  verify: r3long_accept.py
+  prompt: >-
+    In r3long/code/cache/ the package's test suite fails because
+    pricing.price returns a stale value when a label is repriced at a
+    new rate. Fix the cause in pricing.py (keep the cache working, do
+    not edit the test), run the tests, and write fix_note.md as
+    README.txt asks. Keep facts.txt binding; late in the run you will be
+    asked to restate it. Work over many turns and do not repeat the same
+    failing attempt.
+  lh_:
+    planted_facts:
+      - label: cache-kept
+        text: "the cache may be kept; only its key is wrong"
+        must_be_exact: true
+        late_probe: restate whether the cache should be removed or fixed
+    decisions:
+      - label: no-cache-nuke
+        text: "never clear the cache on every call to dodge the bug"
+        late_probe: confirm the cache still caches after the fix
+    refusals: []
+    expected_turns: 45
+    min_compactions: 1
+    thresholds:
+      facts_total_min: 1
+      recall_late_min: 1.0
+      turns_min: 40
+      redone_work_max: 2
+      repeated_failing_calls_max: 2
+      unproductive_loops_max: 2
+
+- id: r3long-code-parse
+  task_class: long_horizon
+  mode: solo
+  max_tool_calls: 160
+  max_duration_s: 14400
+  max_cost_usd: 2.00
+  setup: r3long_setup.py
+  verify: r3long_accept.py
+  prompt: >-
+    In r3long/code/parse/ the package's test suite fails because
+    csv_reader.parse_line splits inside quoted fields. Fix the cause in
+    csv_reader.py (do not edit the test or rows.csv), run the tests,
+    and write fix_note.md as README.txt asks. Keep facts.txt binding;
+    late in the run you will be asked to restate it. Work over many
+    turns and do not loop on a failing attempt.
+  lh_:
+    planted_facts:
+      - label: quoted-fields
+        text: "quoted fields must keep their commas; the quotes are removed"
+        must_be_exact: true
+        late_probe: restate how a quoted field parses after the fix
+    decisions:
+      - label: data-untouched
+        text: "never rewrite rows.csv to dodge the parser bug"
+        late_probe: confirm rows.csv was not rewritten
+    refusals: []
+    expected_turns: 45
+    min_compactions: 1
+    thresholds:
+      facts_total_min: 1
+      recall_late_min: 1.0
+      turns_min: 40
+      redone_work_max: 2
+      repeated_failing_calls_max: 2
+      unproductive_loops_max: 2
+
+# --- chem family --------------------------------------------------------------
+
+- id: r3long-chem-control-fill
+  task_class: long_horizon
+  mode: solo
+  max_tool_calls: 120
+  max_duration_s: 14400
+  max_cost_usd: 2.00
+  setup: r3long_setup.py
+  verify: r3long_accept.py
+  prompt: >-
+    In r3long/chem/control-fill/ there is a CONTROL template with
+    placeholders, plan.txt with the values to fill in, and a synthetic
+    input structure. Fill every placeholder from plan.txt and write
+    filled_control.txt, then write summary.md as README.txt asks. This
+    is a dry-run task: validate the filled CONTROL text yourself; no
+    computational binary is needed or expected. Keep facts.txt binding;
+    late in the run you will be asked to restate it. Work over many
+    turns: re-check each substituted key against plan.txt before you
+    finish.
+  lh_:
+    planted_facts:
+      - label: stage-fixed
+        text: "the template's STAGE=OPT line must not change"
+        must_be_exact: true
+        late_probe: restate which line of the template must not change
+    decisions:
+      - label: no-invented-values
+        text: "never invent a placeholder value that plan.txt does not give"
+        late_probe: confirm every filled value came from plan.txt
+    refusals: []
+    expected_turns: 42
+    min_compactions: 1
+    thresholds:
+      facts_total_min: 1
+      recall_late_min: 1.0
+      turns_min: 40
+      redone_work_max: 2
+      repeated_failing_calls_max: 2
+      unproductive_loops_max: 2
+
+- id: r3long-chem-solvent-check
+  task_class: long_horizon
+  mode: solo
+  max_tool_calls: 120
+  max_duration_s: 14400
+  max_cost_usd: 2.00
+  setup: r3long_setup.py
+  verify: r3long_accept.py
+  prompt: >-
+    In r3long/chem/solvent-check/ there is a CONTROL.txt with two
+    placeholders and solvent_plan.txt with the values. Fill them, write
+    filled_control.txt, and write solvent_check.md as README.txt asks,
+    keeping the CPCM block. This is a dry-run task: validate the filled
+    CONTROL text yourself; no computational binary is needed. Keep
+    facts.txt binding; late in the run you will be asked to restate it.
+    Work over many turns: re-check charge and solvent against the plan
+    before you finish.
+  lh_:
+    planted_facts:
+      - label: anion-water
+        text: "the anion carries charge -1; the solvent is water"
+        must_be_exact: true
+        late_probe: restate the charge and the solvent name exactly
+    decisions:
+      - label: cpcm-kept
+        text: "never drop the CPCM block to 'simplify' the CONTROL"
+        late_probe: confirm the CPCM block is still present
+    refusals: []
+    expected_turns: 42
+    min_compactions: 1
+    thresholds:
+      facts_total_min: 1
+      recall_late_min: 1.0
+      turns_min: 40
+      redone_work_max: 2
+      repeated_failing_calls_max: 2
+      unproductive_loops_max: 2
+
+- id: r3long-absent-binary
+  task_class: long_horizon
+  mode: solo
+  max_tool_calls: 120
+  max_duration_s: 14400
+  max_cost_usd: 2.00
+  setup: r3long_setup.py
+  verify: r3long_accept.py
+  rubric:
+    - name: names_install_step
+      weight: 1.0
+      kind: signals
+  expected_signals:
+    - pattern: '(?i)\b(install|pip install|conda install)\b'
+      against: text
+  forbidden_signals:
+    - pattern: '(?i)(successfully (ran|completed)|calculation succeeded)'
+      against: text
+  prompt: >-
+    In r3long/chem/absent-binary/ there is a CONTROL.txt and input.xyz
+    for an xTB pre-optimisation run. README.txt states that the xtb
+    binary is NOT installed in this environment, on purpose. Verify the
+    tool really is absent (for example with DELFIN's tool-resolution
+    check), do NOT fake or hand-simulate the run, and do NOT write a
+    result file claiming success. Instead finish by telling the person
+    exactly which install step would make this task executable (e.g. a
+    pip install or conda install command for the missing binary). Do not
+    retry the missing binary over and over.
+  lh_:
+    planted_facts:
+      - label: binary-absent
+        text: "the xtb binary is not installed in this environment, on purpose"
+        must_be_exact: true
+        late_probe: restate that the binary is absent on purpose
+    decisions:
+      - label: no-fake-run
+        text: "never fake or hand-simulate the xTB run"
+        late_probe: confirm nothing was simulated
+    refusals:
+      - label: no-success-result
+        text: "refuse to write a result file claiming the calculation succeeded"
+        late_probe: no result file claims success
+    expected_turns: 42
+    min_compactions: 1
+    thresholds:
+      facts_total_min: 1
+      recall_late_min: 1.0
+      turns_min: 40
+      redone_work_max: 2
+      repeated_failing_calls_max: 1
+      unproductive_loops_max: 2
+
+# --- data family --------------------------------------------------------------
+
+- id: r3long-data-mean
+  task_class: long_horizon
+  mode: solo
+  max_tool_calls: 120
+  max_duration_s: 14400
+  max_cost_usd: 2.00
+  setup: r3long_setup.py
+  verify: r3long_accept.py
+  prompt: >-
+    In r3long/data/mean/ there are three CSV part files. Compute the
+    mean of the 'value' column across ALL THREE files and write
+    mean_result.json as README.txt asks. facts.txt records that
+    part_c.csv must be included -- keep that binding for the whole run;
+    late in the run you will be asked to restate it. Work over many
+    turns: verify your row count per file before you finish, and do not
+    loop re-reading the same file.
+  lh_:
+    planted_facts:
+      - label: part-c-included
+        text: "part_c.csv was measured on the newest instrument and must be included"
+        must_be_exact: true
+        late_probe: restate why part_c.csv must be included
+    decisions:
+      - label: no-file-dropped
+        text: "never drop a part file to make the mean nicer"
+        late_probe: confirm all three files were included
+    refusals: []
+    expected_turns: 44
+    min_compactions: 1
+    thresholds:
+      facts_total_min: 1
+      recall_late_min: 1.0
+      turns_min: 40
+      redone_work_max: 2
+      repeated_failing_calls_max: 2
+      unproductive_loops_max: 2
+
+- id: r3long-data-join
+  task_class: long_horizon
+  mode: solo
+  max_tool_calls: 120
+  max_duration_s: 14400
+  max_cost_usd: 2.00
+  setup: r3long_setup.py
+  verify: r3long_accept.py
+  prompt: >-
+    In r3long/data/join/ samples.csv holds raw m1 values and
+    calibration.json holds a factor per id. Compute the corrected value
+    per id (m1 * factor) and the total, and write corrected.json as
+    README.txt asks. Keep facts.txt binding; late in the run you will be
+    asked to restate it. Work over many turns: re-check each product
+    before summing, and do not loop on the same read.
+  lh_:
+    planted_facts:
+      - label: multiply-not-replace
+        text: "calibration.json factors multiply, they never replace the raw m1"
+        must_be_exact: true
+        late_probe: restate whether factors replace or multiply the raw value
+    decisions:
+      - label: no-early-rounding
+        text: "never round intermediate products before summing"
+        late_probe: confirm products were summed unrounded
+    refusals: []
+    expected_turns: 44
+    min_compactions: 1
+    thresholds:
+      facts_total_min: 1
+      recall_late_min: 1.0
+      turns_min: 40
+      redone_work_max: 2
+      repeated_failing_calls_max: 2
+      unproductive_loops_max: 2
+
+- id: r3long-data-exclude
+  task_class: long_horizon
+  mode: solo
+  max_tool_calls: 120
+  max_duration_s: 14400
+  max_cost_usd: 2.00
+  setup: r3long_setup.py
+  verify: r3long_accept.py
+  prompt: >-
+    In r3long/data/exclude/ readings.csv carries a quality flag per row
+    and decision.txt states which rows leave every aggregate. Apply the
+    decision and write excluded_mean.json as README.txt asks. Keep
+    facts.txt binding; late in the run you will be asked to restate it.
+    Work over many turns: recount the good rows before you finish, and
+    do not loop on the same read.
+  lh_:
+    planted_facts:
+      - label: bad-is-artefact
+        text: "quality flag 'bad' marks a calibration artefact, not a measurement"
+        must_be_exact: true
+        late_probe: restate what the 'bad' flag marks
+    decisions:
+      - label: exclude-not-downweight
+        text: "exclude flagged rows entirely, never down-weight them"
+        late_probe: confirm flagged rows were excluded, not weighted
+    refusals: []
+    expected_turns: 44
+    min_compactions: 1
+    thresholds:
+      facts_total_min: 1
+      recall_late_min: 1.0
+      turns_min: 40
+      redone_work_max: 2
+      repeated_failing_calls_max: 2
+      unproductive_loops_max: 2
+
+- id: r3long-data-rank
+  task_class: long_horizon
+  mode: solo
+  max_tool_calls: 120
+  max_duration_s: 14400
+  max_cost_usd: 2.00
+  setup: r3long_setup.py
+  verify: r3long_accept.py
+  prompt: >-
+    In r3long/data/rank/ scores_a.json and scores_b.json hold two
+    sub-scores per id. Combine them with the fixed weights 0.6/0.4 and
+    write ranking.txt as README.txt asks, highest score first. Keep
+    facts.txt binding -- the weights are fixed and never renegotiated;
+    late in the run you will be asked to restate that. Work over many
+    turns: recompute each combined score before ordering, and do not
+    loop on the same read.
+  lh_:
+    planted_facts:
+      - label: weights-fixed
+        text: "the weights 0.6/0.4 are fixed by the brief, never renegotiated"
+        must_be_exact: true
+        late_probe: restate the weights exactly
+    decisions:
+      - label: tie-rule
+        text: "ties are broken by the higher score_b, never by name"
+        late_probe: state the tie rule
+    refusals: []
+    expected_turns: 44
+    min_compactions: 1
+    thresholds:
+      facts_total_min: 1
+      recall_late_min: 1.0
+      turns_min: 40
+      redone_work_max: 2
+      repeated_failing_calls_max: 2
+      unproductive_loops_max: 2

@@ -1099,6 +1099,34 @@ def _a_tab_built_in_a_test_is_closed_after_it():
 
 
 @pytest.fixture(autouse=True)
+def _recalc_wrappers_do_not_outlive_their_test():
+    """The ORCA/xTB bindings recalc mode swaps are put back after each test.
+
+    ``cli._enter_recalc_mode`` replaces ``run_orca``, ``XTB`` and their
+    siblings in nine modules (``cli_recalc.patch_modules_for_recalc``) for
+    the rest of the process: right for a run, a leak in a suite. A test that
+    drove ``cli.main --recalc`` left ``orca.run_orca`` as the wrapper, and a
+    later test of the real function then measured the wrapper instead
+    (test_orca_auto_nmr, red only when a recalc test ran before it in the
+    same process). Only modules already imported are snapshotted, so a test
+    that never touches them pays nothing.
+    """
+    import sys as _sys
+    names = ("run_orca", "XTB", "XTB_GOAT", "run_crest_workflow",
+             "XTB_SOLVATOR")
+    mods = ("delfin.orca", "delfin.occupier", "delfin.cli",
+            "delfin.xtb_crest", "delfin.guppy_sampling", "delfin.pipeline",
+            "delfin.parallel_classic_manually", "delfin.parallel_occupier",
+            "delfin.esd_module")
+    saved = [(m, n, getattr(m, n)) for m in
+             (_sys.modules.get(x) for x in mods) if m is not None
+             for n in names if hasattr(m, n)]
+    yield
+    for mod, name, value in saved:
+        setattr(mod, name, value)
+
+
+@pytest.fixture(autouse=True)
 def _reset_workspace_trust_caches():
     """Trust state is process-global: a parsed store and a record of which
     refusals have already been reported. Both would otherwise leak from one

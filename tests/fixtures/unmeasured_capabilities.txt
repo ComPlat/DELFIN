@@ -137,3 +137,6 @@ workflow:multi_level_energy	needs real QM single points at several levels
 workflow:opt_freq_energy	needs a real optimise+frequency+energy chain
 workflow:redox_potential	needs real QM runs on both redox partners; the single-point potential is a different workflow from the measured workflow:redox
 workflow:xtb_thermochemistry	needs a real xTB binary; the pack forbids real QM/xTB runs
+preset:chemotion-eln	its tools talk to a Chemotion ELN; the benchmark pack has no fake ELN server, and a task must never reach a real one
+preset:lab-specialist	drives lab devices; only meaningful against the lab simulator, which the benchmark pack does not set up
+tool:lab_run	runs a lab workflow; needs a pinned manifest and the lab simulator, which the benchmark pack does not set up

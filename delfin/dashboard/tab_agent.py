@@ -5007,6 +5007,11 @@ def archive_rows(running, finished, unassigned=()) -> list[tuple[str, str]]:
     appear in none of the session lists; they are still on disk and still
     readable, so they are listed below a separate header row
     (``_ARCHIVE_UNASSIGNED_HEADER``) instead of being unreachable.
+
+    The dashboard tab does not pass ``unassigned``: that list belongs to
+    no session, so showing it in a session's archive showed other
+    conversations' delegates to this one. The parameter and the header row
+    stay for callers that list those records deliberately.
     """
     def _rows(records) -> list[tuple[str, str]]:
         out: list[tuple[str, str]] = []
@@ -9920,10 +9925,15 @@ def create_tab(ctx):
             # No session-start cutoff. Hiding earlier runs was what made a
             # finished delegate "disappear": the saved session was still on
             # disk and nothing in the UI could reach it.
+            # No unassigned fold here. Records written before ownership was
+            # recorded belong to no session, so listing them in this
+            # session's archive showed other conversations' delegates to
+            # this one. They stay on disk and stay loadable by id, and the
+            # store's ``list_finished(unassigned=True)`` is still the way to
+            # list them deliberately.
             archive = archive_rows(
                 read_running(),
-                list_finished(_ARCHIVE_LIMIT, session=_owner),
-                list_finished(_ARCHIVE_LIMIT, unassigned=True))
+                list_finished(_ARCHIVE_LIMIT, session=_owner))
             cur = state.get("_view_agent", "main")
             # The archive ids count as valid views: a selected archive entry
             # must not be reset to Main by the next tick.
@@ -12514,6 +12524,17 @@ def create_tab(ctx):
                 "⚠️ This session was saved without the model's side of the "
                 "conversation: the chat above is shown, but the model starts "
                 "without it. Restate what it needs to know." + _archived)
+
+        # The archive, now that the id it is keyed by has settled. This
+        # session's finished delegates were written under THIS id, and
+        # every other caller of ``_refresh_agent_view_chips`` is a tick that
+        # only runs while something is live -- so a resumed session whose
+        # delegates had all finished showed an empty archive, while /agents
+        # in the same tab listed them (measured on the base tree).
+        try:
+            _refresh_agent_view_chips()
+        except Exception:
+            pass
 
     # -- helpers -----------------------------------------------------------
 
@@ -25581,6 +25602,16 @@ def create_tab(ctx):
     _update_status()
     _update_button_states()
     _refresh_session_dropdown()
+    # The archive is drawn once here, for the same reason the two lists
+    # above are: it is a read of this session's own records, and every other
+    # caller of ``_refresh_agent_view_chips`` is a tick that only runs once
+    # something is live. Before this, a tab opened on a session whose
+    # delegates had all finished showed an empty archive -- the ordinary
+    # case after a resume -- while ``/agents`` in the same tab listed them.
+    try:
+        _refresh_agent_view_chips()
+    except Exception:
+        pass
 
     # D5: prime the job-state snapshot so the first real transition we
     # observe doesn't get reported as a "first time seen" non-event.

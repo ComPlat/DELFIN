@@ -82,6 +82,31 @@ def test_an_unclear_manifest_is_refused(mutate, needle):
     assert needle in str(exc.value)
 
 
+def test_a_text_channel_cannot_declare_a_step_bound_it_cannot_enforce():
+    """A `max_step` on a container slot is a limit nobody checks.
+
+    A text channel's value is a NAME, compared for equality against what the
+    position reports -- there is no number to take a step from, so the
+    kernel's ramp gate skips it (``safety.py``: the check is guarded by
+    ``not ch.text``). Accepting the key meant a manifest author could write
+    ``container: {text: true, max_step: 1}``, have it parsed and kept, and
+    get no refusal, no warning and no enforcement: a declared limit that
+    silently does nothing is worse than an absent one, because the manifest
+    reads as if the bound were there. Refuse it, and name the reason.
+    """
+    doc = _doc()
+    _device(doc, "hotplate")["writes"]["setpoint"] = {
+        "text": True, "max_step": 60, "level": "benign"}
+    with pytest.raises(manifest.ManifestError, match="text"):
+        manifest.parse_document(doc)
+    # Control: the same channel without the bound is what the campaign
+    # manifests actually ship, and it still parses.
+    _device(doc, "hotplate")["writes"]["setpoint"] = {
+        "text": True, "level": "benign"}
+    assert manifest.parse_document(doc).devices["hotplate"].writes[
+        "setpoint"].text is True
+
+
 def test_units_convert_within_a_dimension_only():
     assert units.convert(313.15, "K", "degC") == pytest.approx(40.0)
     assert units.convert(212, "degF", "degC") == pytest.approx(100.0)

@@ -5951,7 +5951,8 @@ def _add_agent_flags(p: argparse.ArgumentParser, *,
     # rather than failing, which is what the engine already does.
     p.add_argument("--mode", default=mode_default,
                    help="Agent mode: solo / dashboard / office / research / "
-                        "workflow (plan is a permission profile, not a mode)")
+                        "workflow / lab (plan is a permission profile, not a "
+                        "mode)")
     p.add_argument("--backend", default="", choices=["", "api", "cli"],
                    help="api (direct Anthropic) or cli (subprocess)")
     p.add_argument("--provider", default="",
@@ -6791,6 +6792,13 @@ def build_parser() -> argparse.ArgumentParser:
                     "(delfin-agent lab --help)", add_help=False)
     lab_p.add_argument("lab_args", nargs=argparse.REMAINDER)
     lab_p.set_defaults(func=cmd_lab)
+
+    # eln — Chemotion ELN: the person's approvals (delfin/lab/eln_cli.py)
+    eln_p = sub.add_parser(
+        "eln", help="Chemotion ELN: pending | show ID | approve ID | "
+                    "collections (delfin-agent eln --help)", add_help=False)
+    eln_p.add_argument("eln_args", nargs=argparse.REMAINDER)
+    eln_p.set_defaults(func=cmd_eln)
 
     # usage — a read-only report by attribution (molecule / workflow / task
     # / agent). Light: it reads two local JSONL stores and prints a table,
@@ -7831,6 +7839,17 @@ def cmd_lab(args) -> int:
     """``delfin-agent lab ...``: handed whole to ``delfin.lab.cli``."""
     from delfin.lab.cli import main as lab_main
     return int(lab_main(list(getattr(args, "lab_args", None) or ["--help"]))
+               or 0)
+
+
+def cmd_eln(args) -> int:
+    """``delfin-agent eln ...``: handed whole to ``delfin.lab.eln_cli``.
+
+    The person's side of an ELN write: ``approve`` is refused to a process
+    an agent session started, both here and in the signature underneath.
+    """
+    from delfin.lab.eln_cli import main as eln_main
+    return int(eln_main(list(getattr(args, "eln_args", None) or ["--help"]))
                or 0)
 
 

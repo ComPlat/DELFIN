@@ -64,7 +64,7 @@ _FACTS = {
         ("delfin/config.py", 634, "validate_control_text"),
     ],
     "sp1_benchmark_runner_entry": [
-        ("delfin/agent/benchmark_runner.py", 1450, "run_task"),
+        ("delfin/agent/benchmark_runner.py", 1482, "run_task"),
         ("delfin/agent/benchmark.py", 331, "class Task"),
     ],
     "sp1_pilot_harness": [

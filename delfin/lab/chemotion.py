@@ -24,8 +24,9 @@ session and cited in :data:`SOURCES`:
   requires the bearer token to start with ``chemtoken``
   (``authentication_api.rb``).
 * Samples are created under ``/samples`` with a ``collection_id``, a nested
-  ``container`` (their analyses live there) and ``segments``
-  (``sample_api.rb``).
+  ``container`` (their analyses live there as ``children``: analysis ->
+  dataset -> the data file, the shape ``analysis_container`` builds) and
+  ``segments`` (``sample_api.rb``).
 * Attachments upload in 5000-byte chunks: ``POST /attachments/upload_chunk``
   (multipart field ``file``, form ``key``, ``counter``) then
   ``POST /attachments/upload_chunk_complete`` (form ``key``, ``filename``,
@@ -47,28 +48,58 @@ import hashlib
 import json
 import mimetypes
 import uuid
+import zipfile
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
-FORMAT = "delfin.lab.chemotion/1"
+
+def _iso(ts) -> Optional[str]:
+    """A timestamp as UTC ISO-8601.
+
+    ``record.build`` stores ``started``/``ended`` as ISO strings while the
+    steps and measurements carry epoch seconds, so both arrive here; a value
+    that is already a string is passed through rather than converted twice.
+    """
+    if ts is None:
+        return None
+    if isinstance(ts, str):
+        return ts
+    try:
+        return datetime.fromtimestamp(float(ts), timezone.utc).isoformat()
+    except (TypeError, ValueError, OSError):
+        return str(ts)
+
 
 # Chunk size used by the official client (chemotionapi analyses_manager.py).
 MAX_UPLOAD_CHUNK = 5000
 
-# Endpoint facts read from source this session, with their primary URLs.
+# Endpoint and payload facts read from source, with their primary locations.
+# Re-read on 2026-11-24 for the container tree and the analyses/dataset split.
 SOURCES = {
     "api.root": "ComPlat/chemotion_ELN app/api/api.rb "
-                "(prefix api, version v1; mounts the *_API resources)",
+                "(prefix api, version v1; mounts the *_API resources; "
+                "Detection of an API token: current_token starts with 'chemtoken')",
     "authentication": "ComPlat/chemotion_ELN app/api/chemotion/authentication_api.rb",
-    "samples": "ComPlat/chemotion_ELN app/api/chemotion/sample_api.rb",
-    "research_plans": "ComPlat/chemotion_ELN app/api/chemotion/research_plan_api.rb",
-    "attachments": "Chemotion/chemotionapi chemotion_api/elements/analyses_manager.py",
+    "samples": "ComPlat/chemotion_ELN app/api/chemotion/sample_api.rb "
+               "(sample.container = update_datamodel(params[:container]))",
+    "reactions": "ComPlat/chemotion_ELN app/api/chemotion/reaction_api.rb "
+                 "(reaction.container = update_datamodel(container_info))",
+    "containers": "ComPlat/chemotion_ELN app/usecases/containers/update_datamodel.rb "
+                  "(only description, children and attachments are read -- no "
+                  "analyses key) and app/models/container.rb "
+                  "(create_analysis_with_dataset!: analysis -> dataset -> files)",
+    "attachments": "Chemotion/ChemotionAPI chemotion_api/elements/analyses_manager.py "
+                   "and elements/empty_elements/{analyses,dataset}.json",
 }
 
 UNVERIFIED = [
-    "exact request body of POST /research_plans (create params)",
-    "how analyses nest into containers -> datasets for a fresh sample",
+    "exact create params of POST /research_plans (body, collection_id, "
+    "attachments) -- its api.rb was not re-read for this export",
+    "the ZIP LAYOUT the ELN's own file import expects: only the JSON import "
+    "model and the server's container tree are verified here, so the bundle "
+    "must be checked against one ELN version before it is relied on",
     "token expiry and the full /authentication mount path",
     "the request that maps uploaded attachment keys onto an element "
     "(modelled from the official client's Attachments.save)",
@@ -100,66 +131,440 @@ class HttpRequest:
     auth: bool = True
 
 
+def _attachment(filename: str, text: str) -> dict:
+    ctype = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    return {"filename": filename, "content_type": ctype, "text": text}
+
+
+#: Format of the file a person imports. The request shapes below were read
+#: from the ELN's source and the official client on 2026-11-24
+#: (:data:`SOURCES`); the FILE-import layout of a collection zip is not one
+#: of them, which is why it stays in :data:`UNVERIFIED`.
+IMPORT_FORMAT = "delfin.lab.chemotion-import/1"
+
+
+def _measurement_file(m: dict) -> str:
+    """The measurement as the data file its analysis carries.
+
+    One JSON document per measurement rather than the run's whole
+    measurements array: on the server a dataset's file belongs to that
+    analysis, so a shared file would attach the same bytes to every dataset.
+    """
+    return json.dumps(m, indent=1, sort_keys=True, default=str)
+
+
+def _data_filename(rec: dict, sample: str, measurement: dict, n: int,
+                   total: int) -> str:
+    """The name of one measurement's data file -- the ONE place it is decided.
+
+    Run, sample and quantity identify the analysis; a repeat measurement of
+    the same sample for the same quantity would repeat the name, so the
+    measurement's ordinal within that (sample, quantity) group is appended
+    when there is more than one. ``total`` is what makes the name stable per
+    record: the index appears for every measurement of a repeated pair and
+    for none of a single one, so a name never depends on which measurement
+    is being written.
+
+    Both the container tree and the bundle's attachments get their name from
+    here. They were computed separately before, and drifted: the tree said
+    ``<run>-<sample>-<quantity>.json`` while the bundle held
+    ``...-<i>.json``, so an analysis named a file the import did not contain.
+    """
+    base = (f"{rec.get('run_id')}-{sample or 'sample'}-"
+            f"{measurement.get('quantity') or 'measurement'}")
+    return f"{base}-{n}.json" if total > 1 else f"{base}.json"
+
+
+def _conditions(rec: dict) -> list[dict]:
+    """The ``set`` steps of the run: what it held its devices at.
+
+    A ``measure`` step is not a condition (it reads), a ``wait`` step is not
+    a condition (it is a guard on one), and a ``transfer`` is where the
+    sample went -- that belongs to the sample, not to the reaction.
+
+    Only a set that SUCCEEDED is a condition. The kernel records a refused
+    attempt as a step of its own (``code: approval_required``, with no device
+    and no value), and the same setpoint then appears again once it is
+    approved: counted blindly, the refusal becomes a condition holding a
+    device at nothing. The refusal is not lost -- it stays in ``steps`` and in
+    the audit chain, which is where provenance reads it.
+    """
+    out = []
+    for st in rec.get("steps") or []:
+        if st.get("op") != "set":
+            continue
+        o = st.get("outcome") or {}
+        if not o.get("ok"):
+            continue
+        out.append({
+            "step": st.get("step"),
+            "device": o.get("device"),
+            "channel": o.get("channel"),
+            "value": o.get("value"),
+            "unit": o.get("unit"),
+            "level": o.get("level"),
+            "readback": o.get("readback"),
+            "command": o.get("command"),
+            "at": _iso(st.get("ts")),
+        })
+    return out
+
+
+def analysis_container(measurement: dict, rec: dict, n: int = 1,
+                       total: int = 1) -> dict:
+    """One analysis as the container tree the ELN persists.
+
+    The shape is the client's own (``analyses.json`` / ``dataset.json``), not
+    an invented one: an analysis is a container of type ``analysis`` whose
+    child is a dataset, the files hang on the DATASET, and the values ride in
+    the dataset's ``extended_metadata``, because the server writes container
+    metadata from ``extended_metadata`` and a bare key would be dropped
+    (``Usecases::Containers::UpdateDatamodel#update_description``, and
+    ``Container#create_analysis_with_dataset!`` for the tree).
+    """
+    name = f"{measurement.get('quantity') or 'measurement'} on " \
+           f"{measurement.get('device') or 'device'}"
+    dataset = {
+        "id": str(uuid.uuid4()),
+        "is_new": True,
+        "is_deleted": False,
+        "name": name,
+        "description": "",
+        "container_type": "dataset",
+        "extended_metadata": {
+            "report": True,
+            "delfin": {
+                "quantity": measurement.get("quantity"),
+                "value": measurement.get("value"),
+                "unit": measurement.get("unit"),
+                "device": measurement.get("device"),
+                "container": measurement.get("container"),
+                "measured_at": _iso(measurement.get("ts")),
+                "run_id": rec.get("run_id"),
+                "identifier": (rec.get("fair") or {}).get("identifier"),
+            },
+        },
+        "attachments": [{
+            "id": str(uuid.uuid4()),
+            "is_new": True,
+            # the ONE name both this tree and the bundle use (see
+            # _data_filename): it carries the sample so two samples of one
+            # quantity differ, and the ordinal so a repeat measurement of
+            # ONE sample differs from its twin.
+            "filename": _data_filename(
+                rec, measurement.get("sample"), measurement, n, total),
+            "content_type": "application/json",
+            "checksum": hashlib.md5(
+                _measurement_file(measurement).encode("utf-8")).hexdigest(),
+            "raw": _measurement_file(measurement),
+        }],
+        "children": [],
+    }
+    return {
+        "id": str(uuid.uuid4()),
+        "is_new": True,
+        "is_deleted": False,
+        "name": name,
+        "description": "",
+        "container_type": "analysis",
+        "extended_metadata": {"report": True, "index": 1},
+        # the client's own split: container attachments stay empty, the
+        # files hang on the dataset
+        "attachments": [],
+        "children": [dataset],
+    }
+
+
+def _provenance(rec: dict) -> dict:
+    """Manifest pin, the audit chain, who approved what, and the record's hash.
+
+    The chain is REPORTED, not claimed. ``prev`` is the SHA-256 of the
+    previous line's raw bytes as written (``delfin.agent.audit_log``), so it
+    cannot be re-derived from the parsed lines a record carries: it has to be
+    verified on the log's bytes. ``audit_chain`` is that verification of the
+    installation's log -- through ``delfin.agent.audit_log.verify``, the one
+    reader of the file -- taken when the export is built. A run whose lines
+    are no longer in the log it came from therefore says so instead of
+    presenting itself as chained.
+    """
+    audit = list(rec.get("device_log") or [])
+    chain = _chain_report()
+
+    approvals: dict = {}
+    for line in audit:
+        rid = line.get("id")
+        if not rid or not str(line.get("event", "")).startswith("approval_"):
+            continue
+        ap = approvals.setdefault(rid, {
+            "id": rid, "device": line.get("device"),
+            "channel": line.get("channel"), "value": line.get("value"),
+            "unit": line.get("unit"), "session": line.get("session"),
+            "requested_by": None, "approved_by": None,
+            "requested_at": None, "granted_at": None, "consumed_at": None,
+        })
+        ev = line.get("event")
+        if ev == "approval_requested":
+            ap["requested_by"] = line.get("person")
+            ap["requested_at"] = line.get("ts")
+        elif ev == "approval_granted":
+            ap["approved_by"] = line.get("approver")
+            ap["granted_at"] = line.get("ts")
+        elif ev == "approval_consumed":
+            ap["consumed_at"] = line.get("ts")
+
+    return {
+        "installation": rec.get("installation"),
+        "manifest": rec.get("manifest"),
+        "plan_digest": rec.get("plan_digest"),
+        "actor": rec.get("actor"),
+        "started": rec.get("started"),
+        "ended": rec.get("ended"),
+        "status": rec.get("status"),
+        "deviations": rec.get("deviations") or [],
+        "audit": audit,
+        "audit_lines": len(audit),
+        "audit_chain": chain,
+        "audit_chain_intact": bool(chain and chain.get("ok")),
+        "approvals": sorted(approvals.values(), key=lambda a: str(a["id"])),
+        "record_sha256": hashlib.sha256(
+            json.dumps(rec, indent=1, sort_keys=True).encode("utf-8")
+        ).hexdigest(),
+    }
+
+
+def _chain_report() -> Optional[dict]:
+    """``audit_log.verify`` of the installation's active log, or None.
+
+    None means the question was not answered (no log, or verification could
+    not run), which is different from ``ok: False`` -- a chain that was
+    checked and is broken. The export distinguishes the two so a reader is
+    never told a run is proven when nothing was proven.
+    """
+    try:
+        from delfin.agent import audit_log
+        from . import store
+        path = store.lab_dir() / "audit.log"
+        if not path.exists():
+            return None
+        report = audit_log.verify(path)
+    except Exception:                             # noqa: BLE001 - reported as None
+        return None
+    if not isinstance(report, dict):
+        return None
+    return {k: report.get(k) for k in
+            ("ok", "records", "chained", "legacy", "problems", "path")
+            if k in report}
+
+
+def _fair(rec: dict) -> dict:
+    """The record's FAIR slots, plus the ones a repository asks for.
+
+    ``license`` is reported as it is (the record leaves it unset) together
+    with ``license_set``: an identifier without a licence is not reusable,
+    and silently filling one in would claim a right nobody granted.
+    """
+    fair = dict(rec.get("fair") or {})
+    fair.setdefault("identifier", None)
+    fair.setdefault("creator", None)
+    fair.setdefault("license", None)
+    fair.setdefault("created", None)
+    fair["license_set"] = fair.get("license") is not None
+    fair["metadata_standard"] = IMPORT_FORMAT
+    fair["schema"] = rec.get("schema")
+    fair["searchable"] = {
+        "run_id": rec.get("run_id"),
+        "installation": rec.get("installation"),
+        "plan_id": (rec.get("plan") or {}).get("id"),
+        "samples": sorted((rec.get("samples") or {})),
+        "quantities": sorted({m.get("quantity")
+                              for m in rec.get("measurements") or []
+                              if m.get("quantity")}),
+    }
+    return fair
+
+
 def build_import(rec: dict) -> dict:
     """Map a ``delfin.lab.run/1`` record to the ELN import model.
 
-    One research-plan element (body = the run parameters), one sample entry
-    per run sample with its analyses, and the full record / device log /
-    measurements / parameters as attachments.
+    One research-plan element (body = the run parameters), one reaction
+    carrying the run's conditions and the sample as its product, one sample
+    entry per run sample with its analyses in the container tree the ELN
+    persists, the full record / device log / measurements / parameters as
+    attachments with their bytes, and the provenance and FAIR sections.
     """
-    samples = []
     by_sample: dict = {}
     for m in rec.get("measurements") or []:
         by_sample.setdefault(m.get("sample"), []).append(m)
+
+    def _repeat_index(sid: str, m: dict) -> tuple[int, int]:
+        """Where ``m`` sits among this sample's measurements of its quantity.
+
+        The count is per (sample, quantity): two measurements of ``signal`` on
+        S-001 are a repeat, two measurements of different quantities are not.
+        The position is found by IDENTITY, not equality: two measurements that
+        happen to carry the same values are still two measurements, and
+        ``list.index`` would give both the same ordinal.
+        """
+        same = [x for x in by_sample.get(sid, [])
+                if x.get("quantity") == m.get("quantity")]
+        n = next((i + 1 for i, x in enumerate(same) if x is m), 1)
+        return n, len(same)
+
+    samples = []
     for sid, s in (rec.get("samples") or {}).items():
+        measurements = by_sample.get(sid, [])
         samples.append({
             "name": sid,
             "external_label": s.get("container"),
             "location": f"{s.get('module')}:{s.get('position')}",
+            "container": {
+                "id": str(uuid.uuid4()),
+                "is_new": True,
+                "is_deleted": False,
+                "name": "root",
+                "description": "",
+                "container_type": "root",
+                "extended_metadata": {"report": True},
+                "attachments": [],
+                "children": [analysis_container(m, rec, *_repeat_index(sid, m))
+                             for m in measurements],
+            },
             "analyses": [
                 {"kind": m.get("quantity"), "device": m.get("device"),
                  "value": m.get("value"), "unit": m.get("unit"),
                  "container": m.get("container")}
-                for m in by_sample.get(sid, [])
+                for m in measurements
             ],
         })
+
     parameters = {
+        "format": IMPORT_FORMAT,
         "run_id": rec.get("run_id"),
+        "schema": rec.get("schema"),
         "status": rec.get("status"),
         "plan": rec.get("plan"),
         "plan_digest": rec.get("plan_digest"),
         "manifest": rec.get("manifest"),
+        "installation": rec.get("installation"),
         "actor": rec.get("actor"),
-        "steps": rec.get("steps"),
-        "deviations": rec.get("deviations"),
-        "fair": rec.get("fair"),
         "started": rec.get("started"),
         "ended": rec.get("ended"),
+        "measurements": rec.get("measurements") or [],
+        "samples": sorted((rec.get("samples") or {})),
+        "deviations": rec.get("deviations") or [],
+        "fair": _fair(rec),
     }
+
+    attachments = [
+        _attachment("record.json", json.dumps(rec, indent=1, sort_keys=True)),
+        _attachment("device_log.json",
+                    json.dumps(rec.get("device_log") or [], indent=1)),
+        _attachment("measurements.json",
+                    json.dumps(rec.get("measurements") or [], indent=1)),
+        _attachment("parameters.json",
+                    json.dumps(parameters, indent=1, sort_keys=True)),
+        _attachment("provenance.json",
+                    json.dumps(_provenance(rec), indent=1, sort_keys=True)),
+        _attachment("fair.json",
+                    json.dumps(_fair(rec), indent=1, sort_keys=True)),
+    ]
+    # one data file per measurement, the bytes of the analysis that carries it;
+    # the NAME comes from _data_filename so it matches the one the container
+    # tree gives that analysis (they were named separately and drifted).
+    for sid in sorted(by_sample):
+        for m in by_sample[sid]:
+            n, total = _repeat_index(sid, m)
+            attachments.append(_attachment(
+                _data_filename(rec, sid, m, n, total), _measurement_file(m)))
+
+    products = [{"sample": s["name"], "container": s.get("external_label"),
+                 "location": s.get("location"), "module": (
+                     (rec.get("samples") or {}).get(s["name"]) or {}
+                 ).get("module")}
+                for s in samples]
+    reactions = [{
+        "name": f"Automated run {rec.get('run_id')}",
+        "type": "reaction",
+        "status": rec.get("status"),
+        "conditions": _conditions(rec),
+        "products": products,
+        "starting_materials": [],
+        "reactants": [],
+        "plan_digest": rec.get("plan_digest"),
+        "duration_s": _duration_s(rec),
+    }]
+
     return {
-        "format": FORMAT,
+        "format": IMPORT_FORMAT,
         "element": {
             "type": "research_plan",
-            "name": f"Automated run {rec['run_id']}",
-            "body": parameters,
+            "name": f"Automated run {rec.get('run_id')}",
+            # the record itself, not a three-key summary of it: this is what
+            # the plan element's body holds for a reader of the ELN.
+            "body": dict(rec),
         },
+        "reactions": reactions,
         "samples": samples,
-        "attachments": [
-            _attachment("record.json", json.dumps(rec, indent=1, sort_keys=True)),
-            _attachment("device_log.json",
-                        json.dumps(rec.get("device_log") or [], indent=1)),
-            _attachment("measurements.json",
-                        json.dumps(rec.get("measurements") or [], indent=1)),
-            _attachment("parameters.json",
-                        json.dumps(parameters, indent=1, sort_keys=True)),
-        ],
+        "attachments": attachments,
+        "provenance": _provenance(rec),
+        "fair": _fair(rec),
         "unverified": list(UNVERIFIED),
     }
 
 
-def _attachment(filename: str, text: str) -> dict:
-    ctype = mimetypes.guess_type(filename)[0] or "application/octet-stream"
-    return {"filename": filename, "content_type": ctype, "text": text}
+def _duration_s(rec: dict) -> Optional[float]:
+    """Wall time of the run, when both stamps are readable."""
+    try:
+        a = datetime.fromisoformat(str(rec["started"]))
+        b = datetime.fromisoformat(str(rec["ended"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    return round((b - a).total_seconds(), 3)
+
+
+def write_import(model: dict, out: Path | str) -> tuple[Path, dict]:
+    """Write ``model`` as one import file, plus its readable JSON twin.
+
+    The zip is the artefact a person hands to the ELN. The twin
+    (``chemotion_import.json``) is the same content uncompressed, because a
+    reviewer cannot read a zip in a diff and because the export that already
+    exists is JSON. Nothing here sends anything.
+    """
+    path = Path(out)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    members = {"chemotion_import.json": json.dumps(
+        model, indent=1, sort_keys=True, default=str)}
+    for a in model.get("attachments") or []:
+        members[f"attachments/{a['filename']}"] = a.get("text") or ""
+    # the manifest is a member too, so it must say so: a reader comparing its
+    # list with the archive would otherwise find one name missing.
+    manifest = {
+        "format": IMPORT_FORMAT,
+        "created": _iso(datetime.now(timezone.utc).timestamp()),
+        "members": [],
+        "record_sha256": (model.get("provenance") or {}).get("record_sha256"),
+        "identifier": (model.get("fair") or {}).get("identifier"),
+        "license_set": (model.get("fair") or {}).get("license_set"),
+        "unverified": list(model.get("unverified") or []),
+    }
+    manifest["members"] = sorted(members) + ["manifest.json"]
+    members["manifest.json"] = json.dumps(manifest, indent=1, sort_keys=True)
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        for name in sorted(members):
+            z.writestr(name, members[name])
+    (path.parent / "chemotion_import.json").write_text(
+        json.dumps(model, indent=1, sort_keys=True, default=str),
+        encoding="utf-8")
+    return path, manifest
+
+
+def import_files(model: dict) -> dict:
+    """The bundle's members as ``{name: text}``, without writing anything."""
+    out = {"chemotion_import.json": json.dumps(
+        model, indent=1, sort_keys=True, default=str)}
+    for a in model.get("attachments") or []:
+        out[f"attachments/{a['filename']}"] = a.get("text") or ""
+    return out
 
 
 def request_sequence(model: dict,
@@ -170,6 +575,12 @@ def request_sequence(model: dict,
     attachment as a chunked upload (one request per 5000-byte chunk, plus a
     completion request), then the attach step mapping the upload keys onto
     the research-plan element.
+
+    The sample create carries the container ``build_import`` built, byte for
+    byte: the tree (analysis -> dataset -> its data file) is what the server
+    persists, and a second, flatter ``{"analyses": [...]}`` shape here would
+    be a container type the server does not have and would drop the data
+    files the model names. One shape, one place.
     """
     seq = [HttpRequest("POST", "/api/v1/research_plans", kind="json", data={
         "name": model["element"]["name"],
@@ -182,7 +593,7 @@ def request_sequence(model: dict,
             "name": s["name"],
             "external_label": s.get("external_label"),
             "collection_id": collection_id,
-            "container": {"analyses": s.get("analyses") or []},
+            "container": s.get("container") or {},
         }))
     keys = []
     for a in model["attachments"]:

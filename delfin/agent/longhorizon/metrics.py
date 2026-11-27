@@ -140,6 +140,13 @@ class LongHorizonResult:
     # --- compactions
     compactions_size: List[Dict[str, Any]] = field(default_factory=list)
 
+    # --- derailments (package R3): counts the records themselves attest —
+    # repeated identical failing calls and unproductive successful loops.
+    # Zero is a real zero here (the tool records were examined); the whole
+    # picture lives in delfin/agent/longhorizon/derailments.py.
+    repeated_failing_calls: int = 0
+    unproductive_loops: int = 0
+
     # --- compaction loss, per category, in the writer's own order (see
     # loss_categories). Each entry: {"category": str,
     # "lost_total": int|None, "lost_names": [str, ...]}.
@@ -299,6 +306,14 @@ def measure(
             if key in seen_all_prior:
                 res.redone_work += 1
             current_epoch.add(key)
+
+    # --- derailments (package R3): the same records, reduced again for the
+    # repeat/loop family. Reduced from the ordered records only (ts-less
+    # records do not attest an order), so a zero is a real zero.
+    from .derailments import derailments as _derail
+    counts = _derail(tools)
+    res.repeated_failing_calls = counts["repeated_failing_calls"]
+    res.unproductive_loops = counts["unproductive_loops"]
 
     # --- compactions size (messages_compacted) is kept raw.
     for c in (compactions or []):
