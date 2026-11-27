@@ -1,0 +1,51 @@
+diff --git a/delfin/agent/api_client.py b/delfin/agent/api_client.py
+index 2867e7d40..1ec755a17 100644
+--- a/delfin/agent/api_client.py
++++ b/delfin/agent/api_client.py
+@@ -2354,8 +2354,20 @@ _REQUIRED_BY_TOOL: dict[str, tuple[str, ...]] | None = None
+ # commonest -- and ``_get_path_arg`` has tolerated that for as long as
+ # there have been weak models. A guard that reads the schema literally
+ # would take that tolerance away, so it reads it through this table.
++#
++# `pattern` is here for the same measured reason. Measured 2026-11-26:
++# `list_files(glob="*.py")` -- `glob` is the word the model reaches for --
++# carried a field the schema does not name, was silently passed over, and
++# listed the WHOLE workspace, while `pattern="*.py"` lists two files. A
++# synonym cannot be reached by similarity at all (`_suggestion("glob",
++# ["pattern", "path"])` returns None), so the table is the only place it
++# can be named. `regex` is the other word for the same field. Both are
++# accepted as names for `pattern`, never merged into it silently: the
++# value still has to be a pattern, and a caller that sent a bad one gets
++# the regex engine's own error.
+ _ARG_ALIASES: dict[str, tuple[str, ...]] = {
+     "path": ("file_path", "filename", "file", "target"),
++    "pattern": ("glob", "regex"),
+ }
+ 
+ # (tool, parameter) pairs where an EMPTY value is the point of the call.
+@@ -2465,6 +2477,25 @@ def _malformed_arguments(name: str, arguments: dict) -> Optional[str]:
+                         probe[field_name] = probe.pop(alias)
+                         alias_of[field_name] = alias
+                         break
++        # The translation must reach the CALLER's dict, not only the check
++        # copy above. `grep_file` and `list_files` read
++        # ``arguments["path"]`` / ``arguments["pattern"]`` directly
++        # (api_client.py:20283, :20293, :20402); only the tools that go
++        # through ``_get_path_arg`` ever saw `file_path`. Measured
++        # 2026-11-26: `grep_file(pattern="def", file_path="calc")`
++        # therefore searched the WHOLE workspace and answered with files
++        # from outside `calc`, while the same call with `path="calc"`
++        # answered correctly -- so the alias table's promise ("Keys a tool
++        # accepts INSTEAD of the one its schema names", :2353) held for the
++        # check and not for the tool that does the work.
++        #
++        # The canonical key is ADDED; the alias the caller used is left in
++        # place, because a body that reads the alias keeps working, and
++        # ``_get_path_arg`` reads `path` first, so the canonical value wins
++        # wherever both exist.
++        for canonical, alias in alias_of.items():
++            if canonical not in arguments and alias in arguments:
++                arguments[canonical] = arguments[alias]
+         required = [r for r in schema.get("required") or []
+                     if (bare, r) not in _LABEL_ONLY]
+         result = _tool_args.check({**schema, "required": required}, probe,
