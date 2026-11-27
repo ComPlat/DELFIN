@@ -34,6 +34,7 @@ and the review endpoint are settings now.
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -97,7 +98,378 @@ def identity_email() -> str:
         return ""
 
 
-def check(wt: Path, base: str = "origin/main") -> tuple[bool, str]:
+def coauthor_email() -> str:
+    """The address the DELFIN agent account's trailer must carry, or "".
+
+    Read from ``agent.commit_coauthor_email`` through DELFIN's own settings
+    loader -- the same key the bash executor and the prompt loader use -- so
+    the gate and the commits it checks cannot disagree about which account is
+    meant.
+    """
+    try:
+        from delfin.user_settings import load_settings
+        agent = (load_settings() or {}).get("agent") or {}
+        return str(agent.get("commit_coauthor_email", "") or "").strip()
+    except Exception:
+        return ""
+
+
+# ---------------------------------------------------------------------------
+# The proof a branch must carry, and the signers it must have
+# ---------------------------------------------------------------------------
+# Three things a landed branch was taken on trust for, and what each one cost:
+#
+#   * PROOF. A package's claim that its test is red on the base was the
+#     author's word. The gate now RUNS the test the package's own decision
+#     table names -- on the base (it must fail there) and on the branch (it
+#     must pass) -- because a test that passes on the base, or that does not
+#     exist, measures nothing, and both were landed.
+#   * A REAL RUN. A green test is not a run. The member's real-run rows are
+#     read from the events the stage wrote OUTSIDE its cage, not from the
+#     summary the member can render itself.
+#   * SIGNERS. The COMMITTER was never compared with the identity, so a commit
+#     authored as the person and committed as somebody else passed; and a
+#     ``Co-Authored-By`` line names an account the forge then counts as a
+#     contributor, so it is read now -- and the NUMBER in it is what names the
+#     account, which is why a line spelled for the agent with another account's
+#     number is refused.
+
+#: One row of the decision table in a member's ``scratch/PR.md``.
+_TABLE_ROW = re.compile(r"^\s*\|(?P<cells>.+)\|\s*$")
+#: A code span, which is how a path with a ``|`` in it survives a table cell.
+_CODE_SPAN = re.compile(r"`([^`]+)`")
+#: ``Co-Authored-By: Name <addr>`` in a commit message.
+_COAUTHOR = re.compile(r"^\s*Co-Authored-By:\s*(?P<name>[^<]*?)\s*<(?P<addr>[^>]+)>\s*$",
+                       re.M | re.I)
+#: The number a GitHub noreply address carries: ``<id>+<login>@users.noreply``.
+_ACCOUNT_NUMBER = re.compile(r"^\s*(\d+)\+")
+
+
+def proof_rows(pr_text: str) -> list[dict]:
+    """The packages in a ``scratch/PR.md`` decision table, one dict each.
+
+    Input: the text of PR.md. Output: ``[{"item", "test", "realrun"}]`` in
+    table order, one entry per data row. Header rows, the ``|---|`` separator,
+    and every table that has neither a ``package`` nor an ``item`` column are
+    skipped: a wave report carries several tables (measurements, suites) and
+    only the decision table is the package's claim about itself. An empty list
+    means the branch wrote no decision table, which the caller refuses.
+
+    Both words are accepted because the wave names the row "item"
+    (``compose.DELIVERY_RULES`` 17: "one table row per item") and the package
+    names it "package". Accepting only the second refused every branch written
+    to the wave's own rule for carrying no table at all.
+    """
+    rows: list[dict] = []
+    header: list[str] | None = None
+    pkg_col = test_col = run_col = None
+    for line in (pr_text or "").splitlines():
+        m = _TABLE_ROW.match(line)
+        if not m:
+            header, pkg_col, test_col, run_col = None, None, None, None
+            continue
+        cells = [c.strip() for c in m.group("cells").split("|")]
+        if header is None:
+            lowered = [c.lower() for c in cells]
+            if not any(("package" in c or c == "item") for c in lowered):
+                continue
+            header = lowered
+
+            def find(*words):
+                return next((j for j, c in enumerate(lowered)
+                             if any(w in c for w in words)), None)
+            pkg_col, test_col = find("package", "item"), find("test")
+            run_col = find("real run", "realrun", "run")
+            continue
+        if all(set(c) <= set("-: ") for c in cells):
+            continue                                  # the |---|---| separator
+
+        def cell(j):
+            return cells[j] if j is not None and j < len(cells) else ""
+        span = _CODE_SPAN.search(cell(test_col))
+        rows.append({"item": cell(pkg_col).strip("` "),
+                     "test": (span.group(1) if span else cell(test_col)).strip("` "),
+                     "realrun": cell(run_col).strip("` ")})
+    return rows
+
+
+def _pytest_verdict(python: str, tree: Path, test: str) -> tuple[bool, str]:
+    """Whether ``test`` passes in ``tree``, run the way this gate runs tests.
+
+    Returns ``(passed, one line of output)``. A test file absent from the tree
+    did not pass: "does not exist" and "is red" are different answers and the
+    caller says which one it got.
+    """
+    if not (Path(tree) / test).is_file():
+        return False, f"{test} does not exist in {Path(tree).name}"
+    r = subprocess.run(["nice", "-n", "15", "ionice", "-c3", python, "-m", "pytest",
+                        "-q", "-p", "no:cacheprovider", str(test)],
+                       cwd=str(tree), capture_output=True, text=True, timeout=1800)
+    tail = ((r.stdout or "").strip().splitlines() or [""])[-1]
+    return r.returncode == 0, tail[:160]
+
+
+def _archive_tree(repo: Path, ref: str, dest: Path) -> None:
+    """A ref of ``repo`` as a plain directory, so a test runs on the BASE
+    without disturbing the branch's own worktree."""
+    dest.mkdir(parents=True, exist_ok=True)
+    from delfin.agent import safe_git
+    r = safe_git.run(["archive", ref], str(repo), text=False, timeout=300)
+    if r.returncode != 0:
+        raise RuntimeError(f"git archive {ref} failed: {r.stderr[-200:]!r}")
+    subprocess.run(["tar", "-x", "-C", str(dest)], input=r.stdout, check=True)
+
+
+def _realrun_rows(run: str, tid: str) -> list[dict]:
+    """The member's recorded real-run rows, from the run's event log.
+
+    ``realrun.run`` records one event holding a ``rows`` list per member, and
+    it runs outside the member's cage. Read from there and not from
+    ``scratch/realrun/summary.md``: that file is text the member can write, and
+    a gate that reads the author's own rendering of its run has trusted the
+    author again.
+    """
+    try:
+        from . import wave
+        got = wave.events(run)
+    except Exception:
+        return []
+    rows: list[dict] = []
+    for ev in got.get("events") or []:
+        if ev.get("kind") == "realrun" and str(ev.get("id") or "") == str(tid):
+            rows.extend(ev.get("rows") or [])
+    return rows
+
+
+def _probe_log_reached(wt: Path, probe: str, changed: set[str]) -> tuple[bool, str]:
+    """Whether ``probe``'s branch log shows it TOUCHED a file the branch changed.
+
+    Input: the member's worktree, the probe's name, and the files the branch
+    changed against its base. Output: ``(reached, why)``.
+
+    The log is the one ``realrun._one`` writes, in the shape
+    ``--output-format stream-json`` emits (``delfin/agent/cli_stream.py``): one
+    JSON object per line, a tool call carrying ``name`` and ``input``. A run
+    that answered in chat alone did not reach the change, and the package's
+    first version accepted it -- "the run happened" is not "the run reached
+    the change", and only the second is the proof the package asks for.
+
+    The log lives in the member's worktree, so on its own it is text the
+    member can write; this is why the caller requires the stage's own row
+    (recorded outside the cage by ``realrun.run``) BEFORE reading it. Neither
+    half is trusted alone.
+    """
+    logs = sorted((Path(wt) / "scratch" / "realrun").glob(f"{probe}-branch.jsonl"))
+    if not logs:
+        return False, f"{probe} left no branch log in scratch/realrun/"
+    seen: list[str] = []
+    for log in logs:
+        try:
+            text = log.read_text(errors="replace")
+        except OSError as exc:
+            return False, f"{probe}'s branch log cannot be read ({exc})"
+        for line in text.splitlines():
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(ev, dict) or ev.get("type") != "tool_use":
+                continue
+            blob = json.dumps(ev.get("input") or {}) + " " + str(ev.get("input") or "")
+            for f in changed:
+                if f in blob:
+                    seen.append(f)
+    if seen:
+        return True, ""
+    return False, (f"{probe} reached no file this branch changed "
+                   f"(its log shows no call touching any of "
+                   f"{', '.join(sorted(changed)[:4])})")
+
+
+def _probe_reached(rows: list[dict], probe: str, *,
+                   wt: Path | None = None,
+                   changed: set[str] | None = None) -> tuple[bool, str]:
+    """Whether ``probe`` ran on the branch side and reached the change.
+
+    A row carrying an ``error`` is a run that started and never got there --
+    the import check refused it, the endpoint failed, the budget ran out. It
+    is not evidence, and it is named as what it was rather than as an absence.
+
+    Two independent halves, both required: the stage's own record that the run
+    happened (written outside the member's cage), and the log's evidence that
+    it touched the change (inside the worktree). A gate that read only the
+    first accepted a probe that answered in chat; one that read only the
+    second trusted the author again.
+    """
+    named = [r for r in rows if str(r.get("probe") or "") == probe]
+    if not named:
+        return False, f"no real-run row for {probe}"
+    branch = [r for r in named if str(r.get("side") or "") == "branch"]
+    if not branch:
+        return False, f"{probe} ran on the base only"
+    ok = [r for r in branch if not str(r.get("error") or "").strip()]
+    if not ok:
+        return False, f"the branch probe reached nothing ({str(branch[-1].get('error'))[:120]})"
+    if wt is not None and changed:
+        return _probe_log_reached(wt, probe, changed)
+    return True, ""
+
+
+def proof_refusal(wt: Path, base: str, *, run: str = "", tid: str = "") -> str:
+    """Why this branch carries no proof for one of its packages, or "".
+
+    Input: the member's worktree, its base, and the run/member it belongs to.
+    Output: "" when every package in the decision table that ``scratch/PR.md``
+    carries names a test the gate RAN red on the base and green on the branch,
+    plus a real-run row whose probe reached the change; otherwise one sentence
+    naming the package and what is missing. It refuses when anything cannot be
+    checked, because a proof that could not be examined is not a proof that
+    held.
+    """
+    pr = Path(wt) / "scratch" / "PR.md"
+    try:
+        rows = [r for r in proof_rows(pr.read_text()) if r["item"]]
+    except OSError as exc:
+        return f"no proof table: scratch/PR.md cannot be read ({exc})"
+    if not rows:
+        return ("no proof table: scratch/PR.md carries no decision table with a "
+                "package column (one row per package: the package, its test, its real run)")
+    base_tree: str = ""
+    try:
+        for r in rows:
+            pkg, test = r["item"], r["test"]
+            if not test:
+                return f"{pkg}: the table names no test, so nothing shows the change"
+            if not r["realrun"]:
+                return f"{pkg}: the table names no real run"
+            passed, said = _pytest_verdict(PYCI, Path(wt), test)
+            if not passed:
+                return f"{pkg}: {test} does not pass on the branch ({said})"
+            if not base_tree:
+                import tempfile
+                base_tree = tempfile.mkdtemp(prefix="delfin-land-base-")
+                try:
+                    _archive_tree(Path(wt), base, Path(base_tree))
+                except Exception as exc:
+                    return f"{pkg}: {base} could not be read to run its test ({exc})"
+            on_base, said = _pytest_verdict(PYCI, Path(base_tree), test)
+            if on_base:
+                return (f"{pkg}: {test} passes on {base} too ({said}), so it proves "
+                        "nothing about this branch")
+            # The files this branch changed: what the probe had to reach for its
+            # run to be evidence about THIS branch rather than about a chat.
+            changed = set(git(["diff", "--name-only", f"{base}...HEAD"], wt).stdout.split())
+            reached, why = _probe_reached(_realrun_rows(run, tid), r["realrun"],
+                                          wt=Path(wt), changed=changed)
+            if not reached:
+                return f"{pkg}: no real run reached the change -- {why}"
+    finally:
+        if base_tree:
+            import shutil
+            shutil.rmtree(base_tree, ignore_errors=True)
+    return ""
+
+
+def signers_refusal(wt: Path, base: str) -> str:
+    """Why a commit of this branch is signed by the wrong party, or "".
+
+    Over ``base..HEAD``: every AUTHOR is the configured identity (as before);
+    every COMMITTER is too, because a committer is a second signature on the
+    same commit and was compared with nothing; and every ``Co-Authored-By``
+    line names the agent account exactly. When that account's address carries
+    a number, the number in the line must be the same one: it is the number
+    that identifies the account, so a line spelled for the agent with another
+    account's number renders in the forge's history as that other account's
+    contribution -- and is refused as such, named by its number.
+    """
+    mail = identity_email()
+    if not mail:
+        return ("no commit identity is configured (agent.swarm.git_identity): "
+                "a branch cannot be shown to be authored as the person")
+    authors = set(git(["log", "--format=%ae", f"{base}..HEAD"], wt).stdout.split())
+    if authors - {mail}:
+        return f"commit author is not the configured identity: {sorted(authors)}"
+    committers = set(git(["log", "--format=%ce", f"{base}..HEAD"], wt).stdout.split())
+    if committers - {mail}:
+        return (f"commit committer is not the configured identity: {sorted(committers)}"
+                " (the committer is a signature too)")
+    agent = coauthor_email()
+    if not agent:
+        return "no agent account is configured (agent.commit_coauthor_email)"
+    number = _ACCOUNT_NUMBER.match(agent)
+    want = number.group(1) if number else ""
+    for line in git(["log", "--format=%B", f"{base}..HEAD"], wt).stdout.splitlines():
+        m = _COAUTHOR.match(line)
+        if not m:
+            continue
+        got = m.group("addr").strip()
+        if got.lower() != agent.lower():
+            had = _ACCOUNT_NUMBER.match(got)
+            if want and had and had.group(1) != want:
+                return (f"a Co-Authored-By line carries account number {had.group(1)}, "
+                        f"not the agent account's {want}: {line.strip()[:120]}")
+            return ("a Co-Authored-By line is not the DELFIN agent account: "
+                    f"{line.strip()[:120]}")
+    return ""
+
+
+def _non_public_pattern() -> re.Pattern:
+    """A model, provider or site name in text that is published on the base.
+
+    Built from ``MODEL_FAMILY`` and from the providers a key can be configured
+    for, at CALL time: ``MODEL_FAMILY`` is defined far below the check code in
+    this module, so a table assembled at import here would be empty.
+    """
+    words = {f for f in MODEL_FAMILY.values() if f}
+    words |= {"kit", "blablador", "openai", "anthropic", "ollama"}
+    return re.compile(r"\b(?:%s)\b" % "|".join(sorted((re.escape(w) for w in words),
+                                                      key=len, reverse=True)), re.I)
+
+
+def squash_message(wt: Path, base: str, title: str, msg: str = "", *,
+                   body: str = "") -> tuple[str, str]:
+    """The message a squash merge of this branch publishes, and why not, if so.
+
+    Input: the worktree, its base, the PR title, (optionally) a message the
+    lander proposes, and (optionally) the PR body -- the text the squash commit
+    publishes. Output: ``(message, refusal)``.
+
+    The rule, and each clause of it is a defect measured on a landed branch:
+    the published message carries EXACTLY ONE ``Co-Authored-By:`` line, naming
+    the DELFIN agent account and nothing else -- two lines make two
+    contributors of one branch, and none leaves the agent out of the history it
+    wrote -- and no word of it names the model, the provider or the site,
+    because those belong to the branch and not to the base's history.
+
+    The BODY is scanned as well as the title and the commit subjects: it is
+    most of what a squash merge publishes, and the first version of this check
+    read only the title and the subjects, so a model name in the body passed
+    the gate (measured with ``scratch/measure_arms.py``, case D).
+    """
+    agent = coauthor_email()
+    if not agent:
+        return "", "no agent account is configured (agent.commit_coauthor_email)"
+    head = msg.strip() or title.strip()
+    # The lander's own wording, then the subjects of the commits it bundles.
+    subjects = [s.strip() for s in
+                git(["log", "--format=%s", f"{base}..HEAD"], wt).stdout.splitlines()
+                if s.strip() and not s.strip().startswith("Merge ")]
+    parts = [head, body.strip(), "\n".join(subjects)]
+    text = "\n\n".join(p for p in parts if p)
+    # Every trailer the commits carry is DROPPED, not carried: one line is the
+    # whole of the attribution, and it is the one written below.
+    text = re.sub(r"^\s*Co-Authored-By:.*$\n?", "", text, flags=re.M | re.I).strip()
+    bad = sorted({m.group(0) for m in _non_public_pattern().finditer(text)})
+    if bad:
+        return "", ("the message the lander proposes names a model, provider or "
+                    f"site ({', '.join(bad[:4])}); the base's history carries none")
+    host = (socket.gethostname() or "").split(".")[0].strip()
+    if len(host) > 3 and re.search(r"\b%s\b" % re.escape(host), text, re.I):
+        return "", f"the message the lander proposes names this site ({host})"
+    return f"{text}\n\nCo-Authored-By: DELFIN-Agent <{agent}>", ""
+
+
+def check(wt: Path, base: str = "origin/main", *, run: str = "", tid: str = "") -> tuple[bool, str]:
     if git(["log", "--oneline", f"{base}..HEAD"], wt).stdout.strip() == "":
         return False, f"no commits beyond {base}"
     # scratch/ is the member's own notes; .delfin/ is the state DELFIN keeps
@@ -111,13 +483,9 @@ def check(wt: Path, base: str = "origin/main") -> tuple[bool, str]:
     msgs = git(["log", "--format=%an <%ae>%n%B", f"{base}..HEAD"], wt).stdout
     if HOME_PATH.search(msgs):
         return False, "a commit message carries a home path"
-    email = identity_email()
-    if not email:
-        return False, ("no commit identity is configured (agent.swarm.git_identity): "
-                       "a branch cannot be shown to be authored as the person")
-    authors = set(git(["log", "--format=%ae", f"{base}..HEAD"], wt).stdout.split())
-    if authors - {email}:
-        return False, f"commit author is not the configured identity: {sorted(authors)}"
+    why = signers_refusal(wt, base)
+    if why:
+        return False, why
     files = git(["diff", "--name-only", f"{base}...HEAD"], wt).stdout.split()
     if any(f.endswith("PR_NOTES.md") for f in files):
         return False, "PR_NOTES.md is in the tree (it belongs in scratch/PR.md)"
@@ -157,7 +525,13 @@ def check(wt: Path, base: str = "origin/main") -> tuple[bool, str]:
         if " passed" not in tail[0]:
             return False, f"no test passed ({tail[0][:120]}) on {Path(py).parent.parent.name}"
         results.append(tail[0][:120])
-    return True, " | ".join(results)
+    # The proof each package in scratch/PR.md claims, checked AFTER the tests
+    # the branch itself carries have been shown green: a branch whose own tests
+    # do not run has nothing to prove anything with.
+    why = proof_refusal(wt, base, run=run, tid=tid)
+    if why:
+        return False, why
+    return True, " | ".join(results + ["every package proved"])
 
 
 # ---------------------------------------------------------------------------
@@ -1501,7 +1875,7 @@ def land(runs=None, *, dry_run: bool = True, only=None, log=print) -> list[dict]
                 _record(run, "land_" + outcome, tid, why=why[:300])
                 log(f"{run}/{tid}: {outcome} -- {why}")
 
-            ok, why = check(wt, base)
+            ok, why = check(wt, base, run=run, tid=tid)
             if not ok:
                 done("refused", why)
                 continue
@@ -1513,6 +1887,14 @@ def land(runs=None, *, dry_run: bool = True, only=None, log=print) -> list[dict]
                 continue
             if re.search(r"\bWIP\b|budget ran out", title, re.I):
                 done("refused", "PR.md title says the work is unfinished")
+                continue
+            # The message a squash merge publishes ON THE BASE. Refused here,
+            # before the push, because the base's history is permanent: a model,
+            # a provider or a site name in it cannot be taken back, and a second
+            # Co-Authored-By line makes a contributor of a branch that had one.
+            squash, sq_why = squash_message(wt, base, title, body=body)
+            if sq_why:
+                done("refused", sq_why)
                 continue
             # Nothing above this line was checked by anyone but the author.
             # The independent review runs here, before the push, and a refusal
@@ -1533,6 +1915,8 @@ def land(runs=None, *, dry_run: bool = True, only=None, log=print) -> list[dict]
             if dry_run:
                 log(f"  dry-run: would push {local} -> {branch} and open "
                     f"\"{title}\" against the base ({len(body)} chars of body)")
+                log(f"  squash message ({len(squash)} chars): "
+                    + " / ".join(squash.splitlines()))
                 done("ready", f"would push {local} -> {branch}; review: {r_why}")
                 continue
             push = _push(repo, local, branch)
