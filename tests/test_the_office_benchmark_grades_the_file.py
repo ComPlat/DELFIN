@@ -303,11 +303,17 @@ def test_a_plausible_wrong_answer_is_rejected(tmp_path, case):
         f"{case}: rejected by an exception rather than a finding: {output[:400]}")
 
 
-def test_a_missing_result_file_is_not_graded_as_a_wrong_answer(built):
-    """The distinction the scorer reads: False is a finding about the file;
-    None is "not run". A missing script must not look like a failed attempt.
+def test_a_missing_result_file_is_not_graded_as_a_wrong_answer(tmp_path):
+    """The control: true on the base tree and on this one.
+
+    ``run_acceptance`` distinguishes "the script is not there" (None, not
+    run) from "the script said no" (False). That distinction is the runner's,
+    not this package's -- which is what makes it the control case: it passes
+    before this suite exists and after, so a red here would mean the runner
+    broke rather than that the new tasks work. Deliberately names no fixture
+    for the same reason.
     """
-    ok, output = run_acceptance("o1_no_such_accept.py", built, root=_ROOT)
+    ok, output = run_acceptance("o1_no_such_accept.py", tmp_path, root=_ROOT)
     assert ok is None, f"a missing acceptance script read as {ok!r}"
     assert "not found" in output
 
