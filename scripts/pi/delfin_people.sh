@@ -18,7 +18,27 @@ set -euo pipefail
 #                                  [--host HOST] [--hours N, default 48]
 #
 # They are one Unix user: this is an overview, not a boundary between them.
+#
+# One Linux account per person instead (pi_bootstrap.sh with
+# DELFIN_PI_ACCOUNTS=1; the admin, with sudo): --add-person NAME,
+# --invite-person NAME, --lock-person NAME, --unlock-person NAME,
+# --remove-person NAME, --persons. They run delfin-accounts (delfin_accounts.sh).
 # ============================================================================
+
+accounts_tool=/usr/local/sbin/delfin-accounts
+case "${1:-}" in
+    --add-person|--invite-person|--lock-person|--unlock-person|--remove-person|--persons)
+        verb="${1#--}"; verb="${verb%-person}"
+        [[ "$verb" == persons ]] && verb=list
+        shift
+        [[ -x "$accounts_tool" ]] || {
+            echo "one account per person is not set up on this box ($accounts_tool missing):" >&2
+            echo "pi_bootstrap.sh with DELFIN_PI_ACCOUNTS=1" >&2
+            exit 1
+        }
+        if [[ $EUID -eq 0 ]]; then exec "$accounts_tool" "$verb" "$@"; fi
+        exec sudo "$accounts_tool" "$verb" "$@" ;;
+esac
 
 # -- letting a new person in -------------------------------------------------
 # On a server that takes passwords, the launcher registers a PC by itself:

@@ -9,7 +9,8 @@ set -euo pipefail
 # time. What it does:
 #   1. unused network services off (rpcbind / NFS)
 #   2. sshd: key only for every user, no root login, no X11 forwarding,
-#      3 tries, only the login and the agent user may log in
+#      3 tries, only the login and the agent user may log in (and, with
+#      one account per person, the persons that are not locked)
 #   3. nftables: inbound default deny; SSH only from private IPv4 nets and
 #      the IPv6 prefixes in SSH_V6 (default: link-local only); mDNS, DHCP and
 #      ICMP allowed; outbound open (agent egress is DELFIN's proxy's job)
@@ -27,6 +28,20 @@ set -euo pipefail
 
 LOGIN_USER="${LOGIN_USER:-pi}"
 AGENT_USER="${AGENT_USER:-delfin}"
+# One account per person (delfin_accounts.sh): every member of this group
+# whose account is not locked (expiry reached) may log in too. Without the
+# group (the default setup) the list is the two accounts above, unchanged.
+people_allowed() {
+    local u expire today out=""
+    today=$(( $(date +%s) / 86400 ))
+    for u in $(getent group delfin-people | cut -d: -f4 | tr ',' ' '); do
+        expire="$(getent shadow "$u" | cut -d: -f8)"
+        [[ -n "$expire" && "$expire" -le "$today" ]] && continue
+        out+=" $u"
+    done
+    printf '%s' "$out"
+}
+PEOPLE_ALLOW="$(people_allowed)"
 SSH_V6="${SSH_V6:-}"
 ROLLBACK_UNIT=delfin-fw-rollback
 
@@ -69,7 +84,7 @@ PermitRootLogin no
 X11Forwarding no
 MaxAuthTries 3
 LoginGraceTime 30
-AllowUsers $LOGIN_USER $AGENT_USER
+AllowUsers $LOGIN_USER $AGENT_USER$PEOPLE_ALLOW
 EOF
 chmod 644 /etc/ssh/sshd_config.d/40-delfin-hardening.conf
 # A password exception from earlier manual setups would undo the above.
