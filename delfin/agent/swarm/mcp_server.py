@@ -310,7 +310,12 @@ def run_server(argv: list[str] | None = None) -> None:
     @mcp.tool()
     def wave_resume(run: str, member: str, note: str = "", fresh: bool = False) -> str:
         """Continue an ended member's session with a note (your review) ahead of its
-        task; fresh starts a new session told to read the branch first."""
+        task; fresh starts a new session told to read the branch first.
+
+        A member a person stopped is not resumed: the answer is
+        ``why: "stopped by a person"``. Lifting a stop is that person's next
+        decision, so it is not a parameter here -- they run
+        ``delfin-agent swarm wave resume --after-stop``."""
         return h_resume(run, member, note, fresh)
 
     @mcp.tool()
