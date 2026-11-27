@@ -244,24 +244,41 @@ def test_a_process_that_ends_on_its_own_is_not_signalled(stop_file, monkeypatch)
     mark = f"delfin-test-daemon-{uuid.uuid4().hex}"
     monkeypatch.setattr(S, "_COMMAND_MARKERS", (mark,))
     # It has to be found before it ends, and end on its own inside settle_s.
-    # A fixed lifetime from its start cannot promise the first: the stop
-    # writes its record and disables the schedules before it looks for
-    # processes, which took over 0.5 s and then over 3 s on a loaded CI
-    # runner (the process was gone, found_here == []). So its clock starts
-    # at the stop's record: it waits for the file, then lives 4 s more.
+    # No lifetime counted from a moment before the search can promise the
+    # first: a lifetime counted from its start lost to the record write and
+    # the schedule disabling (over 0.5 s, then over 3 s on a loaded CI
+    # runner), and 4 s counted from the stop's record lost once more
+    # (found_here == []). So it ends on a file written right after the
+    # search has returned, and the search itself is the real one.
+    found_mark = stop_file.parent / "searched"
+    real_search = S._own_agent_processes
+
+    def search_then_let_it_end(before):
+        found = real_search(before)
+        found_mark.write_text("")
+        return found
+
+    monkeypatch.setattr(S, "_own_agent_processes", search_then_let_it_end)
     quick = subprocess.Popen(
         [sys.executable, "-c",
          "import os, sys, time\n"
          "end = time.time() + 60\n"
          "while not os.path.exists(sys.argv[1]) and time.time() < end:\n"
-         "    time.sleep(0.05)\n"
-         "time.sleep(4)\n",
-         str(S._PATH), mark],
+         "    time.sleep(0.05)\n",
+         str(found_mark), mark],
         env=_child_env())
+    # Found only if it started before the stop: process_started_at reads
+    # the start from /proc, so the child must be running when the stop is
+    # given, not merely forked.
+    deadline = time.time() + 30
+    while mark.encode() not in pathlib.Path(f"/proc/{quick.pid}/cmdline").read_bytes() \
+            and time.time() < deadline:
+        time.sleep(0.05)
     try:
         summary = S.request("test", settle_s=20, grace_s=5)
         assert summary["found_here"] == [quick.pid]
         assert summary["ended_here"] == []
+        assert quick.wait(timeout=30) == 0
     finally:
         quick.kill()
         quick.wait()
