@@ -1241,7 +1241,11 @@ def _run_stop_subcommand(argv: list[str]) -> int:
     parser.add_argument(
         "--cleanup",
         action="store_true",
-        help="After signaling, run DELFIN cleanup in the workspace (remove scratch/OCCUPIER artifacts).",
+        help=(
+            "After signaling, run DELFIN cleanup in the workspace (remove "
+            "temporary artifacts and .orca_scratch; keep the *_OCCUPIER "
+            "stage directories as resume state)."
+        ),
     )
     parser.add_argument(
         "--wait-seconds",
