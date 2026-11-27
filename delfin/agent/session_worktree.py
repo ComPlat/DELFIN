@@ -188,11 +188,21 @@ def listing(workspace) -> list[dict]:
 def merge(worktree_path, *, target_dir: Optional[str] = None) -> dict:
     """Merge a session worktree back into its repository's main checkout.
 
-    Runs the ``worktree_merge`` executor with a permission object rooted at
-    the main checkout, mode ``acceptEdits`` and no one to ask: the user's
-    request is the approval of the merge, and every file the write gate
-    would ask about (the agent's safety layer, git configuration files,
-    stored calculations) is refused rather than written unseen."""
+    Enters at the tool's own public entry, ``_DocToolExecutor.execute``, with a
+    permission object rooted at the main checkout, mode ``acceptEdits`` and no
+    one to ask. The user's request is the approval of the merge, and every file
+    the write gate would ask about (the agent's safety layer, git configuration
+    files, stored calculations) is refused rather than written unseen.
+
+    Why the ENTRY and not the executor method: the method sits below
+    ``execute()``, so calling it directly skipped the role check, the
+    permission rules (the administrator's managed policy included), the
+    session's own tool lists and the PreToolUse hooks. Reaching a merge that
+    way was measured with a managed ``deny: ["worktree_merge"]`` in place: the
+    merge applied. What this route deliberately keeps is its own permission
+    object (rooted at the target, no one to ask): the merge is not an
+    agent-initiated call, so the CONTAINMENT and per-file write gates are what
+    guard it, and those are unchanged by entering one level up."""
     from .api_client import KitToolPermissions, _DocToolExecutor
     wt_path = Path(worktree_path).expanduser().resolve()
     r = _wt.safe_git.run(["worktree", "list", "--porcelain"], wt_path,
@@ -206,9 +216,19 @@ def merge(worktree_path, *, target_dir: Optional[str] = None) -> dict:
         else Path(main)
     perms = KitToolPermissions(workspace=target, mode="acceptEdits")
     perms.task_session_id = "session-worktree-merge"
-    raw = _DocToolExecutor()._execute_worktree_merge(
-        {"path": str(wt_path), "target_dir": str(target)}, perms,
-        framework_worktree=True)
+    # The call goes through the tool's entry, not its method: the entry is
+    # where the role check, the permission rules, the session's tool lists and
+    # the PreToolUse hooks live. ``framework_worktree`` cannot be passed here
+    # (the entry calls the method with the call's own arguments), and it does
+    # not belong to this route: that flag skips the check that the SOURCE path
+    # lies in the roots, and this route's session worktrees are made at
+    # ``<repo>/.delfin/worktrees/<name>`` -- inside the very root the
+    # permission object is built from -- so the check is satisfied by
+    # construction and has nothing to skip. The target check and the per-file
+    # write gate below both still run.
+    raw = _DocToolExecutor().execute(
+        "worktree_merge",
+        {"path": str(wt_path), "target_dir": str(target)}, perms)
     try:
         res = json.loads(raw)
     except ValueError:
