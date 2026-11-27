@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from conftest import child_env
 
 #: A complete CONTROL in the shape ``delfin/define.py`` ships.
 COMPLETE_CONTROL = """\
@@ -80,7 +81,7 @@ def _write_workspace(root: Path, extra: str) -> Path:
 def _generated_control(root: Path) -> str:
     """Run the hand-over through its real entry point; return the generated file."""
     repo_root = Path(__file__).resolve().parents[1]
-    env = dict(os.environ)
+    env = child_env(root)
     env["PYTHONPATH"] = os.pathsep.join(
         [str(repo_root)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
     proc = subprocess.run(

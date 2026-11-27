@@ -117,7 +117,7 @@ already routed.
 
 - **Real ORCA outputs in an archive.** The package calls for a local-only
   parity run over them (counts into the PR, never the content). This sandbox
-  denies `/home/qmchem_all/archive`, so it was **not run**; the numbers above
+  denies the shared archive, so it was **not run**; the numbers above
   rest on committed fixtures only. The probe is documented in `scratch/PR.md`.
 - **A real finished calculation read through both readers for a report.** The
   one fixture with a report-relevant thermochemistry block is `synth_h2o`,

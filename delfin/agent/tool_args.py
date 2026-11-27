@@ -160,6 +160,14 @@ def _repair(value: Any, schema: dict, path: str, repairs: list[str]) -> Any:
     return value
 
 
+#: Fields a tool reads although its schema does not advertise them, kept out
+#: of the catalogue because every request pays for an advertised knob
+#: (notebook_read's output cap, see tool_catalog.py). Such a field is a real
+#: argument, never a stray standing in for another property, so the
+#: stand-in refusal below must not fire on it.
+_ACCEPTED_UNADVERTISED: frozenset[str] = frozenset({"max_output_chars"})
+
+
 def _check_object(obj: dict, schema: dict, path: str,
                   repairs: list[str], unknown: str = "refuse") -> Optional[str]:
     props = schema.get("properties") or {}
@@ -200,7 +208,8 @@ def _check_object(obj: dict, schema: dict, path: str,
                 # `paht`->`path` -- so repairing on it would silently
                 # answer a different question, which is the defect
                 # itself, moved. Naming it is the safe half.
-                if hint and hint in props and hint not in obj:
+                if (hint and hint in props and hint not in obj
+                        and key not in _ACCEPTED_UNADVERTISED):
                     return (f"unknown field '{key}' -- did you mean "
                             f"'{hint}'? The call was not run: it named "
                             f"no '{hint}', so it would have run as if "

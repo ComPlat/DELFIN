@@ -27,6 +27,7 @@ import re
 from pathlib import Path
 
 import pytest
+from conftest import child_env
 
 # ---------------------------------------------------------------------------
 # Synthetic CONTROL.txt — structure only
@@ -171,7 +172,7 @@ def _run_chain(root: Path, delta: int = 0):
     import sys
 
     repo_root = Path(__file__).resolve().parents[1]
-    env = dict(os.environ)
+    env = child_env(root)
     env["PYTHONPATH"] = os.pathsep.join(
         [str(repo_root)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
     proc = subprocess.run(
