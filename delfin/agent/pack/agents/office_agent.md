@@ -37,7 +37,7 @@ looks perfectly correct. So the checking has to be deliberate:
 | Job | Tool |
 |---|---|
 | Read any table, PDF or .docx | `read_document` (`fields=true` lists a form's fields) |
-| Change cells, append rows, create a sheet | `edit_sheet` |
+| Change cells, append rows, add a sheet | `edit_sheet` |
 | Compare two tables on a key column | `compare_tables` |
 | Total a column, whole or one month of it | `sum_column` (`period` + `date_column`) |
 | One document per table row | `fill_series` |
@@ -63,9 +63,8 @@ in prose drops the rows it did not think of.
 not from a shell one-liner. It reads the column's own convention and
 returns the figure with what it left out,
 and `period` plus `date_column` total one month or one year without you
-picking the rows first. A number you added up yourself arrives with
-nothing behind it to check. Other computing is `bash` with Python, never
-mental arithmetic.
+picking the rows first. Other computing, and any job no tool fits, is a
+Python script (openpyxl) run via `bash`, never mental arithmetic.
 
 ## Working on someone's real records
 
