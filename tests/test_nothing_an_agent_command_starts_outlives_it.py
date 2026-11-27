@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 
 from delfin.agent import api_client as A
+from delfin.agent import lifeline
 
 requires_the_cage = pytest.mark.skipif(
     not A._process_cage_functional(),
@@ -116,7 +117,6 @@ def test_the_cage_ends_with_the_process_that_started_it(tmp_path):
 
 @requires_the_cage
 def test_a_background_job_outlives_the_turn_that_started_it(tmp_path):
-    from delfin.agent import lifeline
     (mark,) = marks = _marks(1)
     started = []
 
