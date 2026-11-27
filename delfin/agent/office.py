@@ -1785,6 +1785,45 @@ def read_sheet(
 # Spreadsheets — writing
 # ---------------------------------------------------------------------------
 
+_SHEET_NAME_FORBIDDEN = set('[]:*?/\\')
+
+
+def _sheet_for_write(wb: Any, sheet: Optional[str], *, rows_only: bool,
+                     dry_run: bool = False) -> "tuple[Any, bool]":
+    """The worksheet an edit writes to, and whether it is a new one.
+
+    A name the workbook does not hold is ADDED when the call only appends
+    rows: splitting one table into a sheet per group ("one sheet per
+    collaborator") was otherwise impossible with these tools, and the model
+    gave up without a word. Edits, updates and records still need an
+    existing sheet, because there a missing name is a mistake, not a
+    request. *dry_run* reports the new sheet without adding it.
+    """
+    if not sheet:
+        return wb.active, False
+    if sheet in wb.sheetnames:
+        return wb[sheet], False
+    if not rows_only:
+        raise OfficeError(
+            f"no sheet named {sheet!r} — available: "
+            f"{', '.join(wb.sheetnames)}. To add a sheet, send only "
+            f"append_rows with the new name.")
+    name = str(sheet)
+    bad = sorted(set(name) & _SHEET_NAME_FORBIDDEN)
+    if not name.strip() or len(name) > 31 or bad:
+        raise OfficeError(
+            f"{name!r} cannot be a sheet name: at most 31 characters, not "
+            f"empty, none of [ ] : * ? / \\"
+            + (f" (it has {' '.join(bad)})" if bad else ""))
+    if name.lower() in (n.lower() for n in wb.sheetnames):
+        raise OfficeError(
+            f"a sheet named {name!r} differs only in case from one that "
+            f"exists — available: {', '.join(wb.sheetnames)}")
+    if dry_run:
+        return None, True
+    return wb.create_sheet(title=name), True
+
+
 def plan_sheet_edits(
     path: Any,
     *,
@@ -1811,14 +1850,19 @@ def plan_sheet_edits(
     except Exception as exc:
         raise OfficeError(f"could not open workbook: {exc}") from exc
     try:
-        if sheet:
-            if sheet not in wb.sheetnames:
-                raise OfficeError(
-                    f"no sheet named {sheet!r} — available: "
-                    f"{', '.join(wb.sheetnames)}")
-            ws = wb[sheet]
-        else:
-            ws = wb.active
+        ws, new_sheet = _sheet_for_write(
+            wb, sheet, rows_only=bool(append_rows) and not edits,
+            dry_run=True)
+        if new_sheet:
+            return {
+                "path": str(p),
+                "sheet": str(sheet),
+                "new_sheet": True,
+                "changes": [],
+                "appended_rows": len(append_rows or []),
+                "first_appended_row": 1,
+                "fragile": _fragile_features(wb),
+            }
 
         changes: list[dict] = []
         for edit in edits or []:
@@ -2070,14 +2114,10 @@ def edit_sheet(
         raise OfficeError(f"could not open workbook: {exc}") from exc
 
     try:
-        if sheet:
-            if sheet not in wb.sheetnames:
-                raise OfficeError(
-                    f"no sheet named {sheet!r} — available: "
-                    f"{', '.join(wb.sheetnames)}")
-            ws = wb[sheet]
-        else:
-            ws = wb.active
+        ws, new_sheet = _sheet_for_write(
+            wb, sheet,
+            rows_only=bool(append_rows) and not (edits or updates
+                                                 or append_records))
 
         applied: list[dict] = []
         wrote_formula = False
@@ -2219,9 +2259,13 @@ def edit_sheet(
             if not isinstance(new_row, (list, tuple)):
                 raise OfficeError(
                     f"each appended row must be a list, got {new_row!r}")
+            # An empty new sheet reports max_row 1, yet append writes its
+            # first row to row 1: the row append will use is the count of
+            # rows it has written, so a new sheet starts at 1.
+            _target = (appended + 1 if new_sheet
+                       else int(ws.max_row or 0) + 1)
             if not appended:
-                first_appended = int(ws.max_row or 0) + 1
-            _target = int(ws.max_row or 0) + 1
+                first_appended = _target
             ws.append(list(new_row))
             for _c, _v in enumerate(new_row, start=1):
                 appended_cells.append({
@@ -2276,6 +2320,7 @@ def edit_sheet(
             "appended_rows": appended,
             "first_appended_row": first_appended,
             "verified": not unverified,
+            "new_sheet": new_sheet,
             "notes": notes,
         }
     finally:
@@ -6272,6 +6317,41 @@ def record_tool_figures(tool: str, result: Any,
             value = result.get(key)
             if isinstance(value, str) and value:
                 _note_ledger_path(value, scope)
+        with _LEDGER_LOCK:
+            entry = _bucket(scope, create=True)
+            room = MAX_LEDGER_FIGURES - len(entry.figures)
+            if room > 0:
+                entry.figures.extend(found[:room])
+        return found
+    except Exception:
+        return []
+
+
+#: How many numbers one command's output may add to the ledger. A script
+#: that prints a summary prints a handful; a dump of a table would
+#: otherwise fill the ledger with every cell and ground anything.
+MAX_COMMAND_FIGURES = 60
+
+
+def record_command_figures(stdout: str, token: str = "") -> list["ToolFigure"]:
+    """Record the numbers a command that SUCCEEDED printed. Never raises.
+
+    A table job no office tool covers is done by a script, and the script
+    is what counted: measured on a 737-row workbook split by a column, the
+    answer's "192 sheets" and "49 rows without a value" were printed by the
+    agent's own openpyxl script, and the figure check flagged them as
+    numbers no call produced. Only a summary-sized output counts: beyond
+    MAX_COMMAND_FIGURES numbers it is a dump, not a result, and adds
+    nothing.
+    """
+    try:
+        nums = _numbers_in(str(stdout or ""))
+        if not nums or len(nums) > MAX_COMMAND_FIGURES:
+            return []
+        found = [ToolFigure(value=v, kind="count" if float(v).is_integer()
+                            else "cell", label="printed by a command",
+                            tool="bash") for v in nums]
+        scope = _scope(token)
         with _LEDGER_LOCK:
             entry = _bucket(scope, create=True)
             room = MAX_LEDGER_FIGURES - len(entry.figures)

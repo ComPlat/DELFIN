@@ -732,7 +732,9 @@ and always `notebook_read` first to get current cell indices.
 reads them (`fields=true` for a form's fields or a template's
 placeholders); `edit_sheet`, `fill_pdf_form`, `fill_docx_template` and
 `create_docx` write them. Pass on the caveats they return. Office mode is
-the specialised agent for this work.
+the specialised agent for this work. A step no office tool covers (sorting,
+grouping, many sheets at once): write a short Python script with openpyxl,
+run it, then `read_document` the result. Never end the turn without one.
 
 
 <!-- module:project_dev -->

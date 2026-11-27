@@ -12486,6 +12486,11 @@ class ToolSurfaceContext:
     # True so that what the budget measures is the LARGER of the two
     # surfaces; the live request passes the real answer.
     chemistry_workspace: bool = True
+    # The prompt modules the CURRENT request triggers (see
+    # task_prompt_modules). Decides which schemas are hot on this request,
+    # like chemistry_workspace. Default empty: a request that triggers
+    # nothing ships exactly the base hot set.
+    task_modules: frozenset[str] = frozenset()
 
 
 #: The tools that act on DELFIN's HPC clusters (cluster_tools.py).
@@ -12639,7 +12644,61 @@ def _role_defers(role: str) -> bool:
     return _role_allowlist(role or "") is None
 
 
-def _hot_tool_names(chemistry: bool) -> frozenset[str]:
+#: The tools a triggered prompt module describes. The module's prompt
+#: text teaches these tools; with their schemas deferred the model reads
+#: the guidance and then has to fetch each schema first. Measured on a
+#: field install (solo mode, an .xlsx request in German): the generalist
+#: listed the workspace, fetched read_document and edit_sheet through
+#: describe_native_tool and ended three turns empty; 243 of 330 failed
+#: turns on that install were empty turns. Chemistry is not here: its
+#: tools are hot through the workspace and stripped outside one.
+_MODULE_TOOL_NAMES: dict[str, frozenset[str]] = {
+    "documents": _OFFICE_TOOL_NAMES,
+    "notebook": frozenset({"notebook_read", "notebook_edit"}),
+}
+
+
+def _message_user_text(messages: Optional[list]) -> str:
+    """The text the user wrote across *messages*. Tool results are left
+    out: a listing that names an .xlsx is not a request about one."""
+    parts: list[str] = []
+    for m in messages or ():
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        c = m.get("content")
+        if isinstance(c, str):
+            parts.append(c)
+        elif isinstance(c, list):
+            parts.extend(str(b.get("text") or "") for b in c
+                         if isinstance(b, dict) and b.get("type") == "text")
+    return "\n".join(parts)
+
+
+def task_prompt_modules(messages: Optional[list]) -> frozenset[str]:
+    """The tool-carrying prompt modules the user's messages trigger.
+
+    Read off the SAME trigger table that decides which prompt sections
+    ship (``PromptLoader._MODULE_TRIGGERS``), so there is one keyword
+    list. Matched over the whole history, so within a session the set
+    only grows and the tool prefix stays stable from the turn it first
+    triggers on.
+    """
+    text = _message_user_text(messages).lower()
+    if not text:
+        return frozenset()
+    try:
+        from .prompt_loader import PromptLoader
+        table = PromptLoader._MODULE_TRIGGERS
+    except Exception:
+        return frozenset()
+    return frozenset(name for name, triggers in table.items()
+                     if name in _MODULE_TOOL_NAMES
+                     and any(t in text for t in triggers))
+
+
+def _hot_tool_names(chemistry: bool,
+                    modules: frozenset[str] = frozenset()
+                    ) -> frozenset[str]:
     """The tools whose schema is sent on every request: ONE answer.
 
     ``_HOT_TOOL_NAMES`` was derived from 81,949 real calls, and a second
@@ -12647,15 +12706,20 @@ def _hot_tool_names(chemistry: bool) -> frozenset[str]:
     any chemistry tool. So it is a coding agent's hot set. In a DELFIN
     workspace the repository's own chemistry classification,
     ``_DELFIN_ONLY_TOOL_NAMES``, is hot as well -- outside one those tools
-    are stripped before deferral and this adds nothing.
+    are stripped before deferral and this adds nothing. The hot set also
+    follows the TASK: each prompt module the request triggers (*modules*,
+    see ``task_prompt_modules``) adds the tools it describes.
 
     Both the request path and ``advertisable_tools`` ask this, so the
     budget measures what ships. They used to read the frozen set each on
     their own, and this change would have made them disagree.
     """
+    hot = _HOT_TOOL_NAMES
     if chemistry:
-        return _HOT_TOOL_NAMES | _DELFIN_ONLY_TOOL_NAMES
-    return _HOT_TOOL_NAMES
+        hot = hot | _DELFIN_ONLY_TOOL_NAMES
+    for module in modules:
+        hot = hot | _MODULE_TOOL_NAMES.get(module, frozenset())
+    return hot
 
 
 #: Below this many measured calls a tool's schema is deferred. The
@@ -12685,7 +12749,8 @@ def deferred_tool_names(
     out = []
     for entry in tools:
         name = _tool_name_of(entry)
-        if not name or name in _hot_tool_names(ctx.chemistry_workspace):
+        if not name or name in _hot_tool_names(ctx.chemistry_workspace,
+                                               ctx.task_modules):
             continue
         if name == "describe_native_tool":
             continue
@@ -12752,7 +12817,7 @@ def advertisable_tools(
     ]
     if not defer or not _role_defers(ctx.role):
         return out
-    hot = _hot_tool_names(ctx.chemistry_workspace)
+    hot = _hot_tool_names(ctx.chemistry_workspace, ctx.task_modules)
     return [t for t in out
             if _tool_name_of(t) in hot
             or _tool_name_of(t) == "describe_native_tool"]
@@ -13254,6 +13319,78 @@ def _truncate_table_result(text: str, cap: int) -> str:
             return ""
 
 
+_GRID_ROW_RE = re.compile(r"^\s*(\d+) \| ")
+_GRID_HEAD_RE = re.compile(r" — (\d+) rows x (\d+) columns")
+
+
+def _truncate_grid_result(text: str, cap: int, args: Optional[dict] = None) -> str:
+    """Cut a read_document sheet grid at a row boundary, and name the next call.
+
+    The grid is plain text, so it used to fall through to the head-and-tail
+    rule. Measured on a 737 x 21 sheet read with max_cols=7, max_rows=200:
+    the tool returned ~36-62k chars, the model saw ~5k of them -- the first
+    three rows, the last nine, a "... chars from the middle omitted" marker
+    and, below it, the reader's own "NOTE: showing rows 120-319" that was no
+    longer true. Nothing said which rows were missing or how to get them, and
+    the model re-issued the identical read until the repeat guard ended the
+    turn. Here whole rows are dropped from the end until the text fits; the
+    stale "showing rows" note is replaced by one that states the rows shown,
+    the rows not shown, the exact follow-up call, and that a job over the
+    whole table is scripted rather than read into the conversation.
+
+    Returns the cut text, or "" when the text is not such a grid or cannot
+    be made to fit by dropping rows (the caller then keeps head-and-tail).
+    """
+    if not text or len(text) <= cap:
+        return ""
+    lines = text.split("\n")
+    head = _GRID_HEAD_RE.search(lines[0])
+    if not head:
+        return ""
+    idx = [i for i, ln in enumerate(lines) if _GRID_ROW_RE.match(ln)]
+    if len(idx) < 2 or idx[-1] - idx[0] + 1 != len(idx):
+        return ""
+    first, last = idx[0], idx[-1]
+    prefix = lines[:first]
+    rows = lines[first:last + 1]
+    suffix = [ln for ln in lines[last + 1:]
+              if not ln.startswith("NOTE: showing rows")]
+    total = int(head.group(1))
+    last_no = int(_GRID_ROW_RE.match(rows[-1]).group(1))
+    first_no = int(_GRID_ROW_RE.match(rows[0]).group(1))
+    a = dict(args or {})
+
+    def _call(start: int, n: int) -> str:
+        parts = [f"path={json.dumps(str(a.get('path', '')), ensure_ascii=False)}"]
+        if a.get("sheet"):
+            parts.append(f"sheet={json.dumps(str(a['sheet']), ensure_ascii=False)}")
+        parts += [f"start_row={start}", f"max_rows={n}"]
+        for key in ("max_cols", "start_col"):
+            if a.get(key) not in (None, ""):
+                parts.append(f"{key}={a[key]}")
+        return "read_document(" + ", ".join(parts) + ")"
+
+    def _build(k: int) -> str:
+        shown_last = int(_GRID_ROW_RE.match(rows[k - 1]).group(1))
+        note = (
+            f"NOTE: cut to fit the tool-result window: rows {first_no}-"
+            f"{shown_last} are shown, rows {shown_last + 1}-{last_no} of this "
+            f"read are NOT shown (the sheet has {total} rows). Next page: "
+            f"{_call(shown_last + 1, k)}. Do not repeat the same call -- it "
+            "returns the same cut. A job over the whole table (split it into "
+            "sheets, regroup it, copy every row) is not done by reading it "
+            "here: write a Python script with openpyxl and run it with bash.")
+        return "\n".join(prefix + rows[:k] + suffix + ["", note])
+
+    k = len(rows) - 1
+    while k > 0:
+        out = _build(k)
+        if len(out) <= cap:
+            return out
+        k -= 1
+    return ""
+
+
 def _smart_truncate(text: str, cap: int, label: str) -> str:
     """Cap a long output by keeping HEAD and TAIL.
 
@@ -13700,7 +13837,36 @@ _CONTINUE_TEXT = {
     "announced": ("[Continue] Your answer announces a step you did not "
                   "take. Take it now, or say in your answer that it is "
                   "not done."),
+    # After the model inspected a tool (or was told a tool cannot do it)
+    # and then ended with no text. Measured on a field install: 243 of 330
+    # failed turns were empty turns, the measured one right after
+    # describe_native_tool, with bash and python available all along.
+    "inspected_empty": ("[Continue] You ended with no answer after "
+                        "inspecting a tool. If no tool does the step, write "
+                        "a short script (Python preferred), run it with "
+                        "bash and check its result. If the work truly "
+                        "cannot be done, or a gate refused it, say why in "
+                        "one sentence; a script is not a way around a "
+                        "refusal."),
 }
+
+# What a tool result says when the tool cannot do the step: the cue, next
+# to describe_native_tool, that the model looked for a tool and found none.
+_CANNOT_DO_RE = re.compile(
+    r"\b(?:cannot|can't|can not|not supported|unsupported|not available|"
+    r"unknown tool|no such tool)\b", re.IGNORECASE)
+
+
+def _inspected_then_stopped(turn_tool_names, api_messages) -> bool:
+    """Whether the turn looked for a tool and then stopped: it called
+    describe_native_tool, or its last tool result says a tool cannot do
+    the step."""
+    if "describe_native_tool" in (turn_tool_names or ()):
+        return True
+    for m in reversed(api_messages or ()):
+        if isinstance(m, dict) and m.get("role") == "tool":
+            return bool(_CANNOT_DO_RE.search(str(m.get("content") or "")[:2000]))
+    return False
 
 
 def _tv_has_code_edit(acc) -> bool:
@@ -18248,12 +18414,12 @@ class _DocToolExecutor:
                 return self._execute_multi_edit(arguments, permissions)
             if name == "bash":
                 if _caged:
-                    return self._execute_bash(arguments, permissions,
-                                              caged_unasked=True)
+                    return _command_figures_noted(self._execute_bash(
+                        arguments, permissions, caged_unasked=True))
                 return _with_calculation_note(
-                    self._execute_bash(arguments, permissions,
-                                       **({"approved": True} if _approved
-                                          else {})),
+                    _command_figures_noted(self._execute_bash(
+                        arguments, permissions,
+                        **({"approved": True} if _approved else {}))),
                     _calc_notes)
             if name == "bash_background":
                 if _caged:
@@ -30925,6 +31091,23 @@ _SECRET_ENV_NAMES = frozenset({
 })
 
 
+def _command_figures_noted(result: str) -> str:
+    """*result* unchanged, after recording what a successful command printed.
+
+    The office figure check grounds an answer's numbers in what this turn's
+    calls produced; a script the agent ran is one of those calls
+    (office.record_command_figures). A failed command grounds nothing.
+    """
+    try:
+        data = json.loads(result) if isinstance(result, str) else None
+        if isinstance(data, dict) and data.get("exit_code") == 0:
+            from . import office as _office
+            _office.record_command_figures(str(data.get("stdout") or ""))
+    except Exception:
+        pass
+    return result
+
+
 def _scrubbed_bash_env() -> dict:
     """The process environment, without the keys the agent runs on.
 
@@ -30972,6 +31155,23 @@ def _scrubbed_bash_env() -> dict:
     # 10-14). Fail instead; nothing here adds a credential.
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GCM_INTERACTIVE"] = "never"
+    # The interpreter DELFIN itself runs on, reachable as `python`. A
+    # script is the agent's way round a job no tool covers, and it needs
+    # the packages DELFIN ships (openpyxl, pandas, numpy, rdkit). Measured
+    # on a Raspberry Pi install: the service runs from its venv, the shell
+    # saw only /usr/bin/python3 without openpyxl, and an agent that had
+    # written a correct split script asked for a pip install instead of
+    # running it. Added only when absent, so a PATH a person set (an
+    # activated conda env on a cluster) keeps its order.
+    try:
+        _py_bin = os.path.dirname(sys.executable or "")
+        _parts = env.get("PATH", "").split(os.pathsep) if env.get("PATH") else []
+        if (_py_bin and os.path.isdir(_py_bin)
+                and os.path.normcase(_py_bin) not in
+                {os.path.normcase(x) for x in _parts}):
+            env["PATH"] = os.pathsep.join([_py_bin] + _parts)
+    except Exception:
+        pass
     # A thread cap unless the user's environment sets one: an OpenMP
     # program started without it takes every core the host has (measured:
     # a GFN2-xTB scan of butane at 29 264 % CPU on a 384-core host), which
@@ -34501,7 +34701,8 @@ class OpenAIClient(_BaseClient):
         # skill listing above reaches the model: the cue sits on the tool
         # that acts on it, so nothing has to be paid out of the prompt head.
         try:
-            _hot = _hot_tool_names(_is_delfin)
+            _hot = _hot_tool_names(_is_delfin,
+                                   task_prompt_modules(messages))
             _deferred = [] if not _role_defers(_surface_ctx.role) else [
                 _t for _t in advertised_tools
                 if _tool_name_of(_t) not in _hot
@@ -36368,7 +36569,13 @@ class OpenAIClient(_BaseClient):
                                    and _output_needs_fence(fn_name, _redacted))
                     if _fence_this:
                         _cap_here = max(1000, _cap_here - _OUTPUT_FENCE_CHARS)
+                    # A read_document sheet grid is cut at a row boundary
+                    # and names the next call (_truncate_grid_result).
                     context_result = (_truncate_table_result(_redacted, _cap_here)
+                                      or (_truncate_grid_result(
+                                          _redacted, _cap_here, fn_args)
+                                          if fn_name.rsplit("__", 1)[-1]
+                                          == "read_document" else "")
                                       or _smart_truncate(
                                           _redacted, cap=_cap_here, label="tool_result"))
                     # The cut is judged on the result itself, before the
@@ -36894,19 +37101,51 @@ class OpenAIClient(_BaseClient):
                 else:
                     _identical_round_count = 1
                     _last_round_signature = _round_sig
+                # The repeated tools, by name, for the steer and the stop.
+                _rep_names = sorted({
+                    str(tc.get("function", {}).get("name", "")).rsplit("__", 1)[-1]
+                    for tc in tc_list} - {""})
+                _rep_label = ", ".join(_rep_names) or "the same tool"
+                # A repeated document read is the measured case (nine
+                # read_document calls on one 737-row sheet, five of them
+                # byte-identical, then a stop with no answer): the job
+                # was over the whole table, which a script does.
+                _rep_script = (
+                    " If the job needs the whole table (split it into "
+                    "sheets, regroup it, copy every row), write a Python "
+                    "script with openpyxl and run it with bash instead of "
+                    "reading the table here."
+                    if "read_document" in _rep_names else "")
                 if _identical_round_count == 3:
                     api_messages.append(_harness_row((
                         "[system] You have issued the IDENTICAL tool call(s) "
                         "3 rounds in a row. Repeating them again returns the "
                         "same data. Use what you already have: change "
                         "approach, call a different tool, or finish with "
-                        "your answer now."
+                        "your answer now." + _rep_script
                     )))
                 elif _identical_round_count >= 5:
                     yield StreamEvent(type="notice", text=(
                         "\n\n⚠ Aborting tool loop: the identical tool "
-                        "call(s) were repeated 5 rounds in a row without "
-                        "new information. Send 'continue' to resume.\n"))
+                        f"call(s) ({_rep_label}) were repeated 5 rounds in "
+                        "a row and returned the same data each time. Send "
+                        "'continue' to resume.\n"))
+                    # The notice is not the answer (engine: notices never
+                    # reach the answer text), so a stop here used to end
+                    # the turn with no answer at all -- measured: 536 s,
+                    # ~492k input tokens, empty reply. The closing
+                    # sentence is the answer text and names the next
+                    # move the person can ask for.
+                    yield StreamEvent(type="text_delta", text=(
+                        "\n\nStopped: the same call to "
+                        f"{_rep_label} ran five rounds in a row and returned "
+                        "the same data each time, so repeating it cannot "
+                        "get further. To go on, ask for a different step "
+                        "-- other arguments, or a script that does the "
+                        "whole job in one run" + (
+                            " (for a table: a Python script with openpyxl, "
+                            "run with bash)" if _rep_script else "")
+                        + " -- or send 'continue' to resume.\n"))
                     cost = self._estimate_cost(_total_in, _total_out)
                     yield StreamEvent(
                         type="message_delta",
@@ -37102,6 +37341,13 @@ class OpenAIClient(_BaseClient):
                     _cont_reason = "cut_call"
                 elif finish_reason == "length":
                     _cont_reason = "cut"
+                elif (not _ans_c.strip() and not _tool_calls
+                        and _inspected_then_stopped(_turn_tool_names,
+                                                    api_messages)):
+                    # An empty end after a tool lookup: name the move
+                    # that is always there (a script through bash)
+                    # instead of letting the turn end empty.
+                    _cont_reason = "inspected_empty"
                 elif (_ans_c.rstrip().rstrip("*_`").rstrip().endswith(":")
                         and not _announces_an_action(_ans_c)
                         and self._turn_verification is not None
