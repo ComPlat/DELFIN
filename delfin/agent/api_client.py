@@ -31044,6 +31044,23 @@ def _scrubbed_bash_env() -> dict:
     # 10-14). Fail instead; nothing here adds a credential.
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GCM_INTERACTIVE"] = "never"
+    # The interpreter DELFIN itself runs on, reachable as `python`. A
+    # script is the agent's way round a job no tool covers, and it needs
+    # the packages DELFIN ships (openpyxl, pandas, numpy, rdkit). Measured
+    # on a Raspberry Pi install: the service runs from its venv, the shell
+    # saw only /usr/bin/python3 without openpyxl, and an agent that had
+    # written a correct split script asked for a pip install instead of
+    # running it. Added only when absent, so a PATH a person set (an
+    # activated conda env on a cluster) keeps its order.
+    try:
+        _py_bin = os.path.dirname(sys.executable or "")
+        _parts = env.get("PATH", "").split(os.pathsep) if env.get("PATH") else []
+        if (_py_bin and os.path.isdir(_py_bin)
+                and os.path.normcase(_py_bin) not in
+                {os.path.normcase(x) for x in _parts}):
+            env["PATH"] = os.pathsep.join([_py_bin] + _parts)
+    except Exception:
+        pass
     # A thread cap unless the user's environment sets one: an OpenMP
     # program started without it takes every core the host has (measured:
     # a GFN2-xTB scan of butane at 29 264 % CPU on a 384-core host), which
