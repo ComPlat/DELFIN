@@ -34,6 +34,8 @@ switched off, so the test means the same on every host.
 from __future__ import annotations
 
 import json
+import os
+import sys
 
 import pytest
 
@@ -192,9 +194,15 @@ def test_a_path_qualified_program_is_not_an_information_call(ws, tmp_path):
 
 def test_a_program_found_in_the_workspace_is_not_trusted(ws, tmp_path,
                                                          monkeypatch):
-    """A script the agent wrote and named xtb, first on PATH."""
+    """A script the agent wrote and named xtb, first on PATH.
+
+    The PATH names DELFIN's own interpreter directory LAST, as a session
+    started from an activated environment does: the shell then keeps that
+    order (api_client._scrubbed_bash_env adds the directory only when it is
+    absent), so the planted `delfin` stays first and is the one judged."""
     local = _stubs(ws / "bin")
-    monkeypatch.setenv("PATH", f"{local}:{tmp_path / 'opt' / 'bin'}:/usr/bin")
+    monkeypatch.setenv("PATH", f"{local}:{tmp_path / 'opt' / 'bin'}:/usr/bin:"
+                               f"{os.path.dirname(sys.executable)}")
     for cmd in ("xtb --version", "crest -h", "orca -v", "sbatch --usage",
                 "delfin -V", "xtb --version 2>&1 | head -3"):
         assert _bash(ws, cmd) is not None, cmd

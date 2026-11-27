@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 
 from delfin.agent import api_client as A
+from delfin.agent import lifeline
 
 requires_the_cage = pytest.mark.skipif(
     not A._process_cage_functional(),
@@ -118,13 +119,27 @@ def test_the_cage_ends_with_the_process_that_started_it(tmp_path):
 def test_a_background_job_outlives_the_turn_that_started_it(tmp_path):
     (mark,) = marks = _marks(1)
     started = []
-    turn = threading.Thread(target=lambda: started.append(subprocess.Popen(
-        A._in_process_cage(["sleep", mark], tmp_path))))
+
+    def turn_body():
+        # The job is started the way bash_jobs starts it. The turn's thread
+        # ends only once the cage is up (the sleep runs inside it, so bwrap
+        # has set --die-with-parent): a thread that ended first left the
+        # death signal nothing to follow, and the test passed or failed on
+        # which of the two came first (it failed once on a loaded CI runner).
+        started.append(lifeline.start_bound_to_process(
+            lambda: subprocess.Popen(A._in_process_cage(["sleep", mark], tmp_path))))
+        deadline = time.time() + 30
+        while not _living(marks) and time.time() < deadline:
+            time.sleep(0.05)
+
+    turn = threading.Thread(target=turn_body)
     turn.start()
     turn.join()
     try:
+        assert _living(marks) == [mark], "the cage never started"
         time.sleep(1.5)
         assert started[0].poll() is None, "ended with the thread of its turn"
+        assert _living(marks) == [mark], "ended with the thread of its turn"
     finally:
         started[0].kill()
         started[0].wait()
