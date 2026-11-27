@@ -1363,6 +1363,31 @@ class PromptLoader:
         except Exception:
             return ""
 
+    def _load_knowledge_index_context(self) -> str:
+        """The catalogue of repository lessons, one line per entry.
+
+        Separate from :meth:`_load_knowledge_context` because the two
+        answer different questions and depend on different things: that one
+        is a RELEVANCE match against the task and returns nothing when
+        nothing matches, this one is the full VISIBLE catalogue and is
+        pinned per session so the prompt prefix stays cacheable. A session
+        that asks something the repository has no lesson about still learns
+        that the lessons exist and what they are called.
+
+        Fenced as untrusted background data, exactly like the lessons
+        block. Empty in ``--bare`` mode, and empty when there is nothing to
+        list.
+        """
+        if self.skip_external_memory:
+            return ""
+        try:
+            from .knowledge import index_block
+            return index_block(
+                workspace=self.workspace_root or self.repo_root,
+                is_delfin_workspace=self.is_delfin_workspace)
+        except Exception:
+            return ""
+
     def _load_episode_recall_context(self, task_text: str = "",
                                      session_id: str = "") -> str:
         """Best-effort recall of similar PAST SESSIONS (episodic memory).
@@ -2907,6 +2932,19 @@ class PromptLoader:
                     f"--- Shared lessons ---\n{knowledge_ctx}")
                 injected.append("knowledge")
 
+            # The catalogue of those lessons: one line per entry, so the
+            # session knows what the repository has recorded even when
+            # nothing matched (it did not, above, or this is an unrelated
+            # task). It depends only on the workspace, not on the task, so
+            # it does not move on every turn.
+            knowledge_index_ctx = self._load_knowledge_index_context()
+            if knowledge_index_ctx and not self._should_skip_section(
+                    "memory", role_id):
+                add("knowledge_index", self.LAYER_VOLATILE,
+                    f"--- Repository knowledge index ---\n"
+                    f"{knowledge_index_ctx}")
+                injected.append("knowledge_index")
+
             # How this workspace checks its work (tests/lint from its own
             # CI or config), so the agent calls the right runner instead
             # of guessing. Volatile: read from disk at build time, and it
@@ -3292,6 +3330,16 @@ class PromptLoader:
                 add("knowledge", self.LAYER_VOLATILE,
                     f"--- Shared lessons ---\n{knowledge_ctx}")
                 injected.append("knowledge")
+            # The catalogue of those lessons, for the same roles and under
+            # the same exclusions: what the repository has recorded, one
+            # line each, whether or not one matched this task.
+            knowledge_index_ctx = self._load_knowledge_index_context()
+            if knowledge_index_ctx and not self._should_skip_section(
+                    "memory", role_id):
+                add("knowledge_index", self.LAYER_VOLATILE,
+                    f"--- Repository knowledge index ---\n"
+                    f"{knowledge_index_ctx}")
+                injected.append("knowledge_index")
 
         # User model (see _user_model_section).
         _user_block = self._user_model_section(session_key, role_id)
