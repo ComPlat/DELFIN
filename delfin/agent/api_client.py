@@ -7511,6 +7511,13 @@ _MCP_READONLY_TOOL_BASES: frozenset[str] = frozenset({
     # ``eln_attach`` and ``eln_approve`` each need one person's approval,
     # and ``eln_approve`` exists so the agent cannot give that approval.
     "eln_find", "eln_read", "eln_pending",
+    # --- MCP resource/prompt meta-tools (not namespaced, so they answer
+    #     ``is_mcp_family`` without a ``mcp__`` prefix). A resource read and a
+    #     prompt render return text and change nothing, which is what this
+    #     list means. Declared here rather than a name check in the gate so
+    #     the read-only decision has ONE owner: the gate's side-effect step
+    #     reads this list, and the plan-mode set below is this set ORed in.
+    "mcp_read_resource", "mcp_get_prompt",
 })
 
 
@@ -7799,6 +7806,31 @@ def _auto_veto_refusal(permissions, name: str, arguments: Any) -> str:
     return text
 
 
+#: The MCP resource/prompt meta-tools the agent advertises when a connected
+#: server exposes resources or prompts. They are not namespaced with
+#: ``mcp__`` -- they ARE the namespace, the one call that names any server's
+#: resource -- which is why they once had a dispatch branch of their own and
+#: reached the registry with only the role list asked.
+MCP_META_TOOLS: frozenset[str] = frozenset({
+    "mcp_read_resource", "mcp_get_prompt"})
+
+
+def is_mcp_family(name: str) -> bool:
+    """Whether *name* is decided by the MCP gate.
+
+    Input: a tool name as the model sent it. Output: True for a namespaced
+    ``mcp__server__tool`` call and for a :data:`MCP_META_TOOLS` name, False
+    for everything else.
+
+    ONE PREDICATE, because the same question is asked at more than one place
+    -- the turn loop's dispatch, the rule lookup's ``managed_only`` flag and
+    the gate's own entry guard -- and each spelled the test itself, so each
+    got the meta names wrong in its own way. A name that answers True here
+    is decided by ``_mcp_call_refusal`` and nothing else.
+    """
+    return str(name or "").startswith("mcp__") or name in MCP_META_TOOLS
+
+
 def _mcp_call_refusal(fn_name: str, fn_args: dict,
                       permissions) -> Optional[str]:
     """The refusal for an MCP tool call as a JSON result, or None to run it.
@@ -7824,7 +7856,7 @@ def _mcp_call_refusal(fn_name: str, fn_args: dict,
     asked = False
     rule_hit = _permission_rule_hit(
         permissions, fn_name, fn_args,
-        managed_only=not fn_name.startswith("mcp__"))
+        managed_only=not is_mcp_family(fn_name))
     if rule_hit is not None and rule_hit[1].managed:
         if rule_hit[0] == "deny":
             return json.dumps({"error": _refuse_by_rule(fn_name, rule_hit[1])})
@@ -8930,9 +8962,18 @@ def execute_mcp_call(name: str, arguments: dict, permissions,
                      doc_executor) -> str:
     """The ONE MCP dispatch: gate, call, wrap, post-hooks.
 
-    Input: a namespaced tool name, its arguments, the session's
-    permissions and the executor whose post-tool hooks run afterwards.
-    Output: the result string the caller returns to whoever asked.
+    Input: a namespaced tool name, a :data:`MCP_META_TOOLS` name, its
+    arguments, the session's permissions and the executor whose post-tool
+    hooks run afterwards. Output: the result string the caller returns to
+    whoever asked.
+
+    THE META NAMES BELONG HERE, NOT IN A BRANCH OF THE TURN LOOP. A branch
+    of their own asked the role list and then called the registry, so a deny
+    rule, the session's deny list and a PreToolUse hook -- three decisions
+    every other call in the same turn meets -- never ran for a resource read
+    (measured on cdadd9efb). What differs between a namespaced call and a
+    meta one is the TRANSPORT, and that is one argument to step 3 rather
+    than a second path.
 
     WHY IT IS A FUNCTION. MCP tools skip ``_DocToolExecutor.execute``,
     so these four steps lived inline in the agent loop -- and a Code
@@ -8970,16 +9011,31 @@ def execute_mcp_call(name: str, arguments: dict, permissions,
         result = refusal
     else:
         try:
-            from . import mcp_client as _mcp
-            # Always through the guard, with no way to hand a workspace
-            # past it: an optional override here was unused and was a way
-            # round the one check that keeps a project's own MCP config
-            # from starting processes.
-            ws = _hook_workspace(permissions)
-            sid = str(getattr(permissions, "task_session_id", "") or "")
-            result = _wrap_untrusted(
-                _mcp.get_registry(ws).call(name, arguments,
-                                           agent_session_id=sid))
+            if name in MCP_META_TOOLS:
+                # Step 3's transport for a resource read or a prompt render:
+                # the registry's own method, which names any connected
+                # server's item rather than one server's tool.
+                from . import mcp_client as _mcp2
+                _reg = _mcp2.get_registry(_hook_workspace(permissions))
+                if name == "mcp_read_resource":
+                    payload = _reg.read_resource(str(arguments.get("server", "")),
+                                                 str(arguments.get("uri", "")))
+                else:
+                    payload = _reg.get_prompt(
+                        str(arguments.get("name", "")),
+                        arguments.get("arguments") or {})
+                result = _wrap_untrusted(payload)
+            else:
+                from . import mcp_client as _mcp
+                # Always through the guard, with no way to hand a workspace
+                # past it: an optional override here was unused and was a way
+                # round the one check that keeps a project's own MCP config
+                # from starting processes.
+                ws = _hook_workspace(permissions)
+                sid = str(getattr(permissions, "task_session_id", "") or "")
+                result = _wrap_untrusted(
+                    _mcp.get_registry(ws).call(name, arguments,
+                                               agent_session_id=sid))
         except Exception as exc:                        # noqa: BLE001
             result = json.dumps({"error": f"MCP dispatch failed: {exc}"})
     doc_executor._run_post_tool_hooks(base, arguments, permissions, result)
@@ -23994,7 +24050,7 @@ class _DocToolExecutor:
 
         Returns an error string to BLOCK the call, or None to allow it.
         """
-        if not isinstance(name, str) or not name.startswith("mcp__"):
+        if not is_mcp_family(name):
             return None
         if perms is None:
             _record_security_event("no_sandbox_mcp", name, "", blocked=True)
@@ -28235,8 +28291,8 @@ class _DocToolExecutor:
                 if not path:
                     continue
                 try:
-                    res = json.loads(self._execute_worktree_merge(
-                        {"path": path}, perms, framework_worktree=True))
+                    res = json.loads(self.execute(
+                        "worktree_merge", {"path": path}, perms))
                 except Exception as exc:
                     res = {"error": f"merge raised: {exc}"}
                 entry = {
@@ -29897,6 +29953,24 @@ _FENCED_OUTPUT_TOOLS: frozenset[str] = frozenset({
     "read_file", "grep_file", "notebook_read", "read_document",
     "bash", "bash_output",
 })
+#: The doc-index and calc-index readers carry text lifted out of a PDF a
+#: user dropped in the Literature tab (``index_new_pdf`` indexes ANY PDF) or
+#: out of a calculation folder. They reach the model through the agent loop
+#: rather than through an MCP server, so ``execute_mcp_call``'s wrap never
+#: covered them and nothing else did: before this, ``read_section`` handed a
+#: PDF's section text to the model as bare text while ``read_file`` fenced
+#: the identical bytes.
+#:
+#: A second NAMED list, not a second mechanism: both are unioned into the one
+#: ``_FENCED_OUTPUT_TOOLS`` below, so the loop has one membership test and the
+#: two groups stay separately readable (a reader added to either is fenced by
+#: the same code). The shape note is not added here at all -- every fence in
+#: the marker family makes it, so listing a tool is the whole change.
+_DOC_CONTENT_TOOLS: frozenset[str] = frozenset({
+    "search_docs", "read_section", "list_docs", "list_sections",
+    "search_calcs", "get_calc_info", "calc_summary",
+})
+_FENCED_OUTPUT_TOOLS = _FENCED_OUTPUT_TOOLS | _DOC_CONTENT_TOOLS
 #: The shell tools answer a refusal of their own gate as plain text and
 #: real output as a JSON object; only the object is the command's output.
 _JSON_OUTPUT_TOOLS: frozenset[str] = frozenset({"bash", "bash_output"})
@@ -36116,15 +36190,20 @@ class OpenAIClient(_BaseClient):
 
                     # MCP tools come prefixed mcp__server__name and route
                     # through the registry, bypassing the doc executor.
-                    is_mcp = fn_name.startswith("mcp__")
-                    # MCP resource/prompt meta-tools (single underscore).
-                    is_mcp_meta = fn_name in (
-                        "mcp_read_resource", "mcp_get_prompt")
+                    # One predicate for the whole MCP family: a namespaced
+                    # `mcp__server__tool` call AND the two resource/prompt
+                    # meta-tools. The meta names are not namespaced, and the
+                    # separate branch that used to test for them asked the
+                    # role list and then called the registry, so a deny rule,
+                    # the session's deny list and a PreToolUse hook never ran
+                    # for a resource read (measured on cdadd9efb).
+                    is_mcp = (fn_name.startswith("mcp__")
+                              or fn_name in MCP_META_TOOLS)
 
                     # Emit tool_use event for UI display
                     yield StreamEvent(
                         type="tool_use",
-                        tool_name=fn_name if (is_mcp or is_mcp_meta)
+                        tool_name=fn_name if is_mcp
                                   else f"mcp__{ns_prefix}__{fn_name}",
                         tool_input=json.dumps(fn_args),
                     )
@@ -36150,45 +36229,15 @@ class OpenAIClient(_BaseClient):
                     elif is_mcp:
                         # The ONE MCP dispatch (execute_mcp_call): the
                         # gate, the call, the untrusted wrap and the
-                        # post-tool hooks. It used to stand here inline,
-                        # which is why a Code Mode program -- whose RPC
-                        # server calls the executor -- could reach no
-                        # MCP tool at all.
+                        # post-tool hooks -- for a namespaced server tool
+                        # and for a resource/prompt meta-tool alike, which
+                        # differ only in the transport it picks internally.
+                        # This was two branches: the meta one asked the role
+                        # list and called the registry, so every other
+                        # decision the turn makes was skipped for it.
                         result = execute_mcp_call(
                             fn_name, fn_args, self._permissions,
                             _doc_executor)
-                    elif is_mcp_meta:
-                        # MCP resource/prompt meta-tools also skip execute()'s
-                        # role check — apply the same deny-by-default so a
-                        # restricted role can't read MCP resources it isn't
-                        # allowed to.
-                        _meta_role = getattr(self._permissions, "agent_role",
-                                             "") or ""
-                        if (self._permissions is not None
-                                and _tool_denied_for_role(_meta_role, fn_name)):
-                            result = json.dumps({"error": (
-                                f"Tool '{fn_name}' is not available to the "
-                                f"'{_meta_role}' role."
-                            )})
-                        else:
-                            try:
-                                from . import mcp_client as _mcp
-                                _ws = _hook_workspace(self._permissions)
-                                _reg = _mcp.get_registry(_ws)
-                                if fn_name == "mcp_read_resource":
-                                    result = _wrap_untrusted(
-                                        _reg.read_resource(
-                                            str(fn_args.get("server", "")),
-                                            str(fn_args.get("uri", ""))))
-                                else:
-                                    result = _wrap_untrusted(
-                                        _reg.get_prompt(
-                                            str(fn_args.get("name", "")),
-                                            fn_args.get("arguments") or {}))
-                            except Exception as exc:
-                                result = json.dumps({
-                                    "error": f"MCP {fn_name} failed: {exc}"
-                                })
                     else:
                         # Wrap like the MCP/subagent paths above: an uncaught
                         # exception in any tool handler would otherwise escape
@@ -36297,7 +36346,7 @@ class OpenAIClient(_BaseClient):
                     # (_fence_output_tool_result); the fence is paid from
                     # the same cap, so a cut result plus its fence stays
                     # inside the budget.
-                    _fence_this = (not (is_mcp or is_mcp_meta)
+                    _fence_this = (not is_mcp
                                    and _output_needs_fence(fn_name, _redacted))
                     if _fence_this:
                         _cap_here = max(1000, _cap_here - _OUTPUT_FENCE_CHARS)
@@ -36331,7 +36380,7 @@ class OpenAIClient(_BaseClient):
                         if _is_report_tool(fn_name) else _redacted[:2000])
                     yield StreamEvent(
                         type="tool_result",
-                        tool_name=fn_name if (is_mcp or is_mcp_meta)
+                        tool_name=fn_name if is_mcp
                                   else f"mcp__{ns_prefix}__{fn_name}",
                         # Redacted HERE, not only on the context-bound copy.
                         # This event is what the engine writes to
