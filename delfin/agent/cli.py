@@ -6126,8 +6126,20 @@ def build_parser() -> argparse.ArgumentParser:
     chat.add_argument("--max-turns", type=int, default=0, dest="max_turns",
                       metavar="N",
                       help="Stop a turn after N tool rounds (0: the "
-                           "per-model default). Bounds one turn, not the "
-                           "session — see --max-budget-usd for that")
+                                "per-model default). Bounds one turn, not the "
+                                "session — see --max-budget-usd for that")
+    # The wake bound a one-shot run reads in cmd_run. Declared here because
+    # ``chat -p`` ends in cmd_run too (_cmd_chat_one_shot returns
+    # cmd_run(args, prepare=_prepare)), so without it the door a script
+    # drives refused the flag at argparse and the wake loop always ran at
+    # its default -- the caller could not bound it or turn it off. Same
+    # default and meaning as on ``run``; cmd_run reads both the same way.
+    chat.add_argument("--job-wait", type=int, default=_JOB_WAIT_DEFAULT_S,
+                      dest="job_wait", metavar="SECONDS",
+                      help="Stay up this long for jobs the session watches "
+                          "and wake the agent when they finish "
+                          f"(default {_JOB_WAIT_DEFAULT_S}; 0: end with the "
+                          "answer and stop them)")
     chat.add_argument("--max-budget-usd", type=float, default=0.0,
                       dest="max_budget_usd", metavar="USD",
                       help="Stop this session once measured spend reaches "
