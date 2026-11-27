@@ -260,7 +260,19 @@ def workspace_for(root: Path, *, mode: str = "", task_class: str = "") -> Option
     """
     cls = (task_class or "").strip().lower()
     rel: Optional[str] = None
-    if (mode or "") == "office" or cls == "office":
+    if (mode or "") == "office" or cls in ("office", "office_solo"):
+        # ``office`` and the O1 twins' class, named explicitly rather than by
+        # a prefix. A prefix would also have caught ``office_ops`` and
+        # ``office_read`` -- six older solo tasks that read the checkout by
+        # relative path and would have been moved into this folder by
+        # accident, which is a changed meaning for a caller that did not ask.
+        # ``office_solo`` is the same twelve office questions run in solo
+        # (Code) mode, so "does the specialist beat the generalist at office
+        # work?" compares one question in two modes instead of two different
+        # questions. They write the same files into the same folder and need
+        # the same workspace: without this branch they would have the whole
+        # checkout, which is the defect that made every other writing class
+        # get its own directory.
         rel = "office_workspace"
     elif cls.startswith("behavior"):
         rel = "behavior_workspace"
