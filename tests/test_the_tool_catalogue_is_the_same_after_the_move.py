@@ -25,6 +25,19 @@ moved 11,678 -> 11,718 (+40, measured) and the token estimate 11,766 ->
 11,806, which the budget test accounts for. The tool COUNT and the name
 order did not move, and those two pins still carry their original
 baseline.
+
+Re-taken again on 2026-11-26 (wave 58, package n1). THE DELIBERATE CAUSE:
+the ``subagent`` tool's description gained the sentence "resume_id resumes
+a finished run.", and the ``resume_id`` property text was shortened to pay
+for it ("sa_id of a FINISHED subagent to continue with its context
+replayed." -> "Finished run's sa_id."). Measured, not estimated: the
+catalogue total went 11,865 -> 11,862 and the estimate 11,954 -> 11,951,
+i.e. it is 3 tokens CHEAPER, and the count and the name order are unmoved.
+The reason the sentence belongs in the description at all: ``subagent`` is
+in ``_HOT_TOOL_NAMES``, so the description is the field every request
+carries, while a property description is only read by a model that already
+decided to look for it -- the arm measured that a capability living only
+in the property is a capability the model does not use.
 """
 import hashlib
 import json
@@ -35,28 +48,44 @@ from delfin.agent import api_client
 
 # --- the recorded baseline; see the module docstring before moving one ---
 # count and name order: unmoved since origin/main 026eba8f0 until
-#   2026-11-23, when ONE tool was added: describe_native_tool.
-# content and token figures: re-taken 2026-11-23 for the same cause.
+#   2026-11-23, when ONE tool was added: describe_native_tool; then
+#   2026-11-24, when ONE more was added: lab_run (the self-driving lab's
+#   first agent-facing entrance -- a whole workflow judged, then run by the
+#   one coordinator).
+# content and token figures: re-taken 2026-11-24 for that same cause.
 #
-# THE DELIBERATE CAUSE, as this file requires it to be named: deferral.
-# Measured over 81,949 real tool calls in ~/.delfin/tool_traces, the 96
-# schemas cost 11,865 tokens on EVERY request, 27 of them cover 99% of
-# all calls, and 61 with fewer than ten calls each account for 6,799 of
-# those tokens. describe_native_tool returns a deferred tool's schema on
-# demand, so a request now carries 4,408 tokens instead of 11,865 -- 63%
-# less, 7,457 freed per request -- while every tool stays executable and
-# named. This file's figures count the CATALOGUE, which therefore GREW
-# by 136 tokens (the new tool's own schema); the number that ships is
-# ratcheted in tests/test_tool_schema_budget.py::_SHIPPED_BUDGET.
-PINNED_COUNT = 97
+# THE DELIBERATE CAUSE, as this file requires it to be named: the lab
+# specialist. Measured on the tree that ships it, in two parts: +9 tokens
+# for the preset (its name in the subagent_type enum and one more entry in
+# the derived writer list -- the same cost ANY added preset pays) and +198
+# for lab_run's own schema. This file's figures count the CATALOGUE; the
+# number that ships is ratcheted in
+# tests/test_tool_schema_budget.py::_SHIPPED_BUDGET, which did not move.
+#
+# RE-TAKEN AGAIN 2026-11-26 on the MERGED tree, one cause: the
+# `chemotion-eln` preset. The preset's NAME is what the derived `subagent`
+# description grows by, and it measures +8 tokens here -- estimate
+# 12,162 -> 12,170, report total 12,072 -> 12,080, and both digests with
+# them. The sibling ratchet tests/test_tool_schema_budget.py had already
+# been re-measured on the merged tree (_TOKEN_BUDGET = 12_080); this file
+# still carried the figure the ELN branch measured alone, so the two pins
+# asserted two different totals for one catalogue. A merge resolves a
+# numeric ceiling by measuring the result, not by keeping one branch's
+# number. COUNT (98) and name order did not move, and their pins are
+# untouched, because moving a name is a different act from adding a preset.
+#
+# RE-TAKEN 2026-11-27 on the merged tree, one cause: the subagent tool's
+# resume_id sentence was reworded (wave 58). Measured: estimate
+# 12,170 -> 12,167, report total 12,080 -> 12,077; COUNT and names unmoved.
+PINNED_COUNT = 98
 PINNED_NAMES_SHA256 = (
-    "f408d5f11d9175d82cb4f288bbe4475428a6b8ffbd44332114ba42f3e4283933")
+    "7903960c5ec64ec468cbd81d93b4d3b4be10d1823ab2a4d7a18547fd5dfc449f")
 PINNED_BLOB_SHA256 = (
-    "24cb51ddf95f06af3069ddd7318e7be7f32b8198444f0cc91e8294c74fb94900")
-PINNED_ESTIMATE = 11954
+    "c1437b7a83210e47b4a639e2d776dcd92942735d5fd32ed96cd1a3ab9340c519")
+PINNED_ESTIMATE = 12167
 PINNED_REPORT_SHA256 = (
-    "371cb8551a189ba2a086e21ef8dabf67d1a262292a8f4c18927029e528073dbc")
-PINNED_REPORT_TOTAL_TOKENS = 11865
+    "ade091e769307f1562e5a0315d1006e11631e4f7f2691fe4386b6be6eebd0356")
+PINNED_REPORT_TOTAL_TOKENS = 12077
 
 
 def _names_sha256() -> str:
@@ -123,7 +152,6 @@ def test_tool_catalog_imports_nothing_from_api_client():
     pytest.importorskip("delfin.agent.tool_catalog")
     import ast
     import pathlib
-    import sys
 
     import delfin.agent.tool_catalog as tc
 
@@ -138,4 +166,10 @@ def test_tool_catalog_imports_nothing_from_api_client():
             else:
                 mod = node.module or ""
             assert not mod.startswith("delfin.agent.api_client"), mod
-    assert "delfin.agent.api_client" not in sys.modules or True
+    # No bare `assert ... or True` here: this file's own module-level import of
+    # api_client (line 34, for the catalogue constants) puts it in
+    # `sys.modules` before this test runs, so the condition was always false
+    # and the line could never fail. The loop above is the real check -- it
+    # asserts the dependency DIRECTION from the source, per import node. A
+    # fresh-interpreter check would assert something this test cannot: that
+    # importing the catalogue pulls nothing in.

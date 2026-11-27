@@ -594,8 +594,14 @@ def _parse_override_step_list(raw_steps) -> list[int]:
 
 
 def _invalidate_stage_files(base_name: str, workspace_root: Path) -> None:
-    """Remove .out, .inp, and .fprint files for a stage so recalc reruns it."""
-    for suffix in (".out", ".inp", ".inp.fprint"):
+    """Remove .inp and .fprint files for a stage so recalc reruns it.
+
+    The ``.out`` is deliberately kept: the stage is rerun because it is in the
+    force set, not because its output is missing, and deleting a finished
+    ``.out`` is what left junk in its place whenever the rerun failed. The
+    recalc wrapper moves it aside and restores it unless the rerun is complete.
+    """
+    for suffix in (".inp", ".inp.fprint"):
         path = workspace_root / f"{base_name}{suffix}"
         if path.exists():
             try:
@@ -804,8 +810,14 @@ def _apply_occupier_overrides(
         # Instead, let `read_xyz_and_create_input3` (engine/occupier.py)
         # regenerate the full OPT+FREQ input from the refreshed
         # `input_{folder}.xyz`/`.gbw` (copied above via skip_file_copy=False).
+        #
+        # The `.out` is NOT in this list. The rerun is forced by the force set
+        # (added below), so removing the output is not what makes it happen --
+        # and it was what lost a finished result: a rerun that failed or wrote
+        # junk left that junk where the good output had been. The recalc
+        # wrapper keeps it aside and restores it unless the rerun is complete.
         base_name = folder_name.replace("_OCCUPIER", "") if folder_name.endswith("_OCCUPIER") else folder_name
-        for ext in ("inp", "inp.fprint", "out", "xyz", "gbw", "hess", "engrad", "opt", "property.txt", "densities", "densitiesinfo", "bibtex"):
+        for ext in ("inp", "inp.fprint", "xyz", "gbw", "hess", "engrad", "opt", "property.txt", "densities", "densitiesinfo", "bibtex"):
             p = workspace_root / f"{base_name}.{ext}"
             if p.exists():
                 try:
@@ -974,9 +986,9 @@ def _run_cleanup_subcommand(argv: list[str]) -> int:
         print(f"ORCA processes detected: {report['processes_found']}")
         for entry in report["terminated_groups"]:
             print(f"  pgid {entry['pgid']}: {entry['status']} (pids={entry['pids']})")
-        if report["occuper_dirs_removed"]:
-            print("Removed OCCUPIER folders:")
-            for path in report["occuper_dirs_removed"]:
+        if report["occuper_dirs_kept"]:
+            print("Kept OCCUPIER folders (resume state, not scratch):")
+            for path in report["occuper_dirs_kept"]:
                 print(f"  {path}")
         if report["scratch_dirs_removed"]:
             print("Removed ORCA scratch directories:")
@@ -1119,9 +1131,13 @@ def _run_co2_subcommand(argv: list[str]) -> int:
 
     # Normal run mode - execute CO2 coordinator workflow
     try:
-        # Set recalc mode environment variable if needed
+        # Recalc is the same mode as everywhere else in DELFIN: without the
+        # shared setup the coordinator gets DELFIN_CO2_RECALC but no
+        # DELFIN_RECALC, and its skip test (smart_recalc.should_skip) answers
+        # False for every finished angle.
         if args.recalc:
             os.environ["DELFIN_CO2_RECALC"] = "1"
+            _enter_recalc_mode()
         co2_main()
         return 0
     except Exception as exc:
@@ -1225,7 +1241,11 @@ def _run_stop_subcommand(argv: list[str]) -> int:
     parser.add_argument(
         "--cleanup",
         action="store_true",
-        help="After signaling, run DELFIN cleanup in the workspace (remove scratch/OCCUPIER artifacts).",
+        help=(
+            "After signaling, run DELFIN cleanup in the workspace (remove "
+            "temporary artifacts and .orca_scratch; keep the *_OCCUPIER "
+            "stage directories as resume state)."
+        ),
     )
     parser.add_argument(
         "--wait-seconds",
@@ -1320,9 +1340,9 @@ def _run_stop_subcommand(argv: list[str]) -> int:
             print(f"ORCA processes detected: {report['processes_found']}")
             for entry in report["terminated_groups"]:
                 print(f"  pgid {entry['pgid']}: {entry['status']} (pids={entry['pids']})")
-            if report["occuper_dirs_removed"]:
-                print("Removed OCCUPIER folders:")
-                for path in report["occuper_dirs_removed"]:
+            if report["occuper_dirs_kept"]:
+                print("Kept OCCUPIER folders (resume state, not scratch):")
+                for path in report["occuper_dirs_kept"]:
                     print(f"  {path}")
             if report["scratch_dirs_removed"]:
                 print("Removed ORCA scratch directories:")
@@ -1532,6 +1552,40 @@ def _note_control_change(config: dict, workspace_root: Path, control_text, geome
         logger.info("[recalc] The edit reaches no OCCUPIER input; OCCUPIER keeps its finished jobs.")
 
 
+def _enter_recalc_mode(force_outputs: Optional[set[Path]] = None) -> None:
+    """Put this process into recalc mode: one entry point for every path.
+
+    Recalc is not a flag a single module can honour. What a finished job is
+    skipped on lives in three places: ``DELFIN_RECALC`` (``smart_recalc.
+    recalc_enabled()``), the wrappers that install that skip in front of
+    every ORCA/xTB call site, and the modules that captured their own
+    reference to such a function at import time. A dispatch path that reaches
+    its own subcommand parser before ``main()`` has run this setup gets none
+    of it: it can pass a flag down, but nothing downstream consults it, and
+    finished jobs are computed again while the caller believes otherwise.
+    """
+    # IMPORTANT: override the global bindings so all call sites use the wrappers
+    global run_orca, XTB, XTB_GOAT, run_crest_workflow, XTB_SOLVATOR
+
+    # The globals below are populated by the lazy loader; calling it here means
+    # a subcommand path cannot reach this helper with them still unbound.
+    _load_full_cli_dependencies()
+
+    os.environ["DELFIN_RECALC"] = "1"
+
+    wrappers, _reals = setup_recalc_mode(force_outputs=force_outputs)
+
+    # Swap in wrappers in THIS module
+    run_orca = wrappers["run_orca"]
+    XTB = wrappers["XTB"]
+    XTB_GOAT = wrappers["XTB_GOAT"]
+    run_crest_workflow = wrappers["run_crest_workflow"]
+    XTB_SOLVATOR = wrappers["XTB_SOLVATOR"]
+
+    # Patch other modules that captured their own references
+    patch_modules_for_recalc(wrappers)
+
+
 def _run_co2_recalc_if_enabled(config: dict, workspace_root: Path) -> bool:
     """Run CO2 coordinator in recalc mode when enabled via CONTROL."""
     if not _is_enabled_flag(config.get("co2_coordination", "off")):
@@ -1673,20 +1727,7 @@ def main(argv: list[str] | None = None) -> int:
     os.environ["DELFIN_RECALC"] = "1" if RECALC_MODE else "0"
 
     if RECALC_MODE:
-        # IMPORTANT: override the global bindings so all call sites use the wrappers
-        global run_orca, XTB, XTB_GOAT, run_crest_workflow, XTB_SOLVATOR
-
-        wrappers, reals = setup_recalc_mode(force_outputs=force_rerun_outputs)
-
-        # Swap in wrappers in THIS module
-        run_orca = wrappers['run_orca']
-        XTB = wrappers['XTB']
-        XTB_GOAT = wrappers['XTB_GOAT']
-        run_crest_workflow = wrappers['run_crest_workflow']
-        XTB_SOLVATOR = wrappers['XTB_SOLVATOR']
-
-        # Patch other modules that captured their own references
-        patch_modules_for_recalc(wrappers)
+        _enter_recalc_mode(force_rerun_outputs)
 
 
     # Only define template and exit
@@ -1851,6 +1892,24 @@ def main(argv: list[str] | None = None) -> int:
             logger.debug("MANTA construction environment: %d flags set",
                          len(_manta_env))
 
+    # Anchor the run in its workspace.
+    #
+    # ``delfin /path/to/project`` and ``delfin --control /elsewhere/CONTROL.txt``
+    # name a workspace that is not the directory the command was typed in, and
+    # until now every phase that writes CWD-relative work put it in the
+    # CALLER's directory instead: a classic run left its ``initial.inp`` /
+    # ``initial.out`` there, and ESD created ``ESD/`` there and then failed to
+    # find the very ``start.txt`` the previous step had written -- the workspace
+    # keeps ``start.txt``, the process was looking elsewhere.  The README says
+    # results are written into the workspace; a relative name now says the same.
+    # ``_finalize`` restores the previous directory, so an in-process caller
+    # (delfin.api.run) is left as it was found.
+    _previous_cwd = os.getcwd()
+    try:
+        os.chdir(workspace_root)
+    except OSError as exc:  # noqa: BLE001 - a workspace that vanished must not mask the run
+        logger.warning("Could not enter workspace %s: %s", workspace_root, exc)
+
     # Initialize global job manager with configuration
     global_mgr = get_global_manager()
     global_mgr.initialize(config)
@@ -1877,6 +1936,14 @@ def main(argv: list[str] | None = None) -> int:
             logger.info("Global job manager shutdown complete")
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"Global manager shutdown raised: {exc}")
+
+        # Leave the caller's directory as it was found: the pipeline runs in the
+        # workspace (see the chdir above), and an in-process caller such as
+        # delfin.api.run must not come back in a different directory.
+        try:
+            os.chdir(_previous_cwd)
+        except OSError as exc:  # noqa: BLE001
+            logger.debug("Could not restore working directory %s: %s", _previous_cwd, exc)
 
         if not args.no_cleanup:
             cleanup_all(str(get_runtime_dir()))

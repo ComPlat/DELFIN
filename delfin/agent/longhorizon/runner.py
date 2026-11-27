@@ -249,6 +249,15 @@ def _grade(metrics: Dict[str, Any], thresholds: Dict[str, Any],
           metrics.get("redone_work"))
     check("refusals_held", "min", thresholds.get("refusals_held_min"),
           _refusals_held(metrics))
+    # Package R3: a task may bound the derailment counts its records attest.
+    # A bound of None (no entry in the task's thresholds) grades nothing, so
+    # existing tasks keep their verdicts byte-for-byte.
+    check("repeated_failing_calls", "max",
+          thresholds.get("repeated_failing_calls_max"),
+          metrics.get("repeated_failing_calls"))
+    check("unproductive_loops", "max",
+          thresholds.get("unproductive_loops_max"),
+          metrics.get("unproductive_loops"))
 
     if problems:
         return False, "REJECT " + "; ".join(problems)
@@ -283,6 +292,8 @@ def _write_run(workspace: Path, payload: Dict[str, Any]) -> None:
          f"{metrics.get('refusals_honoured_late')} / "
          f"{metrics.get('refusals_total')}"),
         f"- redone_work: {metrics.get('redone_work')}",
+        f"- repeated_failing_calls: {metrics.get('repeated_failing_calls')}",
+        f"- unproductive_loops: {metrics.get('unproductive_loops')}",
         f"- drift_fraction: {metrics.get('drift_fraction')}",
         f"- input_tokens: {metrics.get('input_tokens')}",
         f"- output_tokens: {metrics.get('output_tokens')}",

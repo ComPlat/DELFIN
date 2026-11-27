@@ -267,6 +267,256 @@ def _memory_entry_chunk(title: str, rel: str, raw: str) -> str:
     return chunk
 
 
+# Words that ask rather than name. ``_tokenize``'s stopword list holds ten
+# function words; these are the question words and copulas that survive it, and
+# they are what let an unrelated note into a prompt: measured on the wave-43 m1
+# corpus, four of the ten tasks that NO stored memory applies to admitted a
+# memory body through exactly one such word — ``what`` (twice), ``are`` (twice).
+# A task and a note that share nothing but "what" do not share a subject, so
+# they must not share a prompt.
+#
+# Deliberately NOT a frequency list: the deciding memories in the same corpus
+# were admitted by ONE rare word each (``pdf``, ``figure``, ``machine``,
+# ``main``, ``single``, ``release``), eight of twenty. Dropping everything but
+# multi-word matches would have cut those eight real recalls to fix four leaks,
+# so the gate is about the CLASS of the word, never its count.
+_CLOSED_CLASS = frozenset({
+    # interrogatives
+    "what", "which", "who", "whom", "whose", "where", "when", "why", "how",
+    # copulas and auxiliaries
+    "are", "is", "was", "were", "am", "be", "been", "being", "do", "does",
+    "did", "can", "could", "will", "would", "shall", "should", "may",
+    "might", "need", "needs",
+    # bare pronouns and deixis
+    "it", "its", "they", "them", "their", "there", "here", "you", "your",
+    "we", "our", "his", "her", "some", "any",
+})
+
+
+def _topical_tokens(text: str) -> frozenset:
+    """``_tokenize`` minus the words that ask instead of name."""
+    try:
+        from .memory_store import _tokenize
+        return frozenset(_tokenize(text)) - _CLOSED_CLASS
+    except Exception:
+        return frozenset()
+
+
+# Two notes about one subject agree on nearly their whole phrasing, because the
+# second is a re-statement of the first.
+#
+# The bar is 0.6, and it is set by the WORSE of two measured populations -- not
+# by the same-subject pair alone, which is how 0.5 came to be and what let it
+# merge subjects that are merely written in the same SHAPE.
+#
+# Measured 2026-11-24 on the strings the loader actually hands this function
+# (titles read back from a store seeded through save_typed_memory), pairwise
+# Jaccard over the subject signature:
+#
+#   must NOT merge
+#     a1's five export codes ("The <subject> <noun> export code is <code>.
+#       Use it whenever …") -- the decoys a recall must still tell apart:
+#       0.500 and 0.533                                  max 0.533
+#     a2's sixteen unrelated pool subjects                   max 0.176
+#     a2's contradiction store, non-matching pairs           max 0.083
+#   must merge
+#     a2's s02, "The old environment of this project." against "The
+#       environment of this project today."                     0.714
+#
+# So the window is 0.533 < bar <= 0.714 and 0.6 sits in it with margin on both
+# sides. 0.5 was inside the a1 population (a five-subject store collapsed into
+# one prompt carrying a single code), and 0.8 is above the only pair that must
+# merge -- both measured, not guessed.
+#
+# Stopwords are KEPT in the signature: strip them and "the environment of this
+# project" vs "… today" agree on one word -- which is also all a note about a
+# port and a note about a branch agree on.
+_SUBJECT_SIMILARITY = 0.6
+
+#: Words that say WHEN a fact was learned, never WHICH fact it is.
+#
+# A title's phrasing carries two kinds of difference between two notes, and the
+# collapse must treat them oppositely:
+#
+#   a RECENCY word ("The old environment …" / "… today") -- the two titles name
+#     one subject and the later note states its current value. These MUST
+#     collapse; s02 above is the measured case.
+#   a SUBJECT word ("… for the gpu partition" / "… for the cpu partition") --
+#     the two titles name different subjects, and each answers a task the other
+#     does not. These must NOT collapse: measured on a two-note store, the
+#     collapse withheld the GPU answer from every task INCLUDING "Which
+#     partition do GPU jobs go to?", because 0.714 crossed the bar on titles
+#     that differ only in the one word that distinguishes them.
+#
+# The Jaccard bar cannot separate the two populations -- s02 and the gpu/cpu
+# pair sit at 0.714 and 0.714 -- so the separation is made on the CLASS of the
+# word, which is the same rule the relevance gate above already follows (a
+# closed-class word is not evidence). Listed in full rather than guessed at:
+# every entry says when, and none of them names a thing.
+_RECENCY_TOKENS = frozenset({
+    "old", "older", "oldest", "new", "newer", "newest",
+    "current", "currently", "now", "today", "yesterday",
+    "previous", "previously", "former", "formerly",
+    "latest", "recent", "recently", "originally", "initial", "initially",
+    "updated", "changed", "superseded", "replaced", "deprecated",
+    "finally", "still", "anymore",
+})
+
+
+def _subject_signature(title: str) -> frozenset:
+    """The words of a memory's subject, stopwords included.
+
+    The store's own slug rule decides what a subject is — the title, punctuated
+    into words — so this compares what the store names the note by, not a
+    paraphrase of it.
+    """
+    try:
+        from .memory_store import _normalise_text
+        return frozenset(t for t in re.findall(r"[^\W_]+",
+                                               _normalise_text(title))
+                         if len(t) >= 2)
+    except Exception:
+        return frozenset()
+
+
+def _same_subject(a: str, b: str) -> bool:
+    sa, sb = _subject_signature(a), _subject_signature(b)
+    if not sa or not sb:
+        return False
+    if _names_a_different_subject(sa, sb):
+        return False
+    return len(sa & sb) / len(sa | sb) >= _SUBJECT_SIMILARITY
+
+
+def _names_a_different_subject(sa: frozenset, sb: frozenset) -> bool:
+    """True when a word separates WHICH fact from WHEN it was learned.
+
+    Two titles that differ in a word outside ``_RECENCY_TOKENS`` name two
+    subjects, however much phrasing they share: ``gpu``/``cpu`` is the measured
+    case, and the Jaccard bar cannot see it because s02 sits at the same 0.714.
+
+    A title differing only in recency words still collapses -- that is the pair
+    the bar was measured on. And when BOTH sides carry a non-recency word the
+    other lacks, neither title is the other's restatement by construction.
+    """
+    only_a = sa - sb - _RECENCY_TOKENS
+    only_b = sb - sa - _RECENCY_TOKENS
+    return bool(only_a and only_b)
+
+
+def _created_at(raw: str) -> int:
+    """When this fact was LEARNED, from the file's own frontmatter.
+
+    Not ``updated_at``. ``record_memory_recall`` bumps ``updated_at`` for every
+    memory it injects (``memory_store.py:1930``), so that field says when a note
+    was last SHOWN. Measured in the corpus's s01 world: two contradictory notes
+    ended the run with the same ``updated_at`` (1795554204) because both were
+    injected — keyed on that field, a stale note that has already been recalled
+    would outrank the correction that supersedes it and the store would
+    permanently prefer the older fact.
+    """
+    try:
+        from .memory_store import _parse_frontmatter
+        meta, _ = _parse_frontmatter(raw)
+        return int(meta.get("created_at") or 0)
+    except Exception:
+        return 0
+
+
+def _supersede_note(rel: str, body: str) -> str:
+    """Name the note a shown note replaced — without restating its value.
+
+    The older file is named so the reader can still reach it, but its body is
+    deliberately NOT quoted: an early version of this line pasted the superseded
+    sentence in, and the superseded fact then travelled into the prompt inside
+    the very note meant to retire it, which is the leak this exists to close.
+    The subject is already in the file name; the value is the part that must not
+    come back.
+    """
+    return (f"[the store holds an older note on this subject, {rel}, now "
+            "superseded by the wording above. Its value is not repeated "
+            "here on purpose. /memories lists both; forget retires one.]")
+
+
+def _drop_superseded_subjects(entries: list) -> list:
+    """One note per subject: the newest fact, naming what it replaced.
+
+    Two notes that state different values for one subject were both injected,
+    side by side, with nothing on the page saying which the user meant (0 of 4
+    contradiction tasks in the wave-43 m1 corpus kept the superseded fact out).
+    The store's only supersede path is the in-place merge at body-Jaccard
+    >= 0.72, and a correction that changes ONE value never reaches it —
+    measured 0.333 for "The partition is shortq" against "Jobs go to the
+    partition named longq", since the two bodies differ exactly in the
+    contradicted value.
+
+    Nothing is deleted: the older file stays on disk, `/memories` and `forget`
+    still reach it, and the prompt names it. Withholding a subject silently
+    would be worse than showing both.
+
+    When two notes on one subject carry the SAME ``created_at`` the store cannot
+    tell which states the current fact, and no positional proxy substitutes for
+    it: measured in the corpus's s01 world, both notes were written inside one
+    second and the NEWER one sits EARLIER in MEMORY.md (line 21 against 22), so
+    index order, filename order and `updated_at` all disagree with the write
+    order there. In that case both facts are shown and the reader is told the
+    store cannot order them. Choosing one would be a guess wearing the prompt's
+    authority.
+    """
+    if len(entries) < 2:
+        return entries, {(e[1]): _topical_tokens(
+            f"{e[0]}\n{_memory_body_only(e[2])}") for e in entries}
+    groups: list[list[tuple]] = []        # one group per subject
+    for entry in entries:
+        title, rel, raw = entry
+        for group in groups:
+            if _same_subject(title, group[0][0]):
+                group.append(entry)
+                break
+        else:
+            groups.append([entry])
+
+    out = []
+    group_tokens: dict[str, frozenset] = {}
+    for group in groups:
+        # Relevance is a property of the SUBJECT, not of the one note that
+        # survives the collapse. Measured 2026-11-24 on the corpus's s02
+        # ("Which virtualenv do I install the dependencies into?"): the word
+        # "dependencies" sits in the SUPERSEDED note, so a per-note topical
+        # gate kept the stale claim and dropped the current one -- the exact
+        # inversion of what this collapse exists to prevent. A group is
+        # relevant if ANY note in it answers the task; what it then shows is
+        # still only the newest note, so the superseded value cannot ride in
+        # on the match that made the subject relevant.
+        tokens: frozenset = frozenset()
+        for entry in group:
+            tokens = tokens | _topical_tokens(
+                f"{entry[0]}\n{_memory_body_only(entry[2])}")
+        if len(group) == 1:
+            out.append(group[0])
+            group_tokens[group[0][1]] = tokens
+            continue
+        by_age = sorted(group, key=lambda e: _created_at(e[2]))
+        newest = _created_at(by_age[-1][2])
+        tied = [e for e in by_age if _created_at(e[2]) == newest]
+        if len(tied) > 1:
+            # Undecidable: show every tied note, say so, keep them all.
+            for entry in tied:
+                names = ", ".join(o[1] for o in tied if o is not entry)
+                out.append((entry[0], entry[1],
+                            f"{entry[2]}\n[two notes state this subject and "
+                            f"share a timestamp, so neither can be preferred: "
+                            f"see also {names}]"))
+                group_tokens[entry[1]] = tokens
+            continue
+        winner = by_age[-1]
+        notes = [_supersede_note(o[1], o[2]) for o in by_age[:-1]]
+        out.append((winner[0], winner[1],
+                    f"{winner[2]}\n" + "\n".join(notes)))
+        group_tokens[winner[1]] = tokens
+    return out, group_tokens
+
+
 # The index is a pointer list: one line per memory carrying the first ~160
 # characters of it. It used to be appended in full BEFORE any cap was
 # tested, so with the shipped prune caps (~650 files across the two stores,
@@ -278,6 +528,27 @@ def _memory_entry_chunk(title: str, rel: str, raw: str) -> str:
 _MEMORY_INDEX_BUDGET_SHARE = 0.35
 _MEMORY_INDEX_MIN_CHARS = 300
 
+# How relevant an entry must be RELATIVE TO THE BEST ONE to be recalled.
+#
+# ``score > 0`` was the gate and it is not one: BM25 gives a non-zero score
+# for every word two texts share, and memories about one subject share their
+# boilerplate. Measured 2026-11-24 on a five-memory store whose sentences all
+# have one shape ("The <subject> <noun> export code is <code>. Use it
+# whenever …"): the memory that answered the task scored 2.80, the four about
+# other subjects scored 0.085-0.090 — a factor of 31, all of them over zero,
+# so all five entered the prompt. Across 30 tasks the answering memory
+# reached the prompt 20 times and each prompt carried four or five codes the
+# answer must not be: a model given five export codes and nothing saying
+# which is current has been asked an unanswerable question, whatever it
+# guesses.
+#
+# A tenth is deliberately loose. A memory that genuinely shares the task's
+# subject lands within a factor of a few of the best match; one that shares
+# only "export", "code" and "is" lands two orders of magnitude below. The
+# rule is relative, so it does not depend on store size the way an absolute
+# cutoff would (BM25's idf grows with N).
+_RELATIVE_RELEVANCE_FLOOR = 0.1
+
 # HARD ceiling for the whole injected memory block, preamble included
 # (package 7). Measured 2026-09-27: real stores inject 1014-1743 chars,
 # so the cap never touches everyday recall — it is the ceiling a
@@ -287,7 +558,28 @@ _MEMORY_INDEX_MIN_CHARS = 300
 # callers' own ``max_chars`` in force.
 MEMORY_CONTEXT_HARD_CAP = 3600
 
-_INDEX_POINTER_RE = re.compile(r"\[[^\]]+\]\(([^)]+\.md)\)")
+_INDEX_POINTER_RE = re.compile(r"\[[^\]]+\]\(([^)]+\.md)\)", re.IGNORECASE)
+
+#: The "how many did not fit" line this module (and its sibling) appends. There
+#: are TWO writers -- ``_fit_memory_index`` when the index is too long and
+#: ``_filter_memory_index`` when pointers are withheld -- and a chunk can pass
+#: through both, so the pattern has to be recognisable, not just writable.
+_INDEX_COUNT_RE = re.compile(r"\.\.\. and \d+ more memor", re.IGNORECASE)
+
+
+def _pointer_name(target: str) -> str:
+    """The file name a pointer line names, normalised for comparison.
+
+    Case-insensitive and path-tolerant on purpose. The store writes one
+    canonical spelling (a bare, lowercase ``.md`` name), so any OTHER spelling
+    can only come from a hand-edited ``MEMORY.md`` -- and for an index gate the
+    safe default is "unrecognised still points at a note", never "unrecognised
+    is therefore safe to keep". Measured before this: a withheld note spelled
+    ``withheld.MD`` was read as "not a pointer" and its line kept, while the
+    same note spelled ``withheld.md`` was correctly dropped.
+    """
+    return (str(target or "").strip().replace("\\", "/")
+            .rsplit("/", 1)[-1].lower())
 
 
 def _fit_memory_index(
@@ -311,14 +603,23 @@ def _fit_memory_index(
     for line in lines[1:]:
         match = _INDEX_POINTER_RE.search(line)
         if match is not None:
-            pointers.setdefault(match.group(1).strip(), line)
+            pointers.setdefault(_pointer_name(match.group(1)), line)
             continue
         stripped = line.strip()
         if stripped and not stripped.startswith("#"):
+            if _INDEX_COUNT_RE.match(stripped):
+                # A count line an EARLIER trim wrote. This function writes its
+                # own while it cuts, so keeping the old one would put two
+                # numbers for one store into the prompt -- measured: "... and
+                # 9 more" survived ahead of the pointers and beside the live
+                # "... and 2 more". It is also not the thing the branch below
+                # protects: that is a fact typed straight into MEMORY.md.
+                continue
             # A fact the user typed straight into MEMORY.md — it has no file
             # of its own, so dropping it drops the fact itself.
             loose.append(line)
-    order = [rel for rel in ranked_rels if rel in pointers]
+    order = [_pointer_name(rel) for rel in ranked_rels
+             if _pointer_name(rel) in pointers]
     order += [rel for rel in pointers if rel not in set(order)]
 
     kept = [label]
@@ -336,6 +637,43 @@ def _fit_memory_index(
             f"... and {hidden} more memories, not listed here — ask about a "
             "subject to have its memory recalled")
     return "\n".join(kept)
+
+
+def _filter_memory_index(
+    index_chunk: str, kept_rels: list[str], *, dropped: int,
+) -> str:
+    """Drop the pointer lines of memories the ranking withheld.
+
+    Input: the MEMORY.md chunk, the ``file.md`` names that survived
+    relevance ranking, and how many were dropped. Output: the same chunk
+    without their ``[Title](file.md)`` lines, with a count of what was
+    withheld.
+
+    Why this exists at all: every index line repeats the first 160
+    characters of its memory — the hook — so the index is a second copy of
+    the bodies and was handing the model text the body filter had just
+    rejected. Measured 2026-11-24 across 30 tasks: with the bodies filtered
+    and the index left whole, every prompt still carried four or five codes
+    the answer must not be.
+
+    A fact typed straight into MEMORY.md (no ``file.md`` of its own) is
+    KEPT: it has no body to rank, so dropping it would drop the fact.
+    Headings, blanks and the section structure are kept as written.
+    """
+    if dropped <= 0:
+        return index_chunk
+    keep = {_pointer_name(rel) for rel in kept_rels}
+    lines = index_chunk.splitlines()
+    out: list[str] = []
+    for line in lines:
+        match = _INDEX_POINTER_RE.search(line)
+        if match is not None and _pointer_name(match.group(1)) not in keep:
+            continue
+        out.append(line)
+    kept_text = "\n".join(out).rstrip()
+    return (kept_text
+            + f"\n... and {dropped} more memories, not listed here — ask "
+              "about a subject to have its memory recalled")
 
 
 def _has_body(markdown: str) -> bool:
@@ -619,10 +957,20 @@ class PromptLoader:
                 pass
             entries.append((title, rel, body))
 
+        # One subject, one fact: collapse notes that restate the same subject
+        # with different values BEFORE anything competes for the budget. Order
+        # matters here -- measured on the corpus's s02 task ("Which virtualenv
+        # do I install the dependencies into?"), the word "dependencies" sits in
+        # the SUPERSEDED note, which wins the ranking 2.48 to 0.00. Ranking
+        # first and filtering after would therefore keep the stale claim on a
+        # tie-break nobody chose.
+        entries, subject_tokens = _drop_superseded_subjects(entries)
+
         # Spend the char budget on what THIS task needs: BM25-rank the
         # entries against the task text. Stable sort keeps MEMORY.md order
         # for ties and for tasks with no query tokens (all scores 0).
-        if task_text and len(entries) > 1:
+        kept_by_relevance: int | None = None
+        if task_text and entries:
             try:
                 from .memory_store import bm25_scores
                 scores = bm25_scores(
@@ -637,15 +985,115 @@ class PromptLoader:
                 # context and recall_episodes both already gate on score > 0;
                 # this path is the one that did not.
                 #
-                # Only filter when the query actually matched something. A
-                # task whose words appear in no memory scores 0 across the
-                # board, and dropping everything there would be worse than
-                # falling back to MEMORY.md order.
-                if any(scores[i] > 0 for i in range(len(entries))):
-                    order = [i for i in order if scores[i] > 0]
-                entries = [entries[i] for i in order]
+                # ``score > 0`` is not a gate, measured 2026-11-24 on a
+                # five-memory store of identical sentence shape: the note
+                # that answers the task scored 2.80 and the four notes about
+                # other subjects scored 0.085-0.090, because every one of
+                # them shares "export", "code" and "is". All five were over
+                # zero, so all five were injected, and a prompt carrying five
+                # export codes and no statement of which is current does not
+                # answer the question -- 30 of 30 tasks carried a code the
+                # answer must not be, while the right one was present in
+                # 20 of 20. A match that is a FORTIETH of the best one is
+                # the shared boilerplate, not the subject. Entries are kept
+                # when they reach a tenth of the best score (scaled for
+                # store size, since BM25's idf grows with N): the answering
+                # note keeps its own, a note about a neighbouring subject
+                # does not ride in on the words they have in common.
+                #
+                # Only filter when the query actually matched something, and
+                # then gate each survivor on a shared TOPICAL word. The
+                # all-zero fallback this replaces ("falling back to MEMORY.md
+                # order") was itself the leak: measured on the wave-43 m1
+                # corpus, of ten tasks no stored memory applies to, none kept
+                # every body out -- six unrelated notes went in for a task
+                # about sorting a list. What the model is left with there is
+                # the COUNT line from _filter_memory_index ("... and N more
+                # memories, not listed here"), not a subject: a pointer line
+                # repeats the note's first 160 characters, and on a store
+                # written through save_typed_memory that repetition IS the
+                # value. Measured: the store's title for "The partition jobs
+                # are submitted to. / Queue shortq…" is the note's own first
+                # 160 characters, so a pointer kept for a withheld note hands
+                # back the fact the gate just rejected. "A note exists" is
+                # therefore said by the count alone; the subject is NOT named,
+                # and that is the price this gate accepts.
+                #
+                # A score threshold alone cannot do this job: eight of the
+                # twenty deciding memories were admitted by exactly ONE rare
+                # word (pdf, figure, machine, main, single, release), while the
+                # leaks scored INSIDE that band. The discriminator is the
+                # CLASS of the matched word, not its rarity or its count --
+                # `_topical_tokens` drops the question words and copulas
+                # ("what", "are", "is") that let an unrelated note in.
+                best = max(scores) if scores else 0.0
+                if best > 0:
+                    floor = best * _RELATIVE_RELEVANCE_FLOOR
+                    order = [i for i in order if scores[i] >= floor]
+                query = _topical_tokens(task_text)
+                if domain and domain != "code":
+                    # An explicitly filed, non-default domain is the user's own
+                    # statement that this store's facts belong to this kind of
+                    # work, and the domain gate already enforced it. Measured
+                    # 2026-11-24: the lexical gate then dropped the office
+                    # store's own convention for the office task "prepare the
+                    # reminders" (the note says "Mahnung.docx", the task does
+                    # not -- a German/English gap, not an irrelevant note),
+                    # turning test_office_memory's three reach-the-prompt cases
+                    # red. "code" is the fallback every unfiled memory gets, so
+                    # it carries no such signal and is gated like an unfiled
+                    # store.
+                    kept_by_relevance = None
+                elif not query:
+                    # No content words at all ("What is it?"): nothing can
+                    # share a subject, so show no facts (the pointer count
+                    # below still says the store is there).
+                    kept_by_relevance = len(entries)
+                    entries = []
+                else:
+                    order = [i for i in order
+                             if query & subject_tokens.get(
+                                 entries[i][1], frozenset())]
+                    kept_by_relevance = len(entries) - len(order)
+                    entries = [entries[i] for i in order]
+                # How many pointers the ranking withheld. Computed whenever the
+                # gate ran, NOT only when something scored: a task the store
+                # answers nothing about has best == 0, and leaving the index
+                # unfiltered there was the last channel by which a withheld
+                # fact still reached the model (its pointer line repeats its
+                # first 160 characters). Measured 2026-11-24: with the body
+                # gate working, the pointer of the very note it had just
+                # rejected was still the only memory line in the prompt.
+                # ``None`` means the index must be left as written: either no
+                # ranking ran at all (empty task_text), or the relevance
+                # decision was the domain gate's and the pointers belong to
+                # notes that passed it.
             except Exception:
                 pass
+        # The pointer list is a recall channel of its own: every
+        # ``- [title](file.md) — hook`` line repeats the first 160 characters
+        # of a memory, so an unfiltered index hands the model the DECOY's
+        # code even when its body was correctly dropped above. Measured
+        # 2026-11-24: filtering the bodies alone left 30 of 30 prompts
+        # carrying a code the answer must not be, because the index is
+        # injected whole whenever it fits its share of the budget.
+        #
+        # Only the entries that survived ranking keep a pointer, plus the
+        # count of what was withheld so the model knows the store is larger
+        # than what it can see (the same wording _fit_memory_index uses).
+        #
+        # This runs whenever ``query`` is non-empty -- INCLUDING ``best == 0``,
+        # where nothing matched at all. An earlier version of this comment said
+        # the index "stays as written" when nothing matched; that describes the
+        # opposite of what runs, and it was never true after the pointer gate
+        # went in. The case where the index really is left alone is
+        # ``kept_by_relevance is None``: no ranking ran (empty task_text), or an
+        # explicitly filed non-default domain made the relevance decision the
+        # domain gate's and the pointers belong to notes that passed it.
+        if kept_by_relevance is not None:
+            index_text = _filter_memory_index(
+                index_text, [rel for _t, rel, _b in entries],
+                dropped=kept_by_relevance)
         return f"# {label}\n{index_text.strip()}", entries
 
     def _load_external_memory_context(

@@ -101,7 +101,7 @@ def test_two_module_workflow_with_sample_handover(lab):
     assert rec["manifest"]["checksum"] == manifest.checksum
     assert rec["fair"]["identifier"].endswith(":run-1")
     assert any(r.get("event") == "intent" for r in rec["device_log"])
-    chem = json.loads((run_dir("run-1") / "chemotion_export.json").read_text())
+    chem = json.loads((run_dir("run-1") / "chemotion_import.json").read_text())
     assert chem["samples"][0]["analyses"][0]["value"] == 0.42
     assert chem["unverified"]
 

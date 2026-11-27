@@ -156,6 +156,80 @@ def format_text(data: dict) -> str:
     return "\n".join(lines)
 
 
+def format_roles(report: dict[str, dict[str, Any]]) -> str:
+    """Render ``role_tool_surface_report``: what each role costs to offer.
+
+    The listing above says what a session is offered. This says what that
+    costs, and what the role scoping buys: every row is compared with the
+    unrestricted baseline ``""``, so "office_agent saves N tools and M
+    schema tokens" is a measurement rather than an assertion.
+    """
+    base = report.get("", {})
+    base_count = int(base.get("count", 0) or 0)
+    base_tokens = int(base.get("total_tokens", 0) or 0)
+    header = f"{'role':<22}{'tools':>7}{'tokens':>9}{'saves':>8}{'tok saved':>11}"
+    lines = [
+        "Tool surface per role, with the unrestricted baseline first:",
+        header,
+        "-" * len(header),
+    ]
+    # The baseline first, then the scoped roles cheapest-surface first: the
+    # question a reader has is "which role offers least", not alphabetical.
+    ordered = [""] + sorted(
+        (r for r in report if r != ""),
+        key=lambda r: (int(report[r].get("total_tokens", 0) or 0), r),
+    )
+    for role in ordered:
+        row = report[role]
+        count = int(row.get("count", 0) or 0)
+        tokens = int(row.get("total_tokens", 0) or 0)
+        if role == "":
+            lines.append(
+                f"{'(unrestricted)':<22}{count:>7}{tokens:>9}{'--':>8}{'--':>11}")
+            continue
+        lines.append(
+            f"{role:<22}{count:>7}{tokens:>9}"
+            f"{base_count - count:>8}{base_tokens - tokens:>11}")
+    return "\n".join(lines)
+
+
+def collect_roles(
+    roles: list[str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """The per-role advertised surface and its schema-token cost.
+
+    A thin, documented door onto ``api_client.role_tool_surface_report`` so
+    this module's entry point reaches it by CALL rather than by import: the
+    report is the product's own answer to "what does role scoping save",
+    and until now nothing a person could run printed it.
+
+    ``defer=False`` is passed explicitly because the question here is what
+    each role can CALL, not what ships on a request; see that function's
+    docstring for the measured reason the default had to stay put.
+
+    THE ROLE LIST IS BROADER THAN THE REPORT'S DEFAULT ONE. With ``roles``
+    left as ``None`` the report enumerates only ``_ROLE_EXEC_ALLOWLIST`` and
+    ``_ROLE_EXEC_DENYLIST`` -- 7 roles. But ``_role_allowlist``, which is
+    what actually refuses a tool at the execution call site, also answers
+    for every subagent preset carrying a ``tools:`` line: 17 more, so 19
+    restricted roles in all. A table built from the report's default
+    therefore showed 8 of them and left a reader to conclude the other 11
+    were unrestricted. Naming them here rather than widening the report's
+    default keeps ``test_the_office_role_appears_in_the_surface_report``
+    and every other existing caller measuring what they measured before.
+    """
+    from .api_client import (_ROLE_EXEC_ALLOWLIST, _ROLE_EXEC_DENYLIST,
+                             _role_allowlist, role_tool_surface_report)
+    from .subagents import SUBAGENT_PRESETS
+
+    if roles is None:
+        roles = ["", *sorted(
+            set(_ROLE_EXEC_ALLOWLIST) | set(_ROLE_EXEC_DENYLIST)
+            | {r for r in SUBAGENT_PRESETS if _role_allowlist(r) is not None})]
+    return role_tool_surface_report(roles, defer=False)
+
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Which tools does the agent never use?")
@@ -165,7 +239,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--trace-root", default=None,
         help="Read traces from this directory instead of the local store")
+    parser.add_argument(
+        "--roles", action="store_true",
+        help="Print the advertised tool surface and schema-token cost per "
+             "role, against the unrestricted baseline, instead of the usage "
+             "table")
     args = parser.parse_args(argv)
+    if args.roles:
+        print(format_roles(collect_roles()))
+        return 0
     data = collect(
         since_s=(args.since_hours * 3600.0
                  if args.since_hours is not None else None),

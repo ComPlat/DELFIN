@@ -29,9 +29,53 @@ def test_plan_maps_to_plan_preset():
     assert "subagent_type='plan'" in out
 
 
-def test_delegate_defaults_to_general_purpose():
+def test_delegate_names_a_specialist_and_labels_it_a_suggestion():
+    """CHANGED ON PURPOSE (wave 43 s1) — because the TEST asserted the
+    defect, not a contract.
+
+    It read ``test_delegate_defaults_to_general_purpose`` and asserted
+    ``general-purpose`` for the text "run the benchmark and summarise".
+    The text names work one specialist's own description claims, and the
+    assertion held for EVERY possible text: /delegate was a constant, which
+    is exactly what the labelled set measured
+    (tests/fixtures/specialist_routing_w43s1.yaml: 28 of 30 requests
+    reached the same row, accuracy 0.067 on 41fbf18e2). Pinning a constant
+    is pinning the thing this package exists to remove.
+
+    What is pinned now is the contract, not one scorer's opinion about a
+    debatable row: the directive names a registered preset, it says the
+    choice was a SUGGESTION rather than the user's own naming, and the
+    user's text survives into the briefing. Which specialist a debatable
+    request deserves is measured by the matrix, not asserted here.
+    """
     out = builtin_subagent_command("delegate", "run the benchmark and summarise")
+    assert "subagent_type='" in out
+    assert "suggest" in out.lower(), (
+        "a specialist the user did not name must arrive labelled a "
+        "suggestion, or a wrong pick is indistinguishable from a wish")
+    assert "run the benchmark and summarise" in out
+
+
+def test_a_request_with_one_clear_owner_is_not_left_with_the_catch_all():
+    """The falsifiable half: a request whose cue names exactly one
+    specialist must not be answered with the preset whose own description
+    says it is for when no narrower one fits.
+
+    FALSIFIED on the base (which answers general-purpose to everything)
+    and falsified by any scorer that ranks the catch-all first.
+    """
+    out = builtin_subagent_command(
+        "delegate",
+        "Find all callers of parse_control and tell me where it is defined.")
+    assert "subagent_type='explore'" in out, out[:200]
+    assert "suggest" in out.lower()
+
+
+def test_delegate_falls_back_to_general_purpose_and_says_why():
+    """The default still exists — it is no longer silent."""
+    out = builtin_subagent_command("delegate", "Mach das bitte schnell.")
     assert "subagent_type='general-purpose'" in out
+    assert "no specialist" in out.lower() or "unsure" in out.lower(), out[:250]
 
 
 def test_delegate_with_explicit_type():

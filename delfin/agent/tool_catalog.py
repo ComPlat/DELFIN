@@ -49,8 +49,9 @@ def _subagent_description() -> str:
     else:
         what = "Every type is read-only."
     return ("Delegate a self-contained task to an isolated sub-agent; "
-            "returns one summary. " + what + " Caps: "
-            + _subagent_caps_phrase() + ".")
+            "returns one summary. " + what
+            + " resume_id resumes a finished run."
+            + " Caps: " + _subagent_caps_phrase() + ".")
 
 
 def refresh_subagent_tool() -> None:
@@ -445,6 +446,43 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                 "properties": {"steps": {"type": "array",
                                          "items": {"type": "object"}}},
                 "required": ["steps"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "lab_run",
+            "description": (
+                "A whole lab workflow {id, samples, steps}: judged against the "
+                "pinned manifest, then run by the coordinator. dry_run=true "
+                "(the default) writes nothing. A hazardous step stops the run "
+                "for a person's approval: it answers status=waiting_approval "
+                "and the request id."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "workflow": {
+                        "type": "object",
+                        "description": (
+                            "{id, samples: {sid: {container, module, position}}, "
+                            "steps: [{id, op: set|wait|transfer|measure, ...}]}"
+                        ),
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "the workflow document, when not inline",
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "true (default): judge only, no write",
+                    },
+                    "run_id": {
+                        "type": "string",
+                        "description": "names the run record; one is generated",
+                    },
+                },
             },
         },
     },
@@ -2114,8 +2152,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "resume_id": {
                         "type": "string",
                         "description": (
-                            "sa_id of a FINISHED subagent to continue with "
-                            "its context replayed."
+                            "Finished run's sa_id."
                         ),
                     },
                     "output_schema": {

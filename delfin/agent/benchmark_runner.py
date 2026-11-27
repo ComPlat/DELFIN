@@ -1148,7 +1148,8 @@ def _run_task_once(
             # here. A check that ran afterwards would find the fixture.
             if task.verify:
                 verify_ok, verify_output = run_acceptance(
-                    task.verify, _ws, root=Path(os.getcwd()))
+                    task.verify, _ws, root=Path(os.getcwd()),
+                    task_id=task.id)
     except _SetupFailed as exc:
         # Passed through verbatim: the prefix is what marks the attempt
         # unmeasured, and wrapping it in "_run_once raised" would hide it
@@ -1188,6 +1189,16 @@ def _run_task_once(
 # packaged benchmark directory so a task cannot name a path outside it.
 _ACCEPTANCE_DIR = Path("delfin") / "agent" / "pack" / "benchmark" / "accept"
 _ACCEPTANCE_TIMEOUT_S = 120
+
+# Several tasks share one acceptance script, and the setup/acceptance
+# contract allows exactly one argument (the workspace), so the task being
+# scored is handed over in the environment instead. Measured 2026-11-26: the
+# ten r3 long tasks all name ``r3long_accept.py``, so every run of any of
+# them was graded against all ten fixtures -- a model that finished its own
+# task was rejected over nine it had never seen, and completion could not
+# rise above zero. Name chosen to match the benchmark's own vocabulary; an
+# acceptance script that does not read it is unaffected.
+BENCH_TASK_ID_ENV = "DELFIN_BENCH_TASK_ID"
 
 
 def acceptance_path(name: str, root: Path | str | None = None) -> Path:
@@ -1273,7 +1284,7 @@ def setup_path(name: str, root: Path | str | None = None) -> Path:
     return candidate
 
 
-def _child_env(root: Path | str | None) -> dict:
+def _child_env(root: Path | str | None, task_id: str | None = None) -> dict:
     """The environment a setup or acceptance script runs in: the tree
     under test first on the import path.
 
@@ -1285,12 +1296,24 @@ def _child_env(root: Path | str | None) -> dict:
     benchmarked. Observed 2026-09-10: a self-check that passed on the
     tree failed under the suite, because the child imported an older
     checkout's indexer and the record it built had no outcome.
+
+    ``task_id`` is exported as ``DELFIN_BENCH_TASK_ID`` because several
+    tasks share one acceptance script and the script cannot otherwise
+    tell which one is being scored. It is an ENVIRONMENT variable and not
+    a second argument on purpose: the setup/acceptance contract is
+    "exactly one argument", and at least one script
+    (``lh_metrics_accept.py``) enforces that. An explicit ``task_id``
+    overrides whatever the parent had; with none, the parent environment
+    passes through unchanged, so a caller that sets the variable itself is
+    honoured rather than overruled.
     """
     env = dict(os.environ)
     base = str(Path(root).resolve() if root else Path(os.getcwd()).resolve())
     prior = env.get("PYTHONPATH", "")
     parts = [base] + [p for p in prior.split(os.pathsep) if p and p != base]
     env["PYTHONPATH"] = os.pathsep.join(parts)
+    if task_id:
+        env[BENCH_TASK_ID_ENV] = str(task_id)
     return env
 
 
@@ -1331,8 +1354,17 @@ def run_setup(
 
 def run_acceptance(
     name: str, workspace: Path | str, *, root: Path | str | None = None,
+    task_id: str | None = None,
 ) -> tuple["Optional[bool]", str]:
     """Run one acceptance script against *workspace*.
+
+    ``task_id`` names the task being scored and is handed to the script in
+    ``DELFIN_BENCH_TASK_ID``. It is NOT a command-line argument: the
+    contract for these scripts is exactly one argument (the workspace), and
+    ``lh_metrics_accept.py`` rejects anything else. Omitting it keeps the
+    script's own whole-suite default, which is what the r3 gate test asks
+    for; a caller that knows which task it is scoring should pass it, or a
+    suite of tasks sharing one script cannot be scored per task.
 
     Returns ``(ok, output)``. ``ok`` is None when the script could not be
     run at all -- missing, or it timed out -- which the scorer reads as
@@ -1351,7 +1383,7 @@ def run_acceptance(
             capture_output=True, text=True,
             timeout=_ACCEPTANCE_TIMEOUT_S,
             cwd=str(workspace),
-            env=_child_env(root),
+            env=_child_env(root, task_id=task_id),
         )
     except subprocess.TimeoutExpired:
         return None, (
