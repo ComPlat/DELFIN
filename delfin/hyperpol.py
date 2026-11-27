@@ -723,7 +723,17 @@ def run_cli(argv: list[str]) -> int:
     parser.add_argument("--parallel-jobs", type=int, default=1, help="Number of molecule workflows to run in parallel.")
     parser.add_argument("--maxcore", type=int, default=1000, help="Memory per core in MB for pool scheduling.")
     parser.add_argument("--json-out", help="Optional JSON summary path.")
+    parser.add_argument(
+        "--recalc",
+        action="store_true",
+        help="Recalc mode: keep finished stages instead of computing them again.",
+    )
     args = parser.parse_args(argv)
+
+    if args.recalc:
+        from delfin.cli import _enter_recalc_mode
+
+        _enter_recalc_mode()
 
     try:
         wavelengths_nm = _load_wavelengths(
