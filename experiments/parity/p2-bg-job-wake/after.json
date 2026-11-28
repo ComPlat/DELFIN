@@ -1,0 +1,310 @@
+{
+  "package": "p2-bg-job-wake",
+  "label": "after-int",
+  "command": "PYTHONPATH=. python experiments/parity/p2-bg-job-wake/scenario.py --all --label <label> --out <this file>",
+  "entry_point": "cli.main([...]): delfin-agent chat -p ... --output-format stream-json, delfin-agent run, delfin-agent chat",
+  "n_variants": 13,
+  "tally": {
+    "REACHED": 13,
+    "USED": 10,
+    "CORRECT": 5
+  },
+  "rows": [
+    {
+      "variant": "headless_job_wait_zero",
+      "REACHED": true,
+      "USED": false,
+      "CORRECT": false,
+      "problems": [],
+      "promised": "--job-wait 0 ends with the answer and stops the shells",
+      "measured": {
+        "rc": 0,
+        "wall_s": 4.88,
+        "model_calls": 2,
+        "wake_turns": 0,
+        "waited": false,
+        "gave_up": false,
+        "bound_named": null,
+        "argparse_rejected": false,
+        "stderr_tail": "limits     unattended run: stops at 8 h of wall clock, 200 turns (agent.unattended_budget; a flag or agent.run_budget_* replaces one, 0 lifts it; an auto-mode run or loop widens th",
+        "job_id": "fcb85c9b",
+        "job_pid": 86,
+        "wake_names_job": false,
+        "notice_latency_s": null,
+        "job_alive_after_run": false,
+        "job_stopped": true
+      }
+    },
+    {
+      "variant": "headless_job_wait_bounded",
+      "REACHED": true,
+      "USED": true,
+      "CORRECT": false,
+      "problems": [
+        "noticed the job 29.46 s after it ended, promised <= 8.0 s"
+      ],
+      "promised": "a job that ends 1 s after the answer wakes exactly one turn that names it, noticed within seconds of the job ending",
+      "measured": {
+        "rc": 0,
+        "wall_s": 33.52,
+        "model_calls": 3,
+        "wake_turns": 1,
+        "waited": true,
+        "gave_up": false,
+        "bound_named": 45,
+        "argparse_rejected": false,
+        "stderr_tail": "request-head invariants broken: ['stable row after the shared prefix at row 6 (role_prompt) \u2014 the prefix cache cannot reach it']",
+        "job_id": "57b44612",
+        "job_pid": 224,
+        "wake_names_job": true,
+        "notice_latency_s": 29.46,
+        "job_alive_after_run": false,
+        "job_stopped": true
+      }
+    },
+    {
+      "variant": "headless_default_wakes",
+      "REACHED": true,
+      "USED": true,
+      "CORRECT": true,
+      "problems": [],
+      "promised": "the default keeps the run up and wakes on the job",
+      "measured": {
+        "rc": 0,
+        "wall_s": 33.53,
+        "model_calls": 3,
+        "wake_turns": 1,
+        "waited": true,
+        "gave_up": false,
+        "bound_named": 3600,
+        "argparse_rejected": false,
+        "stderr_tail": "request-head invariants broken: ['stable row after the shared prefix at row 6 (role_prompt) \u2014 the prefix cache cannot reach it']",
+        "job_id": "79e15b7e",
+        "job_pid": 398,
+        "wake_names_job": true,
+        "notice_latency_s": 29.58,
+        "job_alive_after_run": false,
+        "job_stopped": true
+      }
+    },
+    {
+      "variant": "headless_bound_is_honoured",
+      "REACHED": true,
+      "USED": true,
+      "CORRECT": false,
+      "problems": [
+        "held the run 33.05 s, promised <= 20.0 s"
+      ],
+      "promised": "--job-wait 5 holds the run about 5 s and says it ended the wait",
+      "measured": {
+        "rc": 0,
+        "wall_s": 33.05,
+        "model_calls": 3,
+        "wake_turns": 1,
+        "waited": true,
+        "gave_up": true,
+        "bound_named": 5,
+        "argparse_rejected": false,
+        "stderr_tail": "[run] still waiting for a background job after 5 s; the run ends now and stops its background shells (--job-wait sets the limit).",
+        "job_id": "5e47959f",
+        "job_pid": 572,
+        "wake_names_job": false,
+        "notice_latency_s": -29.44,
+        "job_alive_after_run": false,
+        "job_stopped": true
+      }
+    },
+    {
+      "variant": "run_job_wait_zero",
+      "REACHED": true,
+      "USED": false,
+      "CORRECT": false,
+      "problems": [],
+      "promised": "control: the run door already answers this",
+      "measured": {
+        "rc": 0,
+        "wall_s": 3.19,
+        "model_calls": 2,
+        "wake_turns": 0,
+        "waited": false,
+        "gave_up": false,
+        "bound_named": null,
+        "argparse_rejected": false,
+        "stderr_tail": "limits     unattended run: stops at 8 h of wall clock, 200 turns (agent.unattended_budget; a flag or agent.run_budget_* replaces one, 0 lifts it; an auto-mode run or loop widens th",
+        "job_id": "2d6dc17f",
+        "job_pid": 726,
+        "wake_names_job": false,
+        "notice_latency_s": null,
+        "job_alive_after_run": false,
+        "job_stopped": true
+      }
+    },
+    {
+      "variant": "run_job_wait_bounded",
+      "REACHED": true,
+      "USED": true,
+      "CORRECT": false,
+      "problems": [
+        "noticed the job 29.62 s after it ended, promised <= 8.0 s"
+      ],
+      "promised": "the same promise on the run door: one wake turn that names the job, noticed within seconds",
+      "measured": {
+        "rc": 0,
+        "wall_s": 33.99,
+        "model_calls": 3,
+        "wake_turns": 1,
+        "waited": true,
+        "gave_up": false,
+        "bound_named": 45,
+        "argparse_rejected": false,
+        "stderr_tail": "request-head invariants broken: ['stable row after the shared prefix at row 6 (role_prompt) \u2014 the prefix cache cannot reach it']",
+        "job_id": "32a01684",
+        "job_pid": 844,
+        "wake_names_job": true,
+        "notice_latency_s": 29.62,
+        "job_alive_after_run": false,
+        "job_stopped": true
+      }
+    },
+    {
+      "variant": "parser_chat_rejects",
+      "REACHED": true,
+      "USED": true,
+      "CORRECT": true,
+      "problems": [],
+      "promised": "chat -p IS run, so the bound it forwards must parse on this door too",
+      "measured": {
+        "rc": 3,
+        "stderr": "ERROR: engine init failed: stop-here",
+        "engine_stopped": false,
+        "argparse_rejected": false,
+        "argparse_message": "",
+        "job_wait_on_namespace": 0,
+        "names_dash_p": false
+      }
+    },
+    {
+      "variant": "parser_chat_interactive",
+      "REACHED": true,
+      "USED": false,
+      "CORRECT": false,
+      "problems": [
+        "names_dash_p=False, promised True"
+      ],
+      "promised": "an interactive session has no one answer to bound (its jobs wake at the idle prompt), so the flag must parse and SAY it cannot deliver here, naming -p -- the way --output-format does at cli.py:2807",
+      "measured": {
+        "rc": 3,
+        "stderr": "ERROR: engine init failed: stop-here",
+        "engine_stopped": false,
+        "argparse_rejected": false,
+        "argparse_message": "",
+        "job_wait_on_namespace": 0,
+        "names_dash_p": false
+      }
+    },
+    {
+      "variant": "parser_run_takes_it",
+      "REACHED": true,
+      "USED": true,
+      "CORRECT": true,
+      "problems": [],
+      "promised": "control: already true on the base tree",
+      "measured": {
+        "rc": 3,
+        "stderr": "ERROR: engine init failed: stop-here",
+        "engine_stopped": false,
+        "argparse_rejected": false,
+        "argparse_message": "",
+        "job_wait_on_namespace": 0,
+        "names_dash_p": false
+      }
+    },
+    {
+      "variant": "notice_shell_ok",
+      "REACHED": true,
+      "USED": true,
+      "CORRECT": false,
+      "problems": [
+        "names_output=False, promised True"
+      ],
+      "promised": "the notice says how it ended AND where its output is, as the in-turn notice already does",
+      "measured": {
+        "text": "[watch \u2014 a system event, not the user] A job you were watching has finished:\n- shell 248c311e [ok] python -c 'import time; time.sleep(0.1)'\n\nNobody typed this; the job watcher put it here because you asked to be told. Say what the result means for the work it was waiting on. If it failed, name the cause from the evidence before proposing a fix.",
+        "emitted": true,
+        "names_job": true,
+        "state_words": [
+          "ok"
+        ],
+        "names_output": false,
+        "n_rows": 1
+      }
+    },
+    {
+      "variant": "notice_shell_failed",
+      "REACHED": true,
+      "USED": true,
+      "CORRECT": false,
+      "problems": [
+        "names_output=False, promised True"
+      ],
+      "promised": "a failed job says which code it ended with and where to read it",
+      "measured": {
+        "text": "[watch \u2014 a system event, not the user] A job you were watching has finished:\n- shell 8ab11543 [exit 3] python -c 'import time, sys; time.sleep(0.3); sys.exit(3)'\n\nNobody typed this; the job watcher put it here because you asked to be told. Say what the result means for the work it was waiting on. If it failed, name the cause from the evidence before proposing a fix.",
+        "emitted": true,
+        "names_job": true,
+        "state_words": [
+          "exit 3"
+        ],
+        "names_output": false,
+        "n_rows": 1
+      }
+    },
+    {
+      "variant": "notice_slurm",
+      "REACHED": true,
+      "USED": true,
+      "CORRECT": true,
+      "problems": [],
+      "promised": "a SLURM row says what the scheduler answered",
+      "measured": {
+        "text": "[watch \u2014 a system event, not the user] A job you were watching has finished:\n- slurm 4711 [COMPLETED] the chain\n\nNobody typed this; the job watcher put it here because you asked to be told. Say what the result means for the work it was waiting on. If it failed, name the cause from the evidence before proposing a fix.",
+        "emitted": true,
+        "names_job": true,
+        "state_words": [
+          "COMPLETED"
+        ],
+        "names_output": false,
+        "n_rows": 1
+      }
+    },
+    {
+      "variant": "notice_sandbox_refused",
+      "REACHED": true,
+      "USED": true,
+      "CORRECT": true,
+      "problems": [],
+      "promised": "control: a cage refusal must not read as a failing command (job_wake.py:89)",
+      "measured": {
+        "text": "[watch \u2014 a system event, not the user] A job you were watching has finished:\n- shell 3043f4f1 [sandbox refused; the command was not run] echo nothing-is-run-here\n\nNobody typed this; the job watcher put it here because you asked to be told. Say what the result means for the work it was waiting on. If it failed, name the cause from the evidence before proposing a fix.",
+        "emitted": true,
+        "names_job": true,
+        "state_words": [
+          "sandbox refused; the command was not run"
+        ],
+        "names_output": false,
+        "n_rows": 1
+      }
+    }
+  ],
+  "waiting_cost": {
+    "population": "the 6 one-shot-run variants only; the parser and notice variants make no model call",
+    "model_calls": 16,
+    "wake_turns": 4,
+    "wall_s": 142.16
+  },
+  "git": {
+    "rev": "5940caf18ace8754eaccd72b76882f47779134d8",
+    "branch": "wave/w72/p2-int",
+    "dirty": true
+  }
+}

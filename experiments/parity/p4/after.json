@@ -1,0 +1,197 @@
+{
+  "package": "p4",
+  "command": "python3 experiments/parity/p4/scenario.py > experiments/parity/p4/<before|after>.json",
+  "scratch": "<SCRATCH>",
+  "n_variants": 13,
+  "population": "synthetic scenarios on the terminal's real turn path (cli._build_engine + repl.run_turn) in a temporary workspace, with only the model reply scripted; no live model, no network, no user calc/ or archive/ folder",
+  "loaded": {
+    "delfin": "<REPO>/delfin/__init__.py",
+    "tool_context": "<REPO>/delfin/agent/tool_context.py",
+    "subagents": "<REPO>/delfin/agent/subagents.py",
+    "worktree": "<REPO>/delfin/agent/worktree.py",
+    "head": "0880a356e3d0ff12d5f73ea91b7ac1f9cedf000c"
+  },
+  "reached": 5,
+  "used": 5,
+  "correct": 5,
+  "rows": [
+    {
+      "id": "U1",
+      "kind": "undo",
+      "why": "one write, undo a turn later",
+      "reached": false,
+      "used": false,
+      "correct": false,
+      "error": "CalledProcessError: Command '['/usr/bin/python3', '-m', 'pip', 'install', '-q', 'openai>=1.0']' returned non-zero exit status 1."
+    },
+    {
+      "id": "U2",
+      "kind": "undo",
+      "why": "two writes",
+      "reached": false,
+      "used": false,
+      "correct": false,
+      "error": "CalledProcessError: Command '['/usr/bin/python3', '-m', 'pip', 'install', '-q', 'openai>=1.0']' returned non-zero exit status 1."
+    },
+    {
+      "id": "U3",
+      "kind": "undo",
+      "why": "python source file",
+      "reached": false,
+      "used": false,
+      "correct": false,
+      "error": "CalledProcessError: Command '['/usr/bin/python3', '-m', 'pip', 'install', '-q', 'openai>=1.0']' returned non-zero exit status 1."
+    },
+    {
+      "id": "U4",
+      "kind": "undo",
+      "why": "CONTROL: the turn that wrote undoes its own turn -- only its own file may go",
+      "reached": false,
+      "used": false,
+      "correct": false,
+      "error": "CalledProcessError: Command '['/usr/bin/python3', '-m', 'pip', 'install', '-q', 'openai>=1.0']' returned non-zero exit status 1."
+    },
+    {
+      "id": "U5",
+      "kind": "undo",
+      "why": "long multi-line content",
+      "reached": false,
+      "used": false,
+      "correct": false,
+      "error": "CalledProcessError: Command '['/usr/bin/python3', '-m', 'pip', 'install', '-q', 'openai>=1.0']' returned non-zero exit status 1."
+    },
+    {
+      "id": "U6",
+      "kind": "undo",
+      "why": "file in a subfolder",
+      "reached": false,
+      "used": false,
+      "correct": false,
+      "error": "CalledProcessError: Command '['/usr/bin/python3', '-m', 'pip', 'install', '-q', 'openai>=1.0']' returned non-zero exit status 1."
+    },
+    {
+      "id": "U7",
+      "kind": "undo",
+      "why": "the terminal builtin on the same state, not the model tool",
+      "reached": false,
+      "used": false,
+      "correct": false,
+      "error": "CalledProcessError: Command '['/usr/bin/python3', '-m', 'pip', 'install', '-q', 'openai>=1.0']' returned non-zero exit status 1."
+    },
+    {
+      "id": "U8",
+      "kind": "undo",
+      "why": "CONTROL: session scope reaches back over turns, so it MUST take turn 1's file back",
+      "reached": false,
+      "used": false,
+      "correct": false,
+      "error": "CalledProcessError: Command '['/usr/bin/python3', '-m', 'pip', 'install', '-q', 'openai>=1.0']' returned non-zero exit status 1."
+    },
+    {
+      "id": "I1",
+      "kind": "fanout",
+      "why": "fan-out of 2 writers",
+      "reached": true,
+      "used": true,
+      "correct": true,
+      "submitted_isolation": [
+        true,
+        true
+      ],
+      "writers_isolated": 2,
+      "calls_seen": 2,
+      "wanted_isolated": 2,
+      "note": "the fan-out's own decision; no delegate ran"
+    },
+    {
+      "id": "I2",
+      "kind": "fanout",
+      "why": "fan-out of 3 writers",
+      "reached": true,
+      "used": true,
+      "correct": true,
+      "submitted_isolation": [
+        true,
+        true,
+        true
+      ],
+      "writers_isolated": 3,
+      "calls_seen": 3,
+      "wanted_isolated": 3,
+      "note": "the fan-out's own decision; no delegate ran"
+    },
+    {
+      "id": "I3",
+      "kind": "fanout",
+      "why": "fan-out of 6 writers (above the 4-worker pool)",
+      "reached": true,
+      "used": true,
+      "correct": true,
+      "submitted_isolation": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ],
+      "writers_isolated": 6,
+      "calls_seen": 6,
+      "wanted_isolated": 6,
+      "note": "the fan-out's own decision; no delegate ran"
+    },
+    {
+      "id": "I4",
+      "kind": "fanout",
+      "why": "fan-out of read-only presets: no worktree wanted",
+      "reached": true,
+      "used": true,
+      "correct": true,
+      "submitted_isolation": [
+        false,
+        false
+      ],
+      "writers_isolated": 0,
+      "calls_seen": 2,
+      "wanted_isolated": 0,
+      "note": "the fan-out's own decision; no delegate ran"
+    },
+    {
+      "id": "I5",
+      "kind": "isolation",
+      "why": "two writers really run",
+      "reached": true,
+      "used": true,
+      "correct": true,
+      "worktrees": [
+        "<SCRATCH>/I5/delfin-wt-735ac8dd",
+        "<SCRATCH>/I5/delfin-wt-2f1d8753"
+      ],
+      "trees_distinct": true,
+      "delegate_wrote": [
+        "<SCRATCH>/I5/delfin-wt-735ac8dd/arm0.txt",
+        "<SCRATCH>/I5/delfin-wt-2f1d8753/arm1.txt"
+      ],
+      "wrote_inside_a_worktree": 2,
+      "wrote_in_parent": [],
+      "parent_dirty": "",
+      "errors": [],
+      "worktree_summary": [
+        {
+          "branch": "agent/735ac8dd",
+          "had_changes": true,
+          "final_path": "<SCRATCH>/I5/delfin-wt-735ac8dd",
+          "cleaned_up": true,
+          "diff_summary": "Untracked (new):\n  arm0.txt"
+        },
+        {
+          "branch": "agent/2f1d8753",
+          "had_changes": true,
+          "final_path": "<SCRATCH>/I5/delfin-wt-2f1d8753",
+          "cleaned_up": true,
+          "diff_summary": "Untracked (new):\n  arm1.txt"
+        }
+      ]
+    }
+  ]
+}

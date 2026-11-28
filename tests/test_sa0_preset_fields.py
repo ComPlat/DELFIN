@@ -344,10 +344,16 @@ def test_experts_delegate_to_nobody():
 # ---------------------------------------------------------------------------
 
 def test_existing_presets_gain_no_restriction_and_keep_their_identity():
+    # ``code-reviewer`` returns a structured finding list by default; that is
+    # an answer SHAPE, not a restriction on what the preset may do, and it is
+    # pinned by name so a second preset cannot acquire one unnoticed.
+    assert SA.SUBAGENT_PRESETS["code-reviewer"].output_schema is not None
+    for name in ("explore", "plan", "general-purpose"):
+        p = SA.SUBAGENT_PRESETS[name]
+        assert p.output_schema is None
     for name in ("explore", "plan", "code-reviewer", "general-purpose"):
         p = SA.SUBAGENT_PRESETS[name]
         assert p.write_globs == ()
-        assert p.output_schema is None
         assert p.department == ""
         assert p.enabled_setting == ""
 

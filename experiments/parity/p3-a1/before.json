@@ -1,0 +1,121 @@
+{
+  "package": "p3-a1",
+  "contract_module_present": false,
+  "commit": "7fafac914-dirty",
+  "measured_tree": "/tmp/delfin-wt-2e6e7fe1",
+  "command": "python experiments/parity/p3-a1/measure.py --out /tmp/delfin-wt-2e6e7fe1/before.json",
+  "variants": 12,
+  "reached": 0,
+  "used": 0,
+  "correct": 0,
+  "rows": [
+    {
+      "variant": "v01_verified_only",
+      "reachable": false,
+      "used": false,
+      "correct": false,
+      "detail": "the parent's subagent payload carries no normalised review (keys: ['description', 'elapsed_s', 'error', 'input_tokens', 'model', 'output_tokens', 'result', 'sa_id', 'subagent_type', 'tool_calls', 'truncated', 'verification', 'verification_notice', 'worktree'])",
+      "kept": null,
+      "dropped": null
+    },
+    {
+      "variant": "v02_missing_file",
+      "reachable": false,
+      "used": false,
+      "correct": false,
+      "detail": "the parent's subagent payload carries no normalised review (keys: ['description', 'elapsed_s', 'error', 'input_tokens', 'model', 'output_tokens', 'result', 'sa_id', 'subagent_type', 'tool_calls', 'truncated', 'verification', 'verification_notice', 'worktree'])",
+      "kept": null,
+      "dropped": null
+    },
+    {
+      "variant": "v03_line_past_eof",
+      "reachable": false,
+      "used": false,
+      "correct": false,
+      "detail": "the parent's subagent payload carries no normalised review (keys: ['description', 'elapsed_s', 'error', 'input_tokens', 'model', 'output_tokens', 'result', 'sa_id', 'subagent_type', 'tool_calls', 'truncated', 'verification', 'verification_notice', 'worktree'])",
+      "kept": null,
+      "dropped": null
+    },
+    {
+      "variant": "v04_no_scenario",
+      "reachable": false,
+      "used": false,
+      "correct": false,
+      "detail": "the parent's subagent payload carries no normalised review (keys: ['description', 'elapsed_s', 'error', 'input_tokens', 'model', 'output_tokens', 'result', 'sa_id', 'subagent_type', 'tool_calls', 'truncated', 'verification', 'verification_notice', 'worktree'])",
+      "kept": null,
+      "dropped": null
+    },
+    {
+      "variant": "v05_unverified",
+      "reachable": false,
+      "used": false,
+      "correct": false,
+      "detail": "the parent's subagent payload carries no normalised review (keys: ['description', 'elapsed_s', 'error', 'input_tokens', 'model', 'output_tokens', 'result', 'sa_id', 'subagent_type', 'tool_calls', 'truncated', 'verification', 'verification_notice', 'worktree'])",
+      "kept": null,
+      "dropped": null
+    },
+    {
+      "variant": "v06_ranking",
+      "reachable": false,
+      "used": false,
+      "correct": false,
+      "detail": "the parent's subagent payload carries no normalised review (keys: ['description', 'elapsed_s', 'error', 'input_tokens', 'model', 'output_tokens', 'result', 'sa_id', 'subagent_type', 'tool_calls', 'truncated', 'verification', 'verification_notice', 'worktree'])",
+      "kept": null,
+      "dropped": null
+    },
+    {
+      "variant": "v07_all_unverifiable",
+      "reachable": false,
+      "used": false,
+      "correct": false,
+      "detail": "the parent's subagent payload carries no normalised review (keys: ['description', 'elapsed_s', 'error', 'input_tokens', 'model', 'output_tokens', 'result', 'sa_id', 'subagent_type', 'tool_calls', 'truncated', 'verification', 'verification_notice', 'worktree'])",
+      "kept": null,
+      "dropped": null
+    },
+    {
+      "variant": "v08_three_good_one_bad",
+      "reachable": false,
+      "used": false,
+      "correct": false,
+      "detail": "the parent's subagent payload carries no normalised review (keys: ['description', 'elapsed_s', 'error', 'input_tokens', 'model', 'output_tokens', 'result', 'sa_id', 'subagent_type', 'tool_calls', 'truncated', 'verification', 'verification_notice', 'worktree'])",
+      "kept": null,
+      "dropped": null
+    },
+    {
+      "variant": "v09_path_outside_workspace",
+      "reachable": false,
+      "used": false,
+      "correct": false,
+      "detail": "the parent's subagent payload carries no normalised review (keys: ['description', 'elapsed_s', 'error', 'input_tokens', 'model', 'output_tokens', 'result', 'sa_id', 'subagent_type', 'tool_calls', 'truncated', 'verification', 'verification_notice', 'worktree'])",
+      "kept": null,
+      "dropped": null
+    },
+    {
+      "variant": "v10_empty_findings",
+      "reachable": false,
+      "used": false,
+      "correct": false,
+      "detail": "the parent's subagent payload carries no normalised review (keys: ['description', 'elapsed_s', 'error', 'input_tokens', 'model', 'output_tokens', 'result', 'sa_id', 'subagent_type', 'tool_calls', 'truncated', 'verification', 'verification_notice', 'worktree'])",
+      "kept": null,
+      "dropped": null
+    },
+    {
+      "variant": "v11_line_zero",
+      "reachable": false,
+      "used": false,
+      "correct": false,
+      "detail": "the parent's subagent payload carries no normalised review (keys: ['description', 'elapsed_s', 'error', 'input_tokens', 'model', 'output_tokens', 'result', 'sa_id', 'subagent_type', 'tool_calls', 'truncated', 'verification', 'verification_notice', 'worktree'])",
+      "kept": null,
+      "dropped": null
+    },
+    {
+      "variant": "v12_severity_unknown",
+      "reachable": false,
+      "used": false,
+      "correct": false,
+      "detail": "the parent's subagent payload carries no normalised review (keys: ['description', 'elapsed_s', 'error', 'input_tokens', 'model', 'output_tokens', 'result', 'sa_id', 'subagent_type', 'tool_calls', 'truncated', 'verification', 'verification_notice', 'worktree'])",
+      "kept": null,
+      "dropped": null
+    }
+  ]
+}

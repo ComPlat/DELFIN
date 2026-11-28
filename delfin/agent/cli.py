@@ -773,6 +773,21 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         error = _answer_no_model_ran(engine, _text, tool_calls,
                                      _in_tok, _out_tok)
 
+    # A turn that ends with a plan still on the person's screen did not
+    # finish: it is waiting for the one decision only they can make. The
+    # tool's own answer ("awaiting_approval") reached the model and nothing
+    # else -- the result object said done and exit 0, so a script driving
+    # `chat -p` resumed the run as if the work had been executed.
+    _engine_stop = str(getattr(engine, "last_turn_stop_reason", "") or "")
+    if not error and _engine_stop in ("", "end_turn"):
+        _perms = getattr(engine, "kit_permissions", None)
+        _engine_stop = (turn_outcome.pending_plan_reason(
+            mode=str(getattr(_perms, "mode", "") or ""),
+            awaiting=str(getattr(_perms, "plan_awaiting_approval", "") or ""),
+            has_channel=getattr(_perms, "plan_approval_callback",
+                                None) is not None,
+            tool_calls=tool_calls) or _engine_stop)
+
     return {
         "text": _text,
         "tool_calls": tool_calls,
@@ -780,10 +795,7 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         "output_tokens": _out_tok,
         "error": error,
         "model_switches": model_switches,
-        **observer.summary(
-            error=error,
-            engine_stop_reason=str(
-                getattr(engine, "last_turn_stop_reason", "") or "")),
+        **observer.summary(error=error, engine_stop_reason=_engine_stop),
     }
 
 
@@ -2436,6 +2448,34 @@ def _apply_isolation_flags(args: argparse.Namespace) -> str:
     return ""
 
 
+def _supervised_plan_approver(file_broker):
+    """A ``plan_approval_callback`` over the same approvals directory.
+
+    ``exit_plan_mode`` needs its own callback because its answer is a dict
+    (``{approved, new_mode?}``), where the confirm callback answers a plain
+    bool. This wraps the broker that already serves the run's confirm
+    questions rather than opening a second channel: the same room, the same
+    one-time code, the same signature checks, and a question a person sees
+    with ``delfin-agent approvals`` like any other.
+
+    An expiry is reported as ``timed_out``, never as a refusal. The tool
+    treats the two differently on purpose — a rejection settles the plan and
+    invites a fresh proposal, while nobody answering means "stop and wait" —
+    and the one hang this used to cause was a rejected timeout answered by a
+    second full approval window (2026-06-25).
+
+    The refusal's reason cannot travel here: the tool's rejected branch takes
+    the decision alone, so the words the person typed stay in the record.
+    """
+    def _approve(plan: str) -> dict:
+        if file_broker.callback("exit_plan_mode", {}, str(plan or "")):
+            return {"approved": True}
+        if file_broker.last_timed_out:
+            return {"approved": False, "timed_out": True}
+        return {"approved": False}
+    return _approve
+
+
 def _bind_supervised(engine, args: argparse.Namespace) -> bool:
     """Bind the approvals-directory broker; True when the gate took it.
 
@@ -2445,6 +2485,13 @@ def _bind_supervised(engine, args: argparse.Namespace) -> bool:
     at all. Asked for explicitly with ``--supervised``: a run nobody is
     watching keeps the refusal. ``--confirm-timeout`` bounds the wait
     (0 is the broker's own default).
+
+    The plan-approval channel is bound here too. A supervised run has a
+    person on the other side of that directory, so telling it "no approval
+    channel is available in this context" was false, and it made plan mode a
+    dead end: the plan could never be approved and so could never execute
+    (measured on the base commit: 0 of 4 supervised plan runs ever produced
+    a question in the directory).
     """
     bind = getattr(engine, "set_kit_confirm_callback", None)
     if not callable(bind):
@@ -2455,6 +2502,9 @@ def _bind_supervised(engine, args: argparse.Namespace) -> bool:
         timeout_s=float(getattr(args, "confirm_timeout", 0) or 0))
     if not bind(file_broker.callback):
         return False
+    perms = getattr(engine, "kit_permissions", None)
+    if perms is not None:
+        perms.plan_approval_callback = _supervised_plan_approver(file_broker)
     print("[supervised] confirmations go to the approvals directory; "
           "answer with: delfin-agent approvals", file=sys.stderr)
     return True
@@ -6126,8 +6176,20 @@ def build_parser() -> argparse.ArgumentParser:
     chat.add_argument("--max-turns", type=int, default=0, dest="max_turns",
                       metavar="N",
                       help="Stop a turn after N tool rounds (0: the "
-                           "per-model default). Bounds one turn, not the "
-                           "session — see --max-budget-usd for that")
+                                "per-model default). Bounds one turn, not the "
+                                "session — see --max-budget-usd for that")
+    # The wake bound a one-shot run reads in cmd_run. Declared here because
+    # ``chat -p`` ends in cmd_run too (_cmd_chat_one_shot returns
+    # cmd_run(args, prepare=_prepare)), so without it the door a script
+    # drives refused the flag at argparse and the wake loop always ran at
+    # its default -- the caller could not bound it or turn it off. Same
+    # default and meaning as on ``run``; cmd_run reads both the same way.
+    chat.add_argument("--job-wait", type=int, default=_JOB_WAIT_DEFAULT_S,
+                      dest="job_wait", metavar="SECONDS",
+                      help="Stay up this long for jobs the session watches "
+                          "and wake the agent when they finish "
+                          f"(default {_JOB_WAIT_DEFAULT_S}; 0: end with the "
+                          "answer and stop them)")
     chat.add_argument("--max-budget-usd", type=float, default=0.0,
                       dest="max_budget_usd", metavar="USD",
                       help="Stop this session once measured spend reaches "
