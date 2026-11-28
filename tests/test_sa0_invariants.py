@@ -143,10 +143,18 @@ def test_builtins_keep_their_mode_and_prompt_length():
 
 
 def test_new_fields_default_to_no_restriction_on_builtins():
+    # ``output_schema`` is deliberately NOT asserted None here any more: it
+    # constrains the SHAPE of a preset's answer and restricts nothing it may
+    # do, and ``code-reviewer`` now returns the findings contract (a finding
+    # needs a file, a line, a failure scenario and a verified flag). The
+    # exception is named, not waved through — a SECOND builtin acquiring a
+    # schema silently is what this test is for, so it fails on one.
+    assert {n for n in SA._BUILTIN_PRESETS
+            if SA.SUBAGENT_PRESETS[n].output_schema is not None} == {
+                "code-reviewer"}
     for name in SA._BUILTIN_PRESETS:
         p = SA.SUBAGENT_PRESETS[name]
         assert p.write_globs == ()
-        assert p.output_schema is None
         assert p.department == ""
         assert p.enabled_setting == ""
         # An empty enabled_setting means always on: every builtin is

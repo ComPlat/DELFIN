@@ -38,6 +38,7 @@ import socket
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 HOME = Path.home()
 
@@ -964,6 +965,164 @@ def checkable_findings(verdict: dict) -> list[dict]:
     return out
 
 
+_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+class DiffPlaces(NamedTuple):
+    """What a unified diff shows: the ranges per file, and which files it adds.
+
+    ``ranges`` maps a path to the line ranges of BOTH sides of every hunk that
+    touches it; ``whole`` is the set of paths the branch creates, whose every
+    line the diff therefore displays.
+    """
+    ranges: dict[str, list[tuple[int, int]]]
+    whole: frozenset[str]
+
+    def for_file(self, path: str) -> list[tuple[int, int]]:
+        """The ranges shown for ``path``, or [] when the diff never touches it."""
+        return self.ranges.get(path) or []
+
+
+def diff_places(diff: str) -> DiffPlaces:
+    """Where the diff actually looked: per file, the line ranges it shows.
+
+    Input: a unified diff. Output: a ``DiffPlaces`` whose ``ranges`` holds
+    ``{path: [(lo, hi), ...]}`` for BOTH sides of every hunk -- the new side
+    (the branch's line numbers) and the old side, because the reviewer is told
+    to name a line "that appears in the diff" and a context or removed line
+    appears in it too.
+
+    Why both sides and not just the added lines: a finding about a line the
+    change moved or left alone is still about a place the reviewer was shown,
+    and dropping it would delete a correct catch to gain nothing.
+
+    A DELETED file keeps its pre-image path (its ``+++`` side is ``/dev/null``)
+    and a RENAMED file is filed under both paths: the reviewer was shown the
+    removed lines and both names, so "the guard at gone.py:2 is removed" is a
+    finding with a place, not a phantom. Measured on a real deletion diff:
+    without this, a deleted file held no ranges at all and every true finding
+    about a removal was discarded as unverifiable.
+
+    A file the branch ADDS (its ``---`` side is ``/dev/null``) is also listed
+    in ``whole``: the diff shows such a file from line 1 to its last line, so
+    for it the diff can prove a line does NOT exist, not merely fail to show
+    it. That distinction is what ``verified_findings`` acts on.
+
+    A hunk header it cannot read is skipped, and a file whose ranges all
+    skipped is simply absent -- which reads as "no place verified", the
+    direction that reports less rather than more.
+    """
+    out: dict[str, list[tuple[int, int]]] = {}
+    whole: set[str] = set()     # files the diff shows in their entirety
+    cur: str | None = None
+    pre: str | None = None      # the path on the --- side of this file header
+
+    def _head(line: str) -> str:
+        # GNU diff appends a timestamp to a header for a non-git diff, and both
+        # sides carry an a/ or b/ prefix.
+        head = line[4:].split("\t", 1)[0].strip()
+        if head in ("/dev/null", "dev/null"):
+            return ""
+        return head[2:] if head[:2] in ("a/", "b/") else head
+
+    for line in (diff or "").splitlines():
+        if line.startswith("--- "):
+            pre = _head(line) or None
+            continue
+        if line.startswith("+++ "):
+            new = _head(line) or None
+            if new is None:
+                # A deletion: file the hunks under the pre-image path.
+                cur = pre
+            else:
+                cur = new
+                if pre and pre != new:
+                    out.setdefault(pre, [])   # a rename: both names were shown
+                if pre is None:
+                    whole.add(new)            # an added file: shown whole
+            if cur is not None:
+                out.setdefault(cur, [])
+            continue
+        if line.startswith("@@ ") and cur is not None:
+            m = _HUNK_RE.match(line)
+            if not m:
+                continue
+            for base, count in ((m.group(1), m.group(2)), (m.group(3), m.group(4))):
+                lo = int(base)
+                if lo < 1:
+                    continue        # a +0,0 side: nothing on that side to cite
+                n = int(count) if count is not None else 1
+                out[cur].append((lo, lo + max(n, 1) - 1))
+    return DiffPlaces(ranges=out, whole=frozenset(whole))
+
+
+def verified_findings(verdict: dict, diff: str) -> tuple[list[dict], list[dict]]:
+    """Split a reviewer's findings by what the diff it was shown can prove.
+
+    Input: the parsed verdict, and the same diff the reviewer was shown.
+    Output: ``(reported, held_apart)``, both in ``checkable_findings`` shape.
+    Every reported finding carries ``place_confirmed``: True when the line
+    falls inside a range the diff shows. A held-apart finding additionally
+    carries ``why_unconfirmed``, the reason it is not offered as a finding.
+
+    What is held apart -- and only this -- is a place the diff REFUTES:
+
+    * a file the diff never touches. The reviewer was shown this diff and
+      nothing else (``build_review_prompt``), so a finding about another file
+      is a place no person can go and look, and refusing a branch on it is a
+      false alarm dressed as a catch. Measured over the six positive controls
+      of the shipped calibration corpus, every ``expect_files`` entry lies
+      inside its own diff, so this rule never drops a correct catch.
+    * a line past the end of a file the branch ADDED. For an added file the
+      diff shows every line, so it states the file's length: a claim at line
+      3007 of a three-line new file is refuted, not merely unshown.
+
+    What is KEPT, and labelled, is a place the diff simply does not display:
+    a line outside every hunk of a MODIFIED file. The corpus labels a catch of
+    exactly that shape correct (``pos-engine-missing-method``: the finding is
+    about a symbol the diff adds, while the diff's first hunk starts at line
+    3302), so dropping it would delete true findings to enforce a precision the
+    reviewer was never given. Measured: dropping on line-out-of-hunk turns two
+    labelled-correct answers into "no usable answer".
+
+    Neither rule decides whether the CLAIM is true. "This line is wrong" at a
+    real line is a judgement; this only establishes that the place exists in
+    what the reviewer was shown. The delegate-report verifier states the same
+    limit for its own notices: a consistency check against the evidence, not a
+    check against reality.
+    """
+    places = diff_places(diff)
+    reported: list[dict] = []
+    held: list[dict] = []
+    for f in checkable_findings(verdict):
+        name, line = f["file"], f["line"]
+        ranges = places.for_file(name)
+        if not ranges:
+            f["place_confirmed"] = False
+            f["why_unconfirmed"] = ("the diff touches no file named " + name
+                                    + ", so its place cannot be checked")
+            held.append(f)
+            continue
+        if any(lo <= line <= hi for lo, hi in ranges):
+            f["place_confirmed"] = True
+            reported.append(f)
+            continue
+        if name in places.whole:
+            end = max(hi for _lo, hi in ranges)
+            f["place_confirmed"] = False
+            f["why_unconfirmed"] = (f"the branch adds {name} and the diff shows "
+                                    f"it ending at line {end}, so line {line} "
+                                    "is not in the file it names")
+            held.append(f)
+            continue
+        shown = ",".join(f"{lo}-{hi}" for lo, hi in ranges[:3])
+        f["place_confirmed"] = False
+        f["why_unconfirmed"] = (f"line {line} is outside every hunk of "
+                                + name + " (it shows " + shown + ")")
+        reported.append(f)
+    return reported, held
+
+
 def review_diff(model: str, diff: str, brief: str, attempts: int = 2) -> dict:
     """Ask ``model`` for a verdict on ``diff``. Never raises.
 
@@ -971,6 +1130,10 @@ def review_diff(model: str, diff: str, brief: str, attempts: int = 2) -> dict:
     "notes": [...], "calls": n}``. "unusable" covers an endpoint that did not
     answer, a reply that did not parse, and a refusal with no file and line --
     all of which leave the branch unopened, for a person.
+
+    A refusal counts only on a finding whose FILE the diff confirms
+    (``verified_findings``); the refusal line then carries both sets, so what
+    the reviewer said and what could be checked are never conflated.
     """
     messages = build_review_prompt(diff, brief)
     notes: list[str] = []
@@ -989,16 +1152,31 @@ def review_diff(model: str, diff: str, brief: str, attempts: int = 2) -> dict:
         verdict = str(got.get("verdict") or "").strip().lower()
         if verdict == "pass":
             return {"verdict": "pass", "findings": checkable_findings(got),
-                    "notes": notes, "calls": calls}
+                    "unconfirmed": [], "notes": notes, "calls": calls}
         if verdict == "refuse":
-            findings = checkable_findings(got)
-            if findings:
+            findings, held = verified_findings(got, diff)
+            if findings or held:
+                # The VERDICT is the model's and stands as given: it refused.
+                # What changes is what is REPORTED as a finding -- a place the
+                # diff does not have is not a finding, it is a claim -- and
+                # that is why the held set rides along instead of the verdict
+                # being downgraded. Turning it into "unusable" would remove the
+                # answer from the calibration rate entirely (calibration_bounds
+                # excludes unanswered rows), so a model that always cited a
+                # file outside the diff would shrink its own denominator and
+                # read as a better instrument while catching nothing.
+                if held:
+                    notes.append("not reported as findings, no place in the "
+                                 "diff: " + "; ".join(
+                                     f["file"] + ":" + str(f["line"])
+                                     for f in held)[:200])
                 return {"verdict": "refuse", "findings": findings,
-                        "notes": notes, "calls": calls}
+                        "unconfirmed": held, "notes": notes, "calls": calls}
             notes.append("a refusal that names no file and line")
             continue
         notes.append(f"unknown verdict {verdict!r}")
-    return {"verdict": "unusable", "findings": [], "notes": notes, "calls": calls}
+    return {"verdict": "unusable", "findings": [], "unconfirmed": [],
+            "notes": notes, "calls": calls}
 
 
 # --- calibration ------------------------------------------------------------
@@ -1131,7 +1309,12 @@ def review_pair(model_a: str, model_b: str, diff: str,
     b = review_diff(model_b, diff, brief)
     out = {"a": a, "b": b, "model_a": model_a, "model_b": model_b,
            "calls": a["calls"] + b["calls"],
-           "findings": list(a["findings"]) + list(b["findings"])}
+           "findings": list(a["findings"]) + list(b["findings"]),
+           # What each reviewer claimed but the diff could not confirm. Kept
+           # beside the findings, never among them: a person deciding a split
+           # should see that a claim was about a file the branch never touched.
+           "unconfirmed": (list(a.get("unconfirmed") or [])
+                           + list(b.get("unconfirmed") or []))}
     va, vb = a["verdict"], b["verdict"]
     if "unusable" in (va, vb):
         who = model_a if va == "unusable" else model_b
@@ -1654,9 +1837,19 @@ def review_gate(wt: Path, run: str, tid: str, agent: dict) -> tuple[bool, str, d
     rec["reviewers"] = [model_a, model_b]
     rec["calibrated_at"] = cal.get("iso")
     res = review_pair(model_a, model_b, diff, brief)
-    rec["verdict"] = res["verdict"]
+    # Both refused, and every claim they named sits in a place this diff refutes
+    # (a file it never touches, or a line past the end of a file it adds). The
+    # branch is still held -- failing closed is the direction -- but it is NOT
+    # recorded or reported as a refusal with a place, because an author told
+    # "refused: gone.py:12" would go looking in a file they never changed. The
+    # same reasoning as a refusal with no file and line: an unfalsifiable
+    # finding is not a finding. Decided HERE, before REVIEW.json is written, so
+    # the file and the returned line cannot disagree about what happened.
+    unverifiable = res["verdict"] == "refuse" and not res["findings"]
+    rec["verdict"] = "unverified" if unverifiable else res["verdict"]
     rec["calls"] = res["calls"]
     rec["findings"] = res["findings"]
+    rec["unconfirmed"] = res["unconfirmed"]
     rec["notes"] = (res["a"].get("notes"), res["b"].get("notes"))
     rec["pair_why"] = res["why"]
     try:
@@ -1664,12 +1857,18 @@ def review_gate(wt: Path, run: str, tid: str, agent: dict) -> tuple[bool, str, d
             {"reviewers": [model_a, model_b], "calibrated_at": cal.get("iso"),
              "pair_bounds": cal.get("bounds"),
              "corpus": cal.get("corpus_cases"), "author_models": authors,
-             "verdict": res["verdict"], "why": res["why"],
+             # rec["verdict"], not res["verdict"]: what the gate decided is
+             # what the file must say, or the record a person opens would
+             # disagree with the line they were just shown.
+             "verdict": rec["verdict"], "why": res["why"],
              "a": {"model": model_a, "verdict": res["a"]["verdict"],
-                   "findings": res["a"]["findings"]},
+                   "findings": res["a"]["findings"],
+                   "unconfirmed": res["a"].get("unconfirmed") or []},
              "b": {"model": model_b, "verdict": res["b"]["verdict"],
-                   "findings": res["b"]["findings"]},
-             "findings": res["findings"]}, indent=1) + "\n")
+                   "findings": res["b"]["findings"],
+                   "unconfirmed": res["b"].get("unconfirmed") or []},
+             "findings": res["findings"],
+             "unconfirmed": res["unconfirmed"]}, indent=1) + "\n")
     except Exception:
         pass
     if res["verdict"] == "pass":
@@ -1677,11 +1876,26 @@ def review_gate(wt: Path, run: str, tid: str, agent: dict) -> tuple[bool, str, d
                       f"both pass (pair calibrated {cal.get('iso')}, "
                       f"{cal['bounds']['wrong']} wrong of "
                       f"{cal['bounds']['decided']} decided on the corpus)"), rec
+    if unverifiable:
+        names = ", ".join(sorted({f["file"] for f in res["unconfirmed"]}))
+        return False, ("independent review UNDECIDED, a person decides: both "
+                       f"{model_a} and {model_b} refused, but no claim names a "
+                       f"place this diff has ({names})"
+                       "; both reviews in scratch/REVIEW.json"), rec
     if res["verdict"] == "refuse":
         f = res["findings"][0]
+        # The verification verdict rides beside the claim, so a reader can
+        # tell "this place is in the diff" from "the file is, the line is not"
+        # without opening REVIEW.json.
+        where = ("place confirmed in the diff" if f.get("place_confirmed")
+                 else "file is in the diff, this line is outside its hunks")
         return False, (f"independent review refused by BOTH {model_a} and "
                        f"{model_b}: {f['file']}:{f['line']} -- {f['claim']}"
                        + (f" ({f['why_it_matters']})" if f["why_it_matters"] else "")
+                       + f" [{where}]"
+                       + (f"; {len(res['unconfirmed'])} claim(s) naming a "
+                          "place the diff does not have, held apart"
+                          if res["unconfirmed"] else "")
                        + f"; {len(res['findings'])} finding(s) in "
                        "scratch/REVIEW.json"), rec
     if res["verdict"] in ("split", "no_answer"):

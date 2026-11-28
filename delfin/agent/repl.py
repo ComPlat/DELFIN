@@ -986,10 +986,20 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
                 result.error = str(exc)
                 full_text = ""
                 _emit(RenderItem("error", text=result.error))
+            _stop = str(getattr(engine, "last_turn_stop_reason", "") or "")
+            if not result.error and _stop in ("", "end_turn"):
+                # Same rule the headless run applies: a turn that ends with
+                # a plan the person has not answered is not a finished turn.
+                _perms = getattr(engine, "kit_permissions", None)
+                _stop = (turn_outcome.pending_plan_reason(
+                    mode=str(getattr(_perms, "mode", "") or ""),
+                    awaiting=str(getattr(_perms, "plan_awaiting_approval",
+                                         "") or ""),
+                    has_channel=getattr(_perms, "plan_approval_callback",
+                                        None) is not None,
+                    tool_calls=tool_calls) or _stop)
             _outcome = observer.summary(
-                error=result.error,
-                engine_stop_reason=str(
-                    getattr(engine, "last_turn_stop_reason", "") or ""))
+                error=result.error, engine_stop_reason=_stop)
             result.schema_version = _outcome["schema_version"]
             result.stop_reason = _outcome["stop_reason"]
             result.denials = _outcome["denials"]

@@ -34,7 +34,7 @@
 # leaves_the_workspace fails if _leaves_workspace ever stops asking for one
 # of them. Deleting it would remove the only explicit statement of the
 # class; mounting it would add a call that cannot change an answer.
-test-only	_bypass_failure_asks	delfin/agent/api_client.py:15009
+test-only	_bypass_failure_asks	delfin/agent/api_client.py:15050
 # _disabled_keyring_factory stays test-only, measured 2026-11-22: the
 # conftest autouse fixture swaps it in (tests/conftest.py:1599) so no test
 # touches the real keyring, and _keyring_factory is only ever bound to
@@ -262,8 +262,8 @@ test-only	workflow_is	delfin/agent/pack/benchmark/accept/w20_common.py:15
 # same corpus, same question -- which its tests pin. Ported unchanged with the
 # landing gate from the orchestrator's script, where it was test-only too.
 # The anchor followed the definition when wave 54's land gate grew the file
-# (675 -> 1049); the row's tier is unchanged.
-test-only	calibration_record	delfin/agent/swarm/land.py:1078
+# (675 -> 1049, then 1256 with the finding-verification step and the co-author models); the row's tier is unchanged.
+test-only	calibration_record	delfin/agent/swarm/land.py:1256
 # ---------------------------------------------------------------------------
 # Rows added 2026-11-25 by the widening of the census to delfin/tools/.
 # Measured on the tree BEFORE that widening: delfin/tools/ held 591

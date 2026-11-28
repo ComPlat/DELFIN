@@ -149,6 +149,7 @@ def test_a_real_patch_is_still_reported(tmp_path):
     target.write_text("a = 1\n")
     perms = _perms(tmp_path, "real")
     ex = _DocToolExecutor()
+    ex.execute("read_file", {"path": "m.py"}, perms)
     ex.execute("apply_patch", {
         "diff": "--- a/m.py\n+++ b/m.py\n@@ -1 +1 @@\n-a = 1\n+a = 2\n"}, perms)
     assert target.read_text() == "a = 2\n"

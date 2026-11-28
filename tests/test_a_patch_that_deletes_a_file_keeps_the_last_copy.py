@@ -25,7 +25,18 @@ from delfin.agent import patch_apply as pa
 from delfin.agent.api_client import KitToolPermissions, _DocToolExecutor
 
 
+
+def _read_targets(ex, perms, diff):
+    """Read every existing file the diff touches, as a session must before
+    apply_patch accepts it."""
+    from delfin.agent import patch_apply
+    for rel in patch_apply._files_in_diff(diff):
+        if (Path(perms.workspace) / rel).is_file():
+            ex.execute("read_file", {"path": rel}, perms)
+
+
 @pytest.fixture
+
 def home(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     (tmp_path / "home").mkdir()
@@ -67,7 +78,9 @@ def test_a_deleted_file_is_journalled_and_comes_back(home, gitws):
     target.write_text("one\ntwo\n", encoding="utf-8")
 
     ex = _DocToolExecutor()
-    out = ex._execute_apply_patch({"diff": _DELETE_DIFF}, _perms(gitws, "s-del"))
+    perms = _perms(gitws, "s-del")
+    _read_targets(ex, perms, _DELETE_DIFF)
+    out = ex._execute_apply_patch({"diff": _DELETE_DIFF}, perms)
     assert '"status": "ok"' in out, out
     assert not target.exists()
 
@@ -85,7 +98,9 @@ def test_a_recreated_file_is_not_overwritten_by_the_undo(home, gitws):
     target = gitws / "doomed.txt"
     target.write_text("one\ntwo\n", encoding="utf-8")
     ex = _DocToolExecutor()
-    ex._execute_apply_patch({"diff": _DELETE_DIFF}, _perms(gitws, "s-del2"))
+    perms = _perms(gitws, "s-del2")
+    _read_targets(ex, perms, _DELETE_DIFF)
+    ex._execute_apply_patch({"diff": _DELETE_DIFF}, perms)
 
     target.write_text("the user made a new one\n", encoding="utf-8")
     res = cj.revert("s-del2", scope="last", workspace=gitws)
@@ -98,7 +113,9 @@ def test_undoing_the_undo_removes_the_file_again(home, gitws):
     target = gitws / "doomed.txt"
     target.write_text("one\ntwo\n", encoding="utf-8")
     ex = _DocToolExecutor()
-    ex._execute_apply_patch({"diff": _DELETE_DIFF}, _perms(gitws, "s-del3"))
+    perms = _perms(gitws, "s-del3")
+    _read_targets(ex, perms, _DELETE_DIFF)
+    ex._execute_apply_patch({"diff": _DELETE_DIFF}, perms)
 
     res = cj.revert("s-del3", scope="last", workspace=gitws)
     assert target.exists()
@@ -134,7 +151,9 @@ def test_a_renamed_file_can_be_put_back(home, gitws):
         "rename to new.txt\n"
     )
     ex = _DocToolExecutor()
-    out = ex._execute_apply_patch({"diff": diff}, _perms(gitws, "s-ren"))
+    perms = _perms(gitws, "s-ren")
+    _read_targets(ex, perms, diff)
+    out = ex._execute_apply_patch({"diff": diff}, perms)
     assert '"status": "ok"' in out, out
     assert not old.exists() and (gitws / "new.txt").exists()
 
@@ -158,7 +177,9 @@ def test_a_created_file_still_reverts_by_deletion(home, gitws):
         "+hello\n"
     )
     ex = _DocToolExecutor()
-    out = ex._execute_apply_patch({"diff": diff}, _perms(gitws, "s-new"))
+    perms = _perms(gitws, "s-new")
+    _read_targets(ex, perms, diff)
+    out = ex._execute_apply_patch({"diff": diff}, perms)
     assert '"status": "ok"' in out, out
     assert (gitws / "fresh.txt").exists()
 

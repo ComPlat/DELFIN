@@ -217,6 +217,28 @@ _BUILTIN_SUBAGENT_COMMANDS: dict[str, tuple[str, str]] = {
 }
 
 
+#: The answer form a command's preset OWES the caller, appended to the
+#: directive above for the presets whose output is checked rather than read.
+#:
+#: `/review` was expanded to the same generic instruction as `/explore`
+#: ("...and the desired form of the answer"), so the one thing a review must
+#: carry — a location and a way to reproduce the failure — was left to the
+#: model's discretion, and a checklist with no `file:line` was a correct
+#: answer. The preset itself now states the contract and returns it as a
+#: schema; saying it here too is what makes the USER's command ask for it,
+#: because the directive is the whole of what the model is told about the
+#: task the user typed.
+_ANSWER_FORM: dict[str, str] = {
+    "code-reviewer": (
+        ", and it must ask for a FINDINGS list in which every finding carries "
+        "a file, a line number inside that file, a concrete failure scenario "
+        "(which input or call sequence produces which wrong result) and a "
+        "verified flag — plus an instruction to report nothing the reviewer "
+        "did not verify"
+    ),
+}
+
+
 #: A first token this many characters long is treated as the START OF THE
 #: TASK, not as a mistyped preset name. Measured over the 18 registered
 #: names: the shortest is 5 characters ("plan" is 4), and a task's first
@@ -379,7 +401,8 @@ def builtin_subagent_command(name: str, args: str = "") -> str | None:
         f"The user asked you to delegate the following to a `{sa_type}` "
         f"subagent ({gloss}). Call subagent(subagent_type='{sa_type}', "
         f"description=<3-7 word label>, prompt=<self-contained briefing with "
-        f"the goal, relevant files/paths, and the desired form of the answer>)."
+        f"the goal, relevant files/paths, and the desired form of the answer>)"
+        f"{_ANSWER_FORM.get(sa_type, '')}."
         f" For long or independent work, add background=true and collect the "
         f"result later with subagent_result(sa_id). Then summarise the "
         f"subagent's findings for the user.\n\nTask: {task}"
