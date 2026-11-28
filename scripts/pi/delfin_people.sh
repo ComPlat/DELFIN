@@ -104,7 +104,7 @@ add_key() {
 # what an invitation is, so hand it over like a temporary password.
 invite_hours=48
 invite() {
-    local name="$1" host="${2:-}" hours="${3:-$invite_hours}" package work key expiry line self out
+    local name="$1" host="${2:-}" hours="${3:-$invite_hours}" package mac_package work key expiry line self out
     if [[ ! "$name" =~ ^[a-z0-9_][a-z0-9_-]{0,31}$ ]]; then
         echo "usage: delfin-people --invite NAME [--host HOST] [--hours N]" >&2
         echo "NAME: a-z, 0-9, _ and - (it labels the PC's key)" >&2
@@ -127,6 +127,14 @@ invite() {
         done
     fi
     [[ -f "$package" ]] || { echo "launcher package not found; set DELFIN_LAUNCHER_ZIP" >&2; exit 1; }
+    # The macOS package travels along when the server has it: the same
+    # invitation then works on a PC (windows-launcher/) or a Mac
+    # (macos-launcher/), whichever uses it first.
+    mac_package="${DELFIN_MAC_LAUNCHER_ZIP:-}"
+    if [[ -z "$mac_package" ]]; then
+        mac_package="$(dirname "$package")/delfin-macos-launcher.zip"
+    fi
+    [[ -f "$mac_package" ]] || mac_package=""
     work="$(mktemp -d)"
     key="$work/invite_key"
     ssh-keygen -q -t ed25519 -N '' -C "delfin-invite-$name" -f "$key"
@@ -139,9 +147,9 @@ invite() {
     (umask 077 && mkdir -p "$out" "$HOME/.ssh")
     if ! DELFIN_INVITE_TARGET="$(id -un)@$host" DELFIN_INVITE_NAME="$name" DELFIN_INVITE_EXPIRY="$expiry" \
         DELFIN_HOST_KEYS="${DELFIN_HOST_KEYS:-/etc/ssh/ssh_host_*_key.pub}" \
-        python3 - "$package" "$key" "$out/DELFIN-$name.zip" <<'PY'
+        python3 - "$package" "$key" "$out/DELFIN-$name.zip" "$mac_package" <<'PY'
 import glob, json, os, sys, zipfile
-package, key, out = sys.argv[1:4]
+package, key, out, mac_package = sys.argv[1:5]
 keys = []
 for path in sorted(glob.glob(os.environ['DELFIN_HOST_KEYS'])):
     parts = open(path).read().split()
@@ -157,6 +165,12 @@ with zipfile.ZipFile(package) as source, zipfile.ZipFile(out, 'w', zipfile.ZIP_D
         target.writestr(item, source.read(item))
     target.writestr('windows-launcher/invite.json', json.dumps(invite, indent=2) + '\n')
     target.writestr('windows-launcher/invite_key', open(key).read())
+    if mac_package:
+        with zipfile.ZipFile(mac_package) as mac:
+            for item in mac.infolist():
+                target.writestr(item, mac.read(item))
+        target.writestr('macos-launcher/invite.json', json.dumps(invite, indent=2) + '\n')
+        target.writestr('macos-launcher/invite_key', open(key).read())
 PY
     then
         rm -rf "$work"
@@ -168,6 +182,11 @@ PY
     echo "  Server: $(id -un)@$host. Valid once, until $expiry (UTC)."
     echo "  Give the file to $name like a temporary password. They extract it,"
     echo "  double-click Install.cmd, and press Start in DELFIN. Nothing else."
+    if [[ -n "$mac_package" ]]; then
+        echo "  On a Mac: macos-launcher/Install.command, then choose the server in DELFIN."
+    else
+        echo "  (No macOS package here; put delfin-macos-launcher.zip beside the Windows one for Macs.)"
+    fi
     echo "  Withdraw it: delete the delfin-invite-$name line (delfin-people --keys lists it)."
 }
 

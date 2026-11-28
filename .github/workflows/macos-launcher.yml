@@ -1,0 +1,87 @@
+name: macOS launcher
+
+# The Mac launcher (tools/macos-launcher) runs where it is used: macOS, with
+# the Mac's own /bin/bash 3.2 and BSD tools, none of which a Linux runner
+# has. The shared rules (the server command, SSH options, URL check,
+# profiles, invitations) are also checked by pytest in CI; this adds the
+# package as a person gets it, DELFIN set up and served on the Mac, and an
+# SSH connection to an sshd on the runner.
+on:
+  pull_request:
+    paths:
+      - "tools/macos-launcher/**"
+      - "tools/delfin-macos-launcher.zip"
+      - "tools/windows-launcher/remote_bootstrap.sh"
+      - "tools/windows-launcher/remote_launcher.py"
+      - "delfin/installers/fetch_micromamba.sh"
+      - "delfin/cli_voila.py"
+      - "scripts/pi/delfin_people.sh"
+      - "tests/test_the_macos_launcher*.py"
+      - ".github/ci/macos_launcher_*.sh"
+      - ".github/workflows/macos-launcher.yml"
+  push:
+    branches: [main]
+    paths:
+      - "tools/macos-launcher/**"
+      - "tools/delfin-macos-launcher.zip"
+      - "tools/windows-launcher/remote_bootstrap.sh"
+      - "tools/windows-launcher/remote_launcher.py"
+      - ".github/workflows/macos-launcher.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: macos-launcher-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: package, install, uninstall (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+
+      - name: Install pytest and the package without its chemistry stack
+        # tests/conftest.py imports delfin; these tests need nothing else of it.
+        run: |
+          python -m pip install -c .github/ci/constraints-ci.txt pytest pyyaml
+          python -m pip install --no-deps -e .
+
+      - name: The shared rules under the Mac's /bin/bash 3.2
+        # The tests call `bash` from PATH; on the runner that is Homebrew's
+        # bash 5. A person's Mac has /bin/bash 3.2 only.
+        run: |
+          mkdir -p "$RUNNER_TEMP/macbash"
+          ln -s /bin/bash "$RUNNER_TEMP/macbash/bash"
+          export PATH="$RUNNER_TEMP/macbash:$PATH"
+          bash --version | head -n 1
+          pytest -q -p no:cacheprovider tests/test_the_macos_launcher.py \
+            tests/test_the_macos_launcher_package_is_current.py \
+            tests/test_the_release_publishes_the_macos_launcher.py
+
+      - name: Download mark, install and uninstall as a person does
+        run: /bin/bash .github/ci/macos_launcher_install.sh
+
+  run:
+    name: DELFIN on the Mac and over SSH (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Local dashboard, invitation and SSH connection
+        run: /bin/bash .github/ci/macos_launcher_run.sh

@@ -318,6 +318,13 @@ What only a person can do, in this order:
   hours. `delfin-people --keys` lists open invitations (`delfin-invite-*`);
   deleting the line withdraws one.
 
+  **Macs.** When `delfin-macos-launcher.zip` lies beside the Windows
+  package (`tools/` of the checkout; or `DELFIN_MAC_LAUNCHER_ZIP`), the
+  invitation carries it too, as `macos-launcher/` with the same
+  `invite.json` and `invite_key`. On a Mac the person double-clicks the ZIP,
+  then `macos-launcher/Install.command`, and chooses the server in DELFIN.
+  The key still works once, on whichever computer uses it first.
+
   **Without an invitation.** `pi_harden_host.sh` sets
   `PasswordAuthentication no`, and the launcher registers a PC by appending
   its key during the first *password* login — so on a hardened box that

@@ -304,6 +304,18 @@ screen stays in the foreground as before.
 Windows SSH desktop launcher (OTP, separate working terminal, tmux reconnect):
 [Setup and installation](tools/windows-launcher/README.md). Copy that folder to your Windows PC.
 
+macOS app (a server over SSH with the same server side, or DELFIN on the Mac itself):
+[Setup and installation](tools/macos-launcher/README.md). One line in Terminal installs it
+from the release, checked against its SHA-256 before anything of it runs (it works from the
+first release that carries `delfin-macos-launcher.zip`):
+
+<!-- macos-install-line: written by tools/macos-launcher/build_package.py -->
+<!-- recipe: not-runnable — installs the macOS app; run it in Terminal on a Mac -->
+```bash
+d=$(mktemp -d) && curl -fL --proto =https -o "$d/delfin.zip" https://github.com/ComPlat/DELFIN/releases/download/v1.4.0/delfin-macos-launcher.zip && echo "08df03b039999433b8b8e051af2f388b06c6b98b5f5e79e0ffbc1ad6322b88b8  $d/delfin.zip" | shasum -a 256 -c && ditto -x -k "$d/delfin.zip" "$d" && bash "$d/macos-launcher/Install.command"
+```
+<!-- /macos-install-line -->
+
 Detailed documentation: [docs/SETTINGS_AND_SETUP.md](docs/SETTINGS_AND_SETUP.md)
 
 ---

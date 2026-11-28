@@ -1,0 +1,155 @@
+DELFIN FOR MAC - START HERE
+===========================
+
+Two ways to work, from one app:
+
+  * ON A SERVER (a Linux server, the lab Pi, a cluster): everything runs
+    there. Your Mac needs nothing but this app, network access to the
+    server (a VPN if it is on an internal network), and your login.
+  * ON THIS MAC: DELFIN is set up on the Mac itself, once (about 1 GB of
+    downloads). No Xcode, no Homebrew, no Python of your own is needed.
+
+README.md beside this file is the full reference. This is the short path.
+
+THE QUICKEST WAY: ONE LINE IN TERMINAL
+DELFIN's README (github.com/ComPlat/DELFIN) has a one-line install for each
+release. Paste it into Terminal (Spotlight: Cmd+Space, "Terminal") and
+press Enter. It downloads this package for exactly that release, checks it
+against its SHA-256 before anything of it runs, and starts Install.command.
+macOS asks nothing about the download that way.
+
+GOT A PERSONAL FILE "DELFIN-<your name>.zip" FROM WHOEVER RUNS THE SERVER?
+Then it is three steps:
+  1. Double-click the ZIP. It extracts into a folder.
+  2. In that folder, open "macos-launcher" and double-click Install.command
+     (see section 0 if macOS refuses to open it; answer y to remove the
+     download mark).
+  3. In DELFIN choose your server ("1. Connect: ..."). No password, no
+     server address to type, no fingerprint to compare.
+The file works once: keep it to yourself.
+
+
+-------------------------------------------------------------------
+0. MACOS SAYS IT CANNOT OPEN Install.command
+-------------------------------------------------------------------
+
+macOS marks every file that came from the internet. Gatekeeper then
+refuses to open a script or app that is not signed by an identified
+developer, and this package is not signed. You see:
+
+    "Install.command" cannot be opened because it is from an
+    unidentified developer.
+  or
+    Apple could not verify "Install.command" is free of malware ...
+
+That is not a virus warning and nothing is broken. It means "this file
+came from somewhere else and nobody paid Apple to vouch for it".
+
+THE WAY APPLE INTENDS (macOS 13, 14, 15 and later):
+  1. Click "Done" (or "OK") in that message.
+  2. Open System Settings > Privacy & Security, scroll down to Security.
+     It names Install.command, with a button "Open Anyway".
+  3. Click "Open Anyway" and confirm with your password or Touch ID.
+On macOS 14 and earlier, right-click Install.command > Open > Open
+does the same in one step.
+
+Install.command then lists the files that still carry the download mark
+and asks:
+
+    Remove the mark and continue? (y/N)
+
+Type  y  and press Enter. That clears the mark on THESE files and nothing
+else. Gatekeeper stays on; no setting is changed. Answer n and nothing is
+installed. (A release signed and notarized by Apple does not ask: macOS
+opens DELFIN.app with the mark on.)
+
+IF YOU WOULD RATHER USE TERMINAL:
+  1. Open Terminal (Spotlight: Cmd+Space, "Terminal").
+  2. Type  bash  and a space, drag Install.command from Finder into the
+     window, press Enter.
+
+Do not override rules your organisation has set. Ask your IT first.
+
+
+-------------------------------------------------------------------
+1. INSTALL
+-------------------------------------------------------------------
+
+Install.command opens a Terminal window and asks a few questions. No
+administrator password is needed. The app goes to the Applications folder
+of your account (Finder: Go > Home > Applications) and is found by
+Spotlight: Cmd+Space, type DELFIN.
+
+Updating later: run Install.command of a newer version. Do NOT uninstall
+first - you would be asked whether to keep your saved connections.
+
+
+-------------------------------------------------------------------
+2. CONNECT TO A SERVER
+-------------------------------------------------------------------
+
+Open DELFIN. Choose "New server connection..." and enter what you were
+given, for example:
+
+    delfin@192.0.2.10
+
+Leave the options as they are and press OK. A Terminal window opens and
+asks for the password:
+
+  * You may be asked up to THREE times the first time. That is normal -
+    one question per connection, not a refusal.
+  * Typing shows nothing. That is normal too. Cmd+V pastes.
+  * After this one time, this Mac is known to the server and no password
+    is asked again ("Remember login").
+
+On a first login ssh also shows the server's fingerprint and asks
+"Are you sure you want to continue connecting?". Compare it with the one
+whoever runs the server gave you, then type  yes.
+
+Then your browser opens with your dashboard. Leave the Terminal window
+open while you work; closing the browser tab disconnects nothing.
+
+IF IT SAYS "Permission denied" AND YOU WERE GIVEN NO PASSWORD:
+the server takes keys only. A file is now on your desktop:
+
+    DELFIN-key-for-the-server-owner.txt
+
+Send it to whoever runs the server. It is the public half of this Mac's
+key - not secret, not a password. They add it with one command; start
+DELFIN again and you are in.
+
+A CLUSTER with one-time codes asks for the password and the code in the
+Terminal window, once per start.
+
+
+-------------------------------------------------------------------
+3. DELFIN ON THIS MAC
+-------------------------------------------------------------------
+
+Open DELFIN and choose "Set up DELFIN on this Mac...". A Terminal window
+downloads and installs it (5 to 20 minutes, about 4 GB of disk). From then
+on the menu says "DELFIN on this Mac": the dashboard opens in your
+browser, only reachable from this Mac. It keeps running when you close
+the Terminal window and ends by itself 10 minutes after your last browser
+tab closed; "Stop DELFIN on this Mac" in the menu ends it at once. Your files are in the folder
+DELFIN in your home folder. The agent's commands run in macOS's own
+sandbox. ORCA is not included (its licence does not allow it).
+
+
+-------------------------------------------------------------------
+4. STOP AND COME BACK
+-------------------------------------------------------------------
+
+Close the Terminal window of the connection. With "Keep session on the
+server" your session stays alive on the server and the next connection
+puts you back into it. Ctrl+C in that window is an explicit stop and ends
+the session even then.
+
+
+-------------------------------------------------------------------
+5. REMOVE
+-------------------------------------------------------------------
+
+Double-click Uninstall.command, or choose "Uninstall DELFIN..." in the
+app. It asks whether to keep your saved connections and whether to keep
+DELFIN set up on this Mac. Nothing on any server is changed.
