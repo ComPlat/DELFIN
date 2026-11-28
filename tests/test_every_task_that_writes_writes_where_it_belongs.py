@@ -119,7 +119,8 @@ def test_every_packaged_writing_class_has_a_workspace():
         t.get("task_class", "") for t in _tasks()
         if (str(t.get("task_class", "")).startswith("behavior")
             or str(t.get("task_class", "")).startswith("science")
-            or t.get("task_class") in ("office", "generic_project",
+            or t.get("task_class") in ("office", "office_solo",
+                                        "generic_project",
                                         "chemistry", "generalist"))
         and workspace_for(_ROOT, mode=t.get("mode", ""),
                           task_class=t.get("task_class", "")) is None
@@ -130,12 +131,15 @@ def test_every_packaged_writing_class_has_a_workspace():
 def test_the_counts_still_match_what_was_measured():
     """If a task file grows a new writing class, this says so rather than
     letting it inherit the checkout unnoticed."""
-    counts = {"office": 0, "behavior": 0, "generic_project": 0,
-              "science": 0, "chemistry": 0, "generalist": 0, "other": 0}
+    counts = {"office": 0, "office_solo": 0, "behavior": 0,
+              "generic_project": 0, "science": 0, "chemistry": 0,
+              "generalist": 0, "other": 0}
     for t in _tasks():
         c = str(t.get("task_class", ""))
         if c == "office":
             counts["office"] += 1
+        elif c == "office_solo":
+            counts["office_solo"] += 1
         elif c == "chemistry":
             counts["chemistry"] += 1
         elif c.startswith("behavior"):
@@ -441,9 +445,19 @@ def test_the_counts_still_match_what_was_measured():
     # ten ids are r3long-code-{median,cache,parse},
     # r3long-chem-{control-fill,solvent-check}, r3long-absent-binary,
     # r3long-data-{mean,join,exclude,rank}.
-    assert counts == {"office": 14, "behavior": 18, "generic_project": 24,
-                      "science": 63, "chemistry": 33, "generalist": 26,
-                      "other": 108}, counts
+    # twelve tasks on 2026-11-27 (O1, wave 76, wave/w76/o1-a1): the
+    # tasks_o1_office.yaml everyday office tasks, graded on the RESULT FILE
+    # by accept/o1_office_accept.py -- office 14 -> 26. Each is registered
+    # twice, once in office mode and once as a solo (Code) twin, so the mode
+    # comparison asks one question instead of two: the twelve twins are
+    # task_class office_solo, a bucket of their own (0 -> 12) rather than
+    # "other", because they write the office workspace just as concretely
+    # and this count is where a new writing class has to be noticed.
+    # Setup o1_office_fixtures.py builds all twelve fixtures; the reference
+    # solution and the acceptance script are in accept/.
+    assert counts == {"office": 26, "office_solo": 12, "behavior": 18,
+                      "generic_project": 24, "science": 63,
+                      "chemistry": 33, "generalist": 26, "other": 108}, counts
 
 
 # ---------------------------------------------------------------------------
