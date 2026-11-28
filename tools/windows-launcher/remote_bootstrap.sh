@@ -14,6 +14,18 @@ keep=${7:-0}
 working=${8:-0}
 person=${9:-}
 login_key=${10:-}
+# Set only by a connection from the same PC through WSL (DELFIN.ps1, WSL
+# transport): the name of its closing marker. Empty over SSH.
+local_id=${11:-}
+case "$local_id" in
+    '') ;;
+    delfin-win-local-*)
+        local_guid=${local_id#delfin-win-local-}
+        if [ ${#local_guid} -ne 36 ] || [ -n "${local_guid//[0-9a-f-]/}" ]; then
+            printf '%s\n' 'DELFIN: Invalid local connection.' >&2; exit 1
+        fi ;;
+    *) printf '%s\n' 'DELFIN: Invalid local connection.' >&2; exit 1 ;;
+esac
 # One line, nothing else: grep below checks line by line, so a second line
 # would pass unchecked and land in authorized_keys without the restriction.
 case "$login_key" in *$'\n'*|*$'\r'*) login_key='' ;; esac
@@ -331,4 +343,4 @@ case "$dashboard_help" in
     *) printf '%s\n' 'DELFIN: Server DELFIN is too old for this launcher (--strict-port is missing). Update the server installation to the Windows-launcher release; updating the Windows app alone is not enough.' >&2; exit 1 ;;
 esac
 # A script file puts its own folder first on sys.path, not the current one.
-exec "$python" "$launcher_script" "$preferred" "$PWD" "$python" "$tunnel_path" "$keep" "$working"
+exec "$python" "$launcher_script" "$preferred" "$PWD" "$python" "$tunnel_path" "$keep" "$working" ${local_id:+"$local_id"}

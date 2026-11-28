@@ -5,6 +5,12 @@ Everything runs on the server. Your PC needs no Python and no DELFIN
 installation. You need: Windows 10 or 11, network access to the server
 (a VPN if it is on an internal network), and the login you were given.
 
+No server? Install.cmd asks at the end "Set up DELFIN on this PC too?"
+Answer Y and DELFIN is installed on this PC, in WSL (Linux inside
+Windows). If WSL is missing, Windows asks once for administrator
+approval and restarts; setup continues by itself after you sign in.
+Then choose "This PC (WSL DELFIN)" in the app and click Start.
+
 README.md beside this file is the full reference. This is the short path
 from here to a working agent. Read it top to bottom once.
 

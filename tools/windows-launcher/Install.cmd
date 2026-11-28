@@ -27,6 +27,25 @@ echo Package OK.
 "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy RemoteSigned -File "%~dp0Install.ps1"
 if errorlevel 1 goto failed
 echo.
+echo DELFIN can also run on this PC itself, in WSL (Linux inside Windows),
+echo with no server. That needs about 7 GB and 10-40 minutes. If WSL is not
+echo installed yet, Windows asks once for administrator approval and has to
+echo restart; setup then continues by itself after you sign in again.
+choice /C YN /N /M "Set up DELFIN on this PC too? [Y/N]: "
+if errorlevel 2 goto startapp
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy RemoteSigned -File "%LOCALAPPDATA%\DELFIN Launcher\Setup-Wsl.ps1"
+rem 3: WSL was installed and Windows has to restart first; setup continues after it.
+if errorlevel 3 (
+    pause
+    exit /b 0
+)
+if errorlevel 1 (
+    echo.
+    echo The DELFIN app is installed and works with a server. Only the setup
+    echo on this PC stopped; the reason is above. Run Install.cmd again later.
+)
+:startapp
+echo.
 choice /C YN /N /M "Start DELFIN now? [Y/N]: "
 if errorlevel 2 exit /b 0
 if exist "%APPDATA%\Microsoft\Windows\Start Menu\Programs\DELFIN.lnk" (

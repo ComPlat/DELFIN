@@ -91,7 +91,8 @@ def test_it_changes_no_policy_and_says_so():
     assert not re.search(r"(?i)Set-ExecutionPolicy", INSTALL)
     assert not re.search(r"(?i)ExecutionPolicy\s+(Unrestricted|Bypass)",
                          INSTALL)
-    assert INSTALL.count("-ExecutionPolicy RemoteSigned") == 3
+    # Preflight, Test-Launcher, Install.ps1, and Setup-Wsl.ps1 (on this PC, if asked).
+    assert INSTALL.count("-ExecutionPolicy RemoteSigned") == 4
 
 
 def test_only_this_folder_is_touched():

@@ -30,6 +30,7 @@ import time
 import zipfile
 
 NAMES = ['Install.cmd', 'Uninstall.cmd', 'DELFIN.ps1', 'Install.ps1', 'Uninstall.ps1', 'Test-Launcher.ps1',
+         'Setup-Wsl.ps1', 'wsl_setup.sh',
          'remote_launcher.py', 'remote_bootstrap.sh', 'README.md', 'START-HERE.txt',
          'DELFIN_logo.png', 'DELFIN.ico']
 SIGNED = [name for name in NAMES if name.endswith('.ps1')]
