@@ -1,0 +1,1025 @@
+{
+ "package": "w72-p3-a4",
+ "capability": "the independent review flow reports findings a person can check (file and line inside the diff) and reports none it could not verify",
+ "entry_point": "delfin.agent.swarm.land.main([RUN, --dry-run]), the verb delfin-agent swarm wave land forwards to; only land.kit_chat is faked",
+ "command": "python3 experiments/parity/w72-p3-a4/scenarios.py",
+ "tree": {
+  "module_file": "delfin/agent/swarm/land.py",
+  "land_sha": "f0a45a1a1c21ce36b6d7e1d1a98beea800445efc",
+  "head": "7fafac9149ae8d66dff0c6ade8847ed4f5985750",
+  "dirty_at_runtime": "",
+  "python": "3.13.5"
+ },
+ "generated": "2026-11-26T20:35:06+0000",
+ "definitions": {
+  "REACHED": "a reviewer pair was reached and asked; the verdict is a reviewer verdict",
+  "USED": "every reported finding carried a location that could be checked against the branch's own files (oracle: the seed)",
+  "SAFE": "a seeded defect was not landed; a clean branch was not held",
+  "CORRECT": "SAFE and nothing unverifiable was reported"
+ },
+ "summary": {
+  "n_variants": 24,
+  "REACHED": 24,
+  "USED": 18,
+  "CORRECT": 12,
+  "SAFE": 16,
+  "recall_refused_with_right_place": "2/12",
+  "precision_finding_names_real_place": "4/24",
+  "findings_reported": 24,
+  "findings_with_checkable_location": 12,
+  "findings_unverifiable": 12,
+  "negatives_wrongly_refused": 4
+ },
+ "variants": [
+  {
+   "id": "A-precise-real",
+   "seed": "A",
+   "kind": "precise",
+   "shape": "real",
+   "expect": "refuse",
+   "diff_files": [
+    "delfin/agent/quiet_reporter.py",
+    "tests/test_the_quiet_reporter_reports.py"
+   ],
+   "file_lines": {
+    "delfin/agent/quiet_reporter.py": 8,
+    "tests/test_the_quiet_reporter_reports.py": 2
+   },
+   "truth_file": "delfin/agent/quiet_reporter.py",
+   "truth_line": 5,
+   "prompts_sent": 2,
+   "verdict": "refuse",
+   "outcome": "refused",
+   "landing": "refused: independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/quiet_reporter.py:5 -- nothing in delfin/ calls run_it; the new module is never mounted (the capability never runs); 2 finding(s) in scratch/REVIEW.json",
+   "findings": [
+    {
+     "file": "delfin/agent/quiet_reporter.py",
+     "line": 5,
+     "claim": "nothing in delfin/ calls run_it; the new module is never mounted",
+     "why_it_matters": "the capability never runs"
+    },
+    {
+     "file": "delfin/agent/quiet_reporter.py",
+     "line": 5,
+     "claim": "nothing in delfin/ calls run_it; the new module is never mounted",
+     "why_it_matters": "the capability never runs"
+    }
+   ],
+   "gate_lines": [
+    "night9/n9a: review REFUSED -- independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/quiet_reporter.py:5 -- nothing in delfin/ calls run_it; the new module is never mounted (the capability never runs); 2 finding(s) in scratch/REVIEW.json",
+    "night9/n9a: refused -- independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/quiet_reporter.py:5 -- nothing in delfin/ calls run_it; the new module is never mounted (the capability never runs); 2 finding(s) in scratch/REVIEW.json",
+    "review diagnosis (not a target): no branch reached a reviewer (1 could not be reviewed)"
+   ],
+   "reached": true,
+   "unverified_findings": [],
+   "used": true,
+   "caught": true,
+   "safe": true,
+   "why": "refused, and a finding names the seeded place",
+   "correct": true
+  },
+  {
+   "id": "A-precise-clean",
+   "seed": "A",
+   "kind": "precise",
+   "shape": "clean",
+   "expect": "pass",
+   "diff_files": [
+    "delfin/agent/quiet_reporter.py",
+    "tests/test_the_quiet_reporter_reports.py"
+   ],
+   "file_lines": {
+    "delfin/agent/quiet_reporter.py": 8,
+    "tests/test_the_quiet_reporter_reports.py": 2
+   },
+   "truth_file": null,
+   "truth_line": null,
+   "prompts_sent": 2,
+   "verdict": "pass",
+   "outcome": "ready",
+   "landing": "ready: would push main -> wave/night9-n9a; review: independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+   "findings": [],
+   "gate_lines": [
+    "night9/n9a: review passed -- independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+    "night9/n9a: ready -- would push main -> wave/night9-n9a; review: independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+    "review diagnosis (not a target): no branch reached a reviewer (1 could not be reviewed)"
+   ],
+   "reached": true,
+   "unverified_findings": [],
+   "used": true,
+   "caught": false,
+   "safe": true,
+   "why": "clean diff passed",
+   "correct": true
+  },
+  {
+   "id": "A-phantom-file-real",
+   "seed": "A",
+   "kind": "phantom-file",
+   "shape": "real",
+   "expect": "refuse",
+   "diff_files": [
+    "delfin/agent/quiet_reporter.py",
+    "tests/test_the_quiet_reporter_reports.py"
+   ],
+   "file_lines": {
+    "delfin/agent/quiet_reporter.py": 8,
+    "tests/test_the_quiet_reporter_reports.py": 2
+   },
+   "truth_file": null,
+   "truth_line": null,
+   "prompts_sent": 2,
+   "verdict": "refuse",
+   "outcome": "refused",
+   "landing": "refused: independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/never_heard_of_it.py:42 -- nothing calls the new function (it never runs); 2 finding(s) in scratch/REVIEW.json",
+   "findings": [
+    {
+     "file": "delfin/agent/never_heard_of_it.py",
+     "line": 42,
+     "claim": "nothing calls the new function",
+     "why_it_matters": "it never runs"
+    },
+    {
+     "file": "delfin/agent/never_heard_of_it.py",
+     "line": 42,
+     "claim": "nothing calls the new function",
+     "why_it_matters": "it never runs"
+    }
+   ],
+   "gate_lines": [
+    "night9/n9a: review REFUSED -- independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/never_heard_of_it.py:42 -- nothing calls the new function (it never runs); 2 finding(s) in scratch/REVIEW.json",
+    "night9/n9a: refused -- independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/never_heard_of_it.py:42 -- nothing calls the new function (it never runs); 2 finding(s) in scratch/REVIEW.json",
+    "review diagnosis (not a target): no branch reached a reviewer (1 could not be reviewed)"
+   ],
+   "reached": true,
+   "unverified_findings": [
+    "delfin/agent/never_heard_of_it.py:42 (file not in the diff)",
+    "delfin/agent/never_heard_of_it.py:42 (file not in the diff)"
+   ],
+   "used": false,
+   "caught": false,
+   "safe": true,
+   "why": "refused, but no finding names the seeded place",
+   "correct": false
+  },
+  {
+   "id": "A-phantom-file-clean",
+   "seed": "A",
+   "kind": "phantom-file",
+   "shape": "clean",
+   "expect": "pass",
+   "diff_files": [
+    "delfin/agent/quiet_reporter.py",
+    "tests/test_the_quiet_reporter_reports.py"
+   ],
+   "file_lines": {
+    "delfin/agent/quiet_reporter.py": 8,
+    "tests/test_the_quiet_reporter_reports.py": 2
+   },
+   "truth_file": null,
+   "truth_line": null,
+   "prompts_sent": 2,
+   "verdict": "pass",
+   "outcome": "ready",
+   "landing": "ready: would push main -> wave/night9-n9a; review: independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+   "findings": [],
+   "gate_lines": [
+    "night9/n9a: review passed -- independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+    "night9/n9a: ready -- would push main -> wave/night9-n9a; review: independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+    "review diagnosis (not a target): no branch reached a reviewer (1 could not be reviewed)"
+   ],
+   "reached": true,
+   "unverified_findings": [],
+   "used": true,
+   "caught": false,
+   "safe": true,
+   "why": "clean diff passed",
+   "correct": true
+  },
+  {
+   "id": "A-wrong-line-real",
+   "seed": "A",
+   "kind": "wrong-line",
+   "shape": "real",
+   "expect": "refuse",
+   "diff_files": [
+    "delfin/agent/quiet_reporter.py",
+    "tests/test_the_quiet_reporter_reports.py"
+   ],
+   "file_lines": {
+    "delfin/agent/quiet_reporter.py": 8,
+    "tests/test_the_quiet_reporter_reports.py": 2
+   },
+   "truth_file": null,
+   "truth_line": null,
+   "prompts_sent": 2,
+   "verdict": "refuse",
+   "outcome": "refused",
+   "landing": "refused: independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/quiet_reporter.py:3008 -- nothing calls the new function (it never runs); 2 finding(s) in scratch/REVIEW.json",
+   "findings": [
+    {
+     "file": "delfin/agent/quiet_reporter.py",
+     "line": 3008,
+     "claim": "nothing calls the new function",
+     "why_it_matters": "it never runs"
+    },
+    {
+     "file": "delfin/agent/quiet_reporter.py",
+     "line": 3008,
+     "claim": "nothing calls the new function",
+     "why_it_matters": "it never runs"
+    }
+   ],
+   "gate_lines": [
+    "night9/n9a: review REFUSED -- independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/quiet_reporter.py:3008 -- nothing calls the new function (it never runs); 2 finding(s) in scratch/REVIEW.json",
+    "night9/n9a: refused -- independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/quiet_reporter.py:3008 -- nothing calls the new function (it never runs); 2 finding(s) in scratch/REVIEW.json",
+    "review diagnosis (not a target): no branch reached a reviewer (1 could not be reviewed)"
+   ],
+   "reached": true,
+   "unverified_findings": [
+    "delfin/agent/quiet_reporter.py:3008 (line outside the new file)",
+    "delfin/agent/quiet_reporter.py:3008 (line outside the new file)"
+   ],
+   "used": false,
+   "caught": false,
+   "safe": true,
+   "why": "refused, but no finding names the seeded place",
+   "correct": false
+  },
+  {
+   "id": "A-wrong-line-clean",
+   "seed": "A",
+   "kind": "wrong-line",
+   "shape": "clean",
+   "expect": "pass",
+   "diff_files": [
+    "delfin/agent/quiet_reporter.py",
+    "tests/test_the_quiet_reporter_reports.py"
+   ],
+   "file_lines": {
+    "delfin/agent/quiet_reporter.py": 8,
+    "tests/test_the_quiet_reporter_reports.py": 2
+   },
+   "truth_file": null,
+   "truth_line": null,
+   "prompts_sent": 2,
+   "verdict": "pass",
+   "outcome": "ready",
+   "landing": "ready: would push main -> wave/night9-n9a; review: independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+   "findings": [],
+   "gate_lines": [
+    "night9/n9a: review passed -- independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+    "night9/n9a: ready -- would push main -> wave/night9-n9a; review: independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+    "review diagnosis (not a target): no branch reached a reviewer (1 could not be reviewed)"
+   ],
+   "reached": true,
+   "unverified_findings": [],
+   "used": true,
+   "caught": false,
+   "safe": true,
+   "why": "clean diff passed",
+   "correct": true
+  },
+  {
+   "id": "A-off-by-one-real",
+   "seed": "A",
+   "kind": "off-by-one",
+   "shape": "real",
+   "expect": "refuse",
+   "diff_files": [
+    "delfin/agent/quiet_reporter.py",
+    "tests/test_the_quiet_reporter_reports.py"
+   ],
+   "file_lines": {
+    "delfin/agent/quiet_reporter.py": 8,
+    "tests/test_the_quiet_reporter_reports.py": 2
+   },
+   "truth_file": null,
+   "truth_line": null,
+   "prompts_sent": 2,
+   "verdict": "refuse",
+   "outcome": "refused",
+   "landing": "refused: independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/quiet_reporter.py:6 -- nothing calls the new function (it never runs); 2 finding(s) in scratch/REVIEW.json",
+   "findings": [
+    {
+     "file": "delfin/agent/quiet_reporter.py",
+     "line": 6,
+     "claim": "nothing calls the new function",
+     "why_it_matters": "it never runs"
+    },
+    {
+     "file": "delfin/agent/quiet_reporter.py",
+     "line": 6,
+     "claim": "nothing calls the new function",
+     "why_it_matters": "it never runs"
+    }
+   ],
+   "gate_lines": [
+    "night9/n9a: review REFUSED -- independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/quiet_reporter.py:6 -- nothing calls the new function (it never runs); 2 finding(s) in scratch/REVIEW.json",
+    "night9/n9a: refused -- independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/quiet_reporter.py:6 -- nothing calls the new function (it never runs); 2 finding(s) in scratch/REVIEW.json",
+    "review diagnosis (not a target): no branch reached a reviewer (1 could not be reviewed)"
+   ],
+   "reached": true,
+   "unverified_findings": [],
+   "used": true,
+   "caught": false,
+   "safe": true,
+   "why": "refused, but no finding names the seeded place",
+   "correct": true
+  },
+  {
+   "id": "A-off-by-one-clean",
+   "seed": "A",
+   "kind": "off-by-one",
+   "shape": "clean",
+   "expect": "pass",
+   "diff_files": [
+    "delfin/agent/quiet_reporter.py",
+    "tests/test_the_quiet_reporter_reports.py"
+   ],
+   "file_lines": {
+    "delfin/agent/quiet_reporter.py": 8,
+    "tests/test_the_quiet_reporter_reports.py": 2
+   },
+   "truth_file": null,
+   "truth_line": null,
+   "prompts_sent": 2,
+   "verdict": "pass",
+   "outcome": "ready",
+   "landing": "ready: would push main -> wave/night9-n9a; review: independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+   "findings": [],
+   "gate_lines": [
+    "night9/n9a: review passed -- independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+    "night9/n9a: ready -- would push main -> wave/night9-n9a; review: independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+    "review diagnosis (not a target): no branch reached a reviewer (1 could not be reviewed)"
+   ],
+   "reached": true,
+   "unverified_findings": [],
+   "used": true,
+   "caught": false,
+   "safe": true,
+   "why": "clean diff passed",
+   "correct": true
+  },
+  {
+   "id": "A-false-at-real-place-real",
+   "seed": "A",
+   "kind": "false-at-real-place",
+   "shape": "real",
+   "expect": "refuse",
+   "diff_files": [
+    "delfin/agent/quiet_reporter.py",
+    "tests/test_the_quiet_reporter_reports.py"
+   ],
+   "file_lines": {
+    "delfin/agent/quiet_reporter.py": 8,
+    "tests/test_the_quiet_reporter_reports.py": 2
+   },
+   "truth_file": null,
+   "truth_line": null,
+   "prompts_sent": 2,
+   "verdict": "pass",
+   "outcome": "ready",
+   "landing": "ready: would push main -> wave/night9-n9a; review: independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+   "findings": [],
+   "gate_lines": [
+    "night9/n9a: review passed -- independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+    "night9/n9a: ready -- would push main -> wave/night9-n9a; review: independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+    "review diagnosis (not a target): no branch reached a reviewer (1 could not be reviewed)"
+   ],
+   "reached": true,
+   "unverified_findings": [],
+   "used": true,
+   "caught": false,
+   "safe": false,
+   "why": "verdict 'pass' on a seeded defect",
+   "correct": false
+  },
+  {
+   "id": "A-false-at-real-place-clean",
+   "seed": "A",
+   "kind": "false-at-real-place",
+   "shape": "clean",
+   "expect": "pass",
+   "diff_files": [
+    "delfin/agent/quiet_reporter.py",
+    "tests/test_the_quiet_reporter_reports.py"
+   ],
+   "file_lines": {
+    "delfin/agent/quiet_reporter.py": 8,
+    "tests/test_the_quiet_reporter_reports.py": 2
+   },
+   "truth_file": null,
+   "truth_line": null,
+   "prompts_sent": 2,
+   "verdict": "refuse",
+   "outcome": "refused",
+   "landing": "refused: independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/quiet_reporter.py:2 -- this import is never used (the branch carries dead weight); 2 finding(s) in scratch/REVIEW.json",
+   "findings": [
+    {
+     "file": "delfin/agent/quiet_reporter.py",
+     "line": 2,
+     "claim": "this import is never used",
+     "why_it_matters": "the branch carries dead weight"
+    },
+    {
+     "file": "delfin/agent/quiet_reporter.py",
+     "line": 2,
+     "claim": "this import is never used",
+     "why_it_matters": "the branch carries dead weight"
+    }
+   ],
+   "gate_lines": [
+    "night9/n9a: review REFUSED -- independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/quiet_reporter.py:2 -- this import is never used (the branch carries dead weight); 2 finding(s) in scratch/REVIEW.json",
+    "night9/n9a: refused -- independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/quiet_reporter.py:2 -- this import is never used (the branch carries dead weight); 2 finding(s) in scratch/REVIEW.json",
+    "review diagnosis (not a target): no branch reached a reviewer (1 could not be reviewed)"
+   ],
+   "reached": true,
+   "unverified_findings": [],
+   "used": true,
+   "caught": false,
+   "safe": false,
+   "why": "verdict 'refuse' on a clean diff",
+   "correct": false
+  },
+  {
+   "id": "A-phantom-on-clean-real",
+   "seed": "A",
+   "kind": "phantom-on-clean",
+   "shape": "real",
+   "expect": "refuse",
+   "diff_files": [
+    "delfin/agent/quiet_reporter.py",
+    "tests/test_the_quiet_reporter_reports.py"
+   ],
+   "file_lines": {
+    "delfin/agent/quiet_reporter.py": 8,
+    "tests/test_the_quiet_reporter_reports.py": 2
+   },
+   "truth_file": null,
+   "truth_line": null,
+   "prompts_sent": 2,
+   "verdict": "pass",
+   "outcome": "ready",
+   "landing": "ready: would push main -> wave/night9-n9a; review: independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+   "findings": [],
+   "gate_lines": [
+    "night9/n9a: review passed -- independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+    "night9/n9a: ready -- would push main -> wave/night9-n9a; review: independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+    "review diagnosis (not a target): no branch reached a reviewer (1 could not be reviewed)"
+   ],
+   "reached": true,
+   "unverified_findings": [],
+   "used": true,
+   "caught": false,
+   "safe": false,
+   "why": "verdict 'pass' on a seeded defect",
+   "correct": false
+  },
+  {
+   "id": "A-phantom-on-clean-clean",
+   "seed": "A",
+   "kind": "phantom-on-clean",
+   "shape": "clean",
+   "expect": "pass",
+   "diff_files": [
+    "delfin/agent/quiet_reporter.py",
+    "tests/test_the_quiet_reporter_reports.py"
+   ],
+   "file_lines": {
+    "delfin/agent/quiet_reporter.py": 8,
+    "tests/test_the_quiet_reporter_reports.py": 2
+   },
+   "truth_file": null,
+   "truth_line": null,
+   "prompts_sent": 2,
+   "verdict": "refuse",
+   "outcome": "refused",
+   "landing": "refused: independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/not_in_this_branch.py:9 -- the guard at line 9 is removed (a check is lost); 2 finding(s) in scratch/REVIEW.json",
+   "findings": [
+    {
+     "file": "delfin/agent/not_in_this_branch.py",
+     "line": 9,
+     "claim": "the guard at line 9 is removed",
+     "why_it_matters": "a check is lost"
+    },
+    {
+     "file": "delfin/agent/not_in_this_branch.py",
+     "line": 9,
+     "claim": "the guard at line 9 is removed",
+     "why_it_matters": "a check is lost"
+    }
+   ],
+   "gate_lines": [
+    "night9/n9a: review REFUSED -- independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/not_in_this_branch.py:9 -- the guard at line 9 is removed (a check is lost); 2 finding(s) in scratch/REVIEW.json",
+    "night9/n9a: refused -- independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/not_in_this_branch.py:9 -- the guard at line 9 is removed (a check is lost); 2 finding(s) in scratch/REVIEW.json",
+    "review diagnosis (not a target): no branch reached a reviewer (1 could not be reviewed)"
+   ],
+   "reached": true,
+   "unverified_findings": [
+    "delfin/agent/not_in_this_branch.py:9 (file not in the diff)",
+    "delfin/agent/not_in_this_branch.py:9 (file not in the diff)"
+   ],
+   "used": false,
+   "caught": false,
+   "safe": false,
+   "why": "verdict 'refuse' on a clean diff",
+   "correct": false
+  },
+  {
+   "id": "B-precise-real",
+   "seed": "B",
+   "kind": "precise",
+   "shape": "real",
+   "expect": "refuse",
+   "diff_files": [
+    "delfin/agent/quiet_counter.py",
+    "tests/test_the_quiet_counter_counts.py"
+   ],
+   "file_lines": {
+    "delfin/agent/quiet_counter.py": 8,
+    "tests/test_the_quiet_counter_counts.py": 2
+   },
+   "truth_file": "delfin/agent/quiet_counter.py",
+   "truth_line": 5,
+   "prompts_sent": 2,
+   "verdict": "refuse",
+   "outcome": "refused",
+   "landing": "refused: independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/quiet_counter.py:5 -- nothing in delfin/ calls run_it; the new module is never mounted (the capability never runs); 2 finding(s) in scratch/REVIEW.json",
+   "findings": [
+    {
+     "file": "delfin/agent/quiet_counter.py",
+     "line": 5,
+     "claim": "nothing in delfin/ calls run_it; the new module is never mounted",
+     "why_it_matters": "the capability never runs"
+    },
+    {
+     "file": "delfin/agent/quiet_counter.py",
+     "line": 5,
+     "claim": "nothing in delfin/ calls run_it; the new module is never mounted",
+     "why_it_matters": "the capability never runs"
+    }
+   ],
+   "gate_lines": [
+    "night9/n9a: review REFUSED -- independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/quiet_counter.py:5 -- nothing in delfin/ calls run_it; the new module is never mounted (the capability never runs); 2 finding(s) in scratch/REVIEW.json",
+    "night9/n9a: refused -- independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/quiet_counter.py:5 -- nothing in delfin/ calls run_it; the new module is never mounted (the capability never runs); 2 finding(s) in scratch/REVIEW.json",
+    "review diagnosis (not a target): no branch reached a reviewer (1 could not be reviewed)"
+   ],
+   "reached": true,
+   "unverified_findings": [],
+   "used": true,
+   "caught": true,
+   "safe": true,
+   "why": "refused, and a finding names the seeded place",
+   "correct": true
+  },
+  {
+   "id": "B-precise-clean",
+   "seed": "B",
+   "kind": "precise",
+   "shape": "clean",
+   "expect": "pass",
+   "diff_files": [
+    "delfin/agent/quiet_counter.py",
+    "tests/test_the_quiet_counter_counts.py"
+   ],
+   "file_lines": {
+    "delfin/agent/quiet_counter.py": 8,
+    "tests/test_the_quiet_counter_counts.py": 2
+   },
+   "truth_file": null,
+   "truth_line": null,
+   "prompts_sent": 2,
+   "verdict": "pass",
+   "outcome": "ready",
+   "landing": "ready: would push main -> wave/night9-n9a; review: independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+   "findings": [],
+   "gate_lines": [
+    "night9/n9a: review passed -- independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+    "night9/n9a: ready -- would push main -> wave/night9-n9a; review: independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+    "review diagnosis (not a target): no branch reached a reviewer (1 could not be reviewed)"
+   ],
+   "reached": true,
+   "unverified_findings": [],
+   "used": true,
+   "caught": false,
+   "safe": true,
+   "why": "clean diff passed",
+   "correct": true
+  },
+  {
+   "id": "B-phantom-file-real",
+   "seed": "B",
+   "kind": "phantom-file",
+   "shape": "real",
+   "expect": "refuse",
+   "diff_files": [
+    "delfin/agent/quiet_counter.py",
+    "tests/test_the_quiet_counter_counts.py"
+   ],
+   "file_lines": {
+    "delfin/agent/quiet_counter.py": 8,
+    "tests/test_the_quiet_counter_counts.py": 2
+   },
+   "truth_file": null,
+   "truth_line": null,
+   "prompts_sent": 2,
+   "verdict": "refuse",
+   "outcome": "refused",
+   "landing": "refused: independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/never_heard_of_it.py:42 -- nothing calls the new function (it never runs); 2 finding(s) in scratch/REVIEW.json",
+   "findings": [
+    {
+     "file": "delfin/agent/never_heard_of_it.py",
+     "line": 42,
+     "claim": "nothing calls the new function",
+     "why_it_matters": "it never runs"
+    },
+    {
+     "file": "delfin/agent/never_heard_of_it.py",
+     "line": 42,
+     "claim": "nothing calls the new function",
+     "why_it_matters": "it never runs"
+    }
+   ],
+   "gate_lines": [
+    "night9/n9a: review REFUSED -- independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/never_heard_of_it.py:42 -- nothing calls the new function (it never runs); 2 finding(s) in scratch/REVIEW.json",
+    "night9/n9a: refused -- independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/never_heard_of_it.py:42 -- nothing calls the new function (it never runs); 2 finding(s) in scratch/REVIEW.json",
+    "review diagnosis (not a target): no branch reached a reviewer (1 could not be reviewed)"
+   ],
+   "reached": true,
+   "unverified_findings": [
+    "delfin/agent/never_heard_of_it.py:42 (file not in the diff)",
+    "delfin/agent/never_heard_of_it.py:42 (file not in the diff)"
+   ],
+   "used": false,
+   "caught": false,
+   "safe": true,
+   "why": "refused, but no finding names the seeded place",
+   "correct": false
+  },
+  {
+   "id": "B-phantom-file-clean",
+   "seed": "B",
+   "kind": "phantom-file",
+   "shape": "clean",
+   "expect": "pass",
+   "diff_files": [
+    "delfin/agent/quiet_counter.py",
+    "tests/test_the_quiet_counter_counts.py"
+   ],
+   "file_lines": {
+    "delfin/agent/quiet_counter.py": 8,
+    "tests/test_the_quiet_counter_counts.py": 2
+   },
+   "truth_file": null,
+   "truth_line": null,
+   "prompts_sent": 2,
+   "verdict": "pass",
+   "outcome": "ready",
+   "landing": "ready: would push main -> wave/night9-n9a; review: independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+   "findings": [],
+   "gate_lines": [
+    "night9/n9a: review passed -- independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+    "night9/n9a: ready -- would push main -> wave/night9-n9a; review: independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+    "review diagnosis (not a target): no branch reached a reviewer (1 could not be reviewed)"
+   ],
+   "reached": true,
+   "unverified_findings": [],
+   "used": true,
+   "caught": false,
+   "safe": true,
+   "why": "clean diff passed",
+   "correct": true
+  },
+  {
+   "id": "B-wrong-line-real",
+   "seed": "B",
+   "kind": "wrong-line",
+   "shape": "real",
+   "expect": "refuse",
+   "diff_files": [
+    "delfin/agent/quiet_counter.py",
+    "tests/test_the_quiet_counter_counts.py"
+   ],
+   "file_lines": {
+    "delfin/agent/quiet_counter.py": 8,
+    "tests/test_the_quiet_counter_counts.py": 2
+   },
+   "truth_file": null,
+   "truth_line": null,
+   "prompts_sent": 2,
+   "verdict": "refuse",
+   "outcome": "refused",
+   "landing": "refused: independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/quiet_counter.py:3008 -- nothing calls the new function (it never runs); 2 finding(s) in scratch/REVIEW.json",
+   "findings": [
+    {
+     "file": "delfin/agent/quiet_counter.py",
+     "line": 3008,
+     "claim": "nothing calls the new function",
+     "why_it_matters": "it never runs"
+    },
+    {
+     "file": "delfin/agent/quiet_counter.py",
+     "line": 3008,
+     "claim": "nothing calls the new function",
+     "why_it_matters": "it never runs"
+    }
+   ],
+   "gate_lines": [
+    "night9/n9a: review REFUSED -- independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/quiet_counter.py:3008 -- nothing calls the new function (it never runs); 2 finding(s) in scratch/REVIEW.json",
+    "night9/n9a: refused -- independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/quiet_counter.py:3008 -- nothing calls the new function (it never runs); 2 finding(s) in scratch/REVIEW.json",
+    "review diagnosis (not a target): no branch reached a reviewer (1 could not be reviewed)"
+   ],
+   "reached": true,
+   "unverified_findings": [
+    "delfin/agent/quiet_counter.py:3008 (line outside the new file)",
+    "delfin/agent/quiet_counter.py:3008 (line outside the new file)"
+   ],
+   "used": false,
+   "caught": false,
+   "safe": true,
+   "why": "refused, but no finding names the seeded place",
+   "correct": false
+  },
+  {
+   "id": "B-wrong-line-clean",
+   "seed": "B",
+   "kind": "wrong-line",
+   "shape": "clean",
+   "expect": "pass",
+   "diff_files": [
+    "delfin/agent/quiet_counter.py",
+    "tests/test_the_quiet_counter_counts.py"
+   ],
+   "file_lines": {
+    "delfin/agent/quiet_counter.py": 8,
+    "tests/test_the_quiet_counter_counts.py": 2
+   },
+   "truth_file": null,
+   "truth_line": null,
+   "prompts_sent": 2,
+   "verdict": "pass",
+   "outcome": "ready",
+   "landing": "ready: would push main -> wave/night9-n9a; review: independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+   "findings": [],
+   "gate_lines": [
+    "night9/n9a: review passed -- independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+    "night9/n9a: ready -- would push main -> wave/night9-n9a; review: independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+    "review diagnosis (not a target): no branch reached a reviewer (1 could not be reviewed)"
+   ],
+   "reached": true,
+   "unverified_findings": [],
+   "used": true,
+   "caught": false,
+   "safe": true,
+   "why": "clean diff passed",
+   "correct": true
+  },
+  {
+   "id": "B-off-by-one-real",
+   "seed": "B",
+   "kind": "off-by-one",
+   "shape": "real",
+   "expect": "refuse",
+   "diff_files": [
+    "delfin/agent/quiet_counter.py",
+    "tests/test_the_quiet_counter_counts.py"
+   ],
+   "file_lines": {
+    "delfin/agent/quiet_counter.py": 8,
+    "tests/test_the_quiet_counter_counts.py": 2
+   },
+   "truth_file": null,
+   "truth_line": null,
+   "prompts_sent": 2,
+   "verdict": "refuse",
+   "outcome": "refused",
+   "landing": "refused: independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/quiet_counter.py:6 -- nothing calls the new function (it never runs); 2 finding(s) in scratch/REVIEW.json",
+   "findings": [
+    {
+     "file": "delfin/agent/quiet_counter.py",
+     "line": 6,
+     "claim": "nothing calls the new function",
+     "why_it_matters": "it never runs"
+    },
+    {
+     "file": "delfin/agent/quiet_counter.py",
+     "line": 6,
+     "claim": "nothing calls the new function",
+     "why_it_matters": "it never runs"
+    }
+   ],
+   "gate_lines": [
+    "night9/n9a: review REFUSED -- independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/quiet_counter.py:6 -- nothing calls the new function (it never runs); 2 finding(s) in scratch/REVIEW.json",
+    "night9/n9a: refused -- independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/quiet_counter.py:6 -- nothing calls the new function (it never runs); 2 finding(s) in scratch/REVIEW.json",
+    "review diagnosis (not a target): no branch reached a reviewer (1 could not be reviewed)"
+   ],
+   "reached": true,
+   "unverified_findings": [],
+   "used": true,
+   "caught": false,
+   "safe": true,
+   "why": "refused, but no finding names the seeded place",
+   "correct": true
+  },
+  {
+   "id": "B-off-by-one-clean",
+   "seed": "B",
+   "kind": "off-by-one",
+   "shape": "clean",
+   "expect": "pass",
+   "diff_files": [
+    "delfin/agent/quiet_counter.py",
+    "tests/test_the_quiet_counter_counts.py"
+   ],
+   "file_lines": {
+    "delfin/agent/quiet_counter.py": 8,
+    "tests/test_the_quiet_counter_counts.py": 2
+   },
+   "truth_file": null,
+   "truth_line": null,
+   "prompts_sent": 2,
+   "verdict": "pass",
+   "outcome": "ready",
+   "landing": "ready: would push main -> wave/night9-n9a; review: independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+   "findings": [],
+   "gate_lines": [
+    "night9/n9a: review passed -- independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+    "night9/n9a: ready -- would push main -> wave/night9-n9a; review: independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+    "review diagnosis (not a target): no branch reached a reviewer (1 could not be reviewed)"
+   ],
+   "reached": true,
+   "unverified_findings": [],
+   "used": true,
+   "caught": false,
+   "safe": true,
+   "why": "clean diff passed",
+   "correct": true
+  },
+  {
+   "id": "B-false-at-real-place-real",
+   "seed": "B",
+   "kind": "false-at-real-place",
+   "shape": "real",
+   "expect": "refuse",
+   "diff_files": [
+    "delfin/agent/quiet_counter.py",
+    "tests/test_the_quiet_counter_counts.py"
+   ],
+   "file_lines": {
+    "delfin/agent/quiet_counter.py": 8,
+    "tests/test_the_quiet_counter_counts.py": 2
+   },
+   "truth_file": null,
+   "truth_line": null,
+   "prompts_sent": 2,
+   "verdict": "pass",
+   "outcome": "ready",
+   "landing": "ready: would push main -> wave/night9-n9a; review: independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+   "findings": [],
+   "gate_lines": [
+    "night9/n9a: review passed -- independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+    "night9/n9a: ready -- would push main -> wave/night9-n9a; review: independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+    "review diagnosis (not a target): no branch reached a reviewer (1 could not be reviewed)"
+   ],
+   "reached": true,
+   "unverified_findings": [],
+   "used": true,
+   "caught": false,
+   "safe": false,
+   "why": "verdict 'pass' on a seeded defect",
+   "correct": false
+  },
+  {
+   "id": "B-false-at-real-place-clean",
+   "seed": "B",
+   "kind": "false-at-real-place",
+   "shape": "clean",
+   "expect": "pass",
+   "diff_files": [
+    "delfin/agent/quiet_counter.py",
+    "tests/test_the_quiet_counter_counts.py"
+   ],
+   "file_lines": {
+    "delfin/agent/quiet_counter.py": 8,
+    "tests/test_the_quiet_counter_counts.py": 2
+   },
+   "truth_file": null,
+   "truth_line": null,
+   "prompts_sent": 2,
+   "verdict": "refuse",
+   "outcome": "refused",
+   "landing": "refused: independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/quiet_counter.py:2 -- this import is never used (the branch carries dead weight); 2 finding(s) in scratch/REVIEW.json",
+   "findings": [
+    {
+     "file": "delfin/agent/quiet_counter.py",
+     "line": 2,
+     "claim": "this import is never used",
+     "why_it_matters": "the branch carries dead weight"
+    },
+    {
+     "file": "delfin/agent/quiet_counter.py",
+     "line": 2,
+     "claim": "this import is never used",
+     "why_it_matters": "the branch carries dead weight"
+    }
+   ],
+   "gate_lines": [
+    "night9/n9a: review REFUSED -- independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/quiet_counter.py:2 -- this import is never used (the branch carries dead weight); 2 finding(s) in scratch/REVIEW.json",
+    "night9/n9a: refused -- independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/quiet_counter.py:2 -- this import is never used (the branch carries dead weight); 2 finding(s) in scratch/REVIEW.json",
+    "review diagnosis (not a target): no branch reached a reviewer (1 could not be reviewed)"
+   ],
+   "reached": true,
+   "unverified_findings": [],
+   "used": true,
+   "caught": false,
+   "safe": false,
+   "why": "verdict 'refuse' on a clean diff",
+   "correct": false
+  },
+  {
+   "id": "B-phantom-on-clean-real",
+   "seed": "B",
+   "kind": "phantom-on-clean",
+   "shape": "real",
+   "expect": "refuse",
+   "diff_files": [
+    "delfin/agent/quiet_counter.py",
+    "tests/test_the_quiet_counter_counts.py"
+   ],
+   "file_lines": {
+    "delfin/agent/quiet_counter.py": 8,
+    "tests/test_the_quiet_counter_counts.py": 2
+   },
+   "truth_file": null,
+   "truth_line": null,
+   "prompts_sent": 2,
+   "verdict": "pass",
+   "outcome": "ready",
+   "landing": "ready: would push main -> wave/night9-n9a; review: independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+   "findings": [],
+   "gate_lines": [
+    "night9/n9a: review passed -- independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+    "night9/n9a: ready -- would push main -> wave/night9-n9a; review: independent review passed -- kit.glm-5.3-flash and kit.deepseek-v4-flash both pass (pair calibrated 2026-01-01T00:00:00+0000, 0 wrong of 5 decided on the corpus)",
+    "review diagnosis (not a target): no branch reached a reviewer (1 could not be reviewed)"
+   ],
+   "reached": true,
+   "unverified_findings": [],
+   "used": true,
+   "caught": false,
+   "safe": false,
+   "why": "verdict 'pass' on a seeded defect",
+   "correct": false
+  },
+  {
+   "id": "B-phantom-on-clean-clean",
+   "seed": "B",
+   "kind": "phantom-on-clean",
+   "shape": "clean",
+   "expect": "pass",
+   "diff_files": [
+    "delfin/agent/quiet_counter.py",
+    "tests/test_the_quiet_counter_counts.py"
+   ],
+   "file_lines": {
+    "delfin/agent/quiet_counter.py": 8,
+    "tests/test_the_quiet_counter_counts.py": 2
+   },
+   "truth_file": null,
+   "truth_line": null,
+   "prompts_sent": 2,
+   "verdict": "refuse",
+   "outcome": "refused",
+   "landing": "refused: independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/not_in_this_branch.py:9 -- the guard at line 9 is removed (a check is lost); 2 finding(s) in scratch/REVIEW.json",
+   "findings": [
+    {
+     "file": "delfin/agent/not_in_this_branch.py",
+     "line": 9,
+     "claim": "the guard at line 9 is removed",
+     "why_it_matters": "a check is lost"
+    },
+    {
+     "file": "delfin/agent/not_in_this_branch.py",
+     "line": 9,
+     "claim": "the guard at line 9 is removed",
+     "why_it_matters": "a check is lost"
+    }
+   ],
+   "gate_lines": [
+    "night9/n9a: review REFUSED -- independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/not_in_this_branch.py:9 -- the guard at line 9 is removed (a check is lost); 2 finding(s) in scratch/REVIEW.json",
+    "night9/n9a: refused -- independent review refused by BOTH kit.glm-5.3-flash and kit.deepseek-v4-flash: delfin/agent/not_in_this_branch.py:9 -- the guard at line 9 is removed (a check is lost); 2 finding(s) in scratch/REVIEW.json",
+    "review diagnosis (not a target): no branch reached a reviewer (1 could not be reviewed)"
+   ],
+   "reached": true,
+   "unverified_findings": [
+    "delfin/agent/not_in_this_branch.py:9 (file not in the diff)",
+    "delfin/agent/not_in_this_branch.py:9 (file not in the diff)"
+   ],
+   "used": false,
+   "caught": false,
+   "safe": false,
+   "why": "verdict 'refuse' on a clean diff",
+   "correct": false
+  }
+ ]
+}

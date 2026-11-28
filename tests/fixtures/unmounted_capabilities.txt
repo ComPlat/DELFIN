@@ -262,8 +262,8 @@ test-only	workflow_is	delfin/agent/pack/benchmark/accept/w20_common.py:15
 # same corpus, same question -- which its tests pin. Ported unchanged with the
 # landing gate from the orchestrator's script, where it was test-only too.
 # The anchor followed the definition when wave 54's land gate grew the file
-# (675 -> 1049); the row's tier is unchanged.
-test-only	calibration_record	delfin/agent/swarm/land.py:1049
+# (675 -> 1049, then 1227 with the finding-verification step); the row's tier is unchanged.
+test-only	calibration_record	delfin/agent/swarm/land.py:1227
 # ---------------------------------------------------------------------------
 # Rows added 2026-11-25 by the widening of the census to delfin/tools/.
 # Measured on the tree BEFORE that widening: delfin/tools/ held 591

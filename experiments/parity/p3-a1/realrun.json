@@ -1,0 +1,34 @@
+{
+  "package": "p3-a1",
+  "why_these_are_not_measured_here": "Recall and precision of a review against real defects are properties of the MODEL reading the code. This cage has no provider key, and scripting the model would make the number a measurement of my own script. What IS measured here (experiments/parity/p3-a1/) is the part the model cannot fake: whether an unverifiable finding is withheld rather than reported, whether each survivor carries a file:line and a scenario, and whether survivors are ranked.",
+  "probes": [
+    {
+      "id": "p1_recall_and_precision_on_seeded_defects",
+      "prompt": "/review the uncommitted diff in this workspace. Report only what you verified.",
+      "workspace": "a git worktree of DELFIN at the branch under review, with six defects planted in one small module: (1) a mutable default argument; (2) a bare `except:` that swallows every error; (3) `==` where `is` was meant, against None; (4) a `return` dropped from one branch, so the function returns None on that path; (5) an off-by-one in a slice bound; (6) a secret written into a log line. `git diff` must show all six.",
+      "expected_difference": "main: the answer is a prose checklist with no file:line and no reproducible scenario, so recall and precision cannot even be counted. branch: every finding carries file:line and a failure scenario, and the number withheld as unverified is visible in the tool result. RECALL = how many of the six are named at the right line; PRECISION = the share of reported findings that name a real defect. Report both, separately: a change that raises recall by reporting everything is worse, not better.",
+      "what_would_falsify_the_claim": "recall or precision LOWER on the branch than on main. The contract withholds unverified findings, so recall can fall if the model marks real findings verified:false. That is a real regression and must be reported as one, not explained away."
+    },
+    {
+      "id": "p2_the_withheld_count_is_visible",
+      "prompt": "/review this diff. Two of the changes are in files you cannot read (they are not in the workspace).",
+      "workspace": "a worktree whose diff touches both an existing file and a path the reviewer cannot open.",
+      "expected_difference": "branch: the parent's tool result begins '[review-findings] N finding(s) withheld' and the findings list holds only the checkable ones; main: the reviewer either invents the unreadable file's content or silently omits it, and nothing in the result says which happened.",
+      "what_would_falsify_the_claim": "the withheld count absent from the tool result, or a finding citing the unreadable path present in it."
+    },
+    {
+      "id": "p3_a_clean_diff_is_not_a_finding_list",
+      "prompt": "/review this diff.",
+      "workspace": "a worktree whose diff is a one-line docstring typo fix.",
+      "expected_difference": "branch: findings is empty and status is 'no_findings' — an explicit 'I looked and found nothing'. main: a prose answer from which a caller cannot tell 'nothing found' from 'did not look'.",
+      "what_would_falsify_the_claim": "the branch reports invented findings for a clean diff (precision 0), which would show the contract rewarding fabrication."
+    },
+    {
+      "id": "p4_the_count_agrees_with_the_list_on_a_real_model",
+      "prompt": "Ask the code-reviewer to review a diff in a workspace where one path in the diff does not exist, then read the parent's tool payload rather than the delegate's own prose.",
+      "workspace": "any DELFIN worktree; the point is the payload, not the code.",
+      "expected_difference": "branch: payload['review']['counts']['dropped'] equals the number of findings the delegate wrote about the missing path, and payload['review_notice'] names it. main: no 'review' key at all.",
+      "what_would_falsify_the_claim": "a 'review' key whose counts disagree with its own findings list, which would mean the count is decorative."
+    }
+  ]
+}

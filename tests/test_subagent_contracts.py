@@ -301,7 +301,15 @@ def test_the_verdict_presets_declare_a_schema_the_builtin_do_not():
                 in schema["properties"]["live_run"]["properties"]
                    ["test_counts"]["required"]), (
             f"{name}'s schema lets a verdict hide its skipped tests")
-    for name in ("explore", "plan", "code-reviewer", "general-purpose"):
+    # ``code-reviewer`` returns a DIFFERENT contract — a finding list, not a
+    # verdict. It belongs to neither group: it must not silently drop back to
+    # free prose (that is what made a review a checklist nobody could check),
+    # and it must not acquire the verdict contract, which is about a run and
+    # its test counts and a read-only reviewer has neither.
+    review_schema = SA.SUBAGENT_PRESETS["code-reviewer"].output_schema
+    assert review_schema is SA.REVIEW_FINDINGS_SCHEMA
+    assert "live_run" not in review_schema.get("required", [])
+    for name in ("explore", "plan", "general-purpose"):
         assert SA.SUBAGENT_PRESETS[name].output_schema is None, (
             f"{name} kept a schema it never had")
 
