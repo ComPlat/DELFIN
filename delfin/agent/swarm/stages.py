@@ -95,6 +95,13 @@ def advance(run: str, busy: set | None = None, *, start_real_run=None) -> list[d
         a = st["agents"].get(tid)
         if a is None or wave.alive(a["pid"]) or tid in busy or _in_flight(run, tid):
             continue
+        # A person stopped this member: hold it, and say so. Every step below
+        # is a restart or a mark that a later stage's `after` reads as an
+        # ending, and a stop is neither.
+        if wave.stopped_by_a_person(run, tid):
+            done.append({"id": tid, "did": "held",
+                         "why": "stopped by a person: not resumed and not marked final"})
+            continue
         wt = Path(a["worktree"])
         res = wave._last_result(Path(a["log"]))
         # No result line at all: the session was killed (a stopped slice, an

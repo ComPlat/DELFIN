@@ -197,6 +197,9 @@ def configure_parser(
     w.add_argument("member")
     w.add_argument("--note", default="")
     w.add_argument("--fresh", action="store_true")
+    w.add_argument("--after-stop", action="store_true",
+                   help="Start a member a person stopped: lifting a stop is a "
+                        "person's decision, and this is how it is made")
     w = wsub.add_parser("stop", help="End a run's members (or one)")
     w.add_argument("run")
     w.add_argument("member", nargs="?", default="")
@@ -313,7 +316,7 @@ def _cmd_wave(args: argparse.Namespace) -> int:
     elif verb == "review":
         out = M.h_review(args.run, args.member)
     elif verb == "resume":
-        out = M.h_resume(args.run, args.member, args.note, args.fresh)
+        out = M.h_resume(args.run, args.member, args.note, args.fresh, args.after_stop)
     elif verb == "stop":
         out = M.h_stop(args.run, args.member)
     elif verb == "tick":
