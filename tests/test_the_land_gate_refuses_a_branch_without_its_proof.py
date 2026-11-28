@@ -268,21 +268,22 @@ def test_the_agent_account_with_a_different_number_is_refused(swarm):
     assert "account number 999999" in _landing(swarm), _landing(swarm)
 
 
-def test_a_model_suffixed_trailer_is_the_same_account_and_its_model_stays_out(swarm, capsys):
-    """``DELFIN-Agent (model)`` is what the executor writes (prompt_loader.py:970),
-    so it must be ACCEPTED as the agent account -- the account is its address,
-    and a name suffix does not change which account that is. Refusing it would
-    refuse every branch in a deployment that puts the model in the trailer.
+def test_a_model_suffixed_trailer_is_the_same_account_and_its_model_stays_in_the_line(swarm, capsys):
+    """``DELFIN-Agent (model)`` is what the executor writes, so it must be
+    ACCEPTED as the agent account -- the account is its address, and a name
+    suffix does not change which account that is.
 
-    What the package forbids is the model NAME reaching the published message,
-    and that is the second half: the squash message carries no model word.
+    The model stays in the published message, and only inside the agent's
+    line: it is the record of which model wrote the change. Nowhere else.
     """
     _ready_proof(swarm)
     _commit_as(swarm, {}, f"a commit\n\nCo-Authored-By: DELFIN-Agent (a-model) <{AGENT}>\n")
     _gate(swarm)
     assert _landing(swarm).startswith("ready:"), _landing(swarm)
     out = capsys.readouterr().out
-    assert "a-model" not in out.split("squash message")[-1], out
+    published = out.split("squash message")[-1]
+    assert f"Co-Authored-By: DELFIN-Agent (a-model) <{AGENT}>" in published, out
+    assert published.count("a-model") == 1, out
     assert out.count("Co-Authored-By:") == 1, out
 
 
@@ -319,6 +320,31 @@ def test_the_squash_message_drops_the_trailers_the_commits_carry(swarm, capsys):
     out = capsys.readouterr().out
     assert out.count("Co-Authored-By:") == 1, out
 
+
+
+def test_the_squash_message_keeps_the_model_that_wrote_the_commits(swarm, capsys):
+    """Which model wrote a change is part of its record: the one agent line
+    keeps the models the commits name in their own trailer, in its
+    parentheses. Red on the base, which drops them."""
+    _ready_proof(swarm)
+    _commit_as(swarm, {}, "a commit\n\n"
+               f"Co-Authored-By: DELFIN-Agent (deepseek-v4.1-flash) <{AGENT}>\n")
+    _gate(swarm)
+    out = capsys.readouterr().out
+    assert f"Co-Authored-By: DELFIN-Agent (deepseek-v4.1-flash) <{AGENT}>" in out, out
+    assert out.count("Co-Authored-By:") == 1, out
+
+
+def test_a_model_trailer_cannot_write_a_second_line(swarm, capsys):
+    """The model name is cut to the characters a model id uses, so a commit
+    message cannot smuggle an address or a newline into the published line."""
+    _ready_proof(swarm)
+    _commit_as(swarm, {}, "a commit\n\n"
+               f"Co-Authored-By: DELFIN-Agent (x <evil@example.org> y) <{AGENT}>\n")
+    _gate(swarm)
+    out = capsys.readouterr().out
+    assert "evil@example.org" not in out, out
+    assert out.count("Co-Authored-By:") == 1, out
 
 def test_a_squash_message_naming_the_model_is_refused(swarm):
     """A commit subject naming the model reaches the published message. Red on
