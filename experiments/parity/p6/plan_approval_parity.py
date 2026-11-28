@@ -58,6 +58,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -303,13 +304,10 @@ def run_variant(kind: str, repo: Path, plan_fn_holder: dict) -> dict:
     """One variant: one child of the real CLI, scored on REACHED/USED/CORRECT."""
     mode = MODES[kind]
     perm, supervised, confirm_timeout, answer_action, marker, expect = mode
-    root = Path(os.environ.get("DELFIN_PARITY_TMP") or "/tmp") / f"p6-{kind}"
-    if root.exists():
-        for p in sorted(root.rglob("*"), reverse=True):
-            try:
-                p.rmdir() if p.is_dir() else p.unlink()
-            except OSError:
-                pass
+    # A fresh private directory per variant: a fixed name under a shared
+    # /tmp could be planted (a symlink) by another account and then emptied.
+    root = Path(tempfile.mkdtemp(prefix=f"p6-{kind}-",
+                                 dir=os.environ.get("DELFIN_PARITY_TMP") or None))
     home = root / "home"
     ws = root / "ws"
     ws.mkdir(parents=True, exist_ok=True)
