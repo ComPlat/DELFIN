@@ -22,6 +22,10 @@ Output, installed once per session by ``tests/conftest.py``:
   instead; the script logs its argv and exits 127.
 * Network. ``socket.socket.connect``/``connect_ex`` refuse an AF_INET or
   AF_INET6 destination that is not loopback. AF_UNIX is not touched.
+  The proxy variables (``HTTP_PROXY``, ``HTTPS_PROXY``, ``ALL_PROXY``,
+  ``NO_PROXY``) are stripped with the provider keys: through a proxy the
+  socket goes to the proxy's own loopback address, so the refusal above
+  would see nothing while the request left the machine from the proxy.
 * Credentials. Provider keys, tokens and the calling agent's own
   session variables (``CLAUDE*``, ``CODEX*``, ``ANTHROPIC_*``,
   ``OPENAI_*``, ``KIT_*``, ``OLLAMA_*``) are removed from ``os.environ``
@@ -66,8 +70,24 @@ AGENT_CLI_NAMES = ("claude", "codex")
 #: Environment prefixes removed for the session: provider credentials,
 #: provider endpoints, and the variables an attended agent session hands
 #: its children (one of them names the CLI's own executable).
+#:
+#: ``HTTP_PROXY``/``HTTPS_PROXY`` are here because a proxy hides the
+#: destination from the socket refusal below: urllib then connects to the
+#: proxy's own loopback address, which is allowed, and the request leaves
+#: the machine from the PROXY process -- where this in-process tripwire
+#: cannot see it. Measured 2026-11-26 in a swarm member: the shell carried
+#: ``https_proxy=http://127.0.0.1:<cage port>``, a test opened a remote
+#: model endpoint, the guard recorded
+#: NO trip, and the request reached the cage proxy, which refused it
+#: (403) -- one of 7,846 refusals in two hours. With the variables
+#: stripped the socket carries the real destination, the refusal below
+#: sees it, and the test fails here with its own call site instead of
+#: spending a proxy round trip per attempt. ``no_proxy``/``all_proxy``
+#: go with them: a stale ``NO_PROXY=*`` would otherwise quietly restore
+#: the same blind spot.
 STRIPPED_PREFIXES = ("CLAUDE", "CODEX", "ANTHROPIC_", "OPENAI_", "KIT_",
-                     "OLLAMA_")
+                     "OLLAMA_", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                     "NO_PROXY")
 
 MARKER = "fake_agent_cli"
 
