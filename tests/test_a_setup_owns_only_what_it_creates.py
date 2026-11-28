@@ -48,6 +48,14 @@ _WS_FOR_CLASS = {
     "science_analysis": "science_workspace",
     "generic_project": "user_project_workspace",
     "generalist": "generalist_workspace",
+    # Office tasks had no entry here, so their setup scripts were SKIPPED by
+    # every test in this file: the contract ("a setup adds files and rewrites
+    # none", "a second run refuses", "it says what it wants when given
+    # nothing") was never asked of them. Adding the class is what makes the
+    # O1 setup -- which writes twelve fixtures into the shared office
+    # workspace -- run through it.
+    "office": "office_workspace",
+    "office_solo": "office_workspace",
 }
 
 

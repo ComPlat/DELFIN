@@ -1,0 +1,450 @@
+# O1: everyday office work, graded on the RESULT FILE (package O1).
+#
+# WHY THIS SUITE EXISTS. The office mode is where a person does
+# administrative work, and it was measured as the weakest part of the
+# product: on the installation where that work actually happens, one
+# ordinary request -- give every collaborator in column E a sheet of their
+# own, holding the rows that belong to them -- failed in three sessions
+# running, and across those sessions 243 of 330 failed turns were EMPTY
+# turns. The pack already had office tasks, and every one of them is graded
+# on the answer: whether the reply mentions the excluded row, whether it
+# asks about an ambiguous column. A person is graded on the workbook.
+#
+# So these twelve are graded on the FILE and on nothing else:
+# accept/o1_office_accept.py opens what the attempt wrote and compares it
+# with the expectation that setup/o1_office_fixtures.py derives from the
+# same data. The prompt is what a person types; the verdict is what a
+# spreadsheet would show.
+#
+# EACH CASE CARRIES A PLANTED TRAP, because a task whose easy half is the
+# whole task measures nothing. The traps are the ones real administrative
+# data has: 49 empty cells and 47 values carrying a character a sheet name
+# may not carry; 18 names over the 31-character limit; 4 values that differ
+# only in case or spacing; 7 cells naming two people at once; a date column
+# written in two formats; amounts with a thousands dot and a decimal comma;
+# a left join with categories that occur on one side only; a duplicate test
+# that needs case and spacing ignored.
+#
+# TWO MODES, ONE QUESTION. Every case is registered twice -- `o1_office_*`
+# runs in office mode, `o1_solo_*` runs the same prompt and the same grader
+# in solo (Code) mode. That is what makes "does the specialist beat the
+# generalist on office work?" a measurable question instead of two
+# different questions with two different scores. A test pins that the
+# prompt, the setup and the verify of a pair are identical.
+#
+# Synthetic data only. No name in the fixtures belongs to a person: they are
+# invented surname + single initial combinations, and the workspace README
+# says so.
+tasks:
+
+  # ── one sheet per value of a column ────────────────────────────────────
+  - id: o1_office_blaettern
+    task_class: office
+    mode: office
+    setup: o1_office_fixtures.py
+    verify: o1_office_accept.py
+    prompt: >-
+      In o1/blaettern/bestellungen.xlsx steht in Spalte E der Bearbeiter.
+      Lege für jeden Bearbeiter ein eigenes Tabellenblatt an, in dem alle
+      zugehörigen Einträge erfasst sind -- mit derselben Kopfzeile wie im
+      Ausgangsblatt. Die Hausregeln für Blattnamen und Zusammenfassungen
+      stehen in o1/blaettern/HINWEISE.txt; halte dich daran. Ergebnis:
+      o1/blaettern/blaettern.xlsx. Bei über 700 Zeilen bitte mit einem
+      Skript arbeiten und am Ende prüfen, dass jede Zeile genau einmal
+      vorkommt.
+    prompt_en: >-
+      In o1/blaettern/bestellungen.xlsx, column E holds the person who
+      entered the order. Create one sheet per person holding that person's
+      rows, with the same header row as the source sheet. The house rules
+      for sheet names and merging are in o1/blaettern/HINWEISE.txt; follow
+      them. Result: o1/blaettern/blaettern.xlsx. With over 700 rows, work
+      with a script and verify at the end that every row appears exactly
+      once.
+    max_duration_s: 900
+    max_cost_usd: 1.50
+    max_tool_calls: 40
+
+  - id: o1_solo_blaettern
+    task_class: office_solo
+    mode: solo
+    setup: o1_office_fixtures.py
+    verify: o1_office_accept.py
+    prompt: >-
+      In o1/blaettern/bestellungen.xlsx steht in Spalte E der Bearbeiter.
+      Lege für jeden Bearbeiter ein eigenes Tabellenblatt an, in dem alle
+      zugehörigen Einträge erfasst sind -- mit derselben Kopfzeile wie im
+      Ausgangsblatt. Die Hausregeln für Blattnamen und Zusammenfassungen
+      stehen in o1/blaettern/HINWEISE.txt; halte dich daran. Ergebnis:
+      o1/blaettern/blaettern.xlsx. Bei über 700 Zeilen bitte mit einem
+      Skript arbeiten und am Ende prüfen, dass jede Zeile genau einmal
+      vorkommt.
+    max_duration_s: 900
+    max_cost_usd: 1.50
+    max_tool_calls: 40
+
+  # ── merge two tables on a key ──────────────────────────────────────────
+  - id: o1_office_zusammenfuehren
+    task_class: office
+    mode: office
+    setup: o1_office_fixtures.py
+    verify: o1_office_accept.py
+    prompt: >-
+      In o1/zusammenfuehren/ liegen bestellungen.xlsx und kreditoren.xlsx.
+      Ergänze zu jeder Bestellung Name und Ort des Kreditoren. Nicht zu
+      jeder Bestellung gibt es einen Stammdatensatz -- die Regeln dazu
+      stehen in o1/zusammenfuehren/HINWEISE.txt. Ergebnis:
+      o1/zusammenfuehren/ergebnis_join.xlsx.
+    prompt_en: >-
+      o1/zusammenfuehren/ holds bestellungen.xlsx and kreditoren.xlsx. Add
+      each order's creditor name and city. Not every order has a master
+      record -- the rules are in o1/zusammenfuehren/HINWEISE.txt. Result:
+      o1/zusammenfuehren/ergebnis_join.xlsx.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  - id: o1_solo_zusammenfuehren
+    task_class: office_solo
+    mode: solo
+    setup: o1_office_fixtures.py
+    verify: o1_office_accept.py
+    prompt: >-
+      In o1/zusammenfuehren/ liegen bestellungen.xlsx und kreditoren.xlsx.
+      Ergänze zu jeder Bestellung Name und Ort des Kreditoren. Nicht zu
+      jeder Bestellung gibt es einen Stammdatensatz -- die Regeln dazu
+      stehen in o1/zusammenfuehren/HINWEISE.txt. Ergebnis:
+      o1/zusammenfuehren/ergebnis_join.xlsx.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  # ── find and mark duplicates ───────────────────────────────────────────
+  - id: o1_office_dubletten
+    task_class: office
+    mode: office
+    setup: o1_office_fixtures.py
+    verify: o1_office_accept.py
+    prompt: >-
+      In o1/dubletten/eingang.xlsx sind Belege doppelt erfasst. Markiere
+      die Dubletten so, wie es in o1/dubletten/HINWEISE.txt steht.
+      Ergebnis: o1/dubletten/ergebnis_dubletten.xlsx.
+    prompt_en: >-
+      o1/dubletten/eingang.xlsx holds vouchers entered twice. Mark the
+      duplicates the way o1/dubletten/HINWEISE.txt specifies. Result:
+      o1/dubletten/ergebnis_dubletten.xlsx.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  - id: o1_solo_dubletten
+    task_class: office_solo
+    mode: solo
+    setup: o1_office_fixtures.py
+    verify: o1_office_accept.py
+    prompt: >-
+      In o1/dubletten/eingang.xlsx sind Belege doppelt erfasst. Markiere
+      die Dubletten so, wie es in o1/dubletten/HINWEISE.txt steht.
+      Ergebnis: o1/dubletten/ergebnis_dubletten.xlsx.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  # ── monthly totals from a date column with decimal commas ──────────────
+  - id: o1_office_monatssummen
+    task_class: office
+    mode: office
+    setup: o1_office_fixtures.py
+    verify: o1_office_accept.py
+    prompt: >-
+      In o1/monatssummen/spenden.csv stehen Spenden mit Datum und Betrag.
+      Bitte die Summe je Monat von Januar bis Juni 2026, als Zahl auf den
+      Cent genau. Achte auf das Datumsformat und auf die Schreibweise der
+      Beträge -- beides ist in der Datei nicht einheitlich. Ergebnis:
+      o1/monatssummen/monatssummen.xlsx.
+    prompt_en: >-
+      o1/monatssummen/spenden.csv lists donations with a date and an
+      amount. Give the total per month from January to June 2026, as a
+      number to the cent. Watch the date format and the way the amounts are
+      written -- neither is uniform in the file. Result:
+      o1/monatssummen/monatssummen.xlsx.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  - id: o1_solo_monatssummen
+    task_class: office_solo
+    mode: solo
+    setup: o1_office_fixtures.py
+    verify: o1_office_accept.py
+    prompt: >-
+      In o1/monatssummen/spenden.csv stehen Spenden mit Datum und Betrag.
+      Bitte die Summe je Monat von Januar bis Juni 2026, als Zahl auf den
+      Cent genau. Achte auf das Datumsformat und auf die Schreibweise der
+      Beträge -- beides ist in der Datei nicht einheitlich. Ergebnis:
+      o1/monatssummen/monatssummen.xlsx.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  # ── a mail merge into .docx letters ────────────────────────────────────
+  - id: o1_office_serienbrief
+    task_class: office
+    mode: office
+    setup: o1_office_fixtures.py
+    verify: o1_office_accept.py
+    prompt: >-
+      In o1/serienbrief/ liegt die Vorlage vorlage.docx und die Liste
+      teilnehmer.xlsx. Erzeuge für jede Zeile der Liste einen Brief nach
+      der Vorlage, mit allen Platzhaltern ersetzt. Ablage und Dateinamen
+      stehen in o1/serienbrief/HINWEISE.txt.
+    prompt_en: >-
+      o1/serienbrief/ holds the template vorlage.docx and the list
+      teilnehmer.xlsx. Produce one letter per row of the list, following
+      the template, with every placeholder replaced. The folder and file
+      names are in o1/serienbrief/HINWEISE.txt.
+    max_duration_s: 900
+    max_cost_usd: 1.50
+    max_tool_calls: 40
+
+  - id: o1_solo_serienbrief
+    task_class: office_solo
+    mode: solo
+    setup: o1_office_fixtures.py
+    verify: o1_office_accept.py
+    prompt: >-
+      In o1/serienbrief/ liegt die Vorlage vorlage.docx und die Liste
+      teilnehmer.xlsx. Erzeuge für jede Zeile der Liste einen Brief nach
+      der Vorlage, mit allen Platzhaltern ersetzt. Ablage und Dateinamen
+      stehen in o1/serienbrief/HINWEISE.txt.
+    max_duration_s: 900
+    max_cost_usd: 1.50
+    max_tool_calls: 40
+
+  # ── fill a PDF form from a table row ───────────────────────────────────
+  - id: o1_office_formular
+    task_class: office
+    mode: office
+    setup: o1_office_fixtures.py
+    verify: o1_office_accept.py
+    prompt: >-
+      In o1/formular/ liegt das Formular antrag.pdf und die Tabelle
+      antraege.csv. Fülle für jeden Antrag eine Kopie des Formulars mit den
+      Werten seiner Zeile. Ablage und Dateinamen stehen in
+      o1/formular/HINWEISE.txt.
+    prompt_en: >-
+      o1/formular/ holds the form antrag.pdf and the table antraege.csv.
+      Fill one copy of the form per application with that row's values. The
+      folder and file names are in o1/formular/HINWEISE.txt.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  - id: o1_solo_formular
+    task_class: office_solo
+    mode: solo
+    setup: o1_office_fixtures.py
+    verify: o1_office_accept.py
+    prompt: >-
+      In o1/formular/ liegt das Formular antrag.pdf und die Tabelle
+      antraege.csv. Fülle für jeden Antrag eine Kopie des Formulars mit den
+      Werten seiner Zeile. Ablage und Dateinamen stehen in
+      o1/formular/HINWEISE.txt.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  # ── extract a table from a PDF into .xlsx ──────────────────────────────
+  - id: o1_office_pdf_tabelle
+    task_class: office
+    mode: office
+    setup: o1_office_fixtures.py
+    verify: o1_office_accept.py
+    prompt: >-
+      In o1/pdf_tabelle/stunden.pdf steht eine Stundenliste über zwei
+      Seiten. Übernimm die Tabelle nach Excel, mit einer Kopfzeile und einer
+      Zahlen-Spalte für die Stunden. Was nicht in die Tabelle gehört, steht
+      in o1/pdf_tabelle/HINWEISE.txt. Ergebnis:
+      o1/pdf_tabelle/stunden.xlsx.
+    prompt_en: >-
+      o1/pdf_tabelle/stunden.pdf holds an hours list over two pages. Move
+      the table into a spreadsheet, with one header row and the hours as a
+      numeric column. What does not belong in the table is stated in
+      o1/pdf_tabelle/HINWEISE.txt. Result: o1/pdf_tabelle/stunden.xlsx.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  - id: o1_solo_pdf_tabelle
+    task_class: office_solo
+    mode: solo
+    setup: o1_office_fixtures.py
+    verify: o1_office_accept.py
+    prompt: >-
+      In o1/pdf_tabelle/stunden.pdf steht eine Stundenliste über zwei
+      Seiten. Übernimm die Tabelle nach Excel, mit einer Kopfzeile und einer
+      Zahlen-Spalte für die Stunden. Was nicht in die Tabelle gehört, steht
+      in o1/pdf_tabelle/HINWEISE.txt. Ergebnis:
+      o1/pdf_tabelle/stunden.xlsx.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  # ── clean a column ─────────────────────────────────────────────────────
+  - id: o1_office_bereinigen
+    task_class: office
+    mode: office
+    setup: o1_office_fixtures.py
+    verify: o1_office_accept.py
+    prompt: >-
+      Die Spalte Personal in o1/bereinigen/personen.xlsx ist über Jahre
+      gepflegt worden und sieht entsprechend aus. Bitte aufräumen und in
+      Nachname und Vorname trennen, nach den Regeln in
+      o1/bereinigen/HINWEISE.txt. Ergebnis:
+      o1/bereinigen/personen_bereinigt.xlsx.
+    prompt_en: >-
+      The Personal column in o1/bereinigen/personen.xlsx has been
+      maintained by hand for years and shows it. Tidy it up and split it
+      into Nachname and Vorname, following the rules in
+      o1/bereinigen/HINWEISE.txt. Result:
+      o1/bereinigen/personen_bereinigt.xlsx.
+    max_duration_s: 900
+    max_cost_usd: 1.50
+    max_tool_calls: 40
+
+  - id: o1_solo_bereinigen
+    task_class: office_solo
+    mode: solo
+    setup: o1_office_fixtures.py
+    verify: o1_office_accept.py
+    prompt: >-
+      Die Spalte Personal in o1/bereinigen/personen.xlsx ist über Jahre
+      gepflegt worden und sieht entsprechend aus. Bitte aufräumen und in
+      Nachname und Vorname trennen, nach den Regeln in
+      o1/bereinigen/HINWEISE.txt. Ergebnis:
+      o1/bereinigen/personen_bereinigt.xlsx.
+    max_duration_s: 900
+    max_cost_usd: 1.50
+    max_tool_calls: 40
+
+  # ── pivot counts per category ──────────────────────────────────────────
+  - id: o1_office_pivot
+    task_class: office
+    mode: office
+    setup: o1_office_fixtures.py
+    verify: o1_office_accept.py
+    prompt: >-
+      Wie viele Verkäufe gibt es je Kategorie und Monat? Grundlage ist
+      o1/pivot/verkaeufe.xlsx, das Format steht in o1/pivot/HINWEISE.txt.
+      Ergebnis: o1/pivot/pivot.xlsx.
+    prompt_en: >-
+      How many sales are there per category and month? The source is
+      o1/pivot/verkaeufe.xlsx, the format is in o1/pivot/HINWEISE.txt.
+      Result: o1/pivot/pivot.xlsx.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  - id: o1_solo_pivot
+    task_class: office_solo
+    mode: solo
+    setup: o1_office_fixtures.py
+    verify: o1_office_accept.py
+    prompt: >-
+      Wie viele Verkäufe gibt es je Kategorie und Monat? Grundlage ist
+      o1/pivot/verkaeufe.xlsx, das Format steht in o1/pivot/HINWEISE.txt.
+      Ergebnis: o1/pivot/pivot.xlsx.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  # ── a German-locale CSV into .xlsx with correct number types ───────────
+  - id: o1_office_csv_deutsch
+    task_class: office
+    mode: office
+    setup: o1_office_fixtures.py
+    verify: o1_office_accept.py
+    prompt: >-
+      o1/csv_deutsch/umsatz.csv kommt aus unserer Buchhaltung und ist eine
+      deutsche CSV. Bitte nach Excel übernehmen, so dass man damit rechnen
+      kann -- die Hinweise stehen in o1/csv_deutsch/HINWEISE.txt. Ergebnis:
+      o1/csv_deutsch/umsatz.xlsx.
+    prompt_en: >-
+      o1/csv_deutsch/umsatz.csv comes from our bookkeeping and is a German
+      CSV. Bring it into a spreadsheet so that it can be calculated with --
+      the notes are in o1/csv_deutsch/HINWEISE.txt. Result:
+      o1/csv_deutsch/umsatz.xlsx.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  - id: o1_solo_csv_deutsch
+    task_class: office_solo
+    mode: solo
+    setup: o1_office_fixtures.py
+    verify: o1_office_accept.py
+    prompt: >-
+      o1/csv_deutsch/umsatz.csv kommt aus unserer Buchhaltung und ist eine
+      deutsche CSV. Bitte nach Excel übernehmen, so dass man damit rechnen
+      kann -- die Hinweise stehen in o1/csv_deutsch/HINWEISE.txt. Ergebnis:
+      o1/csv_deutsch/umsatz.xlsx.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  # ── (en) two regional sheets into one summary ──────────────────────────
+  - id: o1_office_regional_rollup
+    task_class: office
+    mode: office
+    setup: o1_office_fixtures.py
+    verify: o1_office_accept.py
+    prompt: >-
+      We need one revenue summary from the two regional exports in
+      o1/regional_rollup/. They come from different systems, so check what
+      NOTES.txt says about the categories. Result:
+      o1/regional_rollup/zusammenfassung.xlsx.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  - id: o1_solo_regional_rollup
+    task_class: office_solo
+    mode: solo
+    setup: o1_office_fixtures.py
+    verify: o1_office_accept.py
+    prompt: >-
+      We need one revenue summary from the two regional exports in
+      o1/regional_rollup/. They come from different systems, so check what
+      NOTES.txt says about the categories. Result:
+      o1/regional_rollup/zusammenfassung.xlsx.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  # ── (en) duplicate supplier invoices, case-insensitive ─────────────────
+  - id: o1_office_rechnungs_dubletten
+    task_class: office
+    mode: office
+    setup: o1_office_fixtures.py
+    verify: o1_office_accept.py
+    prompt: >-
+      The invoice register in o1/rechnungs_dubletten/register.xlsx has been
+      typed by several people, so the same invoice may appear twice. Mark
+      the duplicates as NOTES.txt says. Result:
+      o1/rechnungs_dubletten/register_dubletten.xlsx.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  - id: o1_solo_rechnungs_dubletten
+    task_class: office_solo
+    mode: solo
+    setup: o1_office_fixtures.py
+    verify: o1_office_accept.py
+    prompt: >-
+      The invoice register in o1/rechnungs_dubletten/register.xlsx has been
+      typed by several people, so the same invoice may appear twice. Mark
+      the duplicates as NOTES.txt says. Result:
+      o1/rechnungs_dubletten/register_dubletten.xlsx.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 30
