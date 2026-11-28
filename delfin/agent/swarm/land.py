@@ -457,7 +457,11 @@ def squash_message(wt: Path, base: str, title: str, msg: str = "", *,
     parts = [head, body.strip(), "\n".join(subjects)]
     text = "\n\n".join(p for p in parts if p)
     # Every trailer the commits carry is DROPPED, not carried: one line is the
-    # whole of the attribution, and it is the one written below.
+    # whole of the attribution, and it is the one written below. The models
+    # the commits name in their own trailer are kept, in that one line: which
+    # model wrote a change is part of its record, and the parentheses of the
+    # agent's line are the one place a model name belongs.
+    models = trailer_models(wt, base)
     text = re.sub(r"^\s*Co-Authored-By:.*$\n?", "", text, flags=re.M | re.I).strip()
     bad = sorted({m.group(0) for m in _non_public_pattern().finditer(text)})
     if bad:
@@ -466,7 +470,32 @@ def squash_message(wt: Path, base: str, title: str, msg: str = "", *,
     host = (socket.gethostname() or "").split(".")[0].strip()
     if len(host) > 3 and re.search(r"\b%s\b" % re.escape(host), text, re.I):
         return "", f"the message the lander proposes names this site ({host})"
-    return f"{text}\n\nCo-Authored-By: DELFIN-Agent <{agent}>", ""
+    who = f"DELFIN-Agent ({', '.join(models)})" if models else "DELFIN-Agent"
+    return f"{text}\n\nCo-Authored-By: {who} <{agent}>", ""
+
+
+#: ``Co-Authored-By: DELFIN-Agent (<model>) <addr>``, the trailer the
+#: executor writes (api_client._commit_trailer_value).
+_AGENT_MODEL = re.compile(r"^\s*Co-Authored-By:\s*DELFIN-Agent\s*\(([^)\n]{1,80})\)\s*<",
+                          re.M | re.I)
+#: The characters a model name may carry into the published line.
+_MODEL_CHARS = re.compile(r"[^A-Za-z0-9._/:+-]")
+
+
+def trailer_models(wt: Path, base: str) -> list[str]:
+    """The models the branch's commits name in their agent trailer, in order.
+
+    Each name is cut to the characters a model id uses, so a commit message
+    cannot write a second trailer, a newline or an address through it.
+    """
+    out: list[str] = []
+    body = git(["log", "--reverse", "--format=%B", f"{base}..HEAD"], wt).stdout
+    for m in _AGENT_MODEL.finditer(body):
+        for name in m.group(1).split(","):
+            name = _MODEL_CHARS.sub("", name.strip())[:60]
+            if name and name not in out:
+                out.append(name)
+    return out[:6]
 
 
 def check(wt: Path, base: str = "origin/main", *, run: str = "", tid: str = "") -> tuple[bool, str]:

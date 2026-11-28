@@ -132,9 +132,9 @@ the cost of ignoring it is written next to it.
     number the number must be the same one -- the number, not the spelling,
     is what the forge credits. The gate composes the message a squash merge
     publishes -- the title, the BODY of scratch/PR.md and the commit subjects
-    -- and it carries exactly ONE such line and no model, provider or site
-    name anywhere in that text: those belong to the branch, not to the
-    base's history.
+    -- and it carries exactly ONE such line, `DELFIN-Agent (<models>)`,
+    naming the models that wrote the commits. No model, provider or site
+    name anywhere else in that text.
 
 WHAT IS NOT SCORED: the number of things you change. One change with a
 before/after measurement beats five without.
@@ -196,9 +196,11 @@ those words.""",
     "E": """A COMMIT MESSAGE IS PUBLIC TEXT. The person is the author; an \
 agent's commit carries exactly ONE `Co-Authored-By:` line, for DELFIN's agent \
 account, and no other trailer -- no second co-author line and no \
-`Agent: ... via ...` line. No model, provider, assistant product, institution \
-or host names anywhere in a commit message, trailer included: strip them from \
-what you bundle. No home paths, account names or person names either.""",
+`Agent: ... via ...` line. That one line keeps the model that wrote the commit \
+in its parentheses, `DELFIN-Agent (<model>) <address>`: keep it when you \
+bundle. No model, provider, assistant product, institution or host names \
+anywhere ELSE in a commit message. No home paths, account names or person \
+names either.""",
     "F": """AN INTEGRATOR BRANCH 0 COMMITS AHEAD OF THE BASE CARRIES NOTHING. \
 `git log --oneline {base}..<branch> | wc -l` is 0 for a branch whose report \
 describes work: it has no commits, so there is nothing to merge. Find the \
