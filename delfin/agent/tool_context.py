@@ -131,8 +131,24 @@ class ToolContext:
         return list(self._turn_change_seqs or [])
 
     def begin_turn(self) -> None:
-        """Reset the turn boundary: the next write starts a clean undo window."""
+        """Reset the turn boundary: the next write starts a clean undo window.
+
+        BOTH views of the window, not just the flat list. ``turn_seqs_for``
+        reads the session-keyed dict FIRST and only falls back to the flat
+        list, so clearing the list alone left the previous turn's seqs
+        standing: a turn that wrote no file still reported the seqs of the
+        turn before it, and ``undo_changes(scope="turn")`` reverted a file
+        this turn never touched -- then reported that as this turn's undo.
+        The terminal's ``/undo-file turn`` reads the same call and did the
+        same thing.
+
+        The lazy reset in :meth:`note_change_seq` stays: it is the guard for
+        a caller that empties ``_turn_change_seqs`` through the executor's
+        property without starting a turn here (a document write appends to
+        that list directly), which this method cannot see.
+        """
         self._turn_change_seqs = []
+        self._turn_seqs_by_session = {}
 
     # -- pending view images -------------------------------------------------
 
