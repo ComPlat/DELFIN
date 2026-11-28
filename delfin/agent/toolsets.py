@@ -253,6 +253,35 @@ _REQUEST_TERMS: dict[str, tuple[str, ...]] = {
         "word doc", "text document", "pdf-datei",
         "invoice", "letterhead", "cover letter", "mail merge",
         "serienbrief", "anschreiben",
+        # The German worksheet and bookkeeping nouns. A German-speaking
+        # office user names the THING -- a user's own words, "ein
+        # Tabellenblatt anlegen" and "die Belege sortieren" -- and never
+        # names a file extension, so without these the group could only be
+        # offered by a folder that already held a document, never on the
+        # request that creates one. Measured on the column-split request
+        # below: the prompt module fired on it, the tool group did not, so
+        # a solo session was offered 0 of 12 document tools and no
+        # checking rules while its own prompt said the module was active.
+        #
+        # Each is a COMPOUND or a bookkeeping word, which is what keeps
+        # this tighter than the prompt-module triggers while covering
+        # the same speech. The bare ``tabelle``/``spalte`` stay OUT: in
+        # German a database table and its columns are "Tabelle" and
+        # "Spalte" too, so they fire on a SQL request, and ``journal``
+        # is a log file. Find the compound instead -- it is the word
+        # that can only mean the document.
+        "tabellenblatt", "arbeitsblatt", "arbeitsmappe",
+        # Only forms that name the document: a bare "beleg" also fires on
+        # "der Port ist belegt", "buchung" on "Buchungssystem", "umsatz" on
+        # "Umsatzsteuer berechnen im Code".
+        "die belege", "belegliste", "belegnummer", "buchungsliste", "buchungen",
+        "kostenstelle", "kontoauszug", "quittung", "mahnung", "gutschrift",
+        "lieferschein", "umsatzliste", "umsatzzahlen", "umsätze",
+        "zeile eintragen",
+        # English, and unambiguous: a worksheet is a document whether it
+        # is punched into a spreadsheet or handed out in a classroom, and
+        # no code request means one.
+        "worksheet",
     ),
 }
 

@@ -731,10 +731,19 @@ and always `notebook_read` first to get current cell indices.
 `read_file` refuses these — they are containers, not text. `read_document`
 reads them (`fields=true` for a form's fields or a template's
 placeholders); `edit_sheet`, `fill_pdf_form`, `fill_docx_template` and
-`create_docx` write them. Pass on the caveats they return. Office mode is
-the specialised agent for this work. A step no office tool covers (sorting,
-grouping, many sheets at once): write a short Python script with openpyxl,
-run it, then `read_document` the result. Never end the turn without one.
+`create_docx` write them. Pass on the caveats they return.
+
+<!-- generated:shared:office_work_rules -->
+The rules below are rendered from `pack/shared/office_work_rules.md`, the
+same definition the Office mode prompt reads, because they are not advice
+about a mode -- they are what makes a number in a spreadsheet true.
+<!-- /generated -->
+
+**Bulk data is a script, not many calls.** Over about a dozen rows or
+sheets, write one short Python script (openpyxl for .xlsx, pypdf, or
+python-docx), run it through `bash`, then `read_document` the result to
+verify it. Never end the turn without having written something and read it
+back.
 
 
 <!-- module:project_dev -->
