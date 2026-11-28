@@ -422,8 +422,9 @@ def duplicate_rows() -> tuple[list[list], list[int]]:
         row = list(base[idx])
         row[3] = round(float(row[3]) + 0.01, 2)
         dupes.append(row)
-    rows = base + dupes
-    rng.shuffle(rows[1:])
+    body = base[1:] + dupes
+    rng.shuffle(body)
+    rows = base[:1] + body
     marked: list[int] = []
     seen: dict[tuple, list[int]] = {}
     for pos, row in enumerate(rows[1:], start=2):
@@ -461,7 +462,7 @@ def donation_rows() -> list[list]:
         # rows -- and the total still looks like a total.
         datum = (f"2026-{month:02d}-{day:02d}" if idx % 4 == 0
                  else f"{day:02d}.{month:02d}.2026")
-        cents = (idx * 37) % 90000
+        cents = (idx * 3709) % 500000
         sign = "-" if idx % 23 == 0 else ""
         # German thousands separator AND decimal comma, because that is what
         # the column looks like: a naive float() reads "1.234,56" as 1.234
@@ -745,7 +746,9 @@ def revenue_rows() -> list[list]:
     rows: list[list] = [["Kostenstelle", "Bezeichnung", "Datum", "Betrag"]]
     for idx in range(40):
         day = 1 + (idx * 2) % 28
-        cents = (idx * 1234) % 90000
+        # Up to 9,000 EUR, so the thousands dot occurs as HINWEISE says.
+        cents = (idx * 23417) % 900000
+        euros, rest = cents // 100, cents % 100
         rows.append([
             # A typed number keeps its leading zeros only as text; as a
             # number 004711 becomes 4711, and the Kostenstelle stops
@@ -753,7 +756,7 @@ def revenue_rows() -> list[list]:
             f"{4711 + idx % 2:06d}",
             ("Geräte & Zubehör" if idx % 3 == 0 else "Verbrauchsmaterial"),
             f"{day:02d}.{(idx % 6) + 1:02d}.2026",
-            f"{cents // 100}.{cents % 100:02d}",
+            f"{euros:,}".replace(",", ".") + f",{rest:02d}",
         ])
     return rows
 

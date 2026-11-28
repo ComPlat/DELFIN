@@ -271,8 +271,12 @@ _REQUEST_TERMS: dict[str, tuple[str, ...]] = {
         # is a log file. Find the compound instead -- it is the word
         # that can only mean the document.
         "tabellenblatt", "arbeitsblatt", "arbeitsmappe",
-        "beleg", "buchung", "kostenstelle", "kontoauszug", "quittung",
-        "mahnung", "gutschrift", "lieferschein", "umsatz",
+        # Only forms that name the document: a bare "beleg" also fires on
+        # "der Port ist belegt", "buchung" on "Buchungssystem", "umsatz" on
+        # "Umsatzsteuer berechnen im Code".
+        "die belege", "belegliste", "belegnummer", "buchungsliste", "buchungen",
+        "kostenstelle", "kontoauszug", "quittung", "mahnung", "gutschrift",
+        "lieferschein", "umsatzliste", "umsatzzahlen", "umsätze",
         "zeile eintragen",
         # English, and unambiguous: a worksheet is a document whether it
         # is punched into a spreadsheet or handed out in a classroom, and

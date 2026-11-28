@@ -239,6 +239,19 @@ def _check_zusammenfuehren(case: Path, mod) -> str:
     if len(missing) > len(unmatched):
         return (f"{len(missing)} orders missing from the result, but only "
                 f"{len(unmatched)} lack a master record, e.g. {missing[:4]}")
+    # The join itself: a row whose order has a master record must carry that
+    # record's Name and Ort. Without this, copying Beleg and Betrag and
+    # leaving Name and Ort blank passed.
+    name_col, ort_col = header.index("Name"), header.index("Ort")
+    creditor_of = {str(r[0]): str(r[1]) for r in orders[1:]}
+    wrong = []
+    for r in data:
+        want = master.get(creditor_of.get(_norm(r[beleg_col]), ""))
+        if want and (_norm(r[name_col]), _norm(r[ort_col])) != want:
+            wrong.append(_norm(r[beleg_col]))
+    if wrong:
+        return (f"{len(wrong)} joined row(s) carry the wrong Name or Ort, "
+                f"e.g. {wrong[:4]}")
     list_path = _find(case, "nicht_zugeordnet.txt", "unmatched.txt")
     if list_path is None:
         return "no nicht_zugeordnet.txt listing the orders without a master record"
