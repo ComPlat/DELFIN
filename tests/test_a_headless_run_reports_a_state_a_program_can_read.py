@@ -343,10 +343,16 @@ def test_the_stop_reasons_and_exit_codes_are_pinned():
     # classify() to "done", so a run that stopped with its task list open
     # read as finished. This assertion is what made that contract change
     # visible instead of silent, which is why it is spelled out in full.
+    # "awaiting_approval" (11) added with the plan-approval work: a turn
+    # that submits a plan and is left waiting for the person used to report
+    # done/exit 0, exactly like a turn that finished the work. A supervisor
+    # scripting `chat -p` cannot tell those apart from the exit code alone,
+    # and resuming the waiting run as a finished one re-asks a question that
+    # is already on screen.
     assert TO.EXIT_CODES == {
         "done": 0, "error": 1, "needs_approval": 4, "refused": 5,
         "max_turns": 6, "budget": 7, "timeout": 8, "incomplete": 9,
-        "degenerate_test_loop": 10}
+        "degenerate_test_loop": 10, "awaiting_approval": 11}
     assert set(TO.STOP_REASONS) == set(TO.EXIT_CODES)
     # 2 (usage) and 3 (engine init failed) keep the meaning they had
     # before this schema: no run happened, so there is no result.

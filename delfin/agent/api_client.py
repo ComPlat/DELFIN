@@ -10733,6 +10733,39 @@ def _suite_handover_note(n_files: int, job_id: str, watched: bool) -> str:
         "in the foreground: run_tests(target='tests/test_<module>.py').")
 
 
+class ReadTracker(dict):
+    """The edit baseline: mtime per path, and the file identity beside it.
+
+    ``identities`` is what closes the gap the mtime alone leaves: a file that
+    was rewritten and had its timestamp put back looks unchanged to an mtime
+    comparison (see :func:`_read_identity`). It lives on the dict rather than
+    in a second field because a sub-agent gets a COPY of the parent's tracker,
+    and two fields copied separately drift apart while one dict subclass is
+    copied whole.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.identities: dict[str, tuple] = {}
+
+    def __copy__(self) -> "ReadTracker":
+        clone = ReadTracker(self)
+        clone.identities = dict(self.identities)
+        return clone
+
+    def __deepcopy__(self, memo) -> "ReadTracker":
+        clone = ReadTracker(self)
+        clone.identities = dict(self.identities)
+        return clone
+
+    def copy(self) -> "ReadTracker":
+        return self.__copy__()
+
+    def clear(self) -> None:
+        super().clear()
+        self.identities.clear()
+
+
 @dataclass
 class KitToolPermissions:
     """Permission policy for KIT-Toolbox coding-agent tools.
@@ -10919,7 +10952,12 @@ class KitToolPermissions:
     # to judge a "completed" against — which is how it came to run
     # against an empty ledger and flag every artefact task as unmet.
     evidence_provider: Optional[Callable[[], dict]] = None
-    read_tracker: dict[str, float] = field(default_factory=dict)
+    #: path -> mtime, as before; path -> (size, ctime_ns) in ``identities``.
+    #: A dict subclass rather than a second field so that everything which
+    #: already copies, shares or clears this dict -- a sub-agent's inherited
+    #: copy (subagents.py) in particular -- carries BOTH halves along without
+    #: knowing there are two.
+    read_tracker: dict[str, float] = field(default_factory=ReadTracker)
     # Paths the user explicitly REFUSED this session. A refusal has to hold
     # against every tool, not just the one that asked: a denied read_file was
     # trivially reproduced with `bash cat <same path>`, which defeats the
@@ -12624,6 +12662,9 @@ _HOT_TOOL_NAMES: frozenset[str] = frozenset({
     "task_create",           #   1061
     "task_list",             #   1658
     "task_update",           #   2006
+    "undo_changes",          # p4: real runs (scratch/realrun) showed the
+                               # deferred-schema path failing: the undo was
+                               # never callable from the session toolset
     "web_fetch",             #     80
     "web_search",            #     53
     "write_file",            #   2372
@@ -15650,6 +15691,95 @@ _BASH_CONTENT_VIEWERS = frozenset({
 })
 
 
+def _read_identity(path: Path) -> Optional[tuple]:
+    """What a file looked like when it was read: (size, ctime_ns), or None.
+
+    ``read_tracker`` holds one number per file -- the mtime -- and about
+    twenty places read it as a number, so its meaning is not changed here.
+    This is the second half of the same record, kept beside it, and it is
+    what closes the gap mtime alone leaves.
+
+    The mtime answers "was this file written LATER than I read it". A change
+    that leaves the stamp where it was -- ``cp -p`` or ``rsync -t`` restoring
+    it, ``git checkout`` of a tracked file with an older blob, an editor that
+    preserves mtime, anything calling ``os.utime`` -- passes that question,
+    and the edit then lands on content the model never saw. Both shapes are
+    measured in experiments/parity/p1-edit-guard.
+
+    The size catches a rewrite whose length differs. The ctime cannot be set
+    from userspace at all, so it catches a same-length rewrite whose mtime
+    was put back.
+    """
+    try:
+        st = Path(path).stat()
+    except OSError:
+        return None
+    return (st.st_size, st.st_ctime_ns)
+
+
+def _record_baseline(tracker: Any, path: Path, key: Any = None) -> None:
+    """Record that ``path`` was read: the mtime as before, and its identity.
+
+    One helper for every place that establishes a baseline, so no site is
+    left behind as the record grows. Never raises: a baseline is an aid, and
+    a file that vanished under us is reported by the tool that wanted it.
+    """
+    if not isinstance(tracker, dict):
+        return
+    p = Path(path)
+    try:
+        stamp = p.stat().st_mtime
+    except OSError:
+        return
+    if key is None:
+        try:
+            key = str(p.resolve())
+        except OSError:
+            key = str(p)
+    tracker[key] = stamp
+    identities = getattr(tracker, "identities", None)
+    if isinstance(identities, dict):
+        ident = _read_identity(p)
+        if ident is None:
+            identities.pop(key, None)
+        else:
+            identities[key] = ident
+
+
+def _baseline_drift(tracked: Any, path: Path, identities: Any = None) -> str:
+    """Has the file moved since it was read? ``""`` means no.
+
+    Two questions, because one is not enough: the mtime as before (a rewrite
+    after the read), and the file's identity where one was recorded (a
+    rewrite whose stamp was put back). ``identities`` is
+    ``ReadTracker.identities``; without it only the mtime is asked, which is
+    the behaviour every existing caller had.
+
+    Returns a short phrase naming what moved, for the refusal to quote.
+    """
+    p = Path(path)
+    try:
+        st = p.stat()
+    except OSError:
+        return ""
+    try:
+        if st.st_mtime > float(tracked) + 1e-3:
+            return "mtime mismatch"
+    except (TypeError, ValueError):
+        return ""
+    if isinstance(identities, dict):
+        was = identities.get(str(p))
+        if isinstance(was, tuple) and len(was) == 2:
+            size, ctime = was
+            if int(size) != st.st_size:
+                return "rewritten, same timestamp"
+            if int(ctime) != st.st_ctime_ns:
+                # Same length, same mtime, a new ctime: the file was
+                # rewritten and its timestamp put back.
+                return "rewritten with its timestamp put back"
+    return ""
+
+
 def _baseline_shell_reads(perms: Any, fn_args: Any, result: Any) -> None:
     """A file printed through the shell counts as read for edit_file.
 
@@ -15709,7 +15839,7 @@ def _baseline_shell_reads(perms: Any, fn_args: Any, result: Any) -> None:
                     p = base / p
                 if p.is_file():
                     r = p.resolve()
-                    tracker[str(r)] = r.stat().st_mtime
+                    _record_baseline(tracker, r)
             except OSError:
                 continue
 
@@ -17395,10 +17525,7 @@ class _DocToolExecutor:
                 # want of a baseline nobody could have had.
                 if (ch.kind != "deleted" and isinstance(tracker, dict)
                         and (ch.path in tracker or ch.kind == "created")):
-                    try:
-                        tracker[ch.path] = Path(ch.path).stat().st_mtime
-                    except OSError:
-                        pass
+                    _record_baseline(tracker, Path(ch.path), key=ch.path)
             sid = str(getattr(perms, "task_session_id", "") or "")
             for rec in _cj.record_overlay_changes(sid, items):
                 self._note_change_seq(rec, perms)
@@ -17482,10 +17609,7 @@ class _DocToolExecutor:
                 tracker = getattr(perms, "read_tracker", None)
                 if (ch.kind != "deleted" and isinstance(tracker, dict)
                         and str(p) in tracker):
-                    try:
-                        tracker[str(p)] = p.stat().st_mtime
-                    except OSError:
-                        pass
+                    _record_baseline(tracker, p, key=str(p))
             return notes
         except Exception:
             return []
@@ -17966,7 +18090,7 @@ class _DocToolExecutor:
             try:
                 full = self._workspace_root(permissions) / arguments.get("path", "")
                 if full.is_file():
-                    permissions.read_tracker[str(full.resolve())] = full.stat().st_mtime
+                    _record_baseline(permissions.read_tracker, full)
             except Exception:
                 pass
 
@@ -19596,7 +19720,7 @@ class _DocToolExecutor:
         _office.record_tool_figures("edit_sheet", result)
         self._capture_binary_change("edit_sheet", full, pre_bytes, perms)
         try:
-            perms.read_tracker[str(full.resolve())] = full.stat().st_mtime
+            _record_baseline(perms.read_tracker, full)
         except OSError:
             pass
 
@@ -24683,19 +24807,18 @@ class _DocToolExecutor:
         existed = resolved.exists()
         if existed:
             tracked = perms.read_tracker.get(str(resolved))
-            try:
-                current_mtime = resolved.stat().st_mtime
-            except Exception:
-                current_mtime = None
             if tracked is None:
                 return json.dumps({"error": (
                     f"refusing to overwrite existing file '{path_arg}' without "
                     "a prior read_file in this session — call read_file first."
                 )})
-            if current_mtime is not None and current_mtime > tracked + 1e-3:
+            drift = _baseline_drift(
+                tracked, resolved,
+                getattr(perms.read_tracker, "identities", None))
+            if drift:
                 return json.dumps({"error": (
                     f"file '{path_arg}' was modified since last read_file "
-                    "(mtime mismatch). Re-read before writing."
+                    f"({drift}). Re-read before writing."
                 )})
             try:
                 shape = _text_files.read_text_file(resolved)
@@ -24745,7 +24868,7 @@ class _DocToolExecutor:
             old_text if existed else None, content, perms)
 
         try:
-            perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
+            _record_baseline(perms.read_tracker, resolved)
         except Exception:
             pass
 
@@ -24783,18 +24906,18 @@ class _DocToolExecutor:
             return json.dumps({"error": f"not a regular file: {path_arg}"})
 
         tracked = perms.read_tracker.get(str(resolved))
-        try:
-            current_mtime = resolved.stat().st_mtime
-        except Exception:
-            current_mtime = None
         if tracked is None:
             return json.dumps({"error": (
                 f"call read_file on '{path_arg}' before editing — "
                 "edits require an established read baseline."
             )})
-        if current_mtime is not None and current_mtime > tracked + 1e-3:
+        drift = _baseline_drift(
+            tracked, resolved,
+            getattr(perms.read_tracker, "identities", None))
+        if drift:
             return json.dumps({"error": (
-                f"file '{path_arg}' was modified since last read_file. Re-read first."
+                f"file '{path_arg}' was modified since last read_file "
+                f"({drift}). Re-read first."
             )})
 
         try:
@@ -24826,7 +24949,7 @@ class _DocToolExecutor:
                     self._capture_change(
                         "edit_file", resolved, old_text, new_text, perms)
                     try:
-                        perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
+                        _record_baseline(perms.read_tracker, resolved)
                     except Exception:
                         pass
                     disp = self._display_path(resolved, perms)
@@ -24873,7 +24996,7 @@ class _DocToolExecutor:
         self._capture_change("edit_file", resolved, old_text, new_text, perms)
 
         try:
-            perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
+            _record_baseline(perms.read_tracker, resolved)
         except Exception:
             pass
 
@@ -24909,18 +25032,18 @@ class _DocToolExecutor:
             return json.dumps({"error": f"not a regular file: {path_arg}"})
 
         tracked = perms.read_tracker.get(str(resolved))
-        try:
-            current_mtime = resolved.stat().st_mtime
-        except Exception:
-            current_mtime = None
         if tracked is None:
             return json.dumps({"error": (
                 f"call read_file on '{path_arg}' before editing — "
                 "edits require an established read baseline."
             )})
-        if current_mtime is not None and current_mtime > tracked + 1e-3:
+        drift = _baseline_drift(
+            tracked, resolved,
+            getattr(perms.read_tracker, "identities", None))
+        if drift:
             return json.dumps({"error": (
-                f"file '{path_arg}' was modified since last read_file. Re-read first."
+                f"file '{path_arg}' was modified since last read_file "
+                f"({drift}). Re-read first."
             )})
 
         try:
@@ -24980,7 +25103,7 @@ class _DocToolExecutor:
         self._capture_change("multi_edit", resolved, old_text, text, perms)
 
         try:
-            perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
+            _record_baseline(perms.read_tracker, resolved)
         except Exception:
             pass
 
@@ -25656,6 +25779,86 @@ class _DocToolExecutor:
                 )})
         except OSError:
             return None
+        return None
+
+    def _patch_targets_need_a_read(
+        self, diff: str, perms: "KitToolPermissions",
+    ) -> Optional[str]:
+        """The read-before-write rule, applied to every file a patch edits.
+
+        write_file, edit_file, multi_edit, notebook_edit and a shell
+        redirect each refuse an EXISTING file the session has not read, and
+        refuse again once its mtime moved. apply_patch ran none of it:
+        nothing in ``_execute_apply_patch``, ``patch_apply`` or
+        ``patch_targets`` consults ``perms.read_tracker``, so the tool a
+        model uses to change code BY CONTEXT could rewrite a file it never
+        opened, and land on top of a change another process made after the
+        read -- a patch's own context lines still match while the lines
+        beside them have moved. Measured 2026-11-26
+        (experiments/parity/p1-a4/before.json): every blind and stale
+        apply_patch variant applied, in all three permission modes.
+
+        The exemptions are the ones the other tools already make, so no new
+        policy is introduced here: a file the patch CREATES has nothing to
+        clobber, and a ``check_only`` run writes nothing (its caller skips
+        this and stays usable in plan mode).
+
+        Every offending file is named in one refusal: a diff that touches
+        six unread files and reports them one per attempt costs six round
+        trips to learn one fact.
+        """
+        try:
+            from . import patch_apply as _pa
+            touched = _pa._files_in_diff(diff)
+        except Exception:
+            return None          # the applier reports an unparseable diff
+        unread: list[str] = []
+        stale: list[str] = []
+        for rel in touched:
+            try:
+                fp = (Path(perms.workspace) / rel).resolve(strict=False)
+                if not fp.is_file():
+                    continue     # created by this patch: nothing to clobber
+                tracked = perms.read_tracker.get(str(fp))
+            except (OSError, ValueError):
+                continue
+            if tracked is None:
+                unread.append(rel)
+                continue
+            try:
+                moved = fp.stat().st_mtime > tracked + 1e-3
+            except OSError:
+                continue
+            if moved:
+                stale.append(rel)
+
+        were = "it was" if len(unread or stale) == 1 else "they were"
+
+        def _refusal(items: list[str], rule: str, how: str) -> str:
+            names = ", ".join(f"'{n}'" for n in items)
+            return json.dumps({"error": (
+                f"refusing to patch {names} {rule}: {were} "
+                + ("never opened in this session. " if unread else
+                   "changed after the read. ")
+                + f"Call read_file first -- {how} Nothing in this diff was "
+                "applied.")})
+
+        # Both messages keep the phrase the other write tools use
+        # ("without a prior read_file" / "modified since last read_file"):
+        # boundaries._TEXT_CODES maps those to the read_first reason code, so
+        # a refusal worded differently would not be classified with the rest
+        # of them (tests/test_every_refusal_can_say_why.py).
+        if unread:
+            return _refusal(
+                unread, "without a prior read_file",
+                "a patch is applied by context, and context recalled from "
+                "memory is how an edit lands somewhere it did not mean to.")
+        if stale:
+            return _refusal(
+                stale, "modified since last read_file",
+                "someone else's change is in there, and a patch's own "
+                "context lines can still match while the lines beside them "
+                "have moved.")
         return None
 
     @staticmethod
@@ -26506,7 +26709,7 @@ class _DocToolExecutor:
             # What is given up is small and named: the guard still covers
             # a change this session did NOT make, which is what it is for.
             try:
-                perms.read_tracker[str(_tp)] = _tp.stat().st_mtime
+                _record_baseline(perms.read_tracker, _tp)
             except Exception:
                 pass
         _journal_notes = self._journal_shell_changes("bash", _snap, perms)
@@ -26933,7 +27136,7 @@ class _DocToolExecutor:
         # Track the read for the edit-tracker (so notebook_edit can
         # later check the file hasn't changed since this read).
         try:
-            perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
+            _record_baseline(perms.read_tracker, resolved)
         except Exception:
             pass
 
@@ -27062,7 +27265,7 @@ class _DocToolExecutor:
                 pass
 
         try:
-            perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
+            _record_baseline(perms.read_tracker, resolved)
         except Exception:
             pass
 
@@ -27406,10 +27609,66 @@ class _DocToolExecutor:
         # ran here, so a diff could reach .git/hooks, .env, keys or a stored
         # calc that write_file refuses.) check_only is `git apply --check`
         # (read-only) → skip the write gate so it stays allowed in plan mode.
+        #
+        # The read baseline is checked BEFORE the gate on purpose, for the
+        # reason _edit_cannot_apply exists: a change that cannot apply must
+        # not cost a person a dialog they decide for nothing (measured
+        # 2026-09-22, three such dialogs in a row). The executor's own checks
+        # still run after the gate -- this only moves the answer in front of
+        # the question. check_only writes nothing, so it needs no baseline
+        # and keeps working in plan mode.
         if not check_only:
+            _need = self._patch_targets_need_a_read(diff, perms)
+            if _need is not None:
+                return _need
             gate_err = self._run_permission_gate("apply_patch", arguments, perms)
             if gate_err is not None:
                 return json.dumps({"error": gate_err})
+            # The read-before-write contract, on the diff route.
+            #
+            # write_file, edit_file, multi_edit, notebook_edit, edit_sheet
+            # and a shell redirect all require a read baseline for an
+            # EXISTING file. apply_patch applied its diff to whatever was on
+            # disk: no baseline, no drift check, no refusal -- so a diff was
+            # the way around every one of those guards, including the one the
+            # other tools give in the same words. Measured in
+            # experiments/parity/p1-edit-guard (apply_patch_unread: CORRECT=0
+            # before this).
+            #
+            # Only files that EXIST need one: a created file has nothing to
+            # clobber, and a deleted one is not an edit. Resolved through the
+            # same roots the writes go through, so a path the gate would have
+            # refused is not reported as a missing baseline instead.
+            try:
+                _patch_targets = _pa._files_in_diff(diff)
+            except Exception:
+                _patch_targets = []
+            for _rel in _patch_targets:
+                _target = (Path(perms.workspace) / str(_rel))
+                try:
+                    if not _target.is_file():
+                        continue
+                    _target = _target.resolve()
+                except OSError:
+                    continue
+                _tracked = perms.read_tracker.get(str(_target))
+                if _tracked is None:
+                    return json.dumps({"error": (
+                        f"refusing to patch '{_rel}': the diff modifies an "
+                        "existing file this session has not read. Patch "
+                        "creation and deletion freely, but a change to a "
+                        "file calls read_file on it first — apply_patch is "
+                        "not a way around that, and neither is bash."
+                    )})
+                _drift = _baseline_drift(
+                    _tracked, _target,
+                    getattr(perms.read_tracker, "identities", None))
+                if _drift:
+                    return json.dumps({"error": (
+                        f"refusing to patch '{_rel}': it was modified since "
+                        f"last read_file ({_drift}). Re-read it and write the "
+                        "diff against what is there now."
+                    )})
         elif perms is not None:
             # A dry run skips the write gate (it stays usable in plan mode)
             # but not the secret deny list: it READS the target and echoes

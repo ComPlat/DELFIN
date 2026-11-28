@@ -1656,6 +1656,277 @@ _READ_ONLY_PRESET_TOOLS: tuple[str, ...] = tuple(
     sorted(set(_READ_ONLY_TOOLS) | set(_REPORTING_TOOLS)))
 
 
+# ---------------------------------------------------------------------------
+# The review findings contract
+# ---------------------------------------------------------------------------
+#
+# A review of a diff produced a CHECKLIST: prose, in whatever order the
+# delegate happened to write it, with no requirement to name a location, to
+# describe the failure, or to say whether the reviewer actually verified the
+# thing. ``verify_subagent_report`` above judges a report's CLAIMS against the
+# run's tool trace, but nothing made a review's individual findings checkable
+# one by one, and nothing refused a finding the reviewer could not stand
+# behind.
+#
+# This is the per-finding half of the same job, and it lives here rather than
+# in a module of its own because it is a sub-agent contract in exactly the way
+# ``verify_subagent_report`` is: it is decided from the payload the delegate
+# returned and the workspace it ran in, and it is asked at the same moment.
+# See ``verify_review_findings`` for the rules it enforces.
+
+#: The severities a finding may carry, most severe first. The ORDER is the
+#: ranking the report is emitted in, so a review's first line is the one to
+#: read first. A severity outside this set is not silently downgraded: it is
+#: kept at the end, because a reviewer that wrote "blocker" found something
+#: and dropping the finding would lose it; only the ranking suffers.
+REVIEW_SEVERITIES: tuple[str, ...] = ("critical", "major", "minor")
+
+#: The response contract the ``code-reviewer`` preset returns by default.
+#: ``file`` + ``line`` are the location, ``failure_scenario`` is the concrete
+#: way the code goes wrong, and ``verified`` is the reviewer's own statement
+#: that it checked it. All four are required: a finding missing any of them
+#: cannot be acted on, which is the whole point of asking.
+REVIEW_FINDINGS_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "severity": {"type": "string"},
+                    "file": {"type": "string"},
+                    "line": {"type": "integer"},
+                    "what": {"type": "string"},
+                    "failure_scenario": {"type": "string"},
+                    "verified": {"type": "boolean"},
+                },
+                "required": ["severity", "file", "line", "what",
+                             "failure_scenario", "verified"],
+            },
+        },
+    },
+    "required": ["findings"],
+}
+
+#: Written into the parent's tool result whenever a finding was withheld, so
+#: the parent cannot read the list as the complete answer. Same rule as
+#: ``_verification_notice``: the parent is a model, so a count that lives only
+#: in a field is a count it may skip.
+_REFUSED_HEADLINE = (
+    "[review-findings] {n} finding(s) withheld: they could not be verified "
+    "against the workspace and are not reported. Ask the reviewer to check "
+    "them again if they matter."
+)
+
+
+def _review_lines(path) -> list[str] | None:
+    """The lines of ``path``, or None when it cannot be read as a file."""
+    try:
+        return Path(path).read_text(encoding="utf-8",
+                                    errors="replace").splitlines()
+    except (OSError, ValueError):
+        return None
+
+
+def _inside_workspace(root, candidate: Path) -> bool:
+    """Whether ``candidate`` really lies under ``root``.
+
+    ``resolve()`` rather than a string prefix, so ``../`` segments and a
+    symlink pointing out of the tree are both caught. A finding that cites a
+    file outside the workspace is not a review of this change.
+    """
+    try:
+        base = Path(root).resolve()
+        target = candidate.resolve()
+        return target == base or base in target.parents
+    except (OSError, ValueError):
+        return False
+
+
+def verify_review_findings(payload, *, repo_root=None) -> dict:
+    """Keep the findings a reviewer verified; withhold and count the rest.
+
+    ``payload`` is the delegate's structured review (``{"findings": [...]}``)
+    or a payload carrying it. ``repo_root`` is the workspace the delegate ran
+    in — the only tree its citations are checked against.
+
+    A finding is REPORTED only when all of these hold:
+
+      * it names a ``file`` that exists under ``repo_root`` and a ``line``
+        that is a real line in it (1 <= line <= the file's length). This is
+        the ``file:line`` a reviewer has to be able to be wrong about — a
+        citation nobody checks is decoration;
+      * it carries a non-empty ``failure_scenario`` — WHAT breaks, not a
+        restatement of the rule. "Should validate input" is not a scenario;
+      * it states ``verified: true``. A reviewer that did not check a finding
+        may of course report that it suspects one, but this contract's job is
+        to hand the parent findings it can act on, so the suspicion is counted
+        instead of listed.
+
+    Survivors are sorted most-severe first (see ``REVIEW_SEVERITIES``) and a
+    finding whose severity is outside that set sorts last rather than being
+    dropped. ``dropped`` carries one entry per withheld finding with the
+    reason, so the count is never silent and the reviewer can be asked again.
+
+    Never raises. A payload with no findings yields an empty, VALID review
+    (``status: "no_findings"``) — distinct from ``"unreadable"``, which is
+    what a contract that could not be read at all reports; the two must not
+    look alike, because one says "the reviewer looked and found nothing" and
+    the other says "nobody knows".
+    """
+    out: dict = {"status": "unreadable", "findings": [], "dropped": [],
+                 "counts": {"kept": 0, "dropped": 0, "by_severity": {}}}
+    try:
+        raw = payload
+        if isinstance(payload, dict):
+            raw = payload.get("review") if isinstance(
+                payload.get("review"), dict) else payload
+        if isinstance(raw, dict):
+            items = raw.get("findings")
+        elif isinstance(raw, list):
+            items = raw
+        else:
+            items = None
+        if not isinstance(items, list):
+            return out
+
+        kept: list[dict] = []
+        dropped: list[dict] = []
+        root = Path(repo_root) if repo_root else None
+
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                dropped.append({"index": index, "reason": "not an object",
+                                "finding": item})
+                continue
+            declared = item.get("file")
+            file_ref = str(declared or "").strip()
+            line = item.get("line")
+            scenario = str(item.get("failure_scenario") or "").strip()
+
+            if not file_ref:
+                dropped.append({"index": index, "reason": "no file",
+                                "finding": item})
+                continue
+            if root is None:
+                dropped.append({"index": index,
+                                "reason": "no workspace to check it against",
+                                "finding": item})
+                continue
+            candidate = (root / file_ref) if not Path(
+                file_ref).is_absolute() else Path(file_ref)
+            if not _inside_workspace(root, candidate):
+                dropped.append({"index": index,
+                                "reason": f"{file_ref} is outside the "
+                                          "workspace",
+                                "finding": item})
+                continue
+            lines = _review_lines(candidate)
+            if lines is None:
+                dropped.append({"index": index,
+                                "reason": f"{file_ref} does not exist",
+                                "finding": item})
+                continue
+            if not isinstance(line, int) or isinstance(line, bool):
+                dropped.append({"index": index,
+                                "reason": f"line is not a number ({line!r})",
+                                "finding": item})
+                continue
+            if not (1 <= line <= len(lines)):
+                dropped.append({"index": index,
+                                "reason": f"{file_ref}:{line} is past the end "
+                                          f"of the file ({len(lines)} lines)",
+                                "finding": item})
+                continue
+            if not scenario:
+                dropped.append({"index": index,
+                                "reason": "no failure scenario",
+                                "finding": item})
+                continue
+            if item.get("verified") is not True:
+                dropped.append({"index": index,
+                                "reason": "the reviewer did not verify it",
+                                "finding": item})
+                continue
+            kept.append({
+                "severity": str(item.get("severity") or "").strip().lower(),
+                "file": file_ref,
+                "line": line,
+                # The cited line's own text, so the parent can see what the
+                # reviewer was pointing at without opening the file. Read
+                # from the file just checked, never from the finding.
+                "source_line": lines[line - 1].strip()[:200],
+                "what": str(item.get("what") or "").strip(),
+                "failure_scenario": scenario,
+                "verification": "verified",
+            })
+
+        def _rank(finding: dict) -> tuple[int, str]:
+            sev = finding.get("severity", "")
+            try:
+                return (REVIEW_SEVERITIES.index(sev), "")
+            except ValueError:
+                return (len(REVIEW_SEVERITIES), sev)
+
+        kept.sort(key=_rank)
+        out["findings"] = kept
+        out["dropped"] = dropped
+        by_sev: dict[str, int] = {}
+        for finding in kept:
+            by_sev[finding["severity"]] = by_sev.get(
+                finding["severity"], 0) + 1
+        out["counts"] = {"kept": len(kept), "dropped": len(dropped),
+                         "by_severity": by_sev}
+        out["status"] = "ok" if kept else (
+            "no_findings" if not items else "all_withheld")
+        if dropped:
+            out["notice"] = _REFUSED_HEADLINE.format(n=len(dropped))
+        return out
+    except Exception:
+        # Degraded, and SAID so: "unreadable" never reads as "nothing found".
+        out["status"] = "unreadable"
+        return out
+
+
+def attach_review_findings(payload, *, repo_root=None):
+    """Put a verified, ranked finding list on a review delegate's payload.
+
+    Only a REVIEW delegate is touched: a payload whose ``subagent_type`` is
+    not in ``REVIEW_PRESETS`` is returned unchanged, so an explore or a build
+    report acquires no second shape. Idempotent on ``review``. Never raises —
+    a contract that cannot be applied must not cost the parent the report.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    if "review" in payload:
+        return payload
+    if str(payload.get("subagent_type") or "") not in REVIEW_PRESETS:
+        return payload
+    try:
+        source = payload.get("structured_output")
+        if not isinstance(source, dict):
+            return payload
+        root = repo_root or payload.get("workspace") or None
+        review = verify_review_findings(source, repo_root=root)
+        out: dict = {}
+        notice = str(review.get("notice") or "")
+        if notice:
+            out["review_notice"] = notice
+        out.update(payload)
+        out["review"] = review
+        return out
+    except Exception:
+        return payload
+
+
+#: The presets whose answer IS a finding list, so the contract above applies.
+#: Named rather than inferred from a schema: a preset may return a structured
+#: answer that is not a review (the security-reviewer's verdict is one), and
+#: applying the finding contract to it would withhold its whole answer.
+REVIEW_PRESETS: frozenset[str] = frozenset({"code-reviewer"})
+
+
 _BUILTIN_PRESETS: dict[str, SubagentPreset] = {
     "explore": SubagentPreset(
         name="explore",
@@ -1708,14 +1979,34 @@ _BUILTIN_PRESETS: dict[str, SubagentPreset] = {
             "common-sense correctness, security, and style criteria."
         ),
         system_prompt=(
-            "You are a code-review sub-agent. Read the targeted "
-            "files / diff and report concrete issues: bugs, security, "
-            "missing validation, dead code. Format your "
-            "answer as a checklist; lead with the highest-severity "
-            "issue. If nothing concerning is found, say so explicitly."
+            "You are a code-review sub-agent. Read the targeted files / diff "
+            "and report concrete issues: bugs, security, missing validation, "
+            "dead code.\n\n"
+            "A finding is only reportable when you can state all four of:\n"
+            "  severity          one of critical, major, minor\n"
+            "  file + line       the location in THIS workspace, and the line\n"
+            "                    must be the line the problem is on — open the\n"
+            "                    file and read it before citing it\n"
+            "  what              the defect, in one sentence\n"
+            "  failure_scenario  the concrete way it goes wrong: which input or\n"
+            "                    call sequence produces which wrong result. Not\n"
+            "                    a restatement of a rule — a scenario someone\n"
+            "                    could reproduce.\n"
+            "  verified          true only if you checked it: you read the line\n"
+            "                    in question, and the scenario follows from the\n"
+            "                    code you read. If you suspect something but did\n"
+            "                    not confirm it, put it in open_questions\n"
+            "                    instead of reporting it as a finding.\n\n"
+            "Report NOTHING you did not verify. A short list you stand behind "
+            "is worth more than a long one: findings you could not confirm are "
+            "withheld from your answer anyway, so writing them as findings "
+            "costs you nothing but tells the reader less. Lead with the most "
+            "severe. If nothing concerning is found, return an empty findings "
+            "list and say so in summary — that is a result, not a failure."
         ),
         mode="plan",
         tools=_READ_ONLY_PRESET_TOOLS,
+        output_schema=REVIEW_FINDINGS_SCHEMA,
     ),
     "general-purpose": SubagentPreset(
         name="general-purpose",
@@ -3322,6 +3613,13 @@ class SubagentResult:
             payload["structured_output"] = self.structured_output
         if self.schema_error:
             payload["schema_error"] = self.schema_error
+        # A REVIEW's findings are checked one by one against the workspace the
+        # delegate ran in: a kept finding carries its file:line and its failure
+        # scenario, and one that cannot be checked is counted, not listed. Done
+        # before the claim verifier below so it reads the delegate's own text,
+        # and before the marking for the same reason.
+        payload = attach_review_findings(payload,
+                                         repo_root=self.workspace or None)
         # Cross-check the report against this run's own tool trace BEFORE the
         # parent ever reads it. The full trace (with tool outputs) is passed
         # explicitly — the payload copy above carries names/inputs only.
@@ -6286,6 +6584,11 @@ __all__ = [
     "scan_report_completion_claims",
     "verify_subagent_report",
     "attach_verification",
+    "REVIEW_SEVERITIES",
+    "REVIEW_FINDINGS_SCHEMA",
+    "REVIEW_PRESETS",
+    "verify_review_findings",
+    "attach_review_findings",
     "run_subagent",
     "run_orchestration",
     "validate_json_schema",
