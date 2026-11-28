@@ -25658,6 +25658,86 @@ class _DocToolExecutor:
             return None
         return None
 
+    def _patch_targets_need_a_read(
+        self, diff: str, perms: "KitToolPermissions",
+    ) -> Optional[str]:
+        """The read-before-write rule, applied to every file a patch edits.
+
+        write_file, edit_file, multi_edit, notebook_edit and a shell
+        redirect each refuse an EXISTING file the session has not read, and
+        refuse again once its mtime moved. apply_patch ran none of it:
+        nothing in ``_execute_apply_patch``, ``patch_apply`` or
+        ``patch_targets`` consults ``perms.read_tracker``, so the tool a
+        model uses to change code BY CONTEXT could rewrite a file it never
+        opened, and land on top of a change another process made after the
+        read -- a patch's own context lines still match while the lines
+        beside them have moved. Measured 2026-11-26
+        (experiments/parity/p1-a4/before.json): every blind and stale
+        apply_patch variant applied, in all three permission modes.
+
+        The exemptions are the ones the other tools already make, so no new
+        policy is introduced here: a file the patch CREATES has nothing to
+        clobber, and a ``check_only`` run writes nothing (its caller skips
+        this and stays usable in plan mode).
+
+        Every offending file is named in one refusal: a diff that touches
+        six unread files and reports them one per attempt costs six round
+        trips to learn one fact.
+        """
+        try:
+            from . import patch_apply as _pa
+            touched = _pa._files_in_diff(diff)
+        except Exception:
+            return None          # the applier reports an unparseable diff
+        unread: list[str] = []
+        stale: list[str] = []
+        for rel in touched:
+            try:
+                fp = (Path(perms.workspace) / rel).resolve(strict=False)
+                if not fp.is_file():
+                    continue     # created by this patch: nothing to clobber
+                tracked = perms.read_tracker.get(str(fp))
+            except (OSError, ValueError):
+                continue
+            if tracked is None:
+                unread.append(rel)
+                continue
+            try:
+                moved = fp.stat().st_mtime > tracked + 1e-3
+            except OSError:
+                continue
+            if moved:
+                stale.append(rel)
+
+        were = "it was" if len(unread or stale) == 1 else "they were"
+
+        def _refusal(items: list[str], rule: str, how: str) -> str:
+            names = ", ".join(f"'{n}'" for n in items)
+            return json.dumps({"error": (
+                f"refusing to patch {names} {rule}: {were} "
+                + ("never opened in this session. " if unread else
+                   "changed after the read. ")
+                + f"Call read_file first -- {how} Nothing in this diff was "
+                "applied.")})
+
+        # Both messages keep the phrase the other write tools use
+        # ("without a prior read_file" / "modified since last read_file"):
+        # boundaries._TEXT_CODES maps those to the read_first reason code, so
+        # a refusal worded differently would not be classified with the rest
+        # of them (tests/test_every_refusal_can_say_why.py).
+        if unread:
+            return _refusal(
+                unread, "without a prior read_file",
+                "a patch is applied by context, and context recalled from "
+                "memory is how an edit lands somewhere it did not mean to.")
+        if stale:
+            return _refusal(
+                stale, "modified since last read_file",
+                "someone else's change is in there, and a patch's own "
+                "context lines can still match while the lines beside them "
+                "have moved.")
+        return None
+
     @staticmethod
     def _interpreter_names_denied_write(
         cmd: str, perms: "KitToolPermissions"
@@ -27406,7 +27486,18 @@ class _DocToolExecutor:
         # ran here, so a diff could reach .git/hooks, .env, keys or a stored
         # calc that write_file refuses.) check_only is `git apply --check`
         # (read-only) → skip the write gate so it stays allowed in plan mode.
+        #
+        # The read baseline is checked BEFORE the gate on purpose, for the
+        # reason _edit_cannot_apply exists: a change that cannot apply must
+        # not cost a person a dialog they decide for nothing (measured
+        # 2026-09-22, three such dialogs in a row). The executor's own checks
+        # still run after the gate -- this only moves the answer in front of
+        # the question. check_only writes nothing, so it needs no baseline
+        # and keeps working in plan mode.
         if not check_only:
+            _need = self._patch_targets_need_a_read(diff, perms)
+            if _need is not None:
+                return _need
             gate_err = self._run_permission_gate("apply_patch", arguments, perms)
             if gate_err is not None:
                 return json.dumps({"error": gate_err})
