@@ -163,7 +163,9 @@ def test_patch_tool_dispatch():
         ws = Path(d)
         (ws / "foo.txt").write_text("line1\nline2\nline3\n")
         perms = KitToolPermissions(workspace=ws, mode="default")
-        out = _DocToolExecutor().execute(
+        ex = _DocToolExecutor()
+        ex.execute("read_file", {"path": "foo.txt"}, perms)
+        out = ex.execute(
             "apply_patch",
             {"diff": _SIMPLE_DIFF},
             permissions=perms,

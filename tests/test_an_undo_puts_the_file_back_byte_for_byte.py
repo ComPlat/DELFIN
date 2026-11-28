@@ -29,7 +29,18 @@ from delfin.agent import change_journal as cj
 from delfin.agent.api_client import KitToolPermissions, _DocToolExecutor
 
 
+
+def _read_targets(ex, perms, diff):
+    """Read every existing file the diff touches, as a session must before
+    apply_patch accepts it."""
+    from delfin.agent import patch_apply
+    for rel in patch_apply._files_in_diff(diff):
+        if (Path(perms.workspace) / rel).is_file():
+            ex.execute("read_file", {"path": rel}, perms)
+
+
 @pytest.fixture
+
 def home(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     (tmp_path / "home").mkdir()
@@ -114,7 +125,9 @@ def test_a_patch_to_a_non_utf8_file_undoes_byte_for_byte(home, ws):
 
     ex = _DocToolExecutor()
     diff = "--- a/cafe.txt\n+++ b/cafe.txt\n@@ -2 +2 @@\n-beta\n+gamma\n"
-    result = ex._execute_apply_patch({"diff": diff}, _perms(ws, "s-patch"))
+    perms = _perms(ws, "s-patch")
+    _read_targets(ex, perms, diff)
+    result = ex._execute_apply_patch({"diff": diff}, perms)
     assert '"status": "ok"' in result, result
     assert target.read_bytes() == b"caf\xe9 alpha\ngamma\n"
 
@@ -132,7 +145,9 @@ def test_an_ordinary_patch_still_applies_and_undoes(home, ws):
 
     ex = _DocToolExecutor()
     diff = "--- a/note.txt\n+++ b/note.txt\n@@ -2 +2 @@\n-two\n+TWO\n"
-    result = ex._execute_apply_patch({"diff": diff}, _perms(ws, "s-plain"))
+    perms = _perms(ws, "s-plain")
+    _read_targets(ex, perms, diff)
+    result = ex._execute_apply_patch({"diff": diff}, perms)
     assert '"status": "ok"' in result, result
     assert target.read_text(encoding="utf-8") == "one\nTWO\n"
 

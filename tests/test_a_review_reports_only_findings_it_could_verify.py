@@ -281,7 +281,7 @@ def test_the_verb_reports_the_unverifiable_refusal_as_held_not_refused(gate,
     a real repository; this test is about what the review reports, so it is
     replaced with a pass, as the sibling suite does for the same reason.
     """
-    monkeypatch.setattr(pr_bot, "check", lambda wt, base="origin/main": (True, "ok"))
+    monkeypatch.setattr(pr_bot, "check", lambda wt, base="origin/main", **_kw: (True, "ok"))
     gate["set"](_refuse(file="delfin/agent/phantom.py", line=3),
                 _refuse(file="delfin/agent/phantom.py", line=3))
     run = gate["root"] / "night9"
