@@ -277,13 +277,52 @@ def alive(pid: int) -> bool:
 
 
 def ended(ref: str) -> bool:
-    """Whether ``run/tid`` started and no longer runs; ``run/tid.final``
-    whether its stage marked it final."""
+    """Whether ``run/tid`` ended on its own; ``run/tid.final`` whether its
+    stage marked it final.
+
+    A member a person stopped has not ended, whatever its pid says: the
+    stage waits on an ending, and a stop is the opposite of one. Reading a
+    stop as an ending started a lander whose ``after`` named three markers,
+    two of which did not exist (2026-11-27)."""
     run, _, tid = ref.partition("/")
     if tid.endswith(".final"):
         return (run_dir(run) / tid).exists()
+    if stopped_by_a_person(run, tid):
+        return False
     a = load_state(run)["agents"].get(tid)
     return a is not None and not alive(a["pid"])
+
+
+def _worktree_pids(a: dict) -> list[int]:
+    """The live pids whose working directory is this member's worktree.
+
+    The state's pid is the launcher's; a scope can put the member under
+    another one, and then ``alive(pid)`` answers False for a member that is
+    running. ``/proc/*/cwd`` is the one place that names the worktree
+    itself, so the stop looks there before it decides nothing is running --
+    and the pids it finds are what it signals, never the state's stale pid:
+    a pid that has been recycled belongs to an unrelated process, and
+    ``killpg`` on it would end someone else's work (2026-11-27).
+
+    A host without /proc (macOS) has no answer here and gives none: the
+    stop then signals the state's pid only, as it always did."""
+    wt = str(a.get("worktree") or "").rstrip("/")
+    if not wt:
+        return []
+    try:
+        pids = [p.name for p in Path("/proc").iterdir() if p.name.isdigit()]
+    except OSError:
+        return []
+    out = []
+    for pid in pids:
+        try:
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+        except OSError:
+            continue
+        if cwd.rstrip("/") == wt:
+            out.append(int(pid))
+    return out
+
 
 
 def _ended_at(ref: str) -> float:
@@ -299,9 +338,22 @@ def _ended_at(ref: str) -> float:
         return time.time()
 
 
+def waiting_on_a_stop(task: dict) -> list[str]:
+    """The refs in ``after`` that a person stopped, so the gate can say why
+    it is holding instead of leaving the stage looking forgotten."""
+    out = []
+    for ref in task.get("after") or []:
+        run, _, tid = ref.partition("/")
+        if not tid.endswith(".final") and stopped_by_a_person(run, tid):
+            out.append(ref)
+    return out
+
+
 def ready(task: dict, now: float | None = None) -> bool:
     """All of ``after`` ended -- or at least ``after_min`` of them, and the
-    first of those ended ``after_wait_s`` ago."""
+    first of those ended ``after_wait_s`` ago. A ref a person stopped never
+    counts towards either: ``after_min`` is a way to start before everything
+    ended, not a way to start on a stop."""
     refs = task.get("after") or []
     if not refs:
         return True
@@ -717,17 +769,28 @@ def _last_result(log: Path) -> dict:
 
 
 def resume(run: str, tid: str, note: str = "", *, fresh: bool = False,
-           wait_for_room: bool = True, poll_s: float = 60.0) -> dict:
+           wait_for_room: bool = True, poll_s: float = 60.0,
+           after_stop: bool = False) -> dict:
     """Continue member ``tid``'s session in its worktree, with ``note`` (the
     orchestrator's review, or what the stage found) ahead of its task. A
     member still running is not resumed. ``fresh`` starts a new session
-    that is told to read the branch's commits first."""
+    that is told to read the branch's commits first.
+
+    A member a person stopped is not resumed either, and this is the one
+    place that decides it: every restarter -- the stage's error resume, its
+    "was ended from outside" resume, its "ask for a real run" resume, a
+    failed real-run verdict and the verb by hand -- comes through here, so a
+    rule kept in any one of them is a rule the others go round. Lifting the
+    stop is a person's next decision, and ``after_stop`` is how they make
+    it; no automatic path passes it."""
     with _state_lock(run):
         a = load_state(run)["agents"].get(tid)
     if a is None:
         raise WaveError(f"{run}/{tid} was never started")
     if alive(a["pid"]):
         return {"run": run, "id": tid, "resumed": False, "why": "still running"}
+    if stopped_by_a_person(run, tid) and not after_stop:
+        return {"run": run, "id": tid, "resumed": False, "why": "stopped by a person"}
     cfg = settings()
     while wait_for_room and not _room(cfg)[0]:
         time.sleep(poll_s)
@@ -769,29 +832,70 @@ def resume(run: str, tid: str, note: str = "", *, fresh: bool = False,
 
 def stop(run: str, tid: str = "") -> dict:
     """End the members of a run (or one member): their scopes' process
-    groups get SIGTERM, then SIGKILL. Worktrees, commits and logs stay."""
+    groups get SIGTERM, then SIGKILL. Worktrees, commits and logs stay.
+
+    A stop is a person's decision, so it is recorded in the run's state
+    rather than inferred later from a dead pid. That record is the only
+    thing that tells a stop apart from a crash, and the pid alone cannot
+    carry it: by the time a person reads the logs and stops the member,
+    the session has usually ended already, and a stop that reported
+    ``stopped: []`` for it left the tick to resume the member it had just
+    been told to end (2026-11-26). A member named by worktree is found
+    too, because the state's pid is the launcher's while a scope may put
+    the member under another one (2026-11-27)."""
     import signal
     st = load_state(run)
     targets = [t for t in st["agents"] if not tid or t == tid]
     stopped = []
     for t in targets:
-        pid = st["agents"][t]["pid"]
-        if not alive(pid):
-            continue
-        for sig in (signal.SIGTERM, signal.SIGKILL):
-            try:
-                os.killpg(pid, sig)
-            except OSError:
-                break
-            for _ in range(50):
-                if not alive(pid):
+        a = st["agents"][t]
+        pid = a["pid"]
+        # The state's pid first (it is the launcher and its group is the
+        # member's), then whatever process holds the worktree. A stale pid is
+        # not signalled on its own: only a pid that is running AND either
+        # recorded or holding the worktree is ours to end.
+        holders = _worktree_pids(a)
+        ours = ([pid] if alive(pid) else []) + [p for p in holders if p != pid]
+        with _state_lock(run):
+            st = load_state(run)
+            if t in st["agents"]:
+                st["agents"][t]["stopped"] = {
+                    "at": time.time(), "pid": pid, "by": "a person",
+                    "was_running": bool(ours), "pids": ours}
+                _save_state(run, st)
+        if ours:
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                for p in ours:
+                    try:
+                        os.killpg(p, sig)
+                    except OSError:
+                        try:
+                            os.kill(p, sig)
+                        except OSError:
+                            pass
+                for _ in range(50):
+                    if not any(alive(p) for p in ours):
+                        break
+                    time.sleep(0.1)
+                if not any(alive(p) for p in ours):
                     break
-                time.sleep(0.1)
-            if not alive(pid):
-                break
         stopped.append(t)
         record(run, "stopped", t)
     return {"run": run, "stopped": stopped}
+
+
+def stopped_by_a_person(run: str, tid: str) -> bool:
+    """Whether a person stopped ``run/tid`` and nobody has started it again.
+
+    The mark ``_launch`` leaves behind (a newer ``started`` time than the
+    stop's) is what lifts it: the record is the decision, and starting the
+    member anew is the next decision."""
+    a = load_state(run)["agents"].get(tid) or {}
+    stop = a.get("stopped") or {}
+    if not stop:
+        return False
+    return float(stop.get("at") or 0) >= float(a.get("started") or 0)
+
 
 
 def status(run: str) -> dict:
@@ -810,9 +914,20 @@ def status(run: str) -> dict:
         a = st["agents"].get(tid)
         d = run_dir(run)
         marks = [m for m in ("asked", "realrun", "final") if (d / f"{tid}.{m}").exists()]
+        # A person's stop is a mark of its own, and it outranks "ended":
+        # both have a dead pid, and telling them apart is the whole point.
+        held = stopped_by_a_person(run, tid)
+        if held:
+            marks.append("stopped")
         if a is None:
-            rows.append({"id": tid, "state": "waiting" if not ready(t) else "queued",
-                         "marks": marks})
+            waited = waiting_on_a_stop(t)
+            row = {"id": tid, "state": "waiting" if not ready(t) else "queued",
+                   "marks": marks}
+            if waited:
+                row["waiting_on"] = waited
+                row["why"] = (f"waiting on a stop: {', '.join(waited)} was stopped by a "
+                               "person, which is not an ending. Start it again to go on")
+            rows.append(row)
             continue
         wt = Path(a["worktree"])
         try:
@@ -830,7 +945,9 @@ def status(run: str) -> dict:
         except OSError:
             idle_min = None
         res = _last_result(log)
-        rows.append({"id": tid, "state": "running" if alive(a["pid"]) else "ended",
+        state = ("stopped" if held else
+                 "running" if alive(a["pid"]) else "ended")
+        rows.append({"id": tid, "state": state,
                      "pid": a["pid"], "branch": a["branch"], "commits": commits, "dirty": dirty,
                      "pr_md": (wt / "scratch" / "PR.md").is_file(),
                      "stop_reason": res.get("stop_reason"), "error": (res.get("error") or "")[:200],
