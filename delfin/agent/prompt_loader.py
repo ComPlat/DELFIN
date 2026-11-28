@@ -2053,15 +2053,39 @@ class PromptLoader:
     # keep a readable sample for anyone reading the pack on disk. A name
     # nobody owns leaves the block untouched: a prompt that keeps a stale
     # section is better than a prompt with a hole where a section was.
+    #
+    # A name may carry ONE namespace prefix (``shared:NAME``), which is
+    # how a block reads a file from ``pack/shared/``. That is the only
+    # form of role-to-role sharing there is, and it exists so a rule that
+    # must hold in two roles has ONE definition: the office checking
+    # rules were written only into ``office_agent.md``, so a solo session
+    # answering an office request never read them -- measured, the German
+    # column-split request reached a solo prompt with none of the three.
     _GENERATED_RE = re.compile(
-        r"^<!--\s*generated:([a-z_]+)\s*-->[ \t]*\n(.*?)"
+        r"^<!--\s*generated:([a-z_]+(?::[a-z_]+)?)\s*-->[ \t]*\n(.*?)"
         r"^<!--\s*/generated\s*-->[ \t]*\n",
         re.MULTILINE | re.DOTALL,
     )
 
-    @staticmethod
-    def _generated_block(name: str) -> "str | None":
+    def _generated_block(self, name: str) -> "str | None":
         """The text for one generated block, or None if nobody owns it."""
+        if name.startswith("shared:"):
+            # One definition, every role that must obey it. Read through
+            # the same cache the role prompts use, so two roles asking
+            # for the block cost one file read.
+            #
+            # EMPTY means UNOWNED here, not "render nothing": a shared
+            # file that is missing or misspelt must leave the block alone
+            # like any other name nobody owns, or one typo silently
+            # deletes a rule out of every role that states it. Measured
+            # while writing this: a nonexistent name returned "" and the
+            # block was replaced with nothing.
+            rel = name.split(":", 1)[1]
+            try:
+                text = self._cached_read(self.agent_dir / "shared" / f"{rel}.md")
+            except Exception:
+                return None
+            return text or None
         if name == "subagent_table":
             from . import subagents as _sa
             return _sa.decision_table()
