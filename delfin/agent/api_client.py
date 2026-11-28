@@ -12662,6 +12662,9 @@ _HOT_TOOL_NAMES: frozenset[str] = frozenset({
     "task_create",           #   1061
     "task_list",             #   1658
     "task_update",           #   2006
+    "undo_changes",          # p4: real runs (scratch/realrun) showed the
+                               # deferred-schema path failing: the undo was
+                               # never callable from the session toolset
     "web_fetch",             #     80
     "web_search",            #     53
     "write_file",            #   2372
